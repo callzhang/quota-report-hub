@@ -11,6 +11,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -23,7 +24,7 @@ ARCHIVE_DIR = Path.home() / ".agents" / "auth"
 SOURCE_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 CLAUDE_HOME = Path.home() / ".claude"
 CODEx_PROMPT = "reply with ok"
-CLAUDE_QUOTA_MODEL = "claude-sonnet-4-6"
+CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 CLAUDE_DEFAULT_BASE_URL = "https://api.anthropic.com"
 
 
@@ -312,15 +313,21 @@ def run_claude_status(claude_executable: str) -> dict:
     }
 
 
-def claude_base_url() -> str:
-    return (os.environ.get("ANTHROPIC_BASE_URL") or CLAUDE_DEFAULT_BASE_URL).rstrip("/")
-
-
-def claude_bearer_token() -> str | None:
-    token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    if token:
-        return token.strip() or None
-    return None
+def read_claude_keychain_credentials() -> dict | None:
+    if sys.platform != "darwin":
+        return None
+    user = os.environ.get("USER") or getpass.getuser() or ""
+    if not user:
+        return None
+    result = subprocess.run(
+        ["security", "find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-a", user, "-w"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return json.loads(result.stdout)
 
 
 def build_claude_window(utilization: float, resets_at: int, window_minutes: int) -> dict:
@@ -355,60 +362,62 @@ def parse_claude_rate_limit_headers(headers) -> dict:
 
 
 def probe_claude_rate_limits() -> dict:
-    token = claude_bearer_token()
+    credentials = read_claude_keychain_credentials()
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    token = oauth.get("accessToken")
     if token is None:
         return {
             "available": False,
-            "source": "headers",
-            "reason": "missing ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN",
-            "base_url": claude_base_url(),
+            "source": "keychain",
+            "reason": f"missing {CLAUDE_KEYCHAIN_SERVICE} OAuth access token",
+            "base_url": CLAUDE_DEFAULT_BASE_URL,
             "windows": empty_windows(),
         }
-
-    body = json.dumps(
-        {
-            "model": CLAUDE_QUOTA_MODEL,
-            "max_tokens": 1,
-            "messages": [{"role": "user", "content": "quota"}],
-        }
-    ).encode("utf-8")
     request = urllib.request.Request(
-        claude_base_url() + "/v1/messages",
-        data=body,
+        CLAUDE_DEFAULT_BASE_URL + "/api/oauth/usage",
         headers={
-            "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",
-            "anthropic-version": "2023-06-01",
+            "Accept": "application/json",
         },
-        method="POST",
+        method="GET",
     )
 
     try:
         with urllib.request.urlopen(request) as response:
             headers = response.headers
             status_code = getattr(response, "status", None) or response.getcode()
+            response_body = response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         headers = exc.headers
         status_code = exc.code
+        response_body = exc.read().decode("utf-8", "replace")
     except Exception as exc:
         return {
             "available": False,
-            "source": "headers",
+            "source": "keychain",
             "reason": str(exc)[:400],
-            "base_url": claude_base_url(),
+            "base_url": CLAUDE_DEFAULT_BASE_URL,
             "windows": empty_windows(),
         }
 
+    try:
+        payload = json.loads(response_body) if response_body else {}
+    except json.JSONDecodeError:
+        payload = {}
     windows = parse_claude_rate_limit_headers(headers)
     return {
         "available": windows["5h"] is not None or windows["1week"] is not None,
-        "source": "headers",
+        "source": "keychain",
         "status_code": status_code,
-        "base_url": claude_base_url(),
+        "base_url": CLAUDE_DEFAULT_BASE_URL,
         "windows": windows,
         "status": headers.get("anthropic-ratelimit-unified-status"),
         "representative_claim": headers.get("anthropic-ratelimit-unified-representative-claim"),
         "overage_status": headers.get("anthropic-ratelimit-unified-overage-status"),
+        "subscription_type": oauth.get("subscriptionType"),
+        "rate_limit_tier": oauth.get("rateLimitTier"),
+        "oauth_expires_at": oauth.get("expiresAt"),
+        "api_error": ((payload.get("error") or {}).get("message") if isinstance(payload, dict) else None),
     }
 
 
@@ -463,7 +472,7 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
         }
 
     auth_status = json.loads(auth_result.stdout)
-    credentials = read_claude_credentials(claude_home)
+    credentials = read_claude_credentials(claude_home) or read_claude_keychain_credentials()
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     stats = read_claude_stats(claude_home)
     summary = summarize_claude_stats(stats)

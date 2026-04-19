@@ -17,6 +17,7 @@ from quota_reporters import (
     parse_claude_rate_limit_headers,
     probe_claude,
     probe_claude_rate_limits,
+    read_claude_keychain_credentials,
     run_claude_status,
     summarize_claude_stats,
 )  # noqa: E402
@@ -94,48 +95,50 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertFalse(status["available"])
         self.assertEqual(status["text"], "/status isn't available in this environment.")
 
-    def test_probe_claude_rate_limits_reports_missing_token(self):
-        with mock.patch.dict("quota_reporters.os.environ", {}, clear=True):
+    def test_read_claude_keychain_credentials_returns_none_off_darwin(self):
+        with mock.patch("quota_reporters.sys.platform", "linux"):
+            self.assertIsNone(read_claude_keychain_credentials())
+
+    def test_probe_claude_rate_limits_reports_missing_keychain_token(self):
+        with mock.patch("quota_reporters.read_claude_keychain_credentials", return_value=None):
             result = probe_claude_rate_limits()
 
         self.assertFalse(result["available"])
         self.assertEqual(result["windows"]["5h"], None)
         self.assertEqual(result["windows"]["1week"], None)
 
-    def test_probe_claude_rate_limits_reads_headers_from_http_error(self):
+    def test_probe_claude_rate_limits_reads_exact_claude_keychain(self):
         error = urllib.error.HTTPError(
-            url="https://api.anthropic.com/v1/messages",
-            code=429,
-            msg="Too Many Requests",
+            url="https://api.anthropic.com/api/oauth/usage",
+            code=401,
+            msg="Unauthorized",
             hdrs={
-                "anthropic-ratelimit-unified-status": "rejected",
-                "anthropic-ratelimit-unified-representative-claim": "five_hour",
-                "anthropic-ratelimit-unified-overage-status": "rejected",
-                "anthropic-ratelimit-unified-5h-utilization": "0.91",
-                "anthropic-ratelimit-unified-5h-reset": "1776649200",
-                "anthropic-ratelimit-unified-7d-utilization": "0.33",
-                "anthropic-ratelimit-unified-7d-reset": "1777167600",
+                "Content-Type": "application/json",
             },
-            fp=None,
+            fp=mock.Mock(read=mock.Mock(return_value=b'{"type":"error","error":{"message":"OAuth authentication is currently not supported."}}')),
         )
 
-        with mock.patch.dict(
-            "quota_reporters.os.environ",
-            {
-                "ANTHROPIC_AUTH_TOKEN": "test-token",
-                "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+        with mock.patch(
+            "quota_reporters.read_claude_keychain_credentials",
+            return_value={
+                "claudeAiOauth": {
+                    "accessToken": "exact-claude-oauth-token",
+                    "refreshToken": "exact-claude-refresh-token",
+                    "subscriptionType": "max",
+                    "rateLimitTier": "default_claude_max_20x",
+                    "expiresAt": 1776668828033,
+                }
             },
-            clear=True,
         ):
             with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=error):
                 result = probe_claude_rate_limits()
 
-        self.assertTrue(result["available"])
-        self.assertEqual(result["status_code"], 429)
-        self.assertEqual(result["status"], "rejected")
-        self.assertEqual(result["representative_claim"], "five_hour")
-        self.assertEqual(result["windows"]["5h"]["used_percent"], 91.0)
-        self.assertEqual(result["windows"]["1week"]["used_percent"], 33.0)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["source"], "keychain")
+        self.assertEqual(result["status_code"], 401)
+        self.assertEqual(result["subscription_type"], "max")
+        self.assertEqual(result["rate_limit_tier"], "default_claude_max_20x")
+        self.assertEqual(result["api_error"], "OAuth authentication is currently not supported.")
 
     def test_archive_current_codex_auth_creates_stable_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -41,7 +41,7 @@ After install, teammates can either:
 The dashboard handles the two sources differently:
 
 - Codex reports real `5H` and `1week` quota windows from archived auth snapshots under `~/.agents/auth/auth-*.json`
-- Claude reports auth tier, cumulative usage statistics, and now attempts to read `5H` / `1week` quota windows from `anthropic-ratelimit-unified-*` response headers via a minimal `/v1/messages` probe when local auth exposes a bearer token
+- Claude reports auth tier and cumulative usage statistics, and now reads the exact macOS Keychain item `Claude Code-credentials` to identify the active Claude subscription. It will only use that exact Claude OAuth credential path for quota probing, and explicitly records when Anthropic's OAuth usage API does not expose quota windows programmatically.
 
 Codex collection rules:
 
