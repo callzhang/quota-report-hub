@@ -96,7 +96,7 @@
 
       table {
         width: 100%;
-        min-width: 1360px;
+        min-width: 1500px;
         border-collapse: collapse;
       }
 
@@ -158,6 +158,12 @@
       .empty {
         color: var(--muted);
       }
+
+      .usage-block {
+        display: grid;
+        gap: 4px;
+        min-width: 220px;
+      }
     </style>
   </head>
   <body>
@@ -180,6 +186,7 @@
                 <th>Account</th>
                 <th>5H</th>
                 <th>1week</th>
+                <th>Usage</th>
                 <th>Status</th>
                 <th>Reported At</th>
               </tr>
@@ -206,20 +213,48 @@
       }
 
       function progressCell(window) {
-        if (!window) return "n/a";
+        if (!window || window.remaining_percent === null || window.remaining_percent === undefined) {
+          return `<div class="meta">n/a</div>`;
+        }
         const remaining = Number(window.remaining_percent);
         let level = "";
         if (remaining <= 10) level = "critical";
         else if (remaining <= 30) level = "low";
+        const resetLabel = window.reset_at ? `reset ${formatDate(window.reset_at)}` : "reset unavailable";
         return `
           <div class="progress">
             <div class="progress-row">
               <div class="track"><div class="fill ${level}" style="width: ${remaining}%"></div></div>
               <strong>${formatPercent(remaining)}</strong>
             </div>
-            <div class="meta">reset ${formatDate(window.reset_at)}</div>
+            <div class="meta">${resetLabel}</div>
           </div>
         `;
+      }
+
+      function formatCompactNumber(value) {
+        if (value === null || value === undefined) return "n/a";
+        return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value));
+      }
+
+      function usageCell(item) {
+        if (item.source === "claude") {
+          const usage = item.usage_summary || {};
+          const stats = usage.stats || {};
+          return `
+            <div class="usage-block">
+              <div>${usage.rate_limit_tier || item.plan_name || "unknown tier"}</div>
+              <div class="meta">sessions ${stats.total_sessions ?? "n/a"} · messages ${stats.total_messages ?? "n/a"}</div>
+              <div class="meta">tokens ${formatCompactNumber(stats.total_input_tokens)} in · ${formatCompactNumber(stats.total_output_tokens)} out</div>
+            </div>
+          `;
+        }
+
+        if (item.model_context_window) {
+          return `<div class="usage-block"><div>context ${formatCompactNumber(item.model_context_window)}</div></div>`;
+        }
+
+        return `<div class="meta">n/a</div>`;
       }
 
       async function load() {
@@ -229,7 +264,7 @@
         summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active reports: ${payload.report_count || 0}`;
         cards.innerHTML = [
           `<article class="card"><div class="meta">Active reports</div><strong>${payload.report_count || 0}</strong><div class="meta">Latest one per source/host/account</div></article>`,
-          `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Codex now, Claude later</div></article>`,
+          `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Codex and Claude reporters</div></article>`,
           `<article class="card"><div class="meta">Latest report</div><strong>${items[0]?.email || items[0]?.reporter_name || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.reported_at)}</div></article>`
         ].join("");
 
@@ -240,6 +275,7 @@
             <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div></td>
             <td>${progressCell(item.windows?.["5h"])}</td>
             <td>${progressCell(item.windows?.["1week"])}</td>
+            <td>${usageCell(item)}</td>
             <td><div>${item.status}</div><div class="mono wrap">${item.error || ""}</div></td>
             <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="mono wrap">${item.auth_path || ""}</div></td>
           </tr>

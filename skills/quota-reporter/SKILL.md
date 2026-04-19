@@ -1,22 +1,25 @@
 ---
 name: quota-reporter
-description: Install and run a local quota reporter that probes Codex account usage, posts the latest 5H and 1week windows to a shared dashboard, and sets up an hourly scheduled run. Use this whenever a teammate wants to join the shared quota dashboard, report their own Codex quota, install the hourly reporter, or verify that quota reports are reaching the shared service. Trigger on requests about Codex quota, token usage, usage monitoring, hourly usage reporting, shared quota dashboards, Vercel quota dashboards, or Turso-backed quota collection.
+description: Install and run a local quota reporter that probes Codex quota windows plus Claude CLI usage metadata, posts the latest status to a shared dashboard, and sets up an hourly scheduled run. Use this whenever a teammate wants to join the shared quota dashboard, report their own Codex or Claude usage, install the hourly reporter, or verify that reports are reaching the shared service. Trigger on requests about Codex quota, Claude CLI usage, token usage, usage monitoring, hourly usage reporting, shared quota dashboards, Vercel quota dashboards, or Turso-backed quota collection.
 ---
 
 # Quota Reporter
 
-This skill installs and runs a local reporter for Codex quota usage.
+This skill installs and runs local reporters for Codex and Claude CLI usage.
 
 ## What it does
 
-1. Reads the local `~/.codex/auth.json`
-2. Probes the current Codex quota windows
-3. Posts a signed report to the shared dashboard service
-4. Installs a reboot-safe scheduler that reports every hour
+1. Reads the local `~/.codex/auth.json` when Codex is present
+2. Probes the current Codex `5H` and `1week` quota windows
+3. Reads local Claude CLI auth and usage metadata when Claude is present
+4. Posts signed reports to the shared dashboard service
+5. Installs a reboot-safe scheduler that reports every hour
 
 ## Files
 
-- Reporter: `scripts/report_codex_quota.py`
+- Combined reporter: `scripts/report_all_usage.py`
+- Codex reporter: `scripts/report_codex_quota.py`
+- Claude reporter: `scripts/report_claude_usage.py`
 - Installer: `scripts/install_hourly_reporter.py`
 
 ## Required inputs
@@ -33,9 +36,16 @@ You need:
 Run:
 
 ```bash
-python3 scripts/report_codex_quota.py \
+python3 scripts/report_all_usage.py \
   --server-url https://your-dashboard.vercel.app \
   --ingest-token YOUR_TOKEN
+```
+
+If you only want one source:
+
+```bash
+python3 scripts/report_codex_quota.py --server-url https://your-dashboard.vercel.app --ingest-token YOUR_TOKEN
+python3 scripts/report_claude_usage.py --server-url https://your-dashboard.vercel.app --ingest-token YOUR_TOKEN
 ```
 
 ### Install hourly reporting

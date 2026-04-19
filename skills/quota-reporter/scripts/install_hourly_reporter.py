@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    reporter_script = Path(__file__).with_name("report_codex_quota.py")
+    reporter_script = Path(__file__).with_name("report_all_usage.py")
     write_config(args.server_url, args.ingest_token)
     system = platform.system()
 
