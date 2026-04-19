@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quota Report Hub</title>
+    <style>
+      :root {
+        --bg: #f4efe7;
+        --panel: rgba(255, 251, 245, 0.92);
+        --ink: #1d1915;
+        --muted: #6d6154;
+        --line: rgba(75, 52, 31, 0.14);
+        --accent: #1f6d68;
+        --accent-2: #ce6030;
+        --warn: #cf7a1b;
+        --bad: #b23a32;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(31, 109, 104, 0.18), transparent 26%),
+          radial-gradient(circle at top right, rgba(206, 96, 48, 0.18), transparent 28%),
+          linear-gradient(180deg, #f9f4ea 0%, #ece0ce 100%);
+        color: var(--ink);
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+      }
+
+      main {
+        max-width: 1520px;
+        margin: 0 auto;
+        padding: 28px 24px 48px;
+      }
+
+      .hero, .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: 0 18px 54px rgba(77, 58, 37, 0.09);
+      }
+
+      .hero {
+        padding: 28px;
+        display: grid;
+        gap: 14px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(34px, 7vw, 60px);
+        line-height: 0.92;
+        font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      }
+
+      .meta { color: var(--muted); }
+      .cards {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 18px;
+        background: rgba(255, 255, 255, 0.5);
+      }
+
+      .card strong {
+        display: block;
+        margin-top: 8px;
+        font-size: 30px;
+        line-height: 1.1;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .section {
+        margin-top: 18px;
+        padding: 20px;
+      }
+
+      .table-shell {
+        overflow-x: auto;
+        border-radius: 18px;
+      }
+
+      .section h2 {
+        margin: 0 0 14px 0;
+        font-size: 18px;
+      }
+
+      table {
+        width: 100%;
+        min-width: 1360px;
+        border-collapse: collapse;
+      }
+
+      th, td {
+        text-align: left;
+        padding: 14px 12px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+
+      th {
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      tr:last-child td { border-bottom: 0; }
+      .mono { font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; }
+      .wrap {
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+      .truncate {
+        display: block;
+        max-width: 260px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .progress {
+        min-width: 220px;
+      }
+
+      .track {
+        width: 140px;
+        height: 10px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(29, 25, 21, 0.08);
+      }
+
+      .fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), #90d3af);
+      }
+
+      .fill.low { background: linear-gradient(90deg, var(--warn), #f0b35f); }
+      .fill.critical { background: linear-gradient(90deg, var(--bad), #e96d61); }
+
+      .progress-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .empty {
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div class="meta">Shared quota intake for Codex and later Claude reporters</div>
+        <h1>Quota Report Hub</h1>
+        <div class="meta" id="summary">Loading...</div>
+        <div class="cards" id="cards"></div>
+      </section>
+
+      <section class="panel section">
+        <h2>Latest Reports</h2>
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Reporter</th>
+                <th>Account</th>
+                <th>5H</th>
+                <th>1week</th>
+                <th>Status</th>
+                <th>Reported At</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div id="empty" class="empty" hidden>No reports yet.</div>
+      </section>
+    </main>
+
+    <script>
+      const summary = document.getElementById("summary");
+      const cards = document.getElementById("cards");
+      const rows = document.getElementById("rows");
+      const empty = document.getElementById("empty");
+
+      function formatPercent(value) {
+        return `${Number(value).toFixed(1)}%`;
+      }
+
+      function formatDate(value) {
+        return value ? new Date(value).toLocaleString() : "unknown";
+      }
+
+      function progressCell(window) {
+        if (!window) return "n/a";
+        const remaining = Number(window.remaining_percent);
+        let level = "";
+        if (remaining <= 10) level = "critical";
+        else if (remaining <= 30) level = "low";
+        return `
+          <div class="progress">
+            <div class="progress-row">
+              <div class="track"><div class="fill ${level}" style="width: ${remaining}%"></div></div>
+              <strong>${formatPercent(remaining)}</strong>
+            </div>
+            <div class="meta">reset ${formatDate(window.reset_at)}</div>
+          </div>
+        `;
+      }
+
+      async function load() {
+        const response = await fetch("/api/status", { cache: "no-store" });
+        const payload = await response.json();
+        const items = (payload.items || []).sort((a, b) => (b.reported_at || "").localeCompare(a.reported_at || ""));
+        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active reports: ${payload.report_count || 0}`;
+        cards.innerHTML = [
+          `<article class="card"><div class="meta">Active reports</div><strong>${payload.report_count || 0}</strong><div class="meta">Latest one per source/host/account</div></article>`,
+          `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Codex now, Claude later</div></article>`,
+          `<article class="card"><div class="meta">Latest report</div><strong>${items[0]?.email || items[0]?.reporter_name || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.reported_at)}</div></article>`
+        ].join("");
+
+        rows.innerHTML = items.map((item) => `
+          <tr>
+            <td>${item.source}</td>
+            <td><div class="wrap">${item.reporter_name}</div><div class="mono wrap">${item.hostname}</div></td>
+            <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div></td>
+            <td>${progressCell(item.windows?.["5h"])}</td>
+            <td>${progressCell(item.windows?.["1week"])}</td>
+            <td><div>${item.status}</div><div class="mono wrap">${item.error || ""}</div></td>
+            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="mono wrap">${item.auth_path || ""}</div></td>
+          </tr>
+        `).join("");
+
+        empty.hidden = items.length !== 0;
+      }
+
+      load();
+      setInterval(load, 60000);
+    </script>
+  </body>
+</html>
