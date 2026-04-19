@@ -2,6 +2,17 @@
 
 Minimal Vercel app that accepts quota reports from local Codex reporter scripts and displays the latest status.
 
+## Use Case
+
+This project is built for people who regularly switch between multiple coding agents and multiple accounts, and need a shared place to see remaining quota without manually checking each machine.
+
+Typical examples:
+
+- You switch between Codex, Claude, and other coding agents throughout the day
+- You keep separate accounts on different laptops, desktops, or remote boxes
+- You want one dashboard that shows the latest 5H and 1week windows from each machine
+- You want each machine to report quota automatically every hour instead of checking manually before switching agents
+
 ## Install The Skill
 
 This repo also publishes the reusable `quota-reporter` skill.
