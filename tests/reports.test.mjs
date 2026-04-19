@@ -65,8 +65,21 @@ test("statusPayload counts reports and sources", () => {
   const payload = statusPayload([
     { source: "codex", reported_at: "2026-04-19T20:00:00Z" },
     { source: "claude", reported_at: "2026-04-19T20:10:00Z" },
-  ]);
+  ], "2026-04-19T20:30:00Z");
 
   assert.equal(payload.report_count, 2);
   assert.equal(payload.source_count, 2);
+});
+
+test("statusPayload marks reports older than one hour as unknown", () => {
+  const payload = statusPayload([
+    { source: "codex", status: "ok", reported_at: "2026-04-19T18:00:00Z" },
+    { source: "claude", status: "ok", reported_at: "2026-04-19T19:30:30Z" },
+  ], "2026-04-19T20:30:31Z");
+
+  assert.equal(payload.items[0].is_stale, true);
+  assert.equal(payload.items[0].effective_status, "unknown");
+  assert.equal(payload.items[0].age_seconds, 9031);
+  assert.equal(payload.items[1].is_stale, true);
+  assert.equal(payload.items[1].effective_status, "unknown");
 });

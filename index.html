@@ -262,6 +262,13 @@
         return `<div class="meta">n/a</div>`;
       }
 
+      function formatAge(seconds) {
+        if (seconds === null || seconds === undefined) return "unknown age";
+        if (seconds < 60) return `${seconds}s ago`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+        return `${(seconds / 3600).toFixed(1)}h ago`;
+      }
+
       async function load() {
         const response = await fetch("/api/status", { cache: "no-store" });
         const payload = await response.json();
@@ -281,8 +288,8 @@
             <td>${progressCell(item.windows?.["5h"])}</td>
             <td>${progressCell(item.windows?.["1week"])}</td>
             <td>${usageCell(item)}</td>
-            <td><div>${item.status}</div><div class="mono wrap">${item.error || ""}</div></td>
-            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="mono wrap">${item.auth_path || ""}</div></td>
+            <td><div>${item.effective_status || item.status}</div><div class="meta wrap">${item.is_stale ? `last report ${formatAge(item.age_seconds)}` : ""}</div><div class="mono wrap">${item.error || ""}</div></td>
+            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="mono wrap">${item.auth_path || ""}</div></td>
           </tr>
         `).join("");
 
