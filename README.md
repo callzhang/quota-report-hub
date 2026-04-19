@@ -12,6 +12,7 @@ Typical examples:
 - You keep separate accounts on different laptops, desktops, or remote boxes
 - You want one dashboard that shows the latest 5H and 1week windows from each machine
 - You want each machine to report quota automatically every hour instead of checking manually before switching agents
+- You want reporting to resume automatically after a laptop reboot or a remote server restart
 
 ## Install The Skill
 
@@ -33,6 +34,11 @@ After install, teammates can either:
 
 - send one report with `report_codex_quota.py`
 - install hourly reporting with `install_hourly_reporter.py`
+
+The installer is reboot-safe:
+
+- macOS uses `launchd` with `RunAtLoad`
+- Linux uses `crontab` with both `@reboot` and hourly entries
 
 ## Endpoints
 

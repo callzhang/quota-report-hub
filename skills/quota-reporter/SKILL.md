@@ -12,7 +12,7 @@ This skill installs and runs a local reporter for Codex quota usage.
 1. Reads the local `~/.codex/auth.json`
 2. Probes the current Codex quota windows
 3. Posts a signed report to the shared dashboard service
-4. Installs a macOS `launchd` job that reports every hour
+4. Installs a reboot-safe scheduler that reports every hour
 
 ## Files
 
@@ -48,10 +48,12 @@ python3 scripts/install_hourly_reporter.py \
   --ingest-token YOUR_TOKEN
 ```
 
-The installer writes a local config file under `~/.agents/auth/` and loads a `launchd` agent.
+The installer writes a local config file under `~/.agents/auth/` and installs the local scheduler.
+On macOS it installs a `launchd` agent with `RunAtLoad`.
+On Linux it installs `crontab` entries for both `@reboot` and hourly reporting, so the reporter comes back automatically after a restart.
 
 ## Output expectations
 
 - After a one-off report, show the returned status and the dashboard URL.
-- After installation, show the launch agent label and the config path.
+- After installation, show the scheduler type and the config path.
 - If the report fails, include the HTTP status and response body.
