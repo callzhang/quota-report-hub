@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import getpass
 import hashlib
 import json
 import os
@@ -38,7 +39,8 @@ def iso_now() -> str:
 
 def reporter_name() -> str:
     host = socket.gethostname()
-    return f"{os.environ.get('USER', 'unknown')}@{host}"
+    user = os.environ.get("USER") or getpass.getuser() or "unknown"
+    return f"{user}@{host}"
 
 
 def human_plan_name(plan_type: str | None) -> str | None:
