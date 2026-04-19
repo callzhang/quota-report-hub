@@ -18,6 +18,7 @@ from pathlib import Path
 
 
 CONFIG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.json"
+ARCHIVE_DIR = Path.home() / ".agents" / "auth"
 SOURCE_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 CLAUDE_HOME = Path.home() / ".claude"
 CODEx_PROMPT = "reply with ok"
@@ -25,6 +26,10 @@ CODEx_PROMPT = "reply with ok"
 
 def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def decode_jwt_payload(token: str) -> dict:
@@ -61,14 +66,54 @@ def auth_metadata(path: Path) -> dict:
     identity = decode_jwt_payload(payload["tokens"]["id_token"])
     auth_claim = identity.get("https://api.openai.com/auth", {})
     plan_type = auth_claim.get("chatgpt_plan_type")
+    last_refresh = payload.get("last_refresh")
     return {
         "account_id": payload["tokens"]["account_id"],
         "email": identity.get("email"),
         "name": identity.get("name"),
         "plan_name": human_plan_name(plan_type),
-        "auth_last_refresh": payload.get("last_refresh"),
+        "auth_last_refresh": last_refresh,
         "auth_path": str(path),
+        "digest": sha256_file(path),
+        "last_refresh_sort_key": last_refresh or "",
     }
+
+
+def auth_snapshot_name(metadata: dict) -> str:
+    return f"auth-{metadata['account_id']}-{metadata['digest'][:12]}.json"
+
+
+def archive_current_codex_auth(source_auth_path: Path = SOURCE_AUTH_PATH, archive_dir: Path = ARCHIVE_DIR) -> Path | None:
+    if not source_auth_path.exists():
+        return None
+    metadata = auth_metadata(source_auth_path)
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = archive_dir / auth_snapshot_name(metadata)
+    if not snapshot_path.exists():
+        shutil.copy2(source_auth_path, snapshot_path)
+    return snapshot_path
+
+
+def codex_archive_files(archive_dir: Path = ARCHIVE_DIR) -> list[Path]:
+    if not archive_dir.exists():
+        return []
+    return sorted(archive_dir.glob("auth-*.json"))
+
+
+def latest_codex_snapshots_by_account(archive_dir: Path = ARCHIVE_DIR) -> list[Path]:
+    latest: dict[str, tuple[tuple[str, int, str], Path]] = {}
+    for path in codex_archive_files(archive_dir):
+        metadata = auth_metadata(path)
+        key = metadata["account_id"]
+        sort_key = (
+            metadata["last_refresh_sort_key"],
+            path.stat().st_mtime_ns,
+            metadata["digest"],
+        )
+        current = latest.get(key)
+        if current is None or sort_key > current[0]:
+            latest[key] = (sort_key, path)
+    return [entry[1] for entry in sorted(latest.values(), key=lambda item: item[0], reverse=True)]
 
 
 def latest_token_count_event(codex_home: Path) -> dict | None:
@@ -171,6 +216,15 @@ def probe_codex(auth_path: Path) -> dict:
             "1week": normalize_window(rate_limits["secondary"], now_ts),
         },
     }
+
+
+def probe_archived_codex_accounts(
+    source_auth_path: Path = SOURCE_AUTH_PATH,
+    archive_dir: Path = ARCHIVE_DIR,
+) -> list[dict]:
+    archive_current_codex_auth(source_auth_path=source_auth_path, archive_dir=archive_dir)
+    snapshots = latest_codex_snapshots_by_account(archive_dir=archive_dir)
+    return [probe_codex(snapshot_path) for snapshot_path in snapshots]
 
 
 def discover_claude_executable(claude_bin: str | None = None) -> str | None:

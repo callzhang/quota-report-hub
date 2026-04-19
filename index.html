@@ -169,14 +169,14 @@
   <body>
     <main>
       <section class="hero">
-        <div class="meta">Shared quota intake for Codex and later Claude reporters</div>
+        <div class="meta">Shared account-level quota intake for archived Codex auth snapshots and Claude reporters</div>
         <h1>Quota Report Hub</h1>
         <div class="meta" id="summary">Loading...</div>
         <div class="cards" id="cards"></div>
       </section>
 
       <section class="panel section">
-        <h2>Latest Reports</h2>
+        <h2>Latest Accounts</h2>
         <div class="table-shell">
           <table>
             <thead>
@@ -273,9 +273,9 @@
         const response = await fetch("/api/status", { cache: "no-store" });
         const payload = await response.json();
         const items = (payload.items || []).sort((a, b) => (b.reported_at || "").localeCompare(a.reported_at || ""));
-        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active reports: ${payload.report_count || 0}`;
+        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active accounts: ${payload.report_count || 0}`;
         cards.innerHTML = [
-          `<article class="card"><div class="meta">Active reports</div><strong>${payload.report_count || 0}</strong><div class="meta">Latest one per source/host/account</div></article>`,
+          `<article class="card"><div class="meta">Active accounts</div><strong>${payload.report_count || 0}</strong><div class="meta">Latest one per source/account</div></article>`,
           `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Codex and Claude reporters</div></article>`,
           `<article class="card"><div class="meta">Latest report</div><strong>${items[0]?.email || items[0]?.reporter_name || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.reported_at)}</div></article>`
         ].join("");

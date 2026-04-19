@@ -1,6 +1,6 @@
 # Quota Report Hub
 
-Minimal Vercel app that accepts quota reports from local Codex and Claude CLI reporter scripts and displays the latest status.
+Minimal Vercel app that accepts quota reports from archived Codex auth snapshots plus Claude CLI reporter scripts and displays the latest status.
 
 ## Use Case
 
@@ -10,7 +10,7 @@ Typical examples:
 
 - You switch between Codex, Claude, and other coding agents throughout the day
 - You keep separate accounts on different laptops, desktops, or remote boxes
-- You want one dashboard that shows the latest 5H and 1week windows from each machine
+- You want one dashboard that normalizes each account to its latest report, even if multiple machines report the same account
 - You also want Claude CLI usage metadata in the same dashboard, even when Claude does not expose resettable remaining quota
 - You want each machine to report quota automatically every hour instead of checking manually before switching agents
 - You want reporting to resume automatically after a laptop reboot or a remote server restart
@@ -40,8 +40,14 @@ After install, teammates can either:
 
 The dashboard handles the two sources differently:
 
-- Codex reports real `5H` and `1week` quota windows, including reset timestamps
+- Codex reports real `5H` and `1week` quota windows from archived auth snapshots under `~/.agents/auth/auth-*.json`
 - Claude reports auth tier and usage statistics because Claude CLI does not currently expose remaining quota percentages in its local CLI output
+
+Codex collection rules:
+
+- The reporter first archives the current `~/.codex/auth.json` into `~/.agents/auth/` if it has not been seen before
+- It then scans archived auth snapshots and keeps only the newest snapshot per `account_id`
+- The hub normalizes Codex and Claude reports by `source + account_id`, so the latest machine report wins for the account
 
 The installer is reboot-safe:
 
@@ -52,7 +58,7 @@ The installer is reboot-safe:
 
 - `POST /api/report`
   - Requires `Authorization: Bearer <REPORT_INGEST_TOKEN>`
-  - Appends an event row and updates the latest row per `source + hostname + account_id`
+  - Appends an event row and updates the latest row per `source + account_id`
 - `GET /api/status`
   - Returns the current merged dataset
 

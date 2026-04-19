@@ -7,12 +7,13 @@ import json
 from pathlib import Path
 
 from quota_reporters import (
+    ARCHIVE_DIR,
     CLAUDE_HOME,
     SOURCE_AUTH_PATH,
     load_config,
     post_report,
+    probe_archived_codex_accounts,
     probe_claude,
-    probe_codex,
 )
 
 
@@ -21,6 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-url")
     parser.add_argument("--ingest-token")
     parser.add_argument("--codex-auth-path", type=Path, default=SOURCE_AUTH_PATH)
+    parser.add_argument("--archive-dir", type=Path, default=ARCHIVE_DIR)
     parser.add_argument("--claude-home", type=Path, default=CLAUDE_HOME)
     parser.add_argument("--claude-bin")
     parser.add_argument("--print-payload", action="store_true")
@@ -28,9 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def collect_reports(args: argparse.Namespace) -> list[dict]:
-    reports = []
-    if args.codex_auth_path.exists():
-        reports.append(probe_codex(args.codex_auth_path))
+    reports = probe_archived_codex_accounts(args.codex_auth_path, args.archive_dir)
     reports.append(probe_claude(args.claude_home, args.claude_bin))
     return reports
 

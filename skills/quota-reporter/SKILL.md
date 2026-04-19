@@ -1,19 +1,20 @@
 ---
 name: quota-reporter
-description: Install and run a local quota reporter that probes Codex quota windows plus Claude CLI usage metadata, posts the latest status to a shared dashboard, and sets up an hourly scheduled run. Use this whenever a teammate wants to join the shared quota dashboard, report their own Codex or Claude usage, install the hourly reporter, or verify that reports are reaching the shared service. Trigger on requests about Codex quota, Claude CLI usage, token usage, usage monitoring, hourly usage reporting, shared quota dashboards, Vercel quota dashboards, or Turso-backed quota collection.
+description: Install and run a local quota reporter that archives Codex auth snapshots, probes the latest archived Codex quota windows plus Claude CLI usage metadata, posts normalized account-level status to a shared dashboard, and sets up an hourly scheduled run. Use this whenever a teammate wants to join the shared quota dashboard, report their own Codex or Claude usage, install the hourly reporter, or verify that reports are reaching the shared service. Trigger on requests about Codex quota, Claude CLI usage, token usage, usage monitoring, hourly usage reporting, shared quota dashboards, Vercel quota dashboards, or Turso-backed quota collection.
 ---
 
 # Quota Reporter
 
-This skill installs and runs local reporters for Codex and Claude CLI usage.
+This skill installs and runs local reporters for archived Codex auth snapshots and Claude CLI usage.
 
 ## What it does
 
-1. Reads the local `~/.codex/auth.json` when Codex is present
-2. Probes the current Codex `5H` and `1week` quota windows
-3. Reads local Claude CLI auth and usage metadata when Claude is present
-4. Posts signed reports to the shared dashboard service
-5. Installs a reboot-safe scheduler that reports every hour
+1. Archives the local `~/.codex/auth.json` into `~/.agents/auth/` when Codex is present
+2. Scans archived Codex auth snapshots and keeps the newest snapshot per account
+3. Probes each archived Codex account's `5H` and `1week` quota windows
+4. Reads local Claude CLI auth and usage metadata when Claude is present
+5. Posts signed reports to the shared dashboard service
+6. Installs a reboot-safe scheduler that reports every hour
 
 ## Files
 
@@ -61,6 +62,13 @@ python3 scripts/install_hourly_reporter.py \
 The installer writes a local config file under `~/.agents/auth/` and installs the local scheduler.
 On macOS it installs a `launchd` agent with `RunAtLoad`.
 On Linux it installs `crontab` entries for both `@reboot` and hourly reporting, so the reporter comes back automatically after a restart.
+
+For Codex, the combined reporter normalizes by account:
+
+- it archives the current live auth if needed
+- it scans `~/.agents/auth/auth-*.json`
+- it only probes the newest snapshot for each `account_id`
+- the hub keeps the latest report per `source + account_id`
 
 ## Output expectations
 
