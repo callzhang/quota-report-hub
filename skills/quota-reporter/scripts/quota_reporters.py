@@ -238,6 +238,23 @@ def summarize_claude_stats(stats: dict | None) -> dict | None:
     }
 
 
+def run_claude_status(claude_executable: str) -> dict:
+    result = subprocess.run(
+        [claude_executable, "-p", "/status"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    text = (result.stdout.strip() or result.stderr.strip() or "")[:4000]
+    unavailable = text == "/status isn't available in this environment."
+    return {
+        "command": "/status",
+        "available": result.returncode == 0 and not unavailable and bool(text),
+        "exit_code": result.returncode,
+        "text": text or None,
+    }
+
+
 def claude_account_id(credentials: dict | None, auth_status: dict) -> str:
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     token = oauth.get("refreshToken") or oauth.get("accessToken")
@@ -293,6 +310,7 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     stats = read_claude_stats(claude_home)
     summary = summarize_claude_stats(stats)
+    status_command = run_claude_status(claude_executable)
 
     return {
         **base,
@@ -306,6 +324,7 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
             "subscription_type": oauth.get("subscriptionType"),
             "rate_limit_tier": oauth.get("rateLimitTier"),
             "oauth_expires_at": oauth.get("expiresAt"),
+            "quota_status": status_command,
             "stats": summary,
         },
     }

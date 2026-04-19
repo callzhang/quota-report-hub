@@ -2,12 +2,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "skills" / "quota-reporter" / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from quota_reporters import discover_claude_executable, summarize_claude_stats, probe_claude  # noqa: E402
+from quota_reporters import discover_claude_executable, probe_claude, run_claude_status, summarize_claude_stats  # noqa: E402
 
 
 class ReporterScriptsTest(unittest.TestCase):
@@ -58,6 +59,14 @@ class ReporterScriptsTest(unittest.TestCase):
 
     def test_discover_claude_executable_rejects_missing_explicit_path(self):
         self.assertIsNone(discover_claude_executable("/nonexistent/claude"))
+
+    def test_run_claude_status_marks_unavailable_environment(self):
+        completed = mock.Mock(returncode=0, stdout="/status isn't available in this environment.\n", stderr="")
+        with mock.patch("quota_reporters.subprocess.run", return_value=completed):
+            status = run_claude_status("claude")
+
+        self.assertFalse(status["available"])
+        self.assertEqual(status["text"], "/status isn't available in this environment.")
 
 
 if __name__ == "__main__":

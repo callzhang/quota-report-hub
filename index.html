@@ -241,9 +241,14 @@
         if (item.source === "claude") {
           const usage = item.usage_summary || {};
           const stats = usage.stats || {};
+          const quotaStatus = usage.quota_status || {};
+          const quotaLine = quotaStatus.available
+            ? `quota ${quotaStatus.text || "available"}`
+            : `quota ${quotaStatus.text || "unavailable"}`;
           return `
             <div class="usage-block">
               <div>${usage.rate_limit_tier || item.plan_name || "unknown tier"}</div>
+              <div class="meta wrap">${quotaLine}</div>
               <div class="meta">sessions ${stats.total_sessions ?? "n/a"} · messages ${stats.total_messages ?? "n/a"}</div>
               <div class="meta">tokens ${formatCompactNumber(stats.total_input_tokens)} in · ${formatCompactNumber(stats.total_output_tokens)} out</div>
             </div>
