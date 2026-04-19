@@ -41,7 +41,7 @@ After install, teammates can either:
 The dashboard handles the two sources differently:
 
 - Codex reports real `5H` and `1week` quota windows from archived auth snapshots under `~/.agents/auth/auth-*.json`
-- Claude reports auth tier and usage statistics because Claude CLI does not currently expose remaining quota percentages in its local CLI output
+- Claude reports auth tier, cumulative usage statistics, and now attempts to read `5H` / `1week` quota windows from `anthropic-ratelimit-unified-*` response headers via a minimal `/v1/messages` probe when local auth exposes a bearer token
 
 Codex collection rules:
 

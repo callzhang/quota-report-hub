@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,8 @@ ARCHIVE_DIR = Path.home() / ".agents" / "auth"
 SOURCE_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 CLAUDE_HOME = Path.home() / ".claude"
 CODEx_PROMPT = "reply with ok"
+CLAUDE_QUOTA_MODEL = "claude-sonnet-4-6"
+CLAUDE_DEFAULT_BASE_URL = "https://api.anthropic.com"
 
 
 def read_json(path: Path) -> dict:
@@ -309,6 +312,106 @@ def run_claude_status(claude_executable: str) -> dict:
     }
 
 
+def claude_base_url() -> str:
+    return (os.environ.get("ANTHROPIC_BASE_URL") or CLAUDE_DEFAULT_BASE_URL).rstrip("/")
+
+
+def claude_bearer_token() -> str | None:
+    token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if token:
+        return token.strip() or None
+    return None
+
+
+def build_claude_window(utilization: float, resets_at: int, window_minutes: int) -> dict:
+    used_percent = round(utilization * 100.0, 1)
+    return {
+        "used_percent": used_percent,
+        "remaining_percent": round(max(0.0, 100.0 - used_percent), 1),
+        "window_minutes": window_minutes,
+        "reset_in_seconds": max(int(resets_at - datetime.now(timezone.utc).timestamp()), 0),
+        "reset_at": datetime.fromtimestamp(resets_at, tz=timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def parse_claude_rate_limit_headers(headers) -> dict:
+    windows = empty_windows()
+
+    def parse_window(claim_abbrev: str, window_key: str, window_minutes: int) -> dict | None:
+        utilization_value = headers.get(f"anthropic-ratelimit-unified-{claim_abbrev}-utilization")
+        reset_value = headers.get(f"anthropic-ratelimit-unified-{claim_abbrev}-reset")
+        if utilization_value is None or reset_value is None:
+            return None
+        try:
+            utilization = float(utilization_value)
+            resets_at = int(float(reset_value))
+        except (TypeError, ValueError):
+            return None
+        return build_claude_window(utilization, resets_at, window_minutes)
+
+    windows["5h"] = parse_window("5h", "5h", 300)
+    windows["1week"] = parse_window("7d", "1week", 10080)
+    return windows
+
+
+def probe_claude_rate_limits() -> dict:
+    token = claude_bearer_token()
+    if token is None:
+        return {
+            "available": False,
+            "source": "headers",
+            "reason": "missing ANTHROPIC_AUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN",
+            "base_url": claude_base_url(),
+            "windows": empty_windows(),
+        }
+
+    body = json.dumps(
+        {
+            "model": CLAUDE_QUOTA_MODEL,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "quota"}],
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        claude_base_url() + "/v1/messages",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}",
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request) as response:
+            headers = response.headers
+            status_code = getattr(response, "status", None) or response.getcode()
+    except urllib.error.HTTPError as exc:
+        headers = exc.headers
+        status_code = exc.code
+    except Exception as exc:
+        return {
+            "available": False,
+            "source": "headers",
+            "reason": str(exc)[:400],
+            "base_url": claude_base_url(),
+            "windows": empty_windows(),
+        }
+
+    windows = parse_claude_rate_limit_headers(headers)
+    return {
+        "available": windows["5h"] is not None or windows["1week"] is not None,
+        "source": "headers",
+        "status_code": status_code,
+        "base_url": claude_base_url(),
+        "windows": windows,
+        "status": headers.get("anthropic-ratelimit-unified-status"),
+        "representative_claim": headers.get("anthropic-ratelimit-unified-representative-claim"),
+        "overage_status": headers.get("anthropic-ratelimit-unified-overage-status"),
+    }
+
+
 def claude_account_id(credentials: dict | None, auth_status: dict) -> str:
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     token = oauth.get("refreshToken") or oauth.get("accessToken")
@@ -365,6 +468,7 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
     stats = read_claude_stats(claude_home)
     summary = summarize_claude_stats(stats)
     status_command = run_claude_status(claude_executable)
+    rate_limit_probe = probe_claude_rate_limits()
 
     return {
         **base,
@@ -372,6 +476,7 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
         "plan_name": human_plan_name(oauth.get("subscriptionType")) or oauth.get("subscriptionType"),
         "status": "ok" if auth_status.get("loggedIn") else "error",
         "error": None if auth_status.get("loggedIn") else "claude auth status reported loggedIn=false",
+        "windows": rate_limit_probe["windows"],
         "usage_summary": {
             "auth_method": auth_status.get("authMethod"),
             "api_provider": auth_status.get("apiProvider"),
@@ -379,6 +484,9 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
             "rate_limit_tier": oauth.get("rateLimitTier"),
             "oauth_expires_at": oauth.get("expiresAt"),
             "quota_status": status_command,
+            "rate_limit_probe": {
+                key: value for key, value in rate_limit_probe.items() if key != "windows"
+            },
             "stats": summary,
         },
     }

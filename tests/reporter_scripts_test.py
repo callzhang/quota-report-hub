@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 import json
@@ -13,13 +14,30 @@ from quota_reporters import (
     archive_current_codex_auth,
     discover_claude_executable,
     latest_codex_snapshots_by_account,
+    parse_claude_rate_limit_headers,
     probe_claude,
+    probe_claude_rate_limits,
     run_claude_status,
     summarize_claude_stats,
 )  # noqa: E402
 
 
 class ReporterScriptsTest(unittest.TestCase):
+    def test_parse_claude_rate_limit_headers_returns_windows(self):
+        headers = {
+            "anthropic-ratelimit-unified-5h-utilization": "0.42",
+            "anthropic-ratelimit-unified-5h-reset": "1776649200",
+            "anthropic-ratelimit-unified-7d-utilization": "0.17",
+            "anthropic-ratelimit-unified-7d-reset": "1777167600",
+        }
+
+        windows = parse_claude_rate_limit_headers(headers)
+
+        self.assertEqual(windows["5h"]["used_percent"], 42.0)
+        self.assertEqual(windows["5h"]["remaining_percent"], 58.0)
+        self.assertEqual(windows["1week"]["used_percent"], 17.0)
+        self.assertEqual(windows["1week"]["remaining_percent"], 83.0)
+
     def test_summarize_claude_stats_aggregates_totals(self):
         summary = summarize_claude_stats(
             {
@@ -75,6 +93,49 @@ class ReporterScriptsTest(unittest.TestCase):
 
         self.assertFalse(status["available"])
         self.assertEqual(status["text"], "/status isn't available in this environment.")
+
+    def test_probe_claude_rate_limits_reports_missing_token(self):
+        with mock.patch.dict("quota_reporters.os.environ", {}, clear=True):
+            result = probe_claude_rate_limits()
+
+        self.assertFalse(result["available"])
+        self.assertEqual(result["windows"]["5h"], None)
+        self.assertEqual(result["windows"]["1week"], None)
+
+    def test_probe_claude_rate_limits_reads_headers_from_http_error(self):
+        error = urllib.error.HTTPError(
+            url="https://api.anthropic.com/v1/messages",
+            code=429,
+            msg="Too Many Requests",
+            hdrs={
+                "anthropic-ratelimit-unified-status": "rejected",
+                "anthropic-ratelimit-unified-representative-claim": "five_hour",
+                "anthropic-ratelimit-unified-overage-status": "rejected",
+                "anthropic-ratelimit-unified-5h-utilization": "0.91",
+                "anthropic-ratelimit-unified-5h-reset": "1776649200",
+                "anthropic-ratelimit-unified-7d-utilization": "0.33",
+                "anthropic-ratelimit-unified-7d-reset": "1777167600",
+            },
+            fp=None,
+        )
+
+        with mock.patch.dict(
+            "quota_reporters.os.environ",
+            {
+                "ANTHROPIC_AUTH_TOKEN": "test-token",
+                "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+            },
+            clear=True,
+        ):
+            with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=error):
+                result = probe_claude_rate_limits()
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["status_code"], 429)
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["representative_claim"], "five_hour")
+        self.assertEqual(result["windows"]["5h"]["used_percent"], 91.0)
+        self.assertEqual(result["windows"]["1week"]["used_percent"], 33.0)
 
     def test_archive_current_codex_auth_creates_stable_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:
