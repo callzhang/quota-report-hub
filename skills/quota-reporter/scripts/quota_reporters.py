@@ -171,6 +171,19 @@ def probe_codex(auth_path: Path) -> dict:
     }
 
 
+def discover_claude_executable(claude_bin: str | None = None) -> str | None:
+    if claude_bin:
+        if shutil.which(claude_bin) is not None or Path(claude_bin).exists():
+            return claude_bin
+        return None
+
+    bundled = Path.home() / ".local" / "bin" / "claude"
+    if bundled.exists():
+        return str(bundled)
+
+    return shutil.which("claude")
+
+
 def read_claude_credentials(claude_home: Path) -> dict | None:
     path = claude_home / ".credentials.json"
     if not path.exists():
@@ -233,9 +246,7 @@ def claude_account_id(credentials: dict | None, auth_status: dict) -> str:
 
 
 def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None) -> dict:
-    claude_executable = claude_bin or shutil.which("claude")
-    if claude_executable and shutil.which(claude_executable) is None and not Path(claude_executable).exists():
-        claude_executable = None
+    claude_executable = discover_claude_executable(claude_bin)
     base = {
         "source": "claude",
         "hostname": socket.gethostname(),

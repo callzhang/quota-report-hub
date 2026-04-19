@@ -7,7 +7,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "skills" / "quota-reporter" / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from quota_reporters import summarize_claude_stats, probe_claude  # noqa: E402
+from quota_reporters import discover_claude_executable, summarize_claude_stats, probe_claude  # noqa: E402
 
 
 class ReporterScriptsTest(unittest.TestCase):
@@ -55,6 +55,9 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(payload["error"], "claude command not found")
         self.assertIsNone(payload["windows"]["5h"])
         self.assertIsNone(payload["windows"]["1week"])
+
+    def test_discover_claude_executable_rejects_missing_explicit_path(self):
+        self.assertIsNone(discover_claude_executable("/nonexistent/claude"))
 
 
 if __name__ == "__main__":
