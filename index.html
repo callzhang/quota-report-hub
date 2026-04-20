@@ -166,6 +166,31 @@
         min-width: 220px;
       }
 
+      .source-tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .source-tag.codex {
+        color: #0f5a56;
+        background: rgba(31, 109, 104, 0.12);
+        border-color: rgba(31, 109, 104, 0.18);
+      }
+
+      .source-tag.claude {
+        color: #9b451d;
+        background: rgba(206, 96, 48, 0.12);
+        border-color: rgba(206, 96, 48, 0.2);
+      }
+
       .status-chip {
         display: inline-flex;
         align-items: center;
@@ -339,6 +364,11 @@
         return `<div class="meta">n/a</div>`;
       }
 
+      function sourceTag(value) {
+        const normalized = String(value || "unknown").toLowerCase();
+        return `<span class="source-tag ${normalized}">${normalized}</span>`;
+      }
+
       function formatAge(seconds) {
         if (seconds === null || seconds === undefined) return "unknown age";
         if (seconds < 60) return `${seconds}s ago`;
@@ -359,7 +389,7 @@
 
         rows.innerHTML = items.map((item) => `
           <tr>
-            <td>${item.source}</td>
+            <td>${sourceTag(item.source)}</td>
             <td><div class="wrap">${item.reporter_name}</div><div class="mono wrap">${item.hostname}</div></td>
             <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div></td>
             <td>${item.windows?.["5h"] ? progressCell(item.windows?.["5h"]) : quotaWindowFallback(item)}</td>
