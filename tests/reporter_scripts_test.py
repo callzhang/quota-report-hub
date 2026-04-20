@@ -1,4 +1,5 @@
 import sys
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -94,6 +95,17 @@ class ReporterScriptsTest(unittest.TestCase):
 
         self.assertFalse(status["available"])
         self.assertEqual(status["text"], "/status isn't available in this environment.")
+
+    def test_run_claude_status_returns_timeout_instead_of_hanging(self):
+        with mock.patch(
+            "quota_reporters.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd=["claude", "-p", "/status"], timeout=10),
+        ):
+            status = run_claude_status("claude")
+
+        self.assertFalse(status["available"])
+        self.assertIsNone(status["exit_code"])
+        self.assertEqual(status["text"], "/status timed out after 10s")
 
     def test_read_claude_keychain_credentials_returns_none_off_darwin(self):
         with mock.patch("quota_reporters.sys.platform", "linux"):

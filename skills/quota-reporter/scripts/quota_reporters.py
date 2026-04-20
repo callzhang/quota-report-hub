@@ -26,6 +26,8 @@ CLAUDE_HOME = Path.home() / ".claude"
 CODEx_PROMPT = "reply with ok"
 CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 CLAUDE_DEFAULT_BASE_URL = "https://api.anthropic.com"
+CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS = 10
+CLAUDE_STATUS_TIMEOUT_SECONDS = 10
 
 
 def read_json(path: Path) -> dict:
@@ -297,12 +299,21 @@ def summarize_claude_stats(stats: dict | None) -> dict | None:
 
 
 def run_claude_status(claude_executable: str) -> dict:
-    result = subprocess.run(
-        [claude_executable, "-p", "/status"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [claude_executable, "-p", "/status"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=CLAUDE_STATUS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "command": "/status",
+            "available": False,
+            "exit_code": None,
+            "text": f"/status timed out after {CLAUDE_STATUS_TIMEOUT_SECONDS}s",
+        }
     text = (result.stdout.strip() or result.stderr.strip() or "")[:4000]
     unavailable = text == "/status isn't available in this environment."
     return {
@@ -455,12 +466,23 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
             "usage_summary": None,
         }
 
-    auth_result = subprocess.run(
-        [claude_executable, "auth", "status"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        auth_result = subprocess.run(
+            [claude_executable, "auth", "status"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            **base,
+            "account_id": "claude-auth-timeout",
+            "plan_name": None,
+            "status": "error",
+            "error": f"claude auth status timed out after {CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS}s",
+            "usage_summary": None,
+        }
     if auth_result.returncode != 0:
         return {
             **base,
