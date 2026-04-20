@@ -19,6 +19,7 @@ from quota_reporters import (
     archive_current_codex_auth,
     discover_claude_executable,
     latest_codex_snapshots_by_account,
+    parse_claude_auth_status_text,
     parse_claude_rate_limit_headers,
     probe_claude,
     probe_claude_rate_limits,
@@ -29,6 +30,16 @@ from quota_reporters import (
 
 
 class ReporterScriptsTest(unittest.TestCase):
+    def test_parse_claude_auth_status_text_extracts_account_details(self):
+        details = parse_claude_auth_status_text(
+            "Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n"
+        )
+
+        self.assertEqual(details["login_method"], "Claude Max account")
+        self.assertEqual(details["organization"], "Derek Zen")
+        self.assertEqual(details["email"], "leizhang0121@gmail.com")
+        self.assertEqual(details["subscription_type"], "max")
+
     def test_parse_claude_rate_limit_headers_returns_windows(self):
         headers = {
             "anthropic-ratelimit-unified-5h-utilization": "0.42",
@@ -155,6 +166,79 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(result["subscription_type"], "max")
         self.assertEqual(result["rate_limit_tier"], "default_claude_max_20x")
         self.assertEqual(result["api_error"], "OAuth authentication is currently not supported.")
+
+    def test_probe_claude_prefers_auth_status_text_account_details(self):
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
+            stderr="",
+        )
+        status_result = mock.Mock(returncode=0, stdout="/status isn't available in this environment.\n", stderr="")
+
+        with mock.patch(
+            "quota_reporters.discover_claude_executable",
+            return_value="/usr/local/bin/claude",
+        ):
+            with mock.patch(
+                "quota_reporters.subprocess.run",
+                side_effect=[auth_json, auth_text, status_result],
+            ):
+                with mock.patch(
+                    "quota_reporters.read_claude_keychain_credentials",
+                    return_value={
+                        "claudeAiOauth": {
+                            "accessToken": "exact-claude-oauth-token",
+                            "subscriptionType": "max",
+                            "rateLimitTier": "default_claude_max_20x",
+                            "expiresAt": 1776668828033,
+                        }
+                    },
+                ):
+                    with mock.patch(
+                        "quota_reporters.probe_claude_rate_limits",
+                        return_value={"windows": {"5h": None, "1week": None}, "available": False},
+                    ):
+                        with mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                            payload = probe_claude(Path("/tmp/claude-home"))
+
+        self.assertEqual(payload["email"], "leizhang0121@gmail.com")
+        self.assertEqual(payload["name"], "Derek Zen")
+        self.assertEqual(payload["plan_name"], "Max")
+        self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
+        self.assertEqual(payload["usage_summary"]["organization"], "Derek Zen")
+        self.assertEqual(payload["usage_summary"]["login_method"], "Claude Max account")
+
+    def test_probe_claude_auth_commands_drop_env_overrides(self):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(kwargs.get("env", {}))
+            if args[-1] == "--text":
+                return mock.Mock(returncode=0, stdout="Login method: Claude Max account\nEmail: leizhang0121@gmail.com\n", stderr="")
+            if args[:3] == ["/usr/local/bin/claude", "auth", "status"]:
+                return mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+            return mock.Mock(returncode=0, stdout="/status isn't available in this environment.\n", stderr="")
+
+        with mock.patch.dict(
+            "quota_reporters.os.environ",
+            {
+                "ANTHROPIC_AUTH_TOKEN": "stale-token",
+                "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+            },
+            clear=False,
+        ):
+            with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+                with mock.patch("quota_reporters.subprocess.run", side_effect=fake_run):
+                    with mock.patch("quota_reporters.read_claude_keychain_credentials", return_value=None):
+                        with mock.patch("quota_reporters.probe_claude_rate_limits", return_value={"windows": {"5h": None, "1week": None}, "available": False}):
+                            with mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                                probe_claude(Path("/tmp/claude-home"))
+
+        self.assertGreaterEqual(len(calls), 3)
+        for env in calls[:3]:
+            self.assertNotIn("ANTHROPIC_AUTH_TOKEN", env)
+            self.assertNotIn("ANTHROPIC_BASE_URL", env)
 
     def test_archive_current_codex_auth_creates_stable_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:

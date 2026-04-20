@@ -28,6 +28,12 @@ CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 CLAUDE_DEFAULT_BASE_URL = "https://api.anthropic.com"
 CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS = 10
 CLAUDE_STATUS_TIMEOUT_SECONDS = 10
+CLAUDE_ENV_DROP_KEYS = {
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+}
 
 
 def read_json(path: Path) -> dict:
@@ -52,6 +58,13 @@ def reporter_name() -> str:
     host = socket.gethostname()
     user = os.environ.get("USER") or getpass.getuser() or "unknown"
     return f"{user}@{host}"
+
+
+def clean_claude_env() -> dict:
+    env = dict(os.environ)
+    for key in CLAUDE_ENV_DROP_KEYS:
+        env.pop(key, None)
+    return env
 
 
 def human_plan_name(plan_type: str | None) -> str | None:
@@ -302,6 +315,7 @@ def run_claude_status(claude_executable: str) -> dict:
     try:
         result = subprocess.run(
             [claude_executable, "-p", "/status"],
+            env=clean_claude_env(),
             capture_output=True,
             text=True,
             check=False,
@@ -322,6 +336,33 @@ def run_claude_status(claude_executable: str) -> dict:
         "exit_code": result.returncode,
         "text": text or None,
     }
+
+
+def parse_claude_auth_status_text(text: str) -> dict:
+    details = {
+        "login_method": None,
+        "organization": None,
+        "email": None,
+        "subscription_type": None,
+    }
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        value = value.strip()
+        if key == "Login method":
+            details["login_method"] = value
+            lowered = value.lower()
+            if lowered.startswith("claude ") and lowered.endswith(" account"):
+                details["subscription_type"] = lowered.removeprefix("claude ").removesuffix(" account").strip()
+        elif key == "Organization":
+            details["organization"] = value
+        elif key == "Email":
+            details["email"] = value
+    return details
 
 
 def read_claude_keychain_credentials() -> dict | None:
@@ -432,7 +473,10 @@ def probe_claude_rate_limits() -> dict:
     }
 
 
-def claude_account_id(credentials: dict | None, auth_status: dict) -> str:
+def claude_account_id(credentials: dict | None, auth_status: dict, auth_text_details: dict | None = None) -> str:
+    email = (auth_text_details or {}).get("email")
+    if email:
+        return f"claude-{email.lower()}"
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     token = oauth.get("refreshToken") or oauth.get("accessToken")
     if token:
@@ -469,6 +513,7 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
     try:
         auth_result = subprocess.run(
             [claude_executable, "auth", "status"],
+            env=clean_claude_env(),
             capture_output=True,
             text=True,
             check=False,
@@ -494,6 +539,15 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
         }
 
     auth_status = json.loads(auth_result.stdout)
+    auth_text_result = subprocess.run(
+        [claude_executable, "auth", "status", "--text"],
+        env=clean_claude_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS,
+    )
+    auth_text_details = parse_claude_auth_status_text(auth_text_result.stdout if auth_text_result.returncode == 0 else "")
     credentials = read_claude_credentials(claude_home) or read_claude_keychain_credentials()
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     stats = read_claude_stats(claude_home)
@@ -503,14 +557,18 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
 
     return {
         **base,
-        "account_id": claude_account_id(credentials, auth_status),
-        "plan_name": human_plan_name(oauth.get("subscriptionType")) or oauth.get("subscriptionType"),
+        "account_id": claude_account_id(credentials, auth_status, auth_text_details),
+        "email": auth_text_details.get("email"),
+        "name": auth_text_details.get("organization"),
+        "plan_name": human_plan_name(auth_text_details.get("subscription_type")) or human_plan_name(oauth.get("subscriptionType")) or oauth.get("subscriptionType"),
         "status": "ok" if auth_status.get("loggedIn") else "error",
         "error": None if auth_status.get("loggedIn") else "claude auth status reported loggedIn=false",
         "windows": rate_limit_probe["windows"],
         "usage_summary": {
             "auth_method": auth_status.get("authMethod"),
             "api_provider": auth_status.get("apiProvider"),
+            "login_method": auth_text_details.get("login_method"),
+            "organization": auth_text_details.get("organization"),
             "subscription_type": oauth.get("subscriptionType"),
             "rate_limit_tier": oauth.get("rateLimitTier"),
             "oauth_expires_at": oauth.get("expiresAt"),
