@@ -266,6 +266,16 @@ def read_claude_credentials(claude_home: Path) -> dict | None:
     return read_json(path)
 
 
+def read_claude_oauth_credentials(claude_home: Path = CLAUDE_HOME) -> tuple[dict | None, str]:
+    credentials = read_claude_credentials(claude_home)
+    if credentials is not None:
+        return credentials, "credentials_file"
+    credentials = read_claude_keychain_credentials()
+    if credentials is not None:
+        return credentials, "keychain"
+    return None, "unavailable"
+
+
 def read_claude_stats(claude_home: Path) -> dict | None:
     path = claude_home / "stats-cache.json"
     if not path.exists():
@@ -413,15 +423,15 @@ def parse_claude_rate_limit_headers(headers) -> dict:
     return windows
 
 
-def probe_claude_rate_limits() -> dict:
-    credentials = read_claude_keychain_credentials()
+def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
+    credentials, source = read_claude_oauth_credentials(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     token = oauth.get("accessToken")
     if token is None:
         return {
             "available": False,
-            "source": "keychain",
-            "reason": f"missing {CLAUDE_KEYCHAIN_SERVICE} OAuth access token",
+            "source": source,
+            "reason": "missing Claude OAuth access token",
             "base_url": CLAUDE_DEFAULT_BASE_URL,
             "windows": empty_windows(),
         }
@@ -459,7 +469,7 @@ def probe_claude_rate_limits() -> dict:
     windows = parse_claude_rate_limit_headers(headers)
     return {
         "available": windows["5h"] is not None or windows["1week"] is not None,
-        "source": "keychain",
+        "source": source,
         "status_code": status_code,
         "base_url": CLAUDE_DEFAULT_BASE_URL,
         "windows": windows,
@@ -548,12 +558,12 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
         timeout=CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS,
     )
     auth_text_details = parse_claude_auth_status_text(auth_text_result.stdout if auth_text_result.returncode == 0 else "")
-    credentials = read_claude_credentials(claude_home) or read_claude_keychain_credentials()
+    credentials, _ = read_claude_oauth_credentials(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     stats = read_claude_stats(claude_home)
     summary = summarize_claude_stats(stats)
     status_command = run_claude_status(claude_executable)
-    rate_limit_probe = probe_claude_rate_limits()
+    rate_limit_probe = probe_claude_rate_limits(claude_home)
 
     return {
         **base,
