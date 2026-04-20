@@ -83,3 +83,22 @@ test("statusPayload marks reports older than one hour as unknown", () => {
   assert.equal(payload.items[1].is_stale, true);
   assert.equal(payload.items[1].effective_status, "unknown");
 });
+
+test("statusPayload marks live claude 429 probes as rate_limited", () => {
+  const payload = statusPayload([
+    {
+      source: "claude",
+      status: "ok",
+      reported_at: "2026-04-19T20:25:00Z",
+      usage_summary: {
+        rate_limit_probe: {
+          status_code: 429,
+          api_error: "Rate limited. Please try again later.",
+        },
+      },
+    },
+  ], "2026-04-19T20:30:00Z");
+
+  assert.equal(payload.items[0].is_stale, false);
+  assert.equal(payload.items[0].effective_status, "rate_limited");
+});

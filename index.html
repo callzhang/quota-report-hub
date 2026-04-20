@@ -164,6 +164,35 @@
         gap: 4px;
         min-width: 220px;
       }
+
+      .status-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(29, 25, 21, 0.05);
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .status-chip.ok {
+        color: var(--accent);
+        background: rgba(31, 109, 104, 0.08);
+      }
+
+      .status-chip.rate-limited {
+        color: var(--warn);
+        background: rgba(207, 122, 27, 0.1);
+      }
+
+      .status-chip.unknown,
+      .status-chip.error {
+        color: var(--bad);
+        background: rgba(178, 58, 50, 0.09);
+      }
     </style>
   </head>
   <body>
@@ -237,18 +266,44 @@
         return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value));
       }
 
+      function quotaWindowFallback(item) {
+        const probe = item.usage_summary?.rate_limit_probe || {};
+        if (item.source === "claude" && probe.status_code === 429) {
+          return `<div class="meta">rate limited</div>`;
+        }
+        if (item.source === "claude" && probe.api_error) {
+          return `<div class="meta wrap">${probe.api_error}</div>`;
+        }
+        return `<div class="meta">n/a</div>`;
+      }
+
+      function statusLabel(value) {
+        if (value === "rate_limited") return "rate limited";
+        return value || "unknown";
+      }
+
+      function statusChip(value) {
+        const normalized = value === "rate_limited" ? "rate-limited" : (value || "unknown");
+        return `<span class="status-chip ${normalized}">${statusLabel(value)}</span>`;
+      }
+
       function usageCell(item) {
         if (item.source === "claude") {
           const usage = item.usage_summary || {};
           const stats = usage.stats || {};
           const quotaStatus = usage.quota_status || {};
+          const probe = usage.rate_limit_probe || {};
           const quotaLine = quotaStatus.available
             ? `quota ${quotaStatus.text || "available"}`
             : `quota ${quotaStatus.text || "unavailable"}`;
+          const probeLine = probe.status_code === 429
+            ? "usage probe rate limited"
+            : (probe.api_error ? `usage probe ${probe.api_error}` : null);
           return `
             <div class="usage-block">
               <div>${usage.rate_limit_tier || item.plan_name || "unknown tier"}</div>
               <div class="meta wrap">${quotaLine}</div>
+              ${probeLine ? `<div class="meta wrap">${probeLine}</div>` : ""}
               <div class="meta">sessions ${stats.total_sessions ?? "n/a"} · messages ${stats.total_messages ?? "n/a"}</div>
               <div class="meta">tokens ${formatCompactNumber(stats.total_input_tokens)} in · ${formatCompactNumber(stats.total_output_tokens)} out</div>
             </div>
@@ -285,10 +340,10 @@
             <td>${item.source}</td>
             <td><div class="wrap">${item.reporter_name}</div><div class="mono wrap">${item.hostname}</div></td>
             <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div></td>
-            <td>${progressCell(item.windows?.["5h"])}</td>
-            <td>${progressCell(item.windows?.["1week"])}</td>
+            <td>${item.windows?.["5h"] ? progressCell(item.windows?.["5h"]) : quotaWindowFallback(item)}</td>
+            <td>${item.windows?.["1week"] ? progressCell(item.windows?.["1week"]) : quotaWindowFallback(item)}</td>
             <td>${usageCell(item)}</td>
-            <td><div>${item.effective_status || item.status}</div><div class="meta wrap">${item.is_stale ? `last report ${formatAge(item.age_seconds)}` : ""}</div><div class="mono wrap">${item.error || ""}</div></td>
+            <td><div>${statusChip(item.effective_status || item.status)}</div><div class="meta wrap">${item.is_stale ? `last report ${formatAge(item.age_seconds)}` : ""}</div><div class="mono wrap">${item.error || ""}</div></td>
             <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="mono wrap">${item.auth_path || ""}</div></td>
           </tr>
         `).join("");
