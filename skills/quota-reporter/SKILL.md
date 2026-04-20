@@ -65,6 +65,9 @@ python3 scripts/install_hourly_reporter.py \
 The installer writes a local config file under `~/.agents/auth/` and installs the local scheduler.
 On macOS it installs a `launchd` agent with `RunAtLoad`.
 On Linux it installs `crontab` entries for both `@reboot` and hourly reporting, so the reporter comes back automatically after a restart.
+The installer also writes Claude Code `statusLine` settings to `~/.claude/settings.json` so Claude can produce `~/.claude/statusline-rate-limits.json` automatically.
+
+After install, each machine needs one real interactive Claude request to seed the first quota snapshot. Until that happens, macOS Claude reports are skipped instead of sending `n/a`.
 
 For Codex, the combined reporter normalizes by account:
 

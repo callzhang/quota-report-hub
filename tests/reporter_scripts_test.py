@@ -15,6 +15,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import report_all_usage  # noqa: E402
 import report_claude_usage  # noqa: E402
 import report_codex_quota  # noqa: E402
+import install_hourly_reporter  # noqa: E402
 from quota_reporters import (
     archive_current_codex_auth,
     discover_claude_executable,
@@ -394,6 +395,22 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertTrue(result["skipped"])
         self.assertEqual(result["reason"], "codex quota windows unavailable")
         self.assertEqual(result["account_id"], "acct-skip")
+
+    def test_configure_claude_statusline_writes_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            settings_path = base / ".claude" / "settings.json"
+            scripts_dir = base / "skill" / "scripts"
+            scripts_dir.mkdir(parents=True)
+            (scripts_dir / "claude_statusline_probe.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+            with mock.patch.object(install_hourly_reporter, "CLAUDE_SETTINGS_PATH", settings_path):
+                statusline = install_hourly_reporter.configure_claude_statusline("/usr/bin/python3", scripts_dir)
+
+            self.assertEqual(statusline["type"], "command")
+            self.assertIn("claude_statusline_probe.py", statusline["command"])
+            saved = json.loads(settings_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["statusLine"]["refreshInterval"], 60)
 
 
 if __name__ == "__main__":

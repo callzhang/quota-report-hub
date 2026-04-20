@@ -20,6 +20,7 @@ PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 LOG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.log"
 ERROR_LOG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.error.log"
 CRON_MARKER = "# quota-reporter-managed"
+CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 
 def write_config(server_url: str, ingest_token: str) -> None:
@@ -35,6 +36,25 @@ def write_config(server_url: str, ingest_token: str) -> None:
         + "\n",
         encoding="utf-8",
     )
+
+
+def configure_claude_statusline(python_path: str, skill_scripts_dir: Path) -> dict:
+    statusline_script = skill_scripts_dir / "claude_statusline_probe.py"
+    command = f"{shlex.quote(python_path)} {shlex.quote(str(statusline_script))}"
+
+    CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if CLAUDE_SETTINGS_PATH.exists():
+        settings = json.loads(CLAUDE_SETTINGS_PATH.read_text(encoding="utf-8"))
+    else:
+        settings = {}
+
+    settings["statusLine"] = {
+        "type": "command",
+        "command": command,
+        "refreshInterval": 60,
+    }
+    CLAUDE_SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    return settings["statusLine"]
 
 
 def write_plist(python_path: str, reporter_script: Path) -> None:
@@ -108,7 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     reporter_script = Path(__file__).with_name("report_all_usage.py")
+    skill_scripts_dir = Path(__file__).resolve().parent
     write_config(args.server_url, args.ingest_token)
+    statusline_config = configure_claude_statusline(args.python_path, skill_scripts_dir)
     system = platform.system()
 
     if system == "Darwin":
@@ -121,6 +143,9 @@ def main() -> None:
                     "label": LABEL,
                     "config_path": str(CONFIG_PATH),
                     "plist_path": str(PLIST_PATH),
+                    "claude_statusline_settings_path": str(CLAUDE_SETTINGS_PATH),
+                    "claude_statusline": statusline_config,
+                    "claude_first_request_required": True,
                     "run_at_load": True,
                     "start_interval_seconds": 3600,
                 },
@@ -138,6 +163,9 @@ def main() -> None:
                     "config_path": str(CONFIG_PATH),
                     "log_path": str(LOG_PATH),
                     "error_log_path": str(ERROR_LOG_PATH),
+                    "claude_statusline_settings_path": str(CLAUDE_SETTINGS_PATH),
+                    "claude_statusline": statusline_config,
+                    "claude_first_request_required": True,
                     "entries": cron_lines(args.python_path, reporter_script),
                 },
                 indent=2,

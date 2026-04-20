@@ -38,6 +38,13 @@ After install, teammates can either:
 - send one report with `report_all_usage.py`
 - install hourly reporting with `install_hourly_reporter.py`
 
+The installer now also configures Claude Code's `statusLine` hook automatically:
+
+- it writes `statusLine.command = python3 .../claude_statusline_probe.py` into `~/.claude/settings.json`
+- Claude then writes the latest quota snapshot to `~/.claude/statusline-rate-limits.json`
+- after install, each machine must complete at least one real interactive Claude request once so Claude starts populating the `rate_limits` snapshot
+- until that first successful Claude request happens, macOS reporters will skip Claude instead of sending `n/a`
+
 The dashboard handles the two sources differently:
 
 - Codex reports real `5H` and `1week` quota windows from archived auth snapshots under `~/.agents/auth/auth-*.json`
