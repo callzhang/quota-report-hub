@@ -103,12 +103,12 @@ test("statusPayload marks live claude 429 probes as rate_limited", () => {
   assert.equal(payload.items[0].effective_status, "rate_limited");
 });
 
-test("statusPayload filters codex rows without quota windows", () => {
+test("statusPayload keeps codex rows without quota windows visible", () => {
   const payload = statusPayload([
     {
       source: "codex",
       status: "error",
-      account_id: "skip-me",
+      account_id: "keep-error",
       windows: { "5h": null, "1week": null },
       reported_at: "2026-04-19T20:00:00Z",
     },
@@ -124,6 +124,7 @@ test("statusPayload filters codex rows without quota windows", () => {
     },
   ], "2026-04-19T20:30:00Z");
 
-  assert.equal(payload.report_count, 1);
-  assert.equal(payload.items[0].account_id, "keep-me");
+  assert.equal(payload.report_count, 2);
+  assert.equal(payload.items[0].account_id, "keep-error");
+  assert.equal(payload.items[1].account_id, "keep-me");
 });
