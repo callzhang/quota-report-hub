@@ -12,7 +12,7 @@ This skill installs and runs local reporters for archived Codex auth snapshots a
 1. Archives the local `~/.codex/auth.json` into `~/.agents/auth/` when Codex is present
 2. Scans archived Codex auth snapshots and keeps the newest snapshot per account
 3. Probes each archived Codex account's `5H` and `1week` quota windows
-4. Reads local Claude CLI auth and usage metadata when Claude is present, and reads the exact macOS Keychain item `Claude Code-credentials` for Claude OAuth metadata instead of relying on unrelated `ANTHROPIC_*` environment tokens
+4. Reads local Claude CLI auth and usage metadata when Claude is present, and reads the latest Claude Code `statusLine` snapshot for official `rate_limits` data
 5. Posts signed reports to the shared dashboard service
 6. Installs a reboot-safe scheduler that reports every hour
 
@@ -21,6 +21,7 @@ This skill installs and runs local reporters for archived Codex auth snapshots a
 - Combined reporter: `scripts/report_all_usage.py`
 - Codex reporter: `scripts/report_codex_quota.py`
 - Claude reporter: `scripts/report_claude_usage.py`
+- Claude statusline hook: `scripts/claude_statusline_probe.py`
 - Installer: `scripts/install_hourly_reporter.py`
 
 ## Required inputs

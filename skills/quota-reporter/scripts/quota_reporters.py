@@ -23,6 +23,7 @@ CONFIG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.json"
 ARCHIVE_DIR = Path.home() / ".agents" / "auth"
 SOURCE_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 CLAUDE_HOME = Path.home() / ".claude"
+CLAUDE_STATUSLINE_SNAPSHOT_PATH = "statusline-rate-limits.json"
 CODEx_PROMPT = "reply with ok"
 CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 CLAUDE_DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -283,6 +284,13 @@ def read_claude_stats(claude_home: Path) -> dict | None:
     return read_json(path)
 
 
+def read_claude_statusline_snapshot(claude_home: Path) -> dict | None:
+    path = claude_home / CLAUDE_STATUSLINE_SNAPSHOT_PATH
+    if not path.exists():
+        return None
+    return read_json(path)
+
+
 def summarize_claude_stats(stats: dict | None) -> dict | None:
     if not stats:
         return None
@@ -420,6 +428,28 @@ def parse_claude_rate_limit_headers(headers) -> dict:
 
     windows["5h"] = parse_window("5h", "5h", 300)
     windows["1week"] = parse_window("7d", "1week", 10080)
+    return windows
+
+
+def parse_claude_statusline_rate_limits(snapshot: dict | None) -> dict:
+    windows = empty_windows()
+    rate_limits = (snapshot or {}).get("rate_limits") or {}
+
+    def parse_window(window_key: str, window_minutes: int) -> dict | None:
+        raw = rate_limits.get(window_key)
+        if not isinstance(raw, dict):
+            return None
+        used_percentage = raw.get("used_percentage")
+        resets_at = raw.get("resets_at")
+        try:
+            used_percentage = float(used_percentage)
+            resets_at = int(float(resets_at))
+        except (TypeError, ValueError):
+            return None
+        return build_claude_window(used_percentage / 100.0, resets_at, window_minutes)
+
+    windows["5h"] = parse_window("five_hour", 300)
+    windows["1week"] = parse_window("seven_day", 10080)
     return windows
 
 
@@ -561,9 +591,16 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
     credentials, _ = read_claude_oauth_credentials(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     stats = read_claude_stats(claude_home)
+    statusline_snapshot = read_claude_statusline_snapshot(claude_home)
+    statusline_windows = parse_claude_statusline_rate_limits(statusline_snapshot)
     summary = summarize_claude_stats(stats)
     status_command = run_claude_status(claude_executable)
-    rate_limit_probe = probe_claude_rate_limits(claude_home)
+    rate_limit_probe = {
+        "available": statusline_windows["5h"] is not None or statusline_windows["1week"] is not None,
+        "source": "statusline_snapshot",
+        "snapshot_path": str(claude_home / CLAUDE_STATUSLINE_SNAPSHOT_PATH),
+        "snapshot_reported_at": (statusline_snapshot or {}).get("captured_at"),
+    }
 
     return {
         **base,
@@ -573,7 +610,7 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
         "plan_name": human_plan_name(auth_text_details.get("subscription_type")) or human_plan_name(oauth.get("subscriptionType")) or oauth.get("subscriptionType"),
         "status": "ok" if auth_status.get("loggedIn") else "error",
         "error": None if auth_status.get("loggedIn") else "claude auth status reported loggedIn=false",
-        "windows": rate_limit_probe["windows"],
+        "windows": statusline_windows,
         "usage_summary": {
             "auth_method": auth_status.get("authMethod"),
             "api_provider": auth_status.get("apiProvider"),
@@ -583,8 +620,11 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
             "rate_limit_tier": oauth.get("rateLimitTier"),
             "oauth_expires_at": oauth.get("expiresAt"),
             "quota_status": status_command,
-            "rate_limit_probe": {
-                key: value for key, value in rate_limit_probe.items() if key != "windows"
+            "rate_limit_probe": rate_limit_probe,
+            "statusline_snapshot": {
+                "has_rate_limits": rate_limit_probe["available"],
+                "captured_at": (statusline_snapshot or {}).get("captured_at"),
+                "raw_rate_limits": (statusline_snapshot or {}).get("rate_limits"),
             },
             "stats": summary,
         },

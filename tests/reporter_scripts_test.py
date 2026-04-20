@@ -21,8 +21,8 @@ from quota_reporters import (
     latest_codex_snapshots_by_account,
     parse_claude_auth_status_text,
     parse_claude_rate_limit_headers,
+    parse_claude_statusline_rate_limits,
     probe_claude,
-    probe_claude_rate_limits,
     read_claude_keychain_credentials,
     run_claude_status,
     summarize_claude_stats,
@@ -54,6 +54,25 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(windows["5h"]["remaining_percent"], 58.0)
         self.assertEqual(windows["1week"]["used_percent"], 17.0)
         self.assertEqual(windows["1week"]["remaining_percent"], 83.0)
+
+    def test_parse_claude_statusline_rate_limits_returns_windows(self):
+        snapshot = {
+            "rate_limits": {
+                "five_hour": {
+                    "used_percentage": 10,
+                    "resets_at": 1776649200,
+                },
+                "seven_day": {
+                    "used_percentage": 100,
+                    "resets_at": 1777167600,
+                },
+            }
+        }
+
+        windows = parse_claude_statusline_rate_limits(snapshot)
+
+        self.assertEqual(windows["5h"]["used_percent"], 10.0)
+        self.assertEqual(windows["1week"]["used_percent"], 100.0)
 
     def test_summarize_claude_stats_aggregates_totals(self):
         summary = summarize_claude_stats(
@@ -126,79 +145,6 @@ class ReporterScriptsTest(unittest.TestCase):
         with mock.patch("quota_reporters.sys.platform", "linux"):
             self.assertIsNone(read_claude_keychain_credentials())
 
-    def test_probe_claude_rate_limits_reports_missing_keychain_token(self):
-        with mock.patch("quota_reporters.read_claude_keychain_credentials", return_value=None):
-            result = probe_claude_rate_limits()
-
-        self.assertFalse(result["available"])
-        self.assertEqual(result["windows"]["5h"], None)
-        self.assertEqual(result["windows"]["1week"], None)
-
-    def test_probe_claude_rate_limits_reads_exact_claude_keychain(self):
-        error = urllib.error.HTTPError(
-            url="https://api.anthropic.com/api/oauth/usage",
-            code=401,
-            msg="Unauthorized",
-            hdrs={
-                "Content-Type": "application/json",
-            },
-            fp=mock.Mock(read=mock.Mock(return_value=b'{"type":"error","error":{"message":"OAuth authentication is currently not supported."}}')),
-        )
-
-        with mock.patch(
-            "quota_reporters.read_claude_keychain_credentials",
-            return_value={
-                "claudeAiOauth": {
-                    "accessToken": "exact-claude-oauth-token",
-                    "refreshToken": "exact-claude-refresh-token",
-                    "subscriptionType": "max",
-                    "rateLimitTier": "default_claude_max_20x",
-                    "expiresAt": 1776668828033,
-                }
-            },
-        ):
-            with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=error):
-                result = probe_claude_rate_limits()
-
-        self.assertFalse(result["available"])
-        self.assertEqual(result["source"], "keychain")
-        self.assertEqual(result["status_code"], 401)
-        self.assertEqual(result["subscription_type"], "max")
-        self.assertEqual(result["rate_limit_tier"], "default_claude_max_20x")
-        self.assertEqual(result["api_error"], "OAuth authentication is currently not supported.")
-
-    def test_probe_claude_rate_limits_reads_linux_credentials_file(self):
-        error = urllib.error.HTTPError(
-            url="https://api.anthropic.com/api/oauth/usage",
-            code=401,
-            msg="Unauthorized",
-            hdrs={"Content-Type": "application/json"},
-            fp=mock.Mock(read=mock.Mock(return_value=b'{"type":"error","error":{"message":"OAuth authentication is currently not supported."}}')),
-        )
-
-        with mock.patch(
-            "quota_reporters.read_claude_credentials",
-            return_value={
-                "claudeAiOauth": {
-                    "accessToken": "linux-claude-oauth-token",
-                    "refreshToken": "linux-claude-refresh-token",
-                    "subscriptionType": "max",
-                    "rateLimitTier": "default_claude_max_20x",
-                    "expiresAt": 1776663631834,
-                }
-            },
-        ):
-            with mock.patch("quota_reporters.read_claude_keychain_credentials", return_value=None):
-                with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=error):
-                    result = probe_claude_rate_limits(Path("/tmp/claude-home"))
-
-        self.assertFalse(result["available"])
-        self.assertEqual(result["source"], "credentials_file")
-        self.assertEqual(result["status_code"], 401)
-        self.assertEqual(result["subscription_type"], "max")
-        self.assertEqual(result["rate_limit_tier"], "default_claude_max_20x")
-        self.assertEqual(result["api_error"], "OAuth authentication is currently not supported.")
-
     def test_probe_claude_prefers_auth_status_text_account_details(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
         auth_text = mock.Mock(
@@ -217,7 +163,7 @@ class ReporterScriptsTest(unittest.TestCase):
                 side_effect=[auth_json, auth_text, status_result],
             ):
                 with mock.patch(
-                    "quota_reporters.read_claude_keychain_credentials",
+                    "quota_reporters.read_claude_credentials",
                     return_value={
                         "claudeAiOauth": {
                             "accessToken": "exact-claude-oauth-token",
@@ -228,8 +174,14 @@ class ReporterScriptsTest(unittest.TestCase):
                     },
                 ):
                     with mock.patch(
-                        "quota_reporters.probe_claude_rate_limits",
-                        return_value={"windows": {"5h": None, "1week": None}, "available": False},
+                        "quota_reporters.read_claude_statusline_snapshot",
+                        return_value={
+                            "captured_at": "2026-04-20T04:00:00Z",
+                            "rate_limits": {
+                                "five_hour": {"used_percentage": 10, "resets_at": 1776649200},
+                                "seven_day": {"used_percentage": 100, "resets_at": 1777167600},
+                            },
+                        },
                     ):
                         with mock.patch("quota_reporters.read_claude_stats", return_value=None):
                             payload = probe_claude(Path("/tmp/claude-home"))
@@ -240,6 +192,9 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
         self.assertEqual(payload["usage_summary"]["organization"], "Derek Zen")
         self.assertEqual(payload["usage_summary"]["login_method"], "Claude Max account")
+        self.assertEqual(payload["windows"]["5h"]["used_percent"], 10.0)
+        self.assertEqual(payload["usage_summary"]["rate_limit_probe"]["source"], "statusline_snapshot")
+        self.assertEqual(payload["usage_summary"]["statusline_snapshot"]["captured_at"], "2026-04-20T04:00:00Z")
 
     def test_probe_claude_auth_commands_drop_env_overrides(self):
         calls = []
