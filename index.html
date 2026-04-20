@@ -222,7 +222,6 @@
                 <th>5H</th>
                 <th>1week</th>
                 <th>Usage</th>
-                <th>Status</th>
                 <th>Reported At</th>
               </tr>
             </thead>
@@ -310,25 +309,6 @@
         return `<div class="meta">n/a</div>`;
       }
 
-      function statusLabel(value) {
-        if (value === "rate_limited") return "rate limited";
-        if (value === "ready") return "ready";
-        return value || "unknown";
-      }
-
-      function statusChip(value) {
-        const normalized = value === "rate_limited" ? "rate-limited" : (value || "unknown");
-        return `<span class="status-chip ${normalized}">${statusLabel(value)}</span>`;
-      }
-
-      function effectiveWindowStatus(item) {
-        const windows = [item.windows?.["5h"], item.windows?.["1week"]].filter(Boolean);
-        if (windows.length > 0 && windows.every((window) => window.reset_at && Date.parse(window.reset_at) <= Date.now())) {
-          return "ready";
-        }
-        return item.effective_status || item.status;
-      }
-
       function usageCell(item) {
         if (item.source === "claude") {
           const usage = item.usage_summary || {};
@@ -385,8 +365,7 @@
             <td>${item.windows?.["5h"] ? progressCell(item.windows?.["5h"]) : quotaWindowFallback(item)}</td>
             <td>${item.windows?.["1week"] ? progressCell(item.windows?.["1week"]) : quotaWindowFallback(item)}</td>
             <td>${usageCell(item)}</td>
-            <td><div>${statusChip(effectiveWindowStatus(item))}</div><div class="meta wrap">${item.age_seconds !== null && item.age_seconds !== undefined ? `last report ${formatAge(item.age_seconds)}` : ""}</div><div class="mono wrap">${item.error || ""}</div></td>
-            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="mono wrap">${item.auth_path || ""}</div></td>
+            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="meta wrap">${item.error || ""}</div><div class="mono wrap">${item.auth_path || ""}</div></td>
           </tr>
         `).join("");
 
