@@ -9,6 +9,11 @@ from pathlib import Path
 from quota_reporters import SOURCE_AUTH_PATH, load_config, post_report, probe_codex
 
 
+def codex_has_quota_windows(payload: dict) -> bool:
+    windows = payload.get("windows") or {}
+    return windows.get("5h") is not None and windows.get("1week") is not None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Report local Codex quota to a shared dashboard.")
     parser.add_argument("--server-url")
@@ -23,6 +28,21 @@ def main() -> None:
     payload = probe_codex(args.auth_path)
     if args.print_payload:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    if not codex_has_quota_windows(payload):
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "codex quota windows unavailable",
+                    "account_id": payload.get("account_id"),
+                    "email": payload.get("email"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
     config = load_config(args)
     result = post_report(config["server_url"], config["ingest_token"], payload)

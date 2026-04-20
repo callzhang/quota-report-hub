@@ -16,6 +16,12 @@ from quota_reporters import (
     probe_claude,
 )
 
+def codex_has_quota_windows(payload: dict) -> bool:
+    if payload.get("source") != "codex":
+        return True
+    windows = payload.get("windows") or {}
+    return windows.get("5h") is not None and windows.get("1week") is not None
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Report all available local agent usage sources to a shared dashboard.")
@@ -30,7 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def collect_reports(args: argparse.Namespace) -> list[dict]:
-    reports = probe_archived_codex_accounts(args.codex_auth_path, args.archive_dir)
+    reports = [
+        payload
+        for payload in probe_archived_codex_accounts(args.codex_auth_path, args.archive_dir)
+        if codex_has_quota_windows(payload)
+    ]
     reports.append(probe_claude(args.claude_home, args.claude_bin))
     return reports
 

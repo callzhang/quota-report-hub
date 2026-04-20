@@ -41,6 +41,7 @@ After install, teammates can either:
 The dashboard handles the two sources differently:
 
 - Codex reports real `5H` and `1week` quota windows from archived auth snapshots under `~/.agents/auth/auth-*.json`
+- Codex reports are only posted when both `5H` and `1week` windows are present. If Codex returns an auth that lacks quota details, the reporter skips that auth instead of sending a noisy error row to the hub.
 - Claude reports auth tier and cumulative usage statistics, and now reads the exact macOS Keychain item `Claude Code-credentials` to identify the active Claude subscription. It will only use that exact Claude OAuth credential path for quota probing, and explicitly records API outcomes such as `429 Rate limited. Please try again later.`
 - The Claude reporter hard-times out the extra `claude auth status` and `claude -p "/status"` probes so one slow local CLI process cannot block the hourly report.
 - In the dashboard, a fresh Claude `429` probe is shown as `rate limited` instead of a generic unknown state.

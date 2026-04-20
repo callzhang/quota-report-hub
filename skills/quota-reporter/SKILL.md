@@ -68,6 +68,7 @@ For Codex, the combined reporter normalizes by account:
 - it archives the current live auth if needed
 - it scans `~/.agents/auth/auth-*.json`
 - it only probes the newest snapshot for each `account_id`
+- it only posts Codex accounts that actually returned both `5H` and `1week` windows
 - the hub keeps the latest report per `source + account_id`
 
 ## Output expectations
