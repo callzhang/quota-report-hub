@@ -45,6 +45,7 @@ The dashboard handles the two sources differently:
 - Claude reports auth tier and cumulative usage statistics, and now reads Claude Code's official `statusLine` JSON snapshot for `rate_limits` instead of relying on unofficial OAuth usage probing.
 - The included `claude_statusline_probe.py` script can be wired into `~/.claude/settings.json` as a `statusLine` command. It stores the latest `rate_limits` payload under `~/.claude/statusline-rate-limits.json`, which the hourly reporter reads.
 - The Claude reporter still hard-times out the extra `claude auth status` and `claude -p "/status"` commands so one slow local CLI process cannot block the hourly report.
+- On macOS, if Claude does not currently have `5h` and `1week` windows from the statusline snapshot, the reporter skips posting Claude entirely instead of sending a noisy `n/a` row to the hub.
 - The dashboard now keeps the last reported status visible instead of expiring it after one hour, shows how old the report is, and renders each reset time as a live countdown such as `reset in 3h 30m`. Once a reset time has passed, that window is shown in green as `ready now`.
 
 Codex collection rules:

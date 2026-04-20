@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from quota_reporters import (
@@ -18,6 +19,15 @@ from quota_reporters import (
 
 def codex_has_quota_windows(payload: dict) -> bool:
     if payload.get("source") != "codex":
+        return True
+    windows = payload.get("windows") or {}
+    return windows.get("5h") is not None and windows.get("1week") is not None
+
+
+def claude_should_report(payload: dict) -> bool:
+    if payload.get("source") != "claude":
+        return True
+    if sys.platform != "darwin":
         return True
     windows = payload.get("windows") or {}
     return windows.get("5h") is not None and windows.get("1week") is not None
@@ -41,7 +51,9 @@ def collect_reports(args: argparse.Namespace) -> list[dict]:
         for payload in probe_archived_codex_accounts(args.codex_auth_path, args.archive_dir)
         if codex_has_quota_windows(payload)
     ]
-    reports.append(probe_claude(args.claude_home, args.claude_bin))
+    claude_payload = probe_claude(args.claude_home, args.claude_bin)
+    if claude_should_report(claude_payload):
+        reports.append(claude_payload)
     return reports
 
 

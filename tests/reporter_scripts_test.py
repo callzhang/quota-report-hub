@@ -2,7 +2,6 @@ import sys
 import subprocess
 import tempfile
 import unittest
-import urllib.error
 import io
 import contextlib
 from pathlib import Path
@@ -14,6 +13,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent / "skills" / "quota-reporter
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import report_all_usage  # noqa: E402
+import report_claude_usage  # noqa: E402
 import report_codex_quota  # noqa: E402
 from quota_reporters import (
     archive_current_codex_auth,
@@ -319,7 +319,8 @@ class ReporterScriptsTest(unittest.TestCase):
             ],
         ):
             with mock.patch.object(report_all_usage, "probe_claude", return_value={"source": "claude", "account_id": "claude-1"}):
-                payloads = report_all_usage.collect_reports(args)
+                with mock.patch.object(report_all_usage.sys, "platform", "linux"):
+                    payloads = report_all_usage.collect_reports(args)
 
         self.assertEqual(
             payloads,
@@ -332,6 +333,46 @@ class ReporterScriptsTest(unittest.TestCase):
                 {"source": "claude", "account_id": "claude-1"},
             ],
         )
+
+    def test_collect_reports_skips_macos_claude_payload_without_quota_windows(self):
+        args = mock.Mock(
+            codex_auth_path=Path("/tmp/auth.json"),
+            archive_dir=Path("/tmp/archive"),
+            claude_home=Path("/tmp/claude"),
+            claude_bin=None,
+        )
+        with mock.patch.object(report_all_usage, "probe_archived_codex_accounts", return_value=[]):
+            with mock.patch.object(
+                report_all_usage,
+                "probe_claude",
+                return_value={"source": "claude", "account_id": "claude-1", "windows": {"5h": None, "1week": None}},
+            ):
+                with mock.patch.object(report_all_usage.sys, "platform", "darwin"):
+                    payloads = report_all_usage.collect_reports(args)
+
+        self.assertEqual(payloads, [])
+
+    def test_report_claude_usage_skips_post_when_windows_missing_on_macos(self):
+        payload = {
+            "source": "claude",
+            "account_id": "claude-skip",
+            "email": "skip@example.com",
+            "windows": {"5h": None, "1week": None},
+        }
+        with mock.patch.object(report_claude_usage, "probe_claude", return_value=payload):
+            with mock.patch.object(report_claude_usage, "post_report") as post_report:
+                with mock.patch.object(report_claude_usage.sys, "platform", "darwin"):
+                    with mock.patch("sys.argv", ["report_claude_usage.py"]):
+                        output = io.StringIO()
+                        with contextlib.redirect_stdout(output):
+                            report_claude_usage.main()
+
+        post_report.assert_not_called()
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["reason"], "claude quota windows unavailable on macos")
+        self.assertEqual(result["account_id"], "claude-skip")
 
     def test_report_codex_quota_skips_post_when_windows_missing(self):
         payload = {

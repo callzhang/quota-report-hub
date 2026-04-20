@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from quota_reporters import CLAUDE_HOME, load_config, post_report, probe_claude
+
+
+def claude_should_report(payload: dict) -> bool:
+    if sys.platform != "darwin":
+        return True
+    windows = payload.get("windows") or {}
+    return windows.get("5h") is not None and windows.get("1week") is not None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +32,21 @@ def main() -> None:
     payload = probe_claude(args.claude_home, args.claude_bin)
     if args.print_payload:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    if not claude_should_report(payload):
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "claude quota windows unavailable on macos",
+                    "account_id": payload.get("account_id"),
+                    "email": payload.get("email"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
     config = load_config(args)
     result = post_report(config["server_url"], config["ingest_token"], payload)

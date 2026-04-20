@@ -16,6 +16,8 @@ This skill installs and runs local reporters for archived Codex auth snapshots a
 5. Posts signed reports to the shared dashboard service
 6. Installs a reboot-safe scheduler that reports every hour
 
+On macOS, the Claude reporter only posts when the statusline snapshot currently contains both `5h` and `1week` windows. If Claude detection fails there, it skips the Claude report instead of sending `n/a`.
+
 ## Files
 
 - Combined reporter: `scripts/report_all_usage.py`
