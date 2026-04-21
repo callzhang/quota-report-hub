@@ -295,7 +295,7 @@
         return `reset in ${minutes}m`;
       }
 
-      function progressCell(window) {
+      function progressCell(window, isStale = false) {
         if (!window || window.remaining_percent === null || window.remaining_percent === undefined) {
           return `<div class="meta">n/a</div>`;
         }
@@ -314,6 +314,7 @@
               <strong>${label}</strong>
             </div>
             <div class="meta">${resetLabel}</div>
+            ${isStale ? `<div class="meta">stale quota snapshot</div>` : ""}
           </div>
         `;
       }
@@ -392,8 +393,8 @@
             <td>${sourceTag(item.source)}</td>
             <td><div class="wrap">${item.reporter_name}</div><div class="mono wrap">${item.hostname}</div></td>
             <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div></td>
-            <td>${item.windows?.["5h"] ? progressCell(item.windows?.["5h"]) : quotaWindowFallback(item)}</td>
-            <td>${item.windows?.["1week"] ? progressCell(item.windows?.["1week"]) : quotaWindowFallback(item)}</td>
+            <td>${item.windows?.["5h"] ? progressCell(item.windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
+            <td>${item.windows?.["1week"] ? progressCell(item.windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${usageCell(item)}</td>
             <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="meta wrap">${item.error || ""}</div><div class="mono wrap">${item.auth_path || ""}</div></td>
           </tr>

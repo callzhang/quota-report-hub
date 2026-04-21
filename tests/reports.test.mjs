@@ -157,6 +157,7 @@ test("mergeLatestReport keeps prior good windows when a newer report has n/a win
 
   assert.equal(merged.reported_at, "2026-04-21T04:15:00Z");
   assert.equal(merged.error, "missing quota details");
+  assert.equal(merged.windows_stale, true);
   assert.equal(merged.windows["5h"].remaining_percent, 75);
   assert.equal(merged.windows["1week"].remaining_percent, 60);
 });
@@ -190,6 +191,39 @@ test("mergeLatestReport accepts newer non-null windows", () => {
   const merged = mergeLatestReport(previous, incoming);
 
   assert.equal(merged.reported_at, "2026-04-21T04:15:00Z");
+  assert.equal(merged.windows_stale, false);
   assert.equal(merged.windows["5h"].remaining_percent, 90);
   assert.equal(merged.windows["1week"].remaining_percent, 65);
+});
+
+test("mergeLatestReport clears old windows on hard auth invalidation", () => {
+  const previous = sanitizeReport({
+    source: "codex",
+    hostname: "gpu4",
+    reporter_name: "derek@gpu4",
+    reported_at: "2026-04-21T04:00:00Z",
+    account_id: "acct-1",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 25, remaining_percent: 75, reset_at: "2026-04-21T09:00:00Z" },
+      "1week": { used_percent: 40, remaining_percent: 60, reset_at: "2026-04-27T09:00:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    hostname: "gpu4",
+    reporter_name: "derek@gpu4",
+    reported_at: "2026-04-21T04:15:00Z",
+    account_id: "acct-1",
+    status: "error",
+    error: "auth invalidated (token_invalidated)",
+    windows: { "5h": null, "1week": null },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.reported_at, "2026-04-21T04:15:00Z");
+  assert.equal(merged.windows_stale, false);
+  assert.equal(merged.windows["5h"], null);
+  assert.equal(merged.windows["1week"], null);
 });
