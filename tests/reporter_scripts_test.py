@@ -465,6 +465,100 @@ Reading additional input from stdin...
             self.assertIsNone(rotation)
             self.assertEqual(live_auth.read_text(encoding="utf-8"), "current")
 
+    def test_maybe_rotate_codex_auth_replaces_live_auth_when_weekly_quota_is_zero_and_5h_improves(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            archive_dir = base / "archive"
+            live_auth.write_text("current", encoding="utf-8")
+            current_snapshot = archive_dir / "auth-current.json"
+            current_snapshot.parent.mkdir(parents=True)
+            current_snapshot.write_text("current", encoding="utf-8")
+            best_snapshot = archive_dir / "auth-best.json"
+            best_snapshot.write_text("best", encoding="utf-8")
+
+            payloads = [
+                {
+                    "account_id": "current",
+                    "auth_path": str(current_snapshot),
+                    "windows": {"5h": {"remaining_percent": 73}, "1week": {"remaining_percent": 0}},
+                },
+                {
+                    "account_id": "best",
+                    "auth_path": str(best_snapshot),
+                    "windows": {"5h": {"remaining_percent": 88}, "1week": {"remaining_percent": 42}},
+                },
+            ]
+
+            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
+                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
+
+            self.assertTrue(rotation["rotated"])
+            self.assertEqual(rotation["to_account_id"], "best")
+            self.assertEqual(live_auth.read_text(encoding="utf-8"), "best")
+
+    def test_maybe_rotate_codex_auth_skips_when_weekly_quota_is_zero_but_5h_would_drop(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            archive_dir = base / "archive"
+            live_auth.write_text("current", encoding="utf-8")
+            current_snapshot = archive_dir / "auth-current.json"
+            current_snapshot.parent.mkdir(parents=True)
+            current_snapshot.write_text("current", encoding="utf-8")
+            lower_snapshot = archive_dir / "auth-lower.json"
+            lower_snapshot.write_text("lower", encoding="utf-8")
+
+            payloads = [
+                {
+                    "account_id": "current",
+                    "auth_path": str(current_snapshot),
+                    "windows": {"5h": {"remaining_percent": 73}, "1week": {"remaining_percent": 0}},
+                },
+                {
+                    "account_id": "lower",
+                    "auth_path": str(lower_snapshot),
+                    "windows": {"5h": {"remaining_percent": 51}, "1week": {"remaining_percent": 42}},
+                },
+            ]
+
+            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
+                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
+
+            self.assertIsNone(rotation)
+            self.assertEqual(live_auth.read_text(encoding="utf-8"), "current")
+
+    def test_maybe_rotate_codex_auth_ignores_candidates_with_zero_weekly_quota(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            archive_dir = base / "archive"
+            live_auth.write_text("current", encoding="utf-8")
+            current_snapshot = archive_dir / "auth-current.json"
+            current_snapshot.parent.mkdir(parents=True)
+            current_snapshot.write_text("current", encoding="utf-8")
+            bad_snapshot = archive_dir / "auth-bad.json"
+            bad_snapshot.write_text("bad", encoding="utf-8")
+
+            payloads = [
+                {
+                    "account_id": "current",
+                    "auth_path": str(current_snapshot),
+                    "windows": {"5h": {"remaining_percent": 11}, "1week": {"remaining_percent": 12}},
+                },
+                {
+                    "account_id": "bad",
+                    "auth_path": str(bad_snapshot),
+                    "windows": {"5h": {"remaining_percent": 94}, "1week": {"remaining_percent": 0}},
+                },
+            ]
+
+            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
+                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
+
+            self.assertIsNone(rotation)
+            self.assertEqual(live_auth.read_text(encoding="utf-8"), "current")
+
     def test_configure_claude_statusline_writes_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)

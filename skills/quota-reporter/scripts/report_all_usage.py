@@ -26,6 +26,16 @@ def codex_remaining_percent(payload: dict, window_key: str) -> float:
     return float(value) if value is not None else -1.0
 
 
+def codex_has_usable_quota(payload: dict, threshold_percent: float = 20.0) -> bool:
+    five_hour_remaining = codex_remaining_percent(payload, "5h")
+    weekly_remaining = codex_remaining_percent(payload, "1week")
+    return five_hour_remaining >= threshold_percent and weekly_remaining > 0.0
+
+
+def codex_is_usable_candidate(payload: dict) -> bool:
+    return codex_remaining_percent(payload, "5h") > 0.0 and codex_remaining_percent(payload, "1week") > 0.0
+
+
 def codex_rotation_sort_key(payload: dict) -> tuple[float, float]:
     return (
         codex_remaining_percent(payload, "5h"),
@@ -50,23 +60,20 @@ def maybe_rotate_codex_auth(
     if current_payload is None:
         current_payload = probe_codex(current_snapshot)
 
-    current_remaining = codex_remaining_percent(current_payload, "5h")
-    if current_remaining >= threshold_percent:
+    if codex_has_usable_quota(current_payload, threshold_percent=threshold_percent):
         return None
 
     candidates = [
         payload
         for payload in codex_payloads
         if payload.get("auth_path") != str(current_snapshot)
-        and codex_remaining_percent(payload, "5h") >= 0
+        and codex_is_usable_candidate(payload)
+        and codex_remaining_percent(payload, "5h") > codex_remaining_percent(current_payload, "5h")
     ]
     if not candidates:
         return None
 
     best_payload = max(candidates, key=codex_rotation_sort_key)
-    if codex_rotation_sort_key(best_payload) <= codex_rotation_sort_key(current_payload):
-        return None
-
     shutil.copy2(best_payload["auth_path"], codex_auth_path)
     return {
         "rotated": True,

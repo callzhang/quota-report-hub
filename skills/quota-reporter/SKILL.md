@@ -76,7 +76,9 @@ For Codex, the combined reporter normalizes by account:
 - it scans `~/.agents/auth/auth-*.json`
 - it only probes the newest snapshot for each `account_id`
 - it posts Codex accounts even when a snapshot no longer returns quota windows, so stale old values on the hub get overwritten by the current unavailable state
-- if the current live Codex auth is below `20%` remaining in the `5H` window, it copies the best archived snapshot back to `~/.codex/auth.json`
+- if the current live Codex auth is below `20%` remaining in the `5H` window, or its `1week` window is already `0%`, it copies the best usable archived snapshot back to `~/.codex/auth.json`
+- usable rotation targets must have both `5H > 0` and `1week > 0`
+- rotation only happens when that target also has strictly more `5H` remaining than the current live auth
 - the hub keeps the latest report per `source + account_id`
 
 ## Output expectations

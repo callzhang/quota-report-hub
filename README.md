@@ -48,8 +48,10 @@ The installer now also configures Claude Code's `statusLine` hook automatically:
 Codex rotation rules:
 
 - each run archives the current live `~/.codex/auth.json`
-- if the current live Codex auth has less than `20%` remaining in the `5H` window
-- the reporter picks the archived Codex auth with the highest remaining quota
+- if the current live Codex auth has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`
+- only archived Codex auths with both `5H > 0` and `1week > 0` are considered usable rotation targets
+- rotation only happens when a usable archived auth also has strictly more `5H` remaining than the current live auth
+- the reporter picks the usable archived auth with the highest remaining quota
 - ranking is by `5H remaining` first, then `1week remaining`
 - the reporter then copies that best archived snapshot back to `~/.codex/auth.json`
 
