@@ -14,7 +14,8 @@ This skill installs and runs local reporters for archived Codex auth snapshots a
 3. Probes each archived Codex account's `5H` and `1week` quota windows
 4. Reads local Claude CLI auth and usage metadata when Claude is present, and reads the latest Claude Code `statusLine` snapshot for official `rate_limits` data
 5. Posts signed reports to the shared dashboard service
-6. Installs a reboot-safe scheduler that reports every hour
+6. Installs a reboot-safe scheduler that reports every 15 minutes
+7. Rotates `~/.codex/auth.json` to the highest-quota archived snapshot when the current live auth drops below `20%` remaining in the `5H` window
 
 On macOS, the Claude reporter only posts when the statusline snapshot currently contains both `5h` and `1week` windows. If Claude detection fails there, it skips the Claude report instead of sending `n/a`.
 
@@ -64,7 +65,7 @@ python3 scripts/install_hourly_reporter.py \
 
 The installer writes a local config file under `~/.agents/auth/` and installs the local scheduler.
 On macOS it installs a `launchd` agent with `RunAtLoad`.
-On Linux it installs `crontab` entries for both `@reboot` and hourly reporting, so the reporter comes back automatically after a restart.
+On Linux it installs `crontab` entries for both `@reboot` and 15-minute reporting, so the reporter comes back automatically after a restart.
 The installer also writes Claude Code `statusLine` settings to `~/.claude/settings.json` so Claude can produce `~/.claude/statusline-rate-limits.json` automatically.
 
 After install, each machine needs one real interactive Claude request to seed the first quota snapshot. Until that happens, macOS Claude reports are skipped instead of sending `n/a`.
@@ -74,7 +75,8 @@ For Codex, the combined reporter normalizes by account:
 - it archives the current live auth if needed
 - it scans `~/.agents/auth/auth-*.json`
 - it only probes the newest snapshot for each `account_id`
-- it only posts Codex accounts that actually returned both `5H` and `1week` windows
+- it posts Codex accounts even when a snapshot no longer returns quota windows, so stale old values on the hub get overwritten by the current unavailable state
+- if the current live Codex auth is below `20%` remaining in the `5H` window, it copies the best archived snapshot back to `~/.codex/auth.json`
 - the hub keeps the latest report per `source + account_id`
 
 ## Output expectations

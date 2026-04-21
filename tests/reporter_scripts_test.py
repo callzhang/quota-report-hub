@@ -306,6 +306,7 @@ class ReporterScriptsTest(unittest.TestCase):
             archive_dir=Path("/tmp/archive"),
             claude_home=Path("/tmp/claude"),
             claude_bin=None,
+            codex_rotate_threshold_percent=20.0,
         )
         with mock.patch.object(
             report_all_usage,
@@ -321,11 +322,13 @@ class ReporterScriptsTest(unittest.TestCase):
         ):
             with mock.patch.object(report_all_usage, "probe_claude", return_value={"source": "claude", "account_id": "claude-1"}):
                 with mock.patch.object(report_all_usage.sys, "platform", "linux"):
-                    payloads = report_all_usage.collect_reports(args)
+                    with mock.patch.object(report_all_usage, "maybe_rotate_codex_auth", return_value=None):
+                        payloads = report_all_usage.collect_reports(args)
 
         self.assertEqual(
             payloads,
             [
+                {"source": "codex", "account_id": "skip-me", "windows": {"5h": None, "1week": None}},
                 {
                     "source": "codex",
                     "account_id": "keep-me",
@@ -341,6 +344,7 @@ class ReporterScriptsTest(unittest.TestCase):
             archive_dir=Path("/tmp/archive"),
             claude_home=Path("/tmp/claude"),
             claude_bin=None,
+            codex_rotate_threshold_percent=20.0,
         )
         with mock.patch.object(report_all_usage, "probe_archived_codex_accounts", return_value=[]):
             with mock.patch.object(
@@ -349,7 +353,8 @@ class ReporterScriptsTest(unittest.TestCase):
                 return_value={"source": "claude", "account_id": "claude-1", "windows": {"5h": None, "1week": None}},
             ):
                 with mock.patch.object(report_all_usage.sys, "platform", "darwin"):
-                    payloads = report_all_usage.collect_reports(args)
+                    with mock.patch.object(report_all_usage, "maybe_rotate_codex_auth", return_value=None):
+                        payloads = report_all_usage.collect_reports(args)
 
         self.assertEqual(payloads, [])
 
@@ -375,7 +380,7 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(result["reason"], "claude quota windows unavailable on macos")
         self.assertEqual(result["account_id"], "claude-skip")
 
-    def test_report_codex_quota_skips_post_when_windows_missing(self):
+    def test_report_codex_quota_posts_even_when_windows_missing(self):
         payload = {
             "source": "codex",
             "account_id": "acct-skip",
@@ -383,18 +388,71 @@ class ReporterScriptsTest(unittest.TestCase):
             "windows": {"5h": None, "1week": None},
         }
         with mock.patch.object(report_codex_quota, "probe_codex", return_value=payload):
-            with mock.patch.object(report_codex_quota, "post_report") as post_report:
+            with mock.patch.object(report_codex_quota, "post_report", return_value={"ok": True}) as post_report:
                 with mock.patch("sys.argv", ["report_codex_quota.py"]):
                     output = io.StringIO()
                     with contextlib.redirect_stdout(output):
                         report_codex_quota.main()
 
-        post_report.assert_not_called()
+        post_report.assert_called_once()
         result = json.loads(output.getvalue())
         self.assertTrue(result["ok"])
-        self.assertTrue(result["skipped"])
-        self.assertEqual(result["reason"], "codex quota windows unavailable")
-        self.assertEqual(result["account_id"], "acct-skip")
+
+    def test_maybe_rotate_codex_auth_replaces_low_quota_live_auth(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            archive_dir = base / "archive"
+            live_auth.write_text("current", encoding="utf-8")
+            current_snapshot = archive_dir / "auth-current.json"
+            current_snapshot.parent.mkdir(parents=True)
+            current_snapshot.write_text("current", encoding="utf-8")
+            best_snapshot = archive_dir / "auth-best.json"
+            best_snapshot.write_text("best", encoding="utf-8")
+
+            payloads = [
+                {
+                    "account_id": "current",
+                    "auth_path": str(current_snapshot),
+                    "windows": {"5h": {"remaining_percent": 12}, "1week": {"remaining_percent": 70}},
+                },
+                {
+                    "account_id": "best",
+                    "auth_path": str(best_snapshot),
+                    "windows": {"5h": {"remaining_percent": 88}, "1week": {"remaining_percent": 50}},
+                },
+            ]
+
+            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
+                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
+
+            self.assertTrue(rotation["rotated"])
+            self.assertEqual(rotation["to_account_id"], "best")
+            self.assertEqual(live_auth.read_text(encoding="utf-8"), "best")
+
+    def test_maybe_rotate_codex_auth_skips_when_current_quota_is_healthy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            archive_dir = base / "archive"
+            live_auth.write_text("current", encoding="utf-8")
+            current_snapshot = archive_dir / "auth-current.json"
+            current_snapshot.parent.mkdir(parents=True)
+            current_snapshot.write_text("current", encoding="utf-8")
+
+            payloads = [
+                {
+                    "account_id": "current",
+                    "auth_path": str(current_snapshot),
+                    "windows": {"5h": {"remaining_percent": 42}, "1week": {"remaining_percent": 70}},
+                }
+            ]
+
+            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
+                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
+
+            self.assertIsNone(rotation)
+            self.assertEqual(live_auth.read_text(encoding="utf-8"), "current")
 
     def test_configure_claude_statusline_writes_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -411,6 +469,11 @@ class ReporterScriptsTest(unittest.TestCase):
             self.assertIn("claude_statusline_probe.py", statusline["command"])
             saved = json.loads(settings_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["statusLine"]["refreshInterval"], 60)
+
+    def test_install_linux_cron_uses_fifteen_minute_interval(self):
+        lines = install_hourly_reporter.cron_lines("/usr/bin/python3", Path("/tmp/report_all_usage.py"))
+        self.assertTrue(lines[1].startswith("*/15 * * * * /usr/bin/python3 /tmp/report_all_usage.py >> "))
+        self.assertTrue(lines[1].endswith(" # quota-reporter-managed"))
 
 
 if __name__ == "__main__":

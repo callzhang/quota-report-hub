@@ -12,7 +12,7 @@ Typical examples:
 - You keep separate accounts on different laptops, desktops, or remote boxes
 - You want one dashboard that normalizes each account to its latest report, even if multiple machines report the same account
 - You also want Claude CLI usage metadata in the same dashboard, even when Claude does not expose resettable remaining quota
-- You want each machine to report quota automatically every hour instead of checking manually before switching agents
+- You want each machine to report quota automatically every 15 minutes instead of checking manually before switching agents
 - You want reporting to resume automatically after a laptop reboot or a remote server restart
 
 ## Install The Skill
@@ -36,7 +36,7 @@ Skill files live under:
 After install, teammates can either:
 
 - send one report with `report_all_usage.py`
-- install hourly reporting with `install_hourly_reporter.py`
+- install scheduled reporting with `install_hourly_reporter.py`
 
 The installer now also configures Claude Code's `statusLine` hook automatically:
 
@@ -44,6 +44,14 @@ The installer now also configures Claude Code's `statusLine` hook automatically:
 - Claude then writes the latest quota snapshot to `~/.claude/statusline-rate-limits.json`
 - after install, each machine must complete at least one real interactive Claude request once so Claude starts populating the `rate_limits` snapshot
 - until that first successful Claude request happens, macOS reporters will skip Claude instead of sending `n/a`
+
+Codex rotation rules:
+
+- each run archives the current live `~/.codex/auth.json`
+- if the current live Codex auth has less than `20%` remaining in the `5H` window
+- the reporter picks the archived Codex auth with the highest remaining quota
+- ranking is by `5H remaining` first, then `1week remaining`
+- the reporter then copies that best archived snapshot back to `~/.codex/auth.json`
 
 The dashboard handles the two sources differently:
 
@@ -61,10 +69,10 @@ Codex collection rules:
 - It then scans archived auth snapshots and keeps only the newest snapshot per `account_id`
 - The hub normalizes Codex and Claude reports by `source + account_id`, so the latest machine report wins for the account
 
-The installer is reboot-safe:
+The installer is reboot-safe and runs every 15 minutes:
 
 - macOS uses `launchd` with `RunAtLoad`
-- Linux uses `crontab` with both `@reboot` and hourly entries
+- Linux uses `crontab` with both `@reboot` and `*/15 * * * *` entries
 
 ## Endpoints
 

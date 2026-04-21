@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 LABEL = "com.openai.quota-reporter"
+REPORT_INTERVAL_SECONDS = 900
 CONFIG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.json"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 LOG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.log"
@@ -65,7 +66,7 @@ def write_plist(python_path: str, reporter_script: Path) -> None:
             python_path,
             str(reporter_script),
         ],
-        "StartInterval": 3600,
+        "StartInterval": REPORT_INTERVAL_SECONDS,
         "RunAtLoad": True,
         "StandardOutPath": str(LOG_PATH),
         "StandardErrorPath": str(ERROR_LOG_PATH),
@@ -94,7 +95,7 @@ def cron_lines(python_path: str, reporter_script: Path) -> list[str]:
     )
     return [
         f"@reboot {command} {CRON_MARKER}",
-        f"0 * * * * {command} {CRON_MARKER}",
+        f"*/15 * * * * {command} {CRON_MARKER}",
     ]
 
 
@@ -147,7 +148,7 @@ def main() -> None:
                     "claude_statusline": statusline_config,
                     "claude_first_request_required": True,
                     "run_at_load": True,
-                    "start_interval_seconds": 3600,
+                    "start_interval_seconds": REPORT_INTERVAL_SECONDS,
                 },
                 indent=2,
             )
