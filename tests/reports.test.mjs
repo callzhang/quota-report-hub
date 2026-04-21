@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeReport, statusPayload } from "../lib/reports.js";
+import { mergeLatestReport, sanitizeReport, statusPayload } from "../lib/reports.js";
 
 test("sanitizeReport normalizes the quota payload", () => {
   const sanitized = sanitizeReport({
@@ -127,4 +127,69 @@ test("statusPayload keeps codex rows without quota windows visible", () => {
   assert.equal(payload.report_count, 2);
   assert.equal(payload.items[0].account_id, "keep-error");
   assert.equal(payload.items[1].account_id, "keep-me");
+});
+
+test("mergeLatestReport keeps prior good windows when a newer report has n/a windows", () => {
+  const previous = sanitizeReport({
+    source: "codex",
+    hostname: "gpu4",
+    reporter_name: "derek@gpu4",
+    reported_at: "2026-04-21T04:00:00Z",
+    account_id: "acct-1",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 25, remaining_percent: 75, reset_at: "2026-04-21T09:00:00Z" },
+      "1week": { used_percent: 40, remaining_percent: 60, reset_at: "2026-04-27T09:00:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    hostname: "gpu4",
+    reporter_name: "derek@gpu4",
+    reported_at: "2026-04-21T04:15:00Z",
+    account_id: "acct-1",
+    status: "error",
+    error: "missing quota details",
+    windows: { "5h": null, "1week": null },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.reported_at, "2026-04-21T04:15:00Z");
+  assert.equal(merged.error, "missing quota details");
+  assert.equal(merged.windows["5h"].remaining_percent, 75);
+  assert.equal(merged.windows["1week"].remaining_percent, 60);
+});
+
+test("mergeLatestReport accepts newer non-null windows", () => {
+  const previous = sanitizeReport({
+    source: "codex",
+    hostname: "gpu4",
+    reporter_name: "derek@gpu4",
+    reported_at: "2026-04-21T04:00:00Z",
+    account_id: "acct-1",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 25, remaining_percent: 75, reset_at: "2026-04-21T09:00:00Z" },
+      "1week": { used_percent: 40, remaining_percent: 60, reset_at: "2026-04-27T09:00:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    hostname: "gpu4",
+    reporter_name: "derek@gpu4",
+    reported_at: "2026-04-21T04:15:00Z",
+    account_id: "acct-1",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 10, remaining_percent: 90, reset_at: "2026-04-21T10:00:00Z" },
+      "1week": { used_percent: 35, remaining_percent: 65, reset_at: "2026-04-28T10:00:00Z" },
+    },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.reported_at, "2026-04-21T04:15:00Z");
+  assert.equal(merged.windows["5h"].remaining_percent, 90);
+  assert.equal(merged.windows["1week"].remaining_percent, 65);
 });

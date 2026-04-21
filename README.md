@@ -58,7 +58,7 @@ Codex rotation rules:
 The dashboard handles the two sources differently:
 
 - Codex reports real `5H` and `1week` quota windows from archived auth snapshots under `~/.agents/auth/auth-*.json`
-- Codex reports are only posted when both `5H` and `1week` windows are present. If Codex returns an auth that lacks quota details, the reporter skips that auth instead of sending a noisy error row to the hub.
+- The hub keeps the latest report metadata per account, but it does not let a newer `n/a` Codex payload wipe out previously known good `5H` / `1week` windows.
 - Claude reports auth tier and cumulative usage statistics, and now reads Claude Code's official `statusLine` JSON snapshot for `rate_limits` instead of relying on unofficial OAuth usage probing.
 - The included `claude_statusline_probe.py` script can be wired into `~/.claude/settings.json` as a `statusLine` command. It stores the latest `rate_limits` payload under `~/.claude/statusline-rate-limits.json`, which the hourly reporter reads.
 - The Claude reporter still hard-times out the extra `claude auth status` and `claude -p "/status"` commands so one slow local CLI process cannot block the hourly report.
