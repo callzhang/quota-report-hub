@@ -175,6 +175,20 @@ def empty_windows() -> dict:
     return {"5h": None, "1week": None}
 
 
+def summarize_codex_exec_error(stdout: str, stderr: str) -> str:
+    combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part).strip()
+    lowered = combined.lower()
+    if "token_invalidated" in lowered or "your authentication token has been invalidated" in lowered:
+        return "auth invalidated (token_invalidated)"
+    if "401 unauthorized" in lowered:
+        return "auth failed (401 unauthorized)"
+    if "reading additional input from stdin" in lowered:
+        cleaned = combined.replace("Reading additional input from stdin...", "").strip()
+        if cleaned:
+            combined = cleaned
+    return (combined or "codex exec failed")[:240]
+
+
 def probe_codex(auth_path: Path) -> dict:
     metadata = auth_metadata(auth_path)
     checked_at = datetime.now(timezone.utc)
@@ -210,7 +224,7 @@ def probe_codex(auth_path: Path) -> dict:
         return {
             **base,
             "status": "error",
-            "error": (result.stderr.strip() or result.stdout.strip() or "codex exec failed")[:1200],
+            "error": summarize_codex_exec_error(result.stdout, result.stderr),
             "windows": empty_windows(),
         }
 

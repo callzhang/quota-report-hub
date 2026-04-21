@@ -26,6 +26,7 @@ from quota_reporters import (
     probe_claude,
     read_claude_keychain_credentials,
     run_claude_status,
+    summarize_codex_exec_error,
     summarize_claude_stats,
 )  # noqa: E402
 
@@ -74,6 +75,16 @@ class ReporterScriptsTest(unittest.TestCase):
 
         self.assertEqual(windows["5h"]["used_percent"], 10.0)
         self.assertEqual(windows["1week"]["used_percent"], 100.0)
+
+    def test_summarize_codex_exec_error_compacts_invalidated_auth_noise(self):
+        stderr = """
+Reading additional input from stdin...
+2026-04-21T03:10:40.808565Z ERROR codex_models_manager::manager: failed to refresh available models: unexpected status 401 Unauthorized: Your authentication token has been invalidated. Please try signing in again., auth error code: token_invalidated
+"""
+
+        summary = summarize_codex_exec_error("", stderr)
+
+        self.assertEqual(summary, "auth invalidated (token_invalidated)")
 
     def test_summarize_claude_stats_aggregates_totals(self):
         summary = summarize_claude_stats(
