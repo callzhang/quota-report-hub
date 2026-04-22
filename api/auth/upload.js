@@ -1,4 +1,4 @@
-import { authPoolConfigured } from "../../lib/company-auth.js";
+import { authPoolConfigured, bearerTokenFromHeaders } from "../../lib/company-auth.js";
 import { authenticateApiToken, dbConfigured, upsertAuthPoolEntry } from "../../lib/db.js";
 
 function unauthorized(res) {
@@ -15,8 +15,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const provided = req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
-  const authContext = await authenticateApiToken(provided);
+  const authContext = await authenticateApiToken(bearerTokenFromHeaders(req.headers));
   if (!authContext) {
     unauthorized(res);
     return;

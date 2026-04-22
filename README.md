@@ -6,6 +6,12 @@ Minimal Vercel app that stores encrypted Codex auth snapshots, issues per-user a
 
 This project is built for people who regularly switch between multiple coding agents and multiple accounts, and need a shared place to see remaining quota without manually checking each machine.
 
+The default shared hub URL for this project is:
+
+- [quota-report-hub.vercel.app](https://quota-report-hub.vercel.app)
+
+That hub now requires a valid personal access token to read dashboard data. Publishing the repo does not expose the live hub data by itself.
+
 Typical examples:
 
 - You switch between Codex, Claude, and other coding agents throughout the day
@@ -78,6 +84,8 @@ Important runtime notes:
 - Replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions. New auth usually takes effect in the next new session.
 - If the cloud has no better auth than the current one, the guard does nothing and keeps the current auth installed.
 - `~/.agents/auth/quota-reporter.json` should stay private because it contains the user's personal auth-pool token.
+- The hub dashboard also uses the same personal token. Without a valid token, `/api/status` returns `401` and the page stays locked.
+- Every time a user requests a new token by email, the old token is revoked. Only the latest token for that email remains valid, even if that latest token is then reused across multiple machines.
 
 The installer now also configures Claude Code's `statusLine` hook automatically:
 
@@ -112,8 +120,10 @@ Auth pool support:
 
 - The hub can now store encrypted Codex `auth.json` snapshots in a server-side auth pool.
 - Employees request a personal auth-pool token by company email through `/api/auth/issue-token`.
+- Each email can have only one active token at a time; a newly issued token revokes all older tokens for that email.
 - Machines can upload their current Codex auth to `/api/auth/upload`.
 - A client can request the best currently usable Codex auth from `/api/auth/fetch-best`.
+- The dashboard API at `/api/status` also requires the same personal bearer token.
 - The selection logic prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
 - Soft probe failures such as missing quota details can still contribute stale-but-last-known-good windows; hard token invalidations clear the old windows.
 - The auth pool requires server-side encryption plus Mailgun delivery for issuing personal user tokens.

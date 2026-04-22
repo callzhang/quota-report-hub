@@ -35,6 +35,8 @@ You need:
 - the shared auth-pool URL, for example `https://quota-report-hub.vercel.app`
 - a personal auth-pool user token issued by company email
 
+That same personal token is also used to unlock the hosted dashboard.
+
 ## Standard flow
 
 ### Install the 15-minute guard
@@ -55,6 +57,12 @@ The installer:
 - writes the local config file under `~/.agents/auth/quota-reporter.json`
 - installs the 15-minute scheduler
 - writes Claude Code `statusLine` settings to `~/.claude/settings.json`
+
+Token rules:
+
+- only the latest token for an email remains valid
+- requesting a new token revokes the old one
+- the latest token can still be reused on multiple machines
 
 After install, each machine needs one real interactive Claude request to seed the first quota snapshot. Until that happens, macOS Claude reports are skipped instead of sending `n/a`.
 

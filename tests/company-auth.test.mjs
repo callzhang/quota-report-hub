@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { companyEmailAllowed, normalizeEmail } from "../lib/company-auth.js";
+import { bearerTokenFromHeaders, companyEmailAllowed, normalizeEmail } from "../lib/company-auth.js";
 
 test("normalizeEmail trims and lowercases", () => {
   assert.equal(normalizeEmail(" Derek@Stardust.ai "), "derek@stardust.ai");
@@ -25,4 +25,19 @@ test("companyEmailAllowed respects AUTH_ALLOWED_EMAIL_DOMAIN override", () => {
       process.env.AUTH_ALLOWED_EMAIL_DOMAIN = previous;
     }
   }
+});
+
+test("bearerTokenFromHeaders extracts bearer token case-insensitively", () => {
+  assert.equal(
+    bearerTokenFromHeaders({ authorization: "Bearer qrp_example" }),
+    "qrp_example"
+  );
+  assert.equal(
+    bearerTokenFromHeaders({ Authorization: "bearer qrp_other" }),
+    "qrp_other"
+  );
+  assert.equal(
+    bearerTokenFromHeaders({}),
+    ""
+  );
 });

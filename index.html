@@ -84,6 +84,44 @@
         padding: 20px;
       }
 
+      .auth-panel {
+        display: grid;
+        gap: 12px;
+      }
+
+      .auth-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .auth-input {
+        width: min(680px, 100%);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 12px 14px;
+        font: inherit;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.82);
+      }
+
+      .button {
+        appearance: none;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 10px 16px;
+        font: inherit;
+        cursor: pointer;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.85);
+      }
+
+      .button.primary {
+        color: #fff8f0;
+        background: var(--accent);
+        border-color: transparent;
+      }
+
       .table-shell {
         overflow-x: auto;
         border-radius: 18px;
@@ -235,6 +273,17 @@
         <div class="cards" id="cards"></div>
       </section>
 
+      <section class="panel section auth-panel" id="auth-panel">
+        <h2>Access Token</h2>
+        <div class="meta">Enter your personal access token from the email sent by the hub. Only the latest token for your email remains valid.</div>
+        <input id="token-input" class="auth-input" type="password" placeholder="qrp_..." autocomplete="off" />
+        <div class="auth-actions">
+          <button id="save-token" class="button primary">Unlock Hub</button>
+          <button id="clear-token" class="button">Clear Token</button>
+        </div>
+        <div class="meta wrap" id="auth-message"></div>
+      </section>
+
       <section class="panel section">
         <h2>Latest Accounts</h2>
         <div class="table-shell">
@@ -262,6 +311,24 @@
       const cards = document.getElementById("cards");
       const rows = document.getElementById("rows");
       const empty = document.getElementById("empty");
+      const authPanel = document.getElementById("auth-panel");
+      const tokenInput = document.getElementById("token-input");
+      const saveTokenButton = document.getElementById("save-token");
+      const clearTokenButton = document.getElementById("clear-token");
+      const authMessage = document.getElementById("auth-message");
+      const STORAGE_KEY = "quota-report-hub-token";
+
+      function getStoredToken() {
+        return window.localStorage.getItem(STORAGE_KEY) || "";
+      }
+
+      function setStoredToken(token) {
+        if (token) window.localStorage.setItem(STORAGE_KEY, token);
+      }
+
+      function clearStoredToken() {
+        window.localStorage.removeItem(STORAGE_KEY);
+      }
 
       function formatPercent(value) {
         return `${Number(value).toFixed(1)}%`;
@@ -378,8 +445,34 @@
       }
 
       async function load() {
-        const response = await fetch("/api/status", { cache: "no-store" });
+        const token = getStoredToken();
+        if (!token) {
+          authMessage.textContent = "Token required.";
+          summary.textContent = "Locked";
+          cards.innerHTML = "";
+          rows.innerHTML = "";
+          empty.hidden = true;
+          return;
+        }
+
+        const response = await fetch("/api/status", {
+          cache: "no-store",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+
+        if (response.status === 401) {
+          authMessage.textContent = "Token invalid or expired. Request a new token by email and paste the latest one here.";
+          summary.textContent = "Locked";
+          cards.innerHTML = "";
+          rows.innerHTML = "";
+          empty.hidden = true;
+          return;
+        }
+
         const payload = await response.json();
+        authMessage.textContent = "Access granted.";
         const items = (payload.items || []).sort((a, b) => (b.reported_at || "").localeCompare(a.reported_at || ""));
         summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active accounts: ${payload.report_count || 0}`;
         cards.innerHTML = [
@@ -402,6 +495,27 @@
 
         empty.hidden = items.length !== 0;
       }
+
+      tokenInput.value = getStoredToken();
+      saveTokenButton.addEventListener("click", async () => {
+        const token = tokenInput.value.trim();
+        if (!token) {
+          authMessage.textContent = "Enter a token first.";
+          return;
+        }
+        setStoredToken(token);
+        await load();
+      });
+
+      clearTokenButton.addEventListener("click", () => {
+        clearStoredToken();
+        tokenInput.value = "";
+        authMessage.textContent = "Token cleared.";
+        summary.textContent = "Locked";
+        cards.innerHTML = "";
+        rows.innerHTML = "";
+        empty.hidden = true;
+      });
 
       load();
       setInterval(load, 60000);

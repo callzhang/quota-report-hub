@@ -100,6 +100,10 @@ Company access is based on:
 - company email suffix whitelist
 - Mailgun-delivered personal API tokens
 
+The default hosted hub for the project is:
+
+- `https://quota-report-hub.vercel.app`
+
 Instead of using one shared `AUTH_POOL_TOKEN` for all employees, the system issues a separate personal token per user.
 
 This matches the real operating mode:
@@ -122,7 +126,8 @@ Personal tokens improve this:
 
 - every upload is associated with an employee email
 - every fetch request is attributable to one user
-- a token can be reissued or revoked per user later
+- the hub dashboard can require the same token for read access
+- reissuing a token revokes the old one immediately
 
 ### Why Email Delivery
 
@@ -140,6 +145,8 @@ Instead:
 6. the real mailbox owner pastes the token back into Codex
 
 This proves mailbox control without adding a browser login dependency.
+
+Only the latest token for an email is valid. A user can reuse that latest token on multiple machines, but asking for a new token revokes the previous one everywhere.
 
 ## Server-Side API Design
 
@@ -184,6 +191,12 @@ This proves mailbox control without adding a browser login dependency.
   - excludes accounts with `5H <= 0` or `1week <= 0`
   - ranks by highest `5H remaining`, then highest `1week remaining`
   - returns the decrypted best auth plus the latest report metadata
+
+- `GET /api/status`
+  auth:
+  - personal bearer token
+  behavior:
+  - returns dashboard data only to authenticated users
 
 ## Local Skill Flow
 
