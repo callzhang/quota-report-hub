@@ -1,6 +1,6 @@
 import { bearerTokenFromHeaders } from "../lib/company-auth.js";
-import { authenticateApiToken, dbConfigured, latestReports } from "../lib/db.js";
-import { statusPayload } from "../lib/reports.js";
+import { authPoolEntries, authenticateApiToken, dbConfigured, latestReports } from "../lib/db.js";
+import { authPoolStatusPayload } from "../lib/reports.js";
 
 function unauthorized(res) {
   res.statusCode = 401;
@@ -18,11 +18,11 @@ export default async function handler(req, res) {
   if (!dbConfigured()) {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(statusPayload([])));
+    res.end(JSON.stringify(authPoolStatusPayload([], [])));
     return;
   }
-  const rows = await latestReports();
-  const dataset = statusPayload(rows);
+  const [entries, reports] = await Promise.all([authPoolEntries(), latestReports()]);
+  const dataset = authPoolStatusPayload(entries, reports);
   dataset.viewer_email = authContext.email;
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");

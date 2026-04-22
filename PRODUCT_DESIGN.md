@@ -71,6 +71,7 @@ The auth pool is now the primary product surface:
 
 - auth pool answers “which auth file can be handed back to a machine”
 - dashboard should answer “what does the current cloud auth pool look like”
+- dashboard rows should be cloud auth entries, not raw client report rows
 
 ### Company Auth
 

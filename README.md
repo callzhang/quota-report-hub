@@ -16,7 +16,7 @@ Typical examples:
 
 - You switch between multiple Codex accounts across laptops, desktops, and servers
 - You keep separate accounts on different laptops, desktops, or remote boxes
-- You want one dashboard that shows the current cloud auth pool and its latest known Codex quota metadata
+- You want one dashboard that shows the current cloud auth pool and the latest known Codex quota attached to each cloud auth entry
 - You want each machine to check quota automatically every 15 minutes instead of checking manually before switching agents
 - You want reporting to resume automatically after a laptop reboot or a remote server restart
 
@@ -99,7 +99,7 @@ Important runtime notes:
 - every time a user requests a new token by email, the old token is revoked. Only the latest token for that email remains valid, even if that latest token is then reused across multiple machines.
 - old local reporter scripts now live under `skills/quota-reporter/archive/`
 
-The dashboard is now intended to reflect the cloud auth pool, not arbitrary client report rows:
+The dashboard now reflects the cloud auth pool, not arbitrary client report rows:
 
 - each visible row should correspond to one cloud-stored Codex auth entry
 - quota metadata is shown as the latest known Codex quota associated with that cloud auth entry

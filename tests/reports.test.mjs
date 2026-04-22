@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mergeLatestReport, sanitizeReport, statusPayload } from "../lib/reports.js";
+import { authPoolStatusPayload, mergeLatestReport, sanitizeReport, statusPayload } from "../lib/reports.js";
 
 test("sanitizeReport normalizes the quota payload", () => {
   const sanitized = sanitizeReport({
@@ -226,4 +226,49 @@ test("mergeLatestReport clears old windows on hard auth invalidation", () => {
   assert.equal(merged.windows_stale, false);
   assert.equal(merged.windows["5h"], null);
   assert.equal(merged.windows["1week"], null);
+});
+
+test("authPoolStatusPayload only includes cloud auth pool entries", () => {
+  const payload = authPoolStatusPayload(
+    [
+      {
+        source: "codex",
+        account_id: "acct-1",
+        email: "a@example.com",
+        plan_name: "Pro",
+        digest: "digest-1",
+        auth_last_refresh: "2026-04-22T09:00:00Z",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "derek@gpu4",
+        hostname: "gpu4",
+        uploaded_at: "2026-04-22T10:00:00Z",
+      },
+    ],
+    [
+      {
+        source: "codex",
+        account_id: "acct-1",
+        status: "ok",
+        reported_at: "2026-04-22T10:30:00Z",
+        windows: {
+          "5h": { remaining_percent: 80, reset_at: "2026-04-22T15:00:00Z" },
+          "1week": { remaining_percent: 60, reset_at: "2026-04-28T15:00:00Z" },
+        },
+      },
+      {
+        source: "claude",
+        account_id: "claude-x",
+        status: "ok",
+        reported_at: "2026-04-22T10:40:00Z",
+      },
+    ],
+    "2026-04-22T11:00:00Z"
+  );
+
+  assert.equal(payload.auth_pool_count, 1);
+  assert.equal(payload.report_count, 1);
+  assert.equal(payload.items[0].account_id, "acct-1");
+  assert.equal(payload.items[0].email, "a@example.com");
+  assert.equal(payload.items[0].uploader_email, "derek@stardust.ai");
+  assert.equal(payload.items[0].windows["5h"].remaining_percent, 80);
 });

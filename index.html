@@ -287,10 +287,10 @@
     <main>
       <section class="hero">
         <div class="hero-top">
-          <div class="meta">Shared account-level quota intake for archived Codex auth snapshots and Claude reporters</div>
+          <div class="meta">Shared cloud auth pool for Codex accounts and their latest known quota</div>
           <div id="viewer-chip" class="viewer-chip" hidden></div>
         </div>
-        <h1>Quota Report Hub</h1>
+        <h1>Cloud Auth Pool</h1>
         <div class="meta" id="summary">Loading...</div>
         <div class="cards" id="cards"></div>
       </section>
@@ -307,18 +307,18 @@
       </section>
 
       <section class="panel section">
-        <h2>Latest Accounts</h2>
+        <h2>Cloud Auth Entries</h2>
         <div class="table-shell">
           <table>
             <thead>
               <tr>
                 <th>Source</th>
-                <th>Reporter</th>
+                <th>Uploaded By</th>
                 <th>Account</th>
                 <th>5H</th>
                 <th>1week</th>
-                <th>Usage</th>
-                <th>Reported At</th>
+                <th>Cloud Info</th>
+                <th>Known Quota At</th>
               </tr>
             </thead>
             <tbody id="rows"></tbody>
@@ -442,45 +442,19 @@
         return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value));
       }
 
-      function quotaWindowFallback(item) {
-        const probe = item.usage_summary?.rate_limit_probe || {};
-        if (item.source === "claude" && probe.status_code === 429) {
-          return `<div class="meta">rate limited</div>`;
-        }
-        if (item.source === "claude" && probe.api_error) {
-          return `<div class="meta wrap">${probe.api_error}</div>`;
-        }
+      function quotaWindowFallback() {
         return `<div class="meta">n/a</div>`;
       }
 
       function usageCell(item) {
-        if (item.source === "claude") {
-          const usage = item.usage_summary || {};
-          const stats = usage.stats || {};
-          const quotaStatus = usage.quota_status || {};
-          const probe = usage.rate_limit_probe || {};
-          const quotaLine = quotaStatus.available
-            ? `quota ${quotaStatus.text || "available"}`
-            : `quota ${quotaStatus.text || "unavailable"}`;
-          const probeLine = probe.status_code === 429
-            ? "usage probe rate limited"
-            : (probe.api_error ? `usage probe ${probe.api_error}` : null);
-          return `
-            <div class="usage-block">
-              <div>${usage.rate_limit_tier || item.plan_name || "unknown tier"}</div>
-              <div class="meta wrap">${quotaLine}</div>
-              ${probeLine ? `<div class="meta wrap">${probeLine}</div>` : ""}
-              <div class="meta">sessions ${stats.total_sessions ?? "n/a"} · messages ${stats.total_messages ?? "n/a"}</div>
-              <div class="meta">tokens ${formatCompactNumber(stats.total_input_tokens)} in · ${formatCompactNumber(stats.total_output_tokens)} out</div>
-            </div>
-          `;
-        }
-
-        if (item.model_context_window) {
-          return `<div class="usage-block"><div>context ${formatCompactNumber(item.model_context_window)}</div></div>`;
-        }
-
-        return `<div class="meta">n/a</div>`;
+        return `
+          <div class="usage-block">
+            <div>${item.plan_name || "unknown plan"}</div>
+            <div class="meta wrap">digest ${item.digest ? item.digest.slice(0, 12) : "n/a"}</div>
+            <div class="meta wrap">uploaded ${formatDate(item.uploaded_at)}</div>
+            <div class="meta wrap">refresh ${item.auth_last_refresh || "unknown"}</div>
+          </div>
+        `;
       }
 
       function sourceTag(value) {
@@ -519,23 +493,23 @@
 
         const payload = await response.json();
         setAuthenticatedView(payload.viewer_email || "unknown");
-        const items = (payload.items || []).sort((a, b) => (b.reported_at || "").localeCompare(a.reported_at || ""));
-        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active accounts: ${payload.report_count || 0}`;
+        const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
+        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Cloud auth entries: ${payload.auth_pool_count || 0}`;
         cards.innerHTML = [
-          `<article class="card"><div class="meta">Active accounts</div><strong>${payload.report_count || 0}</strong><div class="meta">Latest one per source/account</div></article>`,
-          `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Codex and Claude reporters</div></article>`,
-          `<article class="card"><div class="meta">Latest report</div><strong>${items[0]?.email || items[0]?.reporter_name || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.reported_at)}</div></article>`
+          `<article class="card"><div class="meta">Cloud auth entries</div><strong>${payload.auth_pool_count || 0}</strong><div class="meta">One latest encrypted auth per account</div></article>`,
+          `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Cloud auth pool sources</div></article>`,
+          `<article class="card"><div class="meta">Latest upload</div><strong>${items[0]?.email || items[0]?.uploader_email || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.uploaded_at)}</div></article>`
         ].join("");
 
         rows.innerHTML = items.map((item) => `
           <tr>
             <td>${sourceTag(item.source)}</td>
-            <td><div class="wrap">${item.reporter_name}</div><div class="mono wrap">${item.hostname}</div></td>
+            <td><div class="wrap">${item.uploader_email || item.reporter_name || "-"}</div><div class="mono wrap">${item.hostname || ""}</div></td>
             <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div></td>
             <td>${item.windows?.["5h"] ? progressCell(item.windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${item.windows?.["1week"] ? progressCell(item.windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${usageCell(item)}</td>
-            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="meta wrap">${item.error || ""}</div><div class="mono wrap">${item.auth_path || ""}</div></td>
+            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="meta wrap">${item.error || ""}</div><div class="mono wrap">${item.account_id || ""}</div></td>
           </tr>
         `).join("");
 
