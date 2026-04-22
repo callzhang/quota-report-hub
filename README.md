@@ -40,6 +40,44 @@ After install, teammates can either:
 - run one local guard check with `quota_guard.py`
 - install scheduled checking with `install_quota_guard.py`
 
+## Recommended User Flow
+
+The intended end-to-end flow inside Codex is:
+
+1. The user asks Codex to install the skill and provides the GitHub repo URL.
+2. Codex installs the `quota-reporter` skill.
+3. Codex asks whether to:
+   - use an existing hub URL
+   - or deploy a new hub on Vercel
+4. If the user wants a new hub, Codex runs `scripts/deploy_vercel.py` with:
+   - `allowed domain`
+   - `mailgun api key`
+   - `sending email`
+5. If the user provides an existing hub URL, Codex should verify that the hub supports:
+   - `POST /api/auth/issue-token`
+   - `POST /api/auth/upload`
+   - `POST /api/auth/fetch-best`
+6. Codex asks for the user's company email.
+7. The installer requests a personal token by email and asks the user to paste it back into the terminal.
+8. Codex writes:
+   - `auth_pool_url`
+   - `auth_pool_user_email`
+   - `auth_pool_user_token`
+   into `~/.agents/auth/quota-reporter.json`
+9. Codex installs the 15-minute scheduler.
+10. Every 15 minutes the guard:
+   - archives current `~/.codex/auth.json`
+   - syncs latest archived auth snapshots to the auth pool
+   - checks local Codex and Claude quota
+   - fetches and installs a better Codex auth when local quota is low
+
+Important runtime notes:
+
+- Claude quota requires one real interactive Claude request after install. Until that happens, the statusline snapshot may not contain `5h` or `1week`.
+- Replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions. New auth usually takes effect in the next new session.
+- If the cloud has no better auth than the current one, the guard does nothing and keeps the current auth installed.
+- `~/.agents/auth/quota-reporter.json` should stay private because it contains the user's personal auth-pool token.
+
 The installer now also configures Claude Code's `statusLine` hook automatically:
 
 - it writes `statusLine.command = python3 .../claude_statusline_probe.py` into `~/.claude/settings.json`

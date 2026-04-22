@@ -193,12 +193,17 @@ The intended Codex interaction is:
 
 1. user asks Codex to install the skill
 2. Codex installs local scripts
-3. Codex asks the user for company email
-4. Codex runs `request_auth_pool_token.py`
-5. server emails a personal token to the mailbox
-6. user pastes the token back into Codex
-7. Codex writes the token into local config
-8. Codex installs or updates the 15-minute scheduler
+3. Codex asks whether the user wants to:
+   - use an existing hub URL
+   - or deploy a new hub
+4. if the user wants a new hub, Codex runs `scripts/deploy_vercel.py`
+5. if the user provides an existing hub URL, Codex verifies the auth-pool APIs exist
+6. Codex asks the user for company email
+7. Codex runs `install_quota_guard.py`
+8. server emails a personal token to the mailbox
+9. user pastes the token back into Codex
+10. Codex writes the token into local config
+11. Codex installs or updates the 15-minute scheduler
 
 ### Local Config
 
@@ -208,24 +213,25 @@ The local config file is:
 
 It may contain:
 
-- `server_url`
-- `ingest_token`
 - `auth_pool_url`
+- `auth_pool_user_email`
 - `auth_pool_user_token`
 
 ### Ongoing Machine Behavior
 
-After setup, the local machine does three jobs:
+After setup, the local machine does four jobs:
 
 1. archive the current `~/.codex/auth.json`
 2. upload the latest archived auth snapshots to the shared auth pool
-3. continue reporting dashboard status if dashboard visibility is desired
+3. probe local Codex and Claude quota
+4. fetch and install a better Codex auth when local quota is low
 
-Separately, the machine can run:
+Additional operational constraints:
 
-- `fetch_best_codex_auth.py`
-
-to replace local `~/.codex/auth.json` with the best cloud-selected auth.
+- Claude quota is only available after at least one real interactive Claude request on that machine after the statusline hook is installed.
+- Replacing `~/.codex/auth.json` does not retroactively update already running Codex sessions; new sessions pick up the new auth.
+- If the cloud has no better auth than the currently installed one, the machine does nothing.
+- The local config file must remain private because it stores a personal bearer token.
 
 ## Rotation Logic
 

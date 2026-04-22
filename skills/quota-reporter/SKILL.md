@@ -59,6 +59,13 @@ The installer:
 
 After install, each machine needs one real interactive Claude request to seed the first quota snapshot. Until that happens, macOS Claude reports are skipped instead of sending `n/a`.
 
+If the user is not already using a compatible hub, the correct order is:
+
+1. either deploy a new hub with `scripts/deploy_vercel.py` or confirm an existing hub already supports the auth-pool APIs
+2. then run `install_quota_guard.py`
+3. then paste the emailed token
+4. then let the scheduled guard handle the rest
+
 ### Run one manual check
 
 ```bash
@@ -74,6 +81,13 @@ The guard then:
 - if local Codex is below `20%` in `5H` or has `1week = 0`, fetches a better Codex auth from the cloud
 - if local Claude is below `20%` in `5H` or has `1week = 0`, also fetches a better Codex auth from the cloud
 - only replaces local `~/.codex/auth.json` when the fetched auth is different from what is already installed
+- does nothing when the cloud cannot provide a better auth than the current one
+
+Operational notes:
+
+- replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions
+- the next new Codex session is the one that should pick up the new auth
+- the local config file contains a personal token and should stay private
 
 ## Output expectations
 
