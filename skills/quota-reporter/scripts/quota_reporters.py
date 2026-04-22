@@ -646,9 +646,16 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
 
 
 def load_config(args: argparse.Namespace) -> dict:
-    if getattr(args, "server_url", None) and getattr(args, "ingest_token", None):
-        return {"server_url": args.server_url, "ingest_token": args.ingest_token}
-    return read_json(CONFIG_PATH)
+    config = read_json(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    if getattr(args, "server_url", None):
+        config["server_url"] = args.server_url
+    if getattr(args, "ingest_token", None):
+        config["ingest_token"] = args.ingest_token
+    if getattr(args, "auth_pool_url", None):
+        config["auth_pool_url"] = args.auth_pool_url
+    if getattr(args, "auth_pool_token", None):
+        config["auth_pool_token"] = args.auth_pool_token
+    return config
 
 
 def post_report(server_url: str, ingest_token: str, payload: dict) -> dict:
@@ -659,6 +666,49 @@ def post_report(server_url: str, ingest_token: str, payload: dict) -> dict:
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {ingest_token}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def post_auth_pool_entry(auth_pool_url: str, auth_pool_token: str, auth_path: Path) -> dict:
+    body = json.dumps(
+        {
+            "auth_json": auth_path.read_text(encoding="utf-8"),
+            "reporter_name": reporter_name(),
+            "hostname": socket.gethostname(),
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        auth_pool_url.rstrip("/") + "/api/auth/upload",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {auth_pool_token}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def sync_codex_auth_pool(auth_pool_url: str, auth_pool_token: str, archive_dir: Path = ARCHIVE_DIR) -> list[dict]:
+    results = []
+    for auth_path in latest_codex_snapshots_by_account(archive_dir=archive_dir):
+        results.append(post_auth_pool_entry(auth_pool_url, auth_pool_token, auth_path))
+    return results
+
+
+def fetch_best_auth(auth_pool_url: str, auth_pool_token: str, exclude_account_ids: list[str] | None = None) -> dict:
+    body = json.dumps({"exclude_account_ids": exclude_account_ids or []}).encode("utf-8")
+    request = urllib.request.Request(
+        auth_pool_url.rstrip("/") + "/api/auth/fetch-best",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {auth_pool_token}",
         },
         method="POST",
     )

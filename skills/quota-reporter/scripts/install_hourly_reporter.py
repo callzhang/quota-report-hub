@@ -24,17 +24,23 @@ CRON_MARKER = "# quota-reporter-managed"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 
-def write_config(server_url: str, ingest_token: str) -> None:
+def write_config(
+    server_url: str,
+    ingest_token: str,
+    auth_pool_url: str | None = None,
+    auth_pool_token: str | None = None,
+) -> None:
+    payload = {
+        "server_url": server_url,
+        "ingest_token": ingest_token,
+    }
+    if auth_pool_url and auth_pool_token:
+        payload["auth_pool_url"] = auth_pool_url
+        payload["auth_pool_token"] = auth_pool_token
+
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     CONFIG_PATH.write_text(
-        json.dumps(
-            {
-                "server_url": server_url,
-                "ingest_token": ingest_token,
-            },
-            indent=2,
-        )
-        + "\n",
+        json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",
     )
 
@@ -122,6 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install quota reporting that survives reboot on macOS or Linux.")
     parser.add_argument("--server-url", required=True)
     parser.add_argument("--ingest-token", required=True)
+    parser.add_argument("--auth-pool-url")
+    parser.add_argument("--auth-pool-token")
     parser.add_argument("--python-path", default=sys.executable)
     return parser
 
@@ -130,7 +138,7 @@ def main() -> None:
     args = build_parser().parse_args()
     reporter_script = Path(__file__).with_name("report_all_usage.py")
     skill_scripts_dir = Path(__file__).resolve().parent
-    write_config(args.server_url, args.ingest_token)
+    write_config(args.server_url, args.ingest_token, args.auth_pool_url, args.auth_pool_token)
     statusline_config = configure_claude_statusline(args.python_path, skill_scripts_dir)
     system = platform.system()
 

@@ -18,6 +18,7 @@ from quota_reporters import (
     probe_archived_codex_accounts,
     probe_codex,
     probe_claude,
+    sync_codex_auth_pool,
 )
 
 def codex_remaining_percent(payload: dict, window_key: str) -> float:
@@ -99,6 +100,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Report all available local agent usage sources to a shared dashboard.")
     parser.add_argument("--server-url")
     parser.add_argument("--ingest-token")
+    parser.add_argument("--auth-pool-url")
+    parser.add_argument("--auth-pool-token")
     parser.add_argument("--codex-auth-path", type=Path, default=SOURCE_AUTH_PATH)
     parser.add_argument("--archive-dir", type=Path, default=ARCHIVE_DIR)
     parser.add_argument("--claude-home", type=Path, default=CLAUDE_HOME)
@@ -125,11 +128,13 @@ def collect_reports(args: argparse.Namespace) -> list[dict]:
 def main() -> None:
     args = build_parser().parse_args()
     payloads = collect_reports(args)
+    config = load_config(args)
     if args.print_payload:
         print(json.dumps(payloads, ensure_ascii=False, indent=2))
         return
 
-    config = load_config(args)
+    if config.get("auth_pool_url") and config.get("auth_pool_token"):
+        sync_codex_auth_pool(config["auth_pool_url"], config["auth_pool_token"], archive_dir=args.archive_dir)
     results = [post_report(config["server_url"], config["ingest_token"], payload) for payload in payloads]
     print(json.dumps(results, ensure_ascii=False, indent=2))
 

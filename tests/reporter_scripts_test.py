@@ -580,6 +580,24 @@ Reading additional input from stdin...
         self.assertTrue(lines[1].startswith("*/15 * * * * /usr/bin/python3 /tmp/report_all_usage.py >> "))
         self.assertTrue(lines[1].endswith(" # quota-reporter-managed"))
 
+    def test_write_config_persists_auth_pool_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "quota-reporter.json"
+
+            with mock.patch.object(install_hourly_reporter, "CONFIG_PATH", config_path):
+                install_hourly_reporter.write_config(
+                    "https://quota-report-hub.vercel.app",
+                    "report-token",
+                    "https://quota-report-hub.vercel.app",
+                    "auth-pool-token",
+                )
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["server_url"], "https://quota-report-hub.vercel.app")
+            self.assertEqual(saved["ingest_token"], "report-token")
+            self.assertEqual(saved["auth_pool_url"], "https://quota-report-hub.vercel.app")
+            self.assertEqual(saved["auth_pool_token"], "auth-pool-token")
+
 
 if __name__ == "__main__":
     unittest.main()
