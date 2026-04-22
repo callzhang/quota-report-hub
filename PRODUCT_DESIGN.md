@@ -21,7 +21,7 @@ The product has two layers:
 - `quota-report-hub`
   the Vercel + Turso service that stores reports, renders the dashboard, stores encrypted auth snapshots, and issues per-user auth-pool tokens
 - `quota-reporter`
-  the local skill and scripts that run on each machine, archive `auth.json`, report usage, upload auth snapshots to the hub, and fetch a better auth when needed
+  the local skill and scripts that run on each machine, track the current `auth.json`, upload it to the hub when it changes, and fetch a better auth when needed
 
 ## Problem Statement
 
@@ -221,8 +221,8 @@ It may contain:
 
 After setup, the local machine does four jobs:
 
-1. archive the current `~/.codex/auth.json`
-2. upload the latest archived auth snapshots to the shared auth pool
+1. track the current `~/.codex/auth.json` in `~/.agents/auth/known_auth.json`
+2. upload the current auth to the shared auth pool only when its digest is new
 3. probe local Codex and Claude quota
 4. fetch and install a better Codex auth when local quota is low
 
@@ -232,6 +232,7 @@ Additional operational constraints:
 - Replacing `~/.codex/auth.json` does not retroactively update already running Codex sessions; new sessions pick up the new auth.
 - If the cloud has no better auth than the currently installed one, the machine does nothing.
 - The local config file must remain private because it stores a personal bearer token.
+- The local machine does not keep a rolling archive of auth snapshots anymore; the cloud auth pool is the durable store.
 
 ## Rotation Logic
 
@@ -263,6 +264,17 @@ Cloud fetch selection is simpler:
 - pick highest `5H`, then highest `1week`
 
 This is intentional because cloud selection is not comparing against one specific local account yet; it is just returning the best known usable auth.
+
+### Cloud Deduplication Rule
+
+The cloud auth pool deduplicates by stable identity, not raw file bytes:
+
+- primary identity is `source + account_id`
+- if a new upload arrives for the same account but does not have a newer `auth_last_refresh`, it is treated as a duplicate and ignored
+- this holds even if the file digest differs
+- only a strictly newer refresh replaces the current stored auth for that account
+
+This prevents multiple computers from thrashing the same account entry when they upload equivalent auth files with machine-specific differences.
 
 ## Security Design
 

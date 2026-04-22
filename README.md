@@ -66,8 +66,9 @@ The intended end-to-end flow inside Codex is:
    into `~/.agents/auth/quota-reporter.json`
 9. Codex installs the 15-minute scheduler.
 10. Every 15 minutes the guard:
-   - archives current `~/.codex/auth.json`
-   - syncs latest archived auth snapshots to the auth pool
+   - reads current `~/.codex/auth.json`
+   - updates local `~/.agents/auth/known_auth.json`
+   - uploads current auth to the auth pool only when the current digest is new
    - checks local Codex and Claude quota
    - fetches and installs a better Codex auth when local quota is low
 
@@ -87,17 +88,19 @@ The installer now also configures Claude Code's `statusLine` hook automatically:
 
 Codex and Claude local-guard rules:
 
-- each run archives the current live `~/.codex/auth.json`
+- each run reads the current live `~/.codex/auth.json`
+- each machine stores only one local state file: `~/.agents/auth/known_auth.json`
 - it probes the current local Codex auth and current local Claude statusline snapshot
 - if Codex has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine asks the cloud auth pool for a better Codex auth
 - if Claude has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine also asks the cloud auth pool for a better Codex auth
 - the server-side auth pool picks the best usable Codex auth by `5H remaining` first, then `1week remaining`
+- local upload is skipped when `known_auth.json` already records the same uploaded digest
 - the guard only replaces local `~/.codex/auth.json` when the fetched auth is different from the currently installed auth
 - old local reporter scripts now live under `skills/quota-reporter/archive/`
 
 The dashboard handles the two sources differently:
 
-- Codex reports real `5H` and `1week` quota windows from archived auth snapshots under `~/.agents/auth/auth-*.json`
+- Codex reports real `5H` and `1week` quota windows from the current local `~/.codex/auth.json`
 - The hub keeps the latest report metadata per account. Soft Codex probe failures such as missing quota details keep the last good windows and mark them as stale, while hard auth failures such as token invalidation clear the old windows immediately.
 - Claude reports auth tier and cumulative usage statistics, and now reads Claude Code's official `statusLine` JSON snapshot for `rate_limits` instead of relying on unofficial OAuth usage probing.
 - The included `claude_statusline_probe.py` script is wired into `~/.claude/settings.json` as a `statusLine` command. It stores the latest `rate_limits` payload under `~/.claude/statusline-rate-limits.json`, which the local guard reads.
@@ -109,11 +112,12 @@ Auth pool support:
 
 - The hub can now store encrypted Codex `auth.json` snapshots in a server-side auth pool.
 - Employees request a personal auth-pool token by company email through `/api/auth/issue-token`.
-- Machines can upload their latest archived Codex auth snapshots to `/api/auth/upload`.
+- Machines can upload their current Codex auth to `/api/auth/upload`.
 - A client can request the best currently usable Codex auth from `/api/auth/fetch-best`.
 - The selection logic prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
 - Soft probe failures such as missing quota details can still contribute stale-but-last-known-good windows; hard token invalidations clear the old windows.
 - The auth pool requires server-side encryption plus Mailgun delivery for issuing personal user tokens.
+- The auth pool deduplicates by stable `account_id`, and only replaces an existing entry when the incoming `auth_last_refresh` is newer. If two machines upload different files for the same account without a newer refresh time, the cloud keeps the existing entry.
 
 The installer is reboot-safe and runs every 15 minutes:
 
@@ -190,8 +194,8 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 
 4. The guard automatically:
 
-- archives the current local Codex auth
-- uploads the latest archived Codex auth snapshots to the cloud auth pool
+- updates local `known_auth.json`
+- uploads the current local Codex auth to the cloud auth pool only when needed
 - probes local Codex and Claude quota
 - fetches a better Codex auth from `/api/auth/fetch-best` when local quota is low
 
@@ -210,7 +214,6 @@ python3 skills/quota-reporter/scripts/fetch_best_codex_auth.py \
 python3 skills/quota-reporter/scripts/fetch_best_codex_auth.py \
   --auth-pool-url https://quota-report-hub.vercel.app \
   --auth-pool-user-token YOUR_PERSONAL_TOKEN \
-  --archive-current
 ```
 
 ## Local test

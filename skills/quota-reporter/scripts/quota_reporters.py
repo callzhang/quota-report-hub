@@ -20,7 +20,9 @@ from pathlib import Path
 
 
 CONFIG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.json"
-ARCHIVE_DIR = Path.home() / ".agents" / "auth"
+AUTH_STATE_DIR = Path.home() / ".agents" / "auth"
+ARCHIVE_DIR = AUTH_STATE_DIR
+KNOWN_AUTH_PATH = AUTH_STATE_DIR / "known_auth.json"
 SOURCE_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 CLAUDE_HOME = Path.home() / ".claude"
 CLAUDE_STATUSLINE_SNAPSHOT_PATH = "statusline-rate-limits.json"
@@ -98,42 +100,38 @@ def auth_metadata(path: Path) -> dict:
         "last_refresh_sort_key": last_refresh or "",
     }
 
-
-def auth_snapshot_name(metadata: dict) -> str:
-    return f"auth-{metadata['account_id']}-{metadata['digest'][:12]}.json"
-
-
-def archive_current_codex_auth(source_auth_path: Path = SOURCE_AUTH_PATH, archive_dir: Path = ARCHIVE_DIR) -> Path | None:
-    if not source_auth_path.exists():
+def read_known_auth_state(path: Path = KNOWN_AUTH_PATH) -> dict | None:
+    if not path.exists():
         return None
-    metadata = auth_metadata(source_auth_path)
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_path = archive_dir / auth_snapshot_name(metadata)
-    if not snapshot_path.exists():
-        shutil.copy2(source_auth_path, snapshot_path)
-    return snapshot_path
+    return read_json(path)
 
 
-def codex_archive_files(archive_dir: Path = ARCHIVE_DIR) -> list[Path]:
-    if not archive_dir.exists():
-        return []
-    return sorted(archive_dir.glob("auth-*.json"))
-
-
-def latest_codex_snapshots_by_account(archive_dir: Path = ARCHIVE_DIR) -> list[Path]:
-    latest: dict[str, tuple[tuple[str, int, str], Path]] = {}
-    for path in codex_archive_files(archive_dir):
-        metadata = auth_metadata(path)
-        key = metadata["account_id"]
-        sort_key = (
-            metadata["last_refresh_sort_key"],
-            path.stat().st_mtime_ns,
-            metadata["digest"],
-        )
-        current = latest.get(key)
-        if current is None or sort_key > current[0]:
-            latest[key] = (sort_key, path)
-    return [entry[1] for entry in sorted(latest.values(), key=lambda item: item[0], reverse=True)]
+def write_known_auth_state(
+    auth_path: Path = SOURCE_AUTH_PATH,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
+    *,
+    last_uploaded_digest: str | None,
+    state_source: str,
+) -> dict | None:
+    if not auth_path.exists():
+        return None
+    metadata = auth_metadata(auth_path)
+    payload = {
+        "account_id": metadata["account_id"],
+        "email": metadata["email"],
+        "name": metadata["name"],
+        "plan_name": metadata["plan_name"],
+        "auth_last_refresh": metadata["auth_last_refresh"],
+        "auth_path": metadata["auth_path"],
+        "digest": metadata["digest"],
+        "observed_at": iso_now(),
+        "last_uploaded_digest": last_uploaded_digest,
+        "state_source": state_source,
+    }
+    known_auth_path.parent.mkdir(parents=True, exist_ok=True)
+    known_auth_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    known_auth_path.chmod(0o600)
+    return payload
 
 
 def latest_token_count_event(codex_home: Path) -> dict | None:
@@ -252,13 +250,10 @@ def probe_codex(auth_path: Path) -> dict:
     }
 
 
-def probe_archived_codex_accounts(
-    source_auth_path: Path = SOURCE_AUTH_PATH,
-    archive_dir: Path = ARCHIVE_DIR,
-) -> list[dict]:
-    archive_current_codex_auth(source_auth_path=source_auth_path, archive_dir=archive_dir)
-    snapshots = latest_codex_snapshots_by_account(archive_dir=archive_dir)
-    return [probe_codex(snapshot_path) for snapshot_path in snapshots]
+def current_codex_payload(source_auth_path: Path = SOURCE_AUTH_PATH) -> dict | None:
+    if not source_auth_path.exists():
+        return None
+    return probe_codex(source_auth_path)
 
 
 def discover_claude_executable(claude_bin: str | None = None) -> str | None:
@@ -694,11 +689,46 @@ def post_auth_pool_entry(auth_pool_url: str, auth_pool_user_token: str, auth_pat
         return json.loads(response.read().decode("utf-8"))
 
 
-def sync_codex_auth_pool(auth_pool_url: str, auth_pool_user_token: str, archive_dir: Path = ARCHIVE_DIR) -> list[dict]:
-    results = []
-    for auth_path in latest_codex_snapshots_by_account(archive_dir=archive_dir):
-        results.append(post_auth_pool_entry(auth_pool_url, auth_pool_user_token, auth_path))
-    return results
+def sync_current_codex_auth_pool(
+    auth_pool_url: str,
+    auth_pool_user_token: str,
+    auth_path: Path = SOURCE_AUTH_PATH,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
+) -> dict:
+    if not auth_path.exists():
+        return {"ok": True, "uploaded": False, "reason": "missing_auth"}
+
+    metadata = auth_metadata(auth_path)
+    known = read_known_auth_state(known_auth_path) or {}
+    already_uploaded = known.get("last_uploaded_digest") == metadata["digest"]
+
+    if already_uploaded:
+        state = write_known_auth_state(
+            auth_path,
+            known_auth_path,
+            last_uploaded_digest=metadata["digest"],
+            state_source="unchanged_local_auth",
+        )
+        return {
+            "ok": True,
+            "uploaded": False,
+            "reason": "already_uploaded",
+            "known_auth": state,
+        }
+
+    uploaded = post_auth_pool_entry(auth_pool_url, auth_pool_user_token, auth_path)
+    state = write_known_auth_state(
+        auth_path,
+        known_auth_path,
+        last_uploaded_digest=metadata["digest"],
+        state_source="uploaded_to_auth_pool",
+    )
+    return {
+        "ok": True,
+        "uploaded": True,
+        "entry": uploaded,
+        "known_auth": state,
+    }
 
 
 def fetch_best_auth(auth_pool_url: str, auth_pool_user_token: str, exclude_account_ids: list[str] | None = None) -> dict:

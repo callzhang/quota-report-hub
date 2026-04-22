@@ -9,16 +9,16 @@ import sys
 from pathlib import Path
 
 from quota_reporters import (
-    ARCHIVE_DIR,
     CLAUDE_HOME,
+    KNOWN_AUTH_PATH,
     SOURCE_AUTH_PATH,
-    archive_current_codex_auth,
     auth_metadata,
     fetch_best_auth,
     load_config,
     probe_claude,
     probe_codex,
-    sync_codex_auth_pool,
+    sync_current_codex_auth_pool,
+    write_known_auth_state,
 )
 
 
@@ -69,7 +69,7 @@ def maybe_replace_codex_auth(
     config: dict,
     current_codex_payload: dict | None,
     codex_auth_path: Path,
-    archive_dir: Path,
+    known_auth_path: Path,
     threshold_percent: float,
     claude_payload: dict | None = None,
 ) -> dict:
@@ -100,10 +100,15 @@ def maybe_replace_codex_auth(
             "account_id": fetched_account_id,
         }
 
-    archive_current_codex_auth(codex_auth_path, archive_dir)
     codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
     codex_auth_path.write_text(result["auth_json"], encoding="utf-8")
     codex_auth_path.chmod(0o600)
+    known_auth = write_known_auth_state(
+        codex_auth_path,
+        known_auth_path,
+        last_uploaded_digest=auth_metadata(codex_auth_path)["digest"],
+        state_source="fetched_from_auth_pool",
+    )
 
     return {
         "ok": True,
@@ -114,6 +119,7 @@ def maybe_replace_codex_auth(
         "to_email": result.get("email"),
         "to_plan_name": result.get("plan_name"),
         "latest_report": result.get("latest_report"),
+        "known_auth": known_auth,
     }
 
 
@@ -122,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auth-pool-url")
     parser.add_argument("--auth-pool-user-token")
     parser.add_argument("--codex-auth-path", type=Path, default=SOURCE_AUTH_PATH)
-    parser.add_argument("--archive-dir", type=Path, default=ARCHIVE_DIR)
+    parser.add_argument("--known-auth-path", type=Path, default=KNOWN_AUTH_PATH)
     parser.add_argument("--claude-home", type=Path, default=CLAUDE_HOME)
     parser.add_argument("--claude-bin")
     parser.add_argument("--threshold-percent", type=float, default=20.0)
@@ -143,18 +149,18 @@ def run_guard(args: argparse.Namespace) -> dict:
 
     sync_result = None
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
-        archive_current_codex_auth(args.codex_auth_path, args.archive_dir)
-        sync_result = sync_codex_auth_pool(
+        sync_result = sync_current_codex_auth_pool(
             config["auth_pool_url"],
             config["auth_pool_user_token"],
-            archive_dir=args.archive_dir,
+            auth_path=args.codex_auth_path,
+            known_auth_path=args.known_auth_path,
         )
 
     replacement = maybe_replace_codex_auth(
         config,
         codex_payload,
         args.codex_auth_path,
-        args.archive_dir,
+        args.known_auth_path,
         args.threshold_percent,
         claude_payload=claude_payload,
     )

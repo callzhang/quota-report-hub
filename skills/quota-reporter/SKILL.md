@@ -1,6 +1,6 @@
 ---
 name: quota-reporter
-description: Install and run a local quota guard that checks Codex and Claude quota every 15 minutes, syncs archived Codex auth snapshots to the shared encrypted auth pool, fetches a better Codex auth from the cloud when local quota is low, and stores the user's personal company-email access token locally. Use this whenever a teammate wants to join the shared quota system, install the 15-minute guard, set up a company-email auth-pool token, or verify that local auth rotation is working.
+description: Install and run a local quota guard that checks Codex and Claude quota every 15 minutes, syncs the current Codex auth to the shared encrypted auth pool only when it changes, fetches a better Codex auth from the cloud when local quota is low, and stores the user's personal company-email access token locally. Use this whenever a teammate wants to join the shared quota system, install the 15-minute guard, set up a company-email auth-pool token, or verify that local auth rotation is working.
 ---
 
 # Quota Guard
@@ -9,9 +9,8 @@ This skill installs and runs the local quota guard for Codex and Claude.
 
 ## What it does
 
-1. Archives the local `~/.codex/auth.json` into `~/.agents/auth/` when Codex is present
-2. Scans archived Codex auth snapshots and keeps the newest snapshot per account
-3. Uploads the newest archived Codex auth snapshots to the shared encrypted auth pool
+1. Tracks the local `~/.codex/auth.json` in `~/.agents/auth/known_auth.json`
+2. Uploads the current Codex auth to the shared encrypted auth pool only when its digest changes
 4. Probes local Codex quota plus the latest Claude Code `statusLine` snapshot for official Claude `rate_limits`
 5. When local quota is low, asks the cloud auth pool for the best currently usable Codex auth and installs it into `~/.codex/auth.json`
 6. Installs a reboot-safe scheduler that runs every 15 minutes
@@ -74,14 +73,15 @@ python3 scripts/quota_guard.py
 
 The guard then:
 
-- archives the current live auth if needed
-- uploads the latest snapshot per account to the auth pool
+- updates `~/.agents/auth/known_auth.json`
+- uploads the current auth to the auth pool only when needed
 - probes the current live Codex auth
 - probes Claude from the local statusline snapshot
 - if local Codex is below `20%` in `5H` or has `1week = 0`, fetches a better Codex auth from the cloud
 - if local Claude is below `20%` in `5H` or has `1week = 0`, also fetches a better Codex auth from the cloud
 - only replaces local `~/.codex/auth.json` when the fetched auth is different from what is already installed
 - does nothing when the cloud cannot provide a better auth than the current one
+- relies on the cloud auth pool to deduplicate repeated uploads for the same `account_id`, even when raw files differ
 
 Operational notes:
 

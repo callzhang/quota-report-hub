@@ -15,9 +15,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import quota_guard  # noqa: E402
 import install_quota_guard  # noqa: E402
 from quota_reporters import (
-    archive_current_codex_auth,
     discover_claude_executable,
-    latest_codex_snapshots_by_account,
     parse_claude_auth_status_text,
     parse_claude_rate_limit_headers,
     parse_claude_statusline_rate_limits,
@@ -26,6 +24,7 @@ from quota_reporters import (
     run_claude_status,
     summarize_codex_exec_error,
     summarize_claude_stats,
+    write_known_auth_state,
 )  # noqa: E402
 
 
@@ -237,11 +236,11 @@ Reading additional input from stdin...
             self.assertNotIn("ANTHROPIC_AUTH_TOKEN", env)
             self.assertNotIn("ANTHROPIC_BASE_URL", env)
 
-    def test_archive_current_codex_auth_creates_stable_snapshot(self):
+    def test_write_known_auth_state_records_current_auth_metadata(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             source = base / "auth.json"
-            archive_dir = base / "archive"
+            known_auth_path = base / "known_auth.json"
             source.write_text(
                 json.dumps(
                     {
@@ -255,59 +254,17 @@ Reading additional input from stdin...
                 encoding="utf-8",
             )
 
-            snapshot_path = archive_current_codex_auth(source, archive_dir)
-
-            self.assertIsNotNone(snapshot_path)
-            self.assertTrue(snapshot_path.exists())
-            self.assertTrue(snapshot_path.name.startswith("auth-acct-1-"))
-
-    def test_latest_codex_snapshots_by_account_prefers_latest_refresh(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            archive_dir = Path(temp_dir)
-
-            old = archive_dir / "auth-acct-1-old.json"
-            old.write_text(
-                json.dumps(
-                    {
-                        "last_refresh": "2026-04-19T20:00:00Z",
-                        "tokens": {
-                            "account_id": "acct-1",
-                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
-            new = archive_dir / "auth-acct-1-new.json"
-            new.write_text(
-                json.dumps(
-                    {
-                        "last_refresh": "2026-04-19T21:00:00Z",
-                        "tokens": {
-                            "account_id": "acct-1",
-                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
-            other = archive_dir / "auth-acct-2.json"
-            other.write_text(
-                json.dumps(
-                    {
-                        "last_refresh": "2026-04-19T19:00:00Z",
-                        "tokens": {
-                            "account_id": "acct-2",
-                            "id_token": "x.eyJlbWFpbCI6ICJiQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQiIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInBybyJ9fQ.y",
-                        },
-                    }
-                ),
-                encoding="utf-8",
+            state = write_known_auth_state(
+                source,
+                known_auth_path,
+                last_uploaded_digest="digest-1",
+                state_source="uploaded_to_auth_pool",
             )
 
-            snapshots = latest_codex_snapshots_by_account(archive_dir)
-
-            self.assertEqual(snapshots, [new, other])
+            self.assertEqual(state["account_id"], "acct-1")
+            self.assertEqual(state["last_uploaded_digest"], "digest-1")
+            self.assertEqual(state["state_source"], "uploaded_to_auth_pool")
+            self.assertTrue(known_auth_path.exists())
 
     def test_should_fetch_replacement_when_codex_is_low(self):
         codex_payload = {
@@ -348,7 +305,7 @@ Reading additional input from stdin...
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             live_auth = base / "auth.json"
-            archive_dir = base / "archive"
+            known_auth_path = base / "known_auth.json"
             live_auth.write_text(json.dumps({"tokens": {"account_id": "current"}}), encoding="utf-8")
             config = {
                 "auth_pool_url": "https://quota-report-hub.vercel.app",
@@ -368,12 +325,12 @@ Reading additional input from stdin...
                 "latest_report": {"remaining_5h": 88, "remaining_1week": 50},
             }):
                 with mock.patch.object(quota_guard, "auth_metadata", return_value={"digest": "digest-current"}):
-                    with mock.patch.object(quota_guard, "archive_current_codex_auth", return_value=archive_dir / "archived.json"):
+                    with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "digest-best"}):
                         replacement = quota_guard.maybe_replace_codex_auth(
                             config,
                             codex_payload,
                             live_auth,
-                            archive_dir,
+                            known_auth_path,
                             threshold_percent=20.0,
                         )
 
@@ -396,7 +353,7 @@ Reading additional input from stdin...
                 config,
                 codex_payload,
                 Path("/tmp/auth.json"),
-                Path("/tmp/archive"),
+                Path("/tmp/known_auth.json"),
                 threshold_percent=20.0,
             )
 
@@ -427,7 +384,7 @@ Reading additional input from stdin...
                         config,
                         codex_payload,
                         live_auth,
-                        Path(temp_dir) / "archive",
+                        Path(temp_dir) / "known_auth.json",
                         threshold_percent=20.0,
                     )
 
@@ -439,7 +396,7 @@ Reading additional input from stdin...
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
             codex_auth_path=Path("/tmp/auth.json"),
-            archive_dir=Path("/tmp/archive"),
+            known_auth_path=Path("/tmp/known_auth.json"),
             claude_home=Path("/tmp/claude"),
             claude_bin=None,
             threshold_percent=20.0,
@@ -451,16 +408,51 @@ Reading additional input from stdin...
         }):
             with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
                 with mock.patch.object(quota_guard, "probe_claude", return_value={"source": "claude", "account_id": "claude-1"}):
-                    with mock.patch.object(quota_guard, "archive_current_codex_auth", return_value=Path("/tmp/archive/auth.json")) as archive_auth:
-                        with mock.patch.object(quota_guard, "sync_codex_auth_pool", return_value=[{"ok": True}]) as sync_auth_pool:
-                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_auth:
-                                result = quota_guard.run_guard(args)
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": True}) as sync_auth_pool:
+                        with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_auth:
+                            result = quota_guard.run_guard(args)
 
-        archive_auth.assert_called_once_with(args.codex_auth_path, args.archive_dir)
-        sync_auth_pool.assert_called_once()
+        sync_auth_pool.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            auth_path=args.codex_auth_path,
+            known_auth_path=args.known_auth_path,
+        )
         replace_auth.assert_called_once()
-        self.assertEqual(result["auth_pool_sync"], [{"ok": True}])
+        self.assertEqual(result["auth_pool_sync"], {"ok": True, "uploaded": True})
         self.assertEqual(result["replacement"]["reason"], "healthy")
+
+    def test_sync_current_codex_auth_pool_skips_when_digest_already_uploaded(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-19T21:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            digest = quota_guard.auth_metadata(auth_path)["digest"]
+            known_auth_path.write_text(json.dumps({"last_uploaded_digest": digest}) + "\n", encoding="utf-8")
+
+            with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                )
+
+        post_auth_pool_entry.assert_not_called()
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "already_uploaded")
 
     def test_configure_claude_statusline_writes_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:

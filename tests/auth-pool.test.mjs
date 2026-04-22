@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveAuthPoolEntry, pickBestAuthPoolCandidate } from "../lib/auth-pool.js";
+import {
+  deriveAuthPoolEntry,
+  pickBestAuthPoolCandidate,
+  shouldReplaceAuthPoolEntry,
+} from "../lib/auth-pool.js";
 
 function fakeAuthJson({ accountId, email, name, plan = "pro", lastRefresh = "2026-04-22T00:00:00Z" }) {
   const payload = Buffer.from(
@@ -87,4 +91,38 @@ test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best 
 
   assert.equal(candidate.entry.account_id, "best");
   assert.equal(candidate.report.account_id, "best");
+});
+
+test("shouldReplaceAuthPoolEntry skips duplicate account uploads when incoming refresh is not newer", () => {
+  const existing = {
+    source: "codex",
+    account_id: "acct-1",
+    auth_last_refresh: "2026-04-22T09:00:00Z",
+    digest: "existing-digest",
+  };
+  const incoming = {
+    source: "codex",
+    account_id: "acct-1",
+    auth_last_refresh: "2026-04-22T09:00:00Z",
+    digest: "different-file-digest",
+  };
+
+  assert.equal(shouldReplaceAuthPoolEntry(existing, incoming), false);
+});
+
+test("shouldReplaceAuthPoolEntry accepts newer refresh for same account", () => {
+  const existing = {
+    source: "codex",
+    account_id: "acct-1",
+    auth_last_refresh: "2026-04-22T09:00:00Z",
+    digest: "existing-digest",
+  };
+  const incoming = {
+    source: "codex",
+    account_id: "acct-1",
+    auth_last_refresh: "2026-04-22T10:00:00Z",
+    digest: "newer-digest",
+  };
+
+  assert.equal(shouldReplaceAuthPoolEntry(existing, incoming), true);
 });
