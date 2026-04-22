@@ -102,7 +102,8 @@ Codex and Claude local-guard rules:
 - if Codex has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine asks the cloud auth pool for a better Codex auth
 - if Claude has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine also asks the cloud auth pool for a better Codex auth
 - the server-side auth pool picks the best usable Codex auth by `5H remaining` first, then `1week remaining`
-- local upload is skipped when `known_auth.json` already records the same uploaded digest
+- local upload is skipped only when `known_auth.json` records the same uploaded `account_id`, the same uploaded `auth_last_refresh`, and the same uploaded digest
+- if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy
 - the guard only replaces local `~/.codex/auth.json` when the fetched auth is different from the currently installed auth
 - old local reporter scripts now live under `skills/quota-reporter/archive/`
 

@@ -263,6 +263,8 @@ Reading additional input from stdin...
 
             self.assertEqual(state["account_id"], "acct-1")
             self.assertEqual(state["last_uploaded_digest"], "digest-1")
+            self.assertIsNone(state["last_uploaded_account_id"])
+            self.assertIsNone(state["last_uploaded_auth_last_refresh"])
             self.assertEqual(state["state_source"], "uploaded_to_auth_pool")
             self.assertTrue(known_auth_path.exists())
 
@@ -324,7 +326,15 @@ Reading additional input from stdin...
                 "auth_json": json.dumps({"tokens": {"account_id": "best"}}),
                 "latest_report": {"remaining_5h": 88, "remaining_1week": 50},
             }):
-                with mock.patch.object(quota_guard, "auth_metadata", return_value={"digest": "digest-current"}):
+                with mock.patch.object(
+                    quota_guard,
+                    "auth_metadata",
+                    return_value={
+                        "digest": "digest-current",
+                        "account_id": "best",
+                        "auth_last_refresh": "2026-04-19T22:00:00Z",
+                    },
+                ):
                     with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "digest-best"}):
                         replacement = quota_guard.maybe_replace_codex_auth(
                             config,
@@ -379,7 +389,15 @@ Reading additional input from stdin...
                 "digest": "digest-same",
                 "auth_json": live_auth.read_text(encoding="utf-8"),
             }):
-                with mock.patch.object(quota_guard, "auth_metadata", return_value={"digest": "digest-same"}):
+                with mock.patch.object(
+                    quota_guard,
+                    "auth_metadata",
+                    return_value={
+                        "digest": "digest-same",
+                        "account_id": "current",
+                        "auth_last_refresh": "2026-04-19T21:00:00Z",
+                    },
+                ):
                     replacement = quota_guard.maybe_replace_codex_auth(
                         config,
                         codex_payload,
@@ -440,7 +458,17 @@ Reading additional input from stdin...
                 encoding="utf-8",
             )
             digest = quota_guard.auth_metadata(auth_path)["digest"]
-            known_auth_path.write_text(json.dumps({"last_uploaded_digest": digest}) + "\n", encoding="utf-8")
+            known_auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_uploaded_account_id": "acct-1",
+                        "last_uploaded_auth_last_refresh": "2026-04-19T21:00:00Z",
+                        "last_uploaded_digest": digest,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
                 result = quota_guard.sync_current_codex_auth_pool(
@@ -453,6 +481,48 @@ Reading additional input from stdin...
         post_auth_pool_entry.assert_not_called()
         self.assertFalse(result["uploaded"])
         self.assertEqual(result["reason"], "already_uploaded")
+
+    def test_sync_current_codex_auth_pool_uploads_when_same_account_refreshes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-19T22:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            known_auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_uploaded_account_id": "acct-1",
+                        "last_uploaded_auth_last_refresh": "2026-04-19T21:00:00Z",
+                        "last_uploaded_digest": "old-digest",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": "acct-1"}}) as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                )
+
+        post_auth_pool_entry.assert_called_once()
+        self.assertTrue(result["uploaded"])
+        self.assertEqual(result["known_auth"]["last_uploaded_account_id"], "acct-1")
+        self.assertEqual(result["known_auth"]["last_uploaded_auth_last_refresh"], "2026-04-19T22:00:00Z")
 
     def test_configure_claude_statusline_writes_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:

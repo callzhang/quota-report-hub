@@ -235,7 +235,7 @@ It may contain:
 After setup, the local machine does four jobs:
 
 1. track the current `~/.codex/auth.json` in `~/.agents/auth/known_auth.json`
-2. upload the current auth to the shared auth pool only when its digest is new
+2. upload the current auth to the shared auth pool only when the last uploaded `account_id`, `auth_last_refresh`, and `digest` do not already match
 3. probe local Codex and Claude quota
 4. fetch and install a better Codex auth when local quota is low
 
@@ -246,6 +246,8 @@ Additional operational constraints:
 - If the cloud has no better auth than the currently installed one, the machine does nothing.
 - The local config file must remain private because it stores a personal bearer token.
 - The local machine does not keep a rolling archive of auth snapshots anymore; the cloud auth pool is the durable store.
+- `known_auth.json` is only a local upload filter. It records the last uploaded `account_id`, `auth_last_refresh`, and `digest`.
+- If the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload and overwrite the old cloud copy.
 
 ## Rotation Logic
 

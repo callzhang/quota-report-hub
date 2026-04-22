@@ -10,7 +10,7 @@ This skill installs and runs the local quota guard for Codex and Claude.
 ## What it does
 
 1. Tracks the local `~/.codex/auth.json` in `~/.agents/auth/known_auth.json`
-2. Uploads the current Codex auth to the shared encrypted auth pool only when its digest changes
+2. Uploads the current Codex auth to the shared encrypted auth pool only when the last uploaded `account_id`, `auth_last_refresh`, and `digest` do not already match
 4. Probes local Codex quota plus the latest Claude Code `statusLine` snapshot for official Claude `rate_limits`
 5. When local quota is low, asks the cloud auth pool for the best currently usable Codex auth and installs it into `~/.codex/auth.json`
 6. Installs a reboot-safe scheduler that runs every 15 minutes
@@ -90,6 +90,7 @@ The guard then:
 - only replaces local `~/.codex/auth.json` when the fetched auth is different from what is already installed
 - does nothing when the cloud cannot provide a better auth than the current one
 - relies on the cloud auth pool to deduplicate repeated uploads for the same `account_id`, even when raw files differ
+- if the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload
 
 Operational notes:
 

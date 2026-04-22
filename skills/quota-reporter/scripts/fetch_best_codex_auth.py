@@ -34,10 +34,13 @@ def main() -> None:
     args.target_auth_path.parent.mkdir(parents=True, exist_ok=True)
     args.target_auth_path.write_text(result["auth_json"], encoding="utf-8")
     args.target_auth_path.chmod(0o600)
+    metadata = auth_metadata(args.target_auth_path)
     known_auth = write_known_auth_state(
         args.target_auth_path,
         args.known_auth_path,
-        last_uploaded_digest=auth_metadata(args.target_auth_path)["digest"],
+        last_uploaded_digest=metadata["digest"],
+        last_uploaded_account_id=metadata["account_id"],
+        last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
         state_source="fetched_from_auth_pool",
     )
 

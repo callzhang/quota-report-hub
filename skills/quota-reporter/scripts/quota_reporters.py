@@ -111,6 +111,8 @@ def write_known_auth_state(
     known_auth_path: Path = KNOWN_AUTH_PATH,
     *,
     last_uploaded_digest: str | None,
+    last_uploaded_account_id: str | None = None,
+    last_uploaded_auth_last_refresh: str | None = None,
     state_source: str,
 ) -> dict | None:
     if not auth_path.exists():
@@ -126,6 +128,8 @@ def write_known_auth_state(
         "digest": metadata["digest"],
         "observed_at": iso_now(),
         "last_uploaded_digest": last_uploaded_digest,
+        "last_uploaded_account_id": last_uploaded_account_id,
+        "last_uploaded_auth_last_refresh": last_uploaded_auth_last_refresh,
         "state_source": state_source,
     }
     known_auth_path.parent.mkdir(parents=True, exist_ok=True)
@@ -700,13 +704,19 @@ def sync_current_codex_auth_pool(
 
     metadata = auth_metadata(auth_path)
     known = read_known_auth_state(known_auth_path) or {}
-    already_uploaded = known.get("last_uploaded_digest") == metadata["digest"]
+    already_uploaded = (
+        known.get("last_uploaded_account_id") == metadata["account_id"]
+        and known.get("last_uploaded_auth_last_refresh") == metadata["auth_last_refresh"]
+        and known.get("last_uploaded_digest") == metadata["digest"]
+    )
 
     if already_uploaded:
         state = write_known_auth_state(
             auth_path,
             known_auth_path,
             last_uploaded_digest=metadata["digest"],
+            last_uploaded_account_id=metadata["account_id"],
+            last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
             state_source="unchanged_local_auth",
         )
         return {
@@ -721,6 +731,8 @@ def sync_current_codex_auth_pool(
         auth_path,
         known_auth_path,
         last_uploaded_digest=metadata["digest"],
+        last_uploaded_account_id=metadata["account_id"],
+        last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
         state_source="uploaded_to_auth_pool",
     )
     return {
