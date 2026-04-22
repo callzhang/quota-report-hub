@@ -1,5 +1,5 @@
-import { authPoolConfigured } from "../../lib/auth-pool.js";
-import { bestAuthPoolEntry, dbConfigured } from "../../lib/db.js";
+import { authPoolConfigured } from "../../lib/company-auth.js";
+import { authenticateApiToken, bestAuthPoolEntry, dbConfigured } from "../../lib/db.js";
 
 function unauthorized(res) {
   res.statusCode = 401;
@@ -15,9 +15,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const configuredToken = process.env.AUTH_POOL_TOKEN;
   const provided = req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
-  if (!configuredToken || provided !== configuredToken) {
+  const authContext = await authenticateApiToken(provided);
+  if (!authContext) {
     unauthorized(res);
     return;
   }
@@ -45,6 +45,7 @@ export default async function handler(req, res) {
   res.end(
     JSON.stringify({
       ok: true,
+      requested_by: authContext.email,
       source: entry.source,
       account_id: entry.account_id,
       email: entry.email,

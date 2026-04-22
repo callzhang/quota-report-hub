@@ -32,6 +32,7 @@ Skill files live under:
 - `skills/quota-reporter/scripts/report_codex_quota.py`
 - `skills/quota-reporter/scripts/report_claude_usage.py`
 - `skills/quota-reporter/scripts/install_hourly_reporter.py`
+- `skills/quota-reporter/scripts/request_auth_pool_token.py`
 - `skills/quota-reporter/scripts/sync_codex_auth_pool.py`
 - `skills/quota-reporter/scripts/fetch_best_codex_auth.py`
 
@@ -70,11 +71,12 @@ The dashboard handles the two sources differently:
 Auth pool support:
 
 - The hub can now store encrypted Codex `auth.json` snapshots in a server-side auth pool.
+- Employees request a personal auth-pool token by company email through `/api/auth/issue-token`.
 - Machines can upload their latest archived Codex auth snapshots to `/api/auth/upload`.
 - A client can request the best currently usable Codex auth from `/api/auth/fetch-best`.
 - The selection logic prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
 - Soft probe failures such as missing quota details can still contribute stale-but-last-known-good windows; hard token invalidations clear the old windows.
-- The auth pool requires a distinct bearer token and an encryption key on the server.
+- The auth pool requires server-side encryption plus Mailgun delivery for issuing personal user tokens.
 
 Codex collection rules:
 
@@ -98,8 +100,10 @@ The installer is reboot-safe and runs every 15 minutes:
 ## Required environment variables
 
 - `REPORT_INGEST_TOKEN`
-- `AUTH_POOL_TOKEN`
 - `AUTH_POOL_ENCRYPTION_KEY`
+- `MAILGUN_API_KEY`
+- `MAILGUN_DOMAIN`
+- `MAILGUN_FROM`
 - `TURSO_DATABASE_URL`
 - `TURSO_AUTH_TOKEN`
 
@@ -110,40 +114,50 @@ The installer is reboot-safe and runs every 15 minutes:
 
 ## Auth Pool Workflow
 
-1. Upload archived auth snapshots from a machine:
+1. Request a personal auth-pool token by company email:
+
+```bash
+python3 skills/quota-reporter/scripts/request_auth_pool_token.py \
+  --auth-pool-url https://quota-report-hub.vercel.app \
+  --email your.name@stardust.ai
+```
+
+2. Paste the emailed token into local setup or config.
+
+3. Upload archived auth snapshots from a machine:
 
 ```bash
 python3 skills/quota-reporter/scripts/sync_codex_auth_pool.py \
   --auth-pool-url https://quota-report-hub.vercel.app \
-  --auth-pool-token YOUR_AUTH_POOL_TOKEN
+  --auth-pool-user-token YOUR_PERSONAL_TOKEN
 ```
 
-2. Fetch the best currently usable auth from the pool without installing it:
+4. Fetch the best currently usable auth from the pool without installing it:
 
 ```bash
 python3 skills/quota-reporter/scripts/fetch_best_codex_auth.py \
   --auth-pool-url https://quota-report-hub.vercel.app \
-  --auth-pool-token YOUR_AUTH_POOL_TOKEN \
+  --auth-pool-user-token YOUR_PERSONAL_TOKEN \
   --print-only
 ```
 
-3. Fetch and install the best auth into `~/.codex/auth.json`:
+5. Fetch and install the best auth into `~/.codex/auth.json`:
 
 ```bash
 python3 skills/quota-reporter/scripts/fetch_best_codex_auth.py \
   --auth-pool-url https://quota-report-hub.vercel.app \
-  --auth-pool-token YOUR_AUTH_POOL_TOKEN \
+  --auth-pool-user-token YOUR_PERSONAL_TOKEN \
   --archive-current
 ```
 
-4. To make 15-minute reporters upload auths automatically, include these two values during install:
+6. To make 15-minute reporters upload auths automatically, include the auth pool URL plus your personal token during install:
 
 ```bash
 python3 skills/quota-reporter/scripts/install_hourly_reporter.py \
   --server-url https://quota-report-hub.vercel.app \
   --ingest-token YOUR_REPORT_INGEST_TOKEN \
   --auth-pool-url https://quota-report-hub.vercel.app \
-  --auth-pool-token YOUR_AUTH_POOL_TOKEN
+  --auth-pool-user-token YOUR_PERSONAL_TOKEN
 ```
 
 ## Local test

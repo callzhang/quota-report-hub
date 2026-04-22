@@ -26,6 +26,7 @@ On macOS, the Claude reporter only posts when the statusline snapshot currently 
 - Claude reporter: `scripts/report_claude_usage.py`
 - Claude statusline hook: `scripts/claude_statusline_probe.py`
 - Installer: `scripts/install_hourly_reporter.py`
+- Auth pool token request: `scripts/request_auth_pool_token.py`
 - Auth pool sync: `scripts/sync_codex_auth_pool.py`
 - Auth pool fetch/install: `scripts/fetch_best_codex_auth.py`
 
@@ -35,7 +36,7 @@ You need:
 
 - the shared dashboard URL, for example `https://quota-report-hub.vercel.app`
 - the ingest token for `POST /api/report`
-- optionally, an auth pool token for encrypted Codex auth upload/download
+- optionally, a personal auth-pool user token for encrypted Codex auth upload/download
 
 ## Standard flow
 
@@ -70,7 +71,7 @@ The installer writes a local config file under `~/.agents/auth/` and installs th
 On macOS it installs a `launchd` agent with `RunAtLoad`.
 On Linux it installs `crontab` entries for both `@reboot` and 15-minute reporting, so the reporter comes back automatically after a restart.
 The installer also writes Claude Code `statusLine` settings to `~/.claude/settings.json` so Claude can produce `~/.claude/statusline-rate-limits.json` automatically.
-If `--auth-pool-url` and `--auth-pool-token` are provided, the same config file also lets each 15-minute run upload the latest archived Codex auth snapshots to the shared auth pool automatically.
+If `--auth-pool-url` and `--auth-pool-user-token` are provided, the same config file also lets each 15-minute run upload the latest archived Codex auth snapshots to the shared auth pool automatically.
 
 After install, each machine needs one real interactive Claude request to seed the first quota snapshot. Until that happens, macOS Claude reports are skipped instead of sending `n/a`.
 
@@ -87,6 +88,7 @@ For Codex, the combined reporter normalizes by account:
 
 For cloud-hosted auth rotation:
 
+- `request_auth_pool_token.py` asks the server to email a personal auth-pool token to a company address such as `name@stardust.ai`
 - `sync_codex_auth_pool.py` uploads the latest archived Codex auth snapshot for each account to the server-side encrypted auth pool
 - `fetch_best_codex_auth.py` requests the best currently usable Codex auth from the pool and can install it into `~/.codex/auth.json`
 - best-auth selection prefers the highest `5H remaining`, then `1week remaining`

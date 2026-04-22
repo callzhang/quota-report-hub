@@ -12,7 +12,7 @@ from quota_reporters import ARCHIVE_DIR, SOURCE_AUTH_PATH, archive_current_codex
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Fetch the best available Codex auth from the shared auth pool.")
     parser.add_argument("--auth-pool-url")
-    parser.add_argument("--auth-pool-token")
+    parser.add_argument("--auth-pool-user-token")
     parser.add_argument("--target-auth-path", type=Path, default=SOURCE_AUTH_PATH)
     parser.add_argument("--archive-current", action="store_true")
     parser.add_argument("--exclude-account-id", action="append", default=[])
@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args)
-    result = fetch_best_auth(config["auth_pool_url"], config["auth_pool_token"], exclude_account_ids=args.exclude_account_id)
+    result = fetch_best_auth(config["auth_pool_url"], config["auth_pool_user_token"], exclude_account_ids=args.exclude_account_id)
 
     if args.print_only:
         safe = dict(result)

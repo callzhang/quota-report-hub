@@ -589,14 +589,14 @@ Reading additional input from stdin...
                     "https://quota-report-hub.vercel.app",
                     "report-token",
                     "https://quota-report-hub.vercel.app",
-                    "auth-pool-token",
+                    "user-token",
                 )
 
             saved = json.loads(config_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["server_url"], "https://quota-report-hub.vercel.app")
             self.assertEqual(saved["ingest_token"], "report-token")
             self.assertEqual(saved["auth_pool_url"], "https://quota-report-hub.vercel.app")
-            self.assertEqual(saved["auth_pool_token"], "auth-pool-token")
+            self.assertEqual(saved["auth_pool_user_token"], "user-token")
 
 
 if __name__ == "__main__":

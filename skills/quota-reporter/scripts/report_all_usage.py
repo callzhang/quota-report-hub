@@ -101,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-url")
     parser.add_argument("--ingest-token")
     parser.add_argument("--auth-pool-url")
-    parser.add_argument("--auth-pool-token")
+    parser.add_argument("--auth-pool-user-token")
     parser.add_argument("--codex-auth-path", type=Path, default=SOURCE_AUTH_PATH)
     parser.add_argument("--archive-dir", type=Path, default=ARCHIVE_DIR)
     parser.add_argument("--claude-home", type=Path, default=CLAUDE_HOME)
@@ -133,8 +133,8 @@ def main() -> None:
         print(json.dumps(payloads, ensure_ascii=False, indent=2))
         return
 
-    if config.get("auth_pool_url") and config.get("auth_pool_token"):
-        sync_codex_auth_pool(config["auth_pool_url"], config["auth_pool_token"], archive_dir=args.archive_dir)
+    if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
+        sync_codex_auth_pool(config["auth_pool_url"], config["auth_pool_user_token"], archive_dir=args.archive_dir)
     results = [post_report(config["server_url"], config["ingest_token"], payload) for payload in payloads]
     print(json.dumps(results, ensure_ascii=False, indent=2))
 
