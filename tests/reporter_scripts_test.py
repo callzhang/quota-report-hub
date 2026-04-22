@@ -12,10 +12,8 @@ import json
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "skills" / "quota-reporter" / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-import report_all_usage  # noqa: E402
-import report_claude_usage  # noqa: E402
-import report_codex_quota  # noqa: E402
-import install_hourly_reporter  # noqa: E402
+import quota_guard  # noqa: E402
+import install_quota_guard  # noqa: E402
 from quota_reporters import (
     archive_current_codex_auth,
     discover_claude_executable,
@@ -311,253 +309,158 @@ Reading additional input from stdin...
 
             self.assertEqual(snapshots, [new, other])
 
-    def test_collect_reports_skips_codex_payloads_without_quota_windows(self):
-        args = mock.Mock(
-            codex_auth_path=Path("/tmp/auth.json"),
-            archive_dir=Path("/tmp/archive"),
-            claude_home=Path("/tmp/claude"),
-            claude_bin=None,
-            codex_rotate_threshold_percent=20.0,
-        )
-        with mock.patch.object(
-            report_all_usage,
-            "probe_archived_codex_accounts",
-            return_value=[
-                {"source": "codex", "account_id": "skip-me", "windows": {"5h": None, "1week": None}},
-                {
-                    "source": "codex",
-                    "account_id": "keep-me",
-                    "windows": {"5h": {"remaining_percent": 20}, "1week": {"remaining_percent": 40}},
-                },
-            ],
-        ):
-            with mock.patch.object(report_all_usage, "probe_claude", return_value={"source": "claude", "account_id": "claude-1"}):
-                with mock.patch.object(report_all_usage.sys, "platform", "linux"):
-                    with mock.patch.object(report_all_usage, "maybe_rotate_codex_auth", return_value=None):
-                        payloads = report_all_usage.collect_reports(args)
-
-        self.assertEqual(
-            payloads,
-            [
-                {"source": "codex", "account_id": "skip-me", "windows": {"5h": None, "1week": None}},
-                {
-                    "source": "codex",
-                    "account_id": "keep-me",
-                    "windows": {"5h": {"remaining_percent": 20}, "1week": {"remaining_percent": 40}},
-                },
-                {"source": "claude", "account_id": "claude-1"},
-            ],
-        )
-
-    def test_collect_reports_skips_macos_claude_payload_without_quota_windows(self):
-        args = mock.Mock(
-            codex_auth_path=Path("/tmp/auth.json"),
-            archive_dir=Path("/tmp/archive"),
-            claude_home=Path("/tmp/claude"),
-            claude_bin=None,
-            codex_rotate_threshold_percent=20.0,
-        )
-        with mock.patch.object(report_all_usage, "probe_archived_codex_accounts", return_value=[]):
-            with mock.patch.object(
-                report_all_usage,
-                "probe_claude",
-                return_value={"source": "claude", "account_id": "claude-1", "windows": {"5h": None, "1week": None}},
-            ):
-                with mock.patch.object(report_all_usage.sys, "platform", "darwin"):
-                    with mock.patch.object(report_all_usage, "maybe_rotate_codex_auth", return_value=None):
-                        payloads = report_all_usage.collect_reports(args)
-
-        self.assertEqual(payloads, [])
-
-    def test_report_claude_usage_skips_post_when_windows_missing_on_macos(self):
-        payload = {
-            "source": "claude",
-            "account_id": "claude-skip",
-            "email": "skip@example.com",
-            "windows": {"5h": None, "1week": None},
-        }
-        with mock.patch.object(report_claude_usage, "probe_claude", return_value=payload):
-            with mock.patch.object(report_claude_usage, "post_report") as post_report:
-                with mock.patch.object(report_claude_usage.sys, "platform", "darwin"):
-                    with mock.patch("sys.argv", ["report_claude_usage.py"]):
-                        output = io.StringIO()
-                        with contextlib.redirect_stdout(output):
-                            report_claude_usage.main()
-
-        post_report.assert_not_called()
-        result = json.loads(output.getvalue())
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["skipped"])
-        self.assertEqual(result["reason"], "claude quota windows unavailable on macos")
-        self.assertEqual(result["account_id"], "claude-skip")
-
-    def test_report_codex_quota_posts_even_when_windows_missing(self):
-        payload = {
+    def test_should_fetch_replacement_when_codex_is_low(self):
+        codex_payload = {
             "source": "codex",
-            "account_id": "acct-skip",
-            "email": "skip@example.com",
-            "windows": {"5h": None, "1week": None},
+            "windows": {
+                "5h": {"remaining_percent": 12},
+                "1week": {"remaining_percent": 70},
+            },
         }
-        with mock.patch.object(report_codex_quota, "probe_codex", return_value=payload):
-            with mock.patch.object(report_codex_quota, "post_report", return_value={"ok": True}) as post_report:
-                with mock.patch("sys.argv", ["report_codex_quota.py"]):
-                    output = io.StringIO()
-                    with contextlib.redirect_stdout(output):
-                        report_codex_quota.main()
 
-        post_report.assert_called_once()
-        result = json.loads(output.getvalue())
-        self.assertTrue(result["ok"])
+        should_fetch, reasons = quota_guard.should_fetch_replacement(codex_payload, None, 20.0)
 
-    def test_maybe_rotate_codex_auth_replaces_low_quota_live_auth(self):
+        self.assertTrue(should_fetch)
+        self.assertEqual(reasons, ["codex"])
+
+    def test_should_fetch_replacement_when_claude_is_low(self):
+        codex_payload = {
+            "source": "codex",
+            "windows": {
+                "5h": {"remaining_percent": 62},
+                "1week": {"remaining_percent": 50},
+            },
+        }
+        claude_payload = {
+            "source": "claude",
+            "windows": {
+                "5h": {"remaining_percent": 15},
+                "1week": {"remaining_percent": 40},
+            },
+        }
+
+        should_fetch, reasons = quota_guard.should_fetch_replacement(codex_payload, claude_payload, 20.0)
+
+        self.assertTrue(should_fetch)
+        self.assertEqual(reasons, ["claude"])
+
+    def test_maybe_replace_codex_auth_replaces_low_quota_live_auth(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             live_auth = base / "auth.json"
             archive_dir = base / "archive"
-            live_auth.write_text("current", encoding="utf-8")
-            current_snapshot = archive_dir / "auth-current.json"
-            current_snapshot.parent.mkdir(parents=True)
-            current_snapshot.write_text("current", encoding="utf-8")
-            best_snapshot = archive_dir / "auth-best.json"
-            best_snapshot.write_text("best", encoding="utf-8")
+            live_auth.write_text(json.dumps({"tokens": {"account_id": "current"}}), encoding="utf-8")
+            config = {
+                "auth_pool_url": "https://quota-report-hub.vercel.app",
+                "auth_pool_user_token": "qrp_token",
+            }
+            codex_payload = {
+                "account_id": "current",
+                "windows": {"5h": {"remaining_percent": 12}, "1week": {"remaining_percent": 70}},
+            }
 
-            payloads = [
-                {
-                    "account_id": "current",
-                    "auth_path": str(current_snapshot),
-                    "windows": {"5h": {"remaining_percent": 12}, "1week": {"remaining_percent": 70}},
-                },
-                {
-                    "account_id": "best",
-                    "auth_path": str(best_snapshot),
-                    "windows": {"5h": {"remaining_percent": 88}, "1week": {"remaining_percent": 50}},
-                },
-            ]
+            with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                "account_id": "best",
+                "digest": "digest-best",
+                "email": "best@example.com",
+                "plan_name": "Pro",
+                "auth_json": json.dumps({"tokens": {"account_id": "best"}}),
+                "latest_report": {"remaining_5h": 88, "remaining_1week": 50},
+            }):
+                with mock.patch.object(quota_guard, "auth_metadata", return_value={"digest": "digest-current"}):
+                    with mock.patch.object(quota_guard, "archive_current_codex_auth", return_value=archive_dir / "archived.json"):
+                        replacement = quota_guard.maybe_replace_codex_auth(
+                            config,
+                            codex_payload,
+                            live_auth,
+                            archive_dir,
+                            threshold_percent=20.0,
+                        )
 
-            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
-                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
+            self.assertTrue(replacement["replaced"])
+            self.assertEqual(replacement["to_account_id"], "best")
+            self.assertEqual(json.loads(live_auth.read_text(encoding="utf-8"))["tokens"]["account_id"], "best")
 
-            self.assertTrue(rotation["rotated"])
-            self.assertEqual(rotation["to_account_id"], "best")
-            self.assertEqual(live_auth.read_text(encoding="utf-8"), "best")
+    def test_maybe_replace_codex_auth_skips_when_current_quota_is_healthy(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        codex_payload = {
+            "account_id": "current",
+            "windows": {"5h": {"remaining_percent": 42}, "1week": {"remaining_percent": 70}},
+        }
 
-    def test_maybe_rotate_codex_auth_skips_when_current_quota_is_healthy(self):
+        with mock.patch.object(quota_guard, "fetch_best_auth") as fetch_best_auth:
+            replacement = quota_guard.maybe_replace_codex_auth(
+                config,
+                codex_payload,
+                Path("/tmp/auth.json"),
+                Path("/tmp/archive"),
+                threshold_percent=20.0,
+            )
+
+        fetch_best_auth.assert_not_called()
+        self.assertFalse(replacement["replaced"])
+        self.assertEqual(replacement["reason"], "healthy")
+
+    def test_maybe_replace_codex_auth_skips_when_best_auth_already_installed(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            base = Path(temp_dir)
-            live_auth = base / "auth.json"
-            archive_dir = base / "archive"
-            live_auth.write_text("current", encoding="utf-8")
-            current_snapshot = archive_dir / "auth-current.json"
-            current_snapshot.parent.mkdir(parents=True)
-            current_snapshot.write_text("current", encoding="utf-8")
+            live_auth = Path(temp_dir) / "auth.json"
+            live_auth.write_text(json.dumps({"tokens": {"account_id": "current"}}), encoding="utf-8")
+            config = {
+                "auth_pool_url": "https://quota-report-hub.vercel.app",
+                "auth_pool_user_token": "qrp_token",
+            }
+            codex_payload = {
+                "account_id": "current",
+                "windows": {"5h": {"remaining_percent": 10}, "1week": {"remaining_percent": 70}},
+            }
 
-            payloads = [
-                {
-                    "account_id": "current",
-                    "auth_path": str(current_snapshot),
-                    "windows": {"5h": {"remaining_percent": 42}, "1week": {"remaining_percent": 70}},
-                }
-            ]
+            with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                "account_id": "current",
+                "digest": "digest-same",
+                "auth_json": live_auth.read_text(encoding="utf-8"),
+            }):
+                with mock.patch.object(quota_guard, "auth_metadata", return_value={"digest": "digest-same"}):
+                    replacement = quota_guard.maybe_replace_codex_auth(
+                        config,
+                        codex_payload,
+                        live_auth,
+                        Path(temp_dir) / "archive",
+                        threshold_percent=20.0,
+                    )
 
-            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
-                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
+        self.assertFalse(replacement["replaced"])
+        self.assertEqual(replacement["reason"], "best_auth_already_installed")
 
-            self.assertIsNone(rotation)
-            self.assertEqual(live_auth.read_text(encoding="utf-8"), "current")
+    def test_run_guard_syncs_pool_and_fetches_replacement(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            archive_dir=Path("/tmp/archive"),
+            claude_home=Path("/tmp/claude"),
+            claude_bin=None,
+            threshold_percent=20.0,
+        )
 
-    def test_maybe_rotate_codex_auth_replaces_live_auth_when_weekly_quota_is_zero_and_5h_improves(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            base = Path(temp_dir)
-            live_auth = base / "auth.json"
-            archive_dir = base / "archive"
-            live_auth.write_text("current", encoding="utf-8")
-            current_snapshot = archive_dir / "auth-current.json"
-            current_snapshot.parent.mkdir(parents=True)
-            current_snapshot.write_text("current", encoding="utf-8")
-            best_snapshot = archive_dir / "auth-best.json"
-            best_snapshot.write_text("best", encoding="utf-8")
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"source": "claude", "account_id": "claude-1"}):
+                    with mock.patch.object(quota_guard, "archive_current_codex_auth", return_value=Path("/tmp/archive/auth.json")) as archive_auth:
+                        with mock.patch.object(quota_guard, "sync_codex_auth_pool", return_value=[{"ok": True}]) as sync_auth_pool:
+                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_auth:
+                                result = quota_guard.run_guard(args)
 
-            payloads = [
-                {
-                    "account_id": "current",
-                    "auth_path": str(current_snapshot),
-                    "windows": {"5h": {"remaining_percent": 73}, "1week": {"remaining_percent": 0}},
-                },
-                {
-                    "account_id": "best",
-                    "auth_path": str(best_snapshot),
-                    "windows": {"5h": {"remaining_percent": 88}, "1week": {"remaining_percent": 42}},
-                },
-            ]
-
-            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
-                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
-
-            self.assertTrue(rotation["rotated"])
-            self.assertEqual(rotation["to_account_id"], "best")
-            self.assertEqual(live_auth.read_text(encoding="utf-8"), "best")
-
-    def test_maybe_rotate_codex_auth_skips_when_weekly_quota_is_zero_but_5h_would_drop(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            base = Path(temp_dir)
-            live_auth = base / "auth.json"
-            archive_dir = base / "archive"
-            live_auth.write_text("current", encoding="utf-8")
-            current_snapshot = archive_dir / "auth-current.json"
-            current_snapshot.parent.mkdir(parents=True)
-            current_snapshot.write_text("current", encoding="utf-8")
-            lower_snapshot = archive_dir / "auth-lower.json"
-            lower_snapshot.write_text("lower", encoding="utf-8")
-
-            payloads = [
-                {
-                    "account_id": "current",
-                    "auth_path": str(current_snapshot),
-                    "windows": {"5h": {"remaining_percent": 73}, "1week": {"remaining_percent": 0}},
-                },
-                {
-                    "account_id": "lower",
-                    "auth_path": str(lower_snapshot),
-                    "windows": {"5h": {"remaining_percent": 51}, "1week": {"remaining_percent": 42}},
-                },
-            ]
-
-            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
-                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
-
-            self.assertIsNone(rotation)
-            self.assertEqual(live_auth.read_text(encoding="utf-8"), "current")
-
-    def test_maybe_rotate_codex_auth_ignores_candidates_with_zero_weekly_quota(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            base = Path(temp_dir)
-            live_auth = base / "auth.json"
-            archive_dir = base / "archive"
-            live_auth.write_text("current", encoding="utf-8")
-            current_snapshot = archive_dir / "auth-current.json"
-            current_snapshot.parent.mkdir(parents=True)
-            current_snapshot.write_text("current", encoding="utf-8")
-            bad_snapshot = archive_dir / "auth-bad.json"
-            bad_snapshot.write_text("bad", encoding="utf-8")
-
-            payloads = [
-                {
-                    "account_id": "current",
-                    "auth_path": str(current_snapshot),
-                    "windows": {"5h": {"remaining_percent": 11}, "1week": {"remaining_percent": 12}},
-                },
-                {
-                    "account_id": "bad",
-                    "auth_path": str(bad_snapshot),
-                    "windows": {"5h": {"remaining_percent": 94}, "1week": {"remaining_percent": 0}},
-                },
-            ]
-
-            with mock.patch.object(report_all_usage, "archive_current_codex_auth", return_value=current_snapshot):
-                rotation = report_all_usage.maybe_rotate_codex_auth(payloads, live_auth, archive_dir, threshold_percent=20.0)
-
-            self.assertIsNone(rotation)
-            self.assertEqual(live_auth.read_text(encoding="utf-8"), "current")
+        archive_auth.assert_called_once_with(args.codex_auth_path, args.archive_dir)
+        sync_auth_pool.assert_called_once()
+        replace_auth.assert_called_once()
+        self.assertEqual(result["auth_pool_sync"], [{"ok": True}])
+        self.assertEqual(result["replacement"]["reason"], "healthy")
 
     def test_configure_claude_statusline_writes_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -567,8 +470,8 @@ Reading additional input from stdin...
             scripts_dir.mkdir(parents=True)
             (scripts_dir / "claude_statusline_probe.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
 
-            with mock.patch.object(install_hourly_reporter, "CLAUDE_SETTINGS_PATH", settings_path):
-                statusline = install_hourly_reporter.configure_claude_statusline("/usr/bin/python3", scripts_dir)
+            with mock.patch.object(install_quota_guard, "CLAUDE_SETTINGS_PATH", settings_path):
+                statusline = install_quota_guard.configure_claude_statusline("/usr/bin/python3", scripts_dir)
 
             self.assertEqual(statusline["type"], "command")
             self.assertIn("claude_statusline_probe.py", statusline["command"])
@@ -576,26 +479,24 @@ Reading additional input from stdin...
             self.assertEqual(saved["statusLine"]["refreshInterval"], 60)
 
     def test_install_linux_cron_uses_fifteen_minute_interval(self):
-        lines = install_hourly_reporter.cron_lines("/usr/bin/python3", Path("/tmp/report_all_usage.py"))
-        self.assertTrue(lines[1].startswith("*/15 * * * * /usr/bin/python3 /tmp/report_all_usage.py >> "))
-        self.assertTrue(lines[1].endswith(" # quota-reporter-managed"))
+        lines = install_quota_guard.cron_lines("/usr/bin/python3", Path("/tmp/quota_guard.py"))
+        self.assertTrue(lines[1].startswith("*/15 * * * * /usr/bin/python3 /tmp/quota_guard.py >> "))
+        self.assertTrue(lines[1].endswith(" # quota-guard-managed"))
 
     def test_write_config_persists_auth_pool_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "quota-reporter.json"
 
-            with mock.patch.object(install_hourly_reporter, "CONFIG_PATH", config_path):
-                install_hourly_reporter.write_config(
+            with mock.patch.object(install_quota_guard, "CONFIG_PATH", config_path):
+                install_quota_guard.write_config(
                     "https://quota-report-hub.vercel.app",
-                    "report-token",
-                    "https://quota-report-hub.vercel.app",
+                    "derek@stardust.ai",
                     "user-token",
                 )
 
             saved = json.loads(config_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["server_url"], "https://quota-report-hub.vercel.app")
-            self.assertEqual(saved["ingest_token"], "report-token")
             self.assertEqual(saved["auth_pool_url"], "https://quota-report-hub.vercel.app")
+            self.assertEqual(saved["auth_pool_user_email"], "derek@stardust.ai")
             self.assertEqual(saved["auth_pool_user_token"], "user-token")
 
 
