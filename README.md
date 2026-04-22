@@ -105,6 +105,33 @@ The installer is reboot-safe and runs every 15 minutes:
 - 64 hex characters
 - or base64 for exactly 32 raw bytes
 
+## Vercel deploy script
+
+Use the included deploy script to configure the auth-pool email settings on Vercel and trigger a production deploy:
+
+```bash
+python3 scripts/deploy_vercel.py \
+  --allowed-domain stardust.ai \
+  --mailgun-api-key YOUR_MAILGUN_API_KEY \
+  --sending-email hello@friday.preseen.ai
+```
+
+What it does:
+
+- sets `AUTH_ALLOWED_EMAIL_DOMAIN`
+- sets `MAILGUN_API_KEY`
+- derives `MAILGUN_DOMAIN` from the sending email domain
+- sets `MAILGUN_FROM`
+- generates `AUTH_POOL_ENCRYPTION_KEY` only if one does not already exist
+- updates `production`, `preview`, and `development`
+- runs `vercel deploy --prod --yes`
+
+Important:
+
+- the script preserves an existing `AUTH_POOL_ENCRYPTION_KEY` by default, because rotating it would make previously encrypted auth-pool rows unreadable
+- use `--rotate-auth-pool-key` only when you intentionally want to invalidate existing encrypted auth-pool entries
+- use `--skip-deploy` if you only want to update Vercel env values without deploying immediately
+
 ## Auth Pool Workflow
 
 1. Install the local guard and request a personal auth-pool token by company email:
