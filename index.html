@@ -340,6 +340,7 @@
       const clearTokenButton = document.getElementById("clear-token");
       const authMessage = document.getElementById("auth-message");
       const COOKIE_NAME = "quota_report_hub_token";
+      let currentToken = "";
 
       function getCookie(name) {
         const prefix = `${name}=`;
@@ -495,7 +496,7 @@
       }
 
       async function load() {
-        const token = getStoredToken();
+        const token = currentToken || getStoredToken();
         if (!token) {
           setLockedView("Token required.");
           return;
@@ -509,6 +510,7 @@
         });
 
         if (response.status === 401) {
+          currentToken = "";
           clearTokenCookie();
           tokenInput.value = "";
           setLockedView("Token invalid or expired. Request a new token by email and paste the latest one here.");
@@ -540,18 +542,21 @@
         empty.hidden = items.length !== 0;
       }
 
-      tokenInput.value = getStoredToken();
+      currentToken = getStoredToken();
+      tokenInput.value = currentToken;
       saveTokenButton.addEventListener("click", async () => {
         const token = tokenInput.value.trim();
         if (!token) {
           authMessage.textContent = "Enter a token first.";
           return;
         }
+        currentToken = token;
         setTokenCookie(token);
         await load();
       });
 
       clearTokenButton.addEventListener("click", () => {
+        currentToken = "";
         clearTokenCookie();
         tokenInput.value = "";
         setLockedView("Token cleared.");
