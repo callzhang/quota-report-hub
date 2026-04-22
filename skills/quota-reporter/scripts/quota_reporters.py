@@ -526,16 +526,11 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
     }
 
 
-def claude_account_id(credentials: dict | None, auth_status: dict, auth_text_details: dict | None = None) -> str:
+def claude_account_id(auth_text_details: dict | None = None) -> str:
     email = (auth_text_details or {}).get("email")
     if email:
         return f"claude-{email.lower()}"
-    oauth = (credentials or {}).get("claudeAiOauth") or {}
-    token = oauth.get("refreshToken") or oauth.get("accessToken")
-    if token:
-        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
-        return f"claude-oauth-{digest}"
-    return f"claude-{auth_status.get('authMethod', 'unknown')}"
+    return "claude-email-missing"
 
 
 def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None) -> dict:
@@ -617,12 +612,18 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
 
     return {
         **base,
-        "account_id": claude_account_id(credentials, auth_status, auth_text_details),
+        "account_id": claude_account_id(auth_text_details),
         "email": auth_text_details.get("email"),
         "name": auth_text_details.get("organization"),
         "plan_name": human_plan_name(auth_text_details.get("subscription_type")) or human_plan_name(oauth.get("subscriptionType")) or oauth.get("subscriptionType"),
-        "status": "ok" if auth_status.get("loggedIn") else "error",
-        "error": None if auth_status.get("loggedIn") else "claude auth status reported loggedIn=false",
+        "status": "ok" if auth_status.get("loggedIn") and auth_text_details.get("email") else "error",
+        "error": (
+            None
+            if auth_status.get("loggedIn") and auth_text_details.get("email")
+            else "claude auth email unavailable"
+            if auth_status.get("loggedIn")
+            else "claude auth status reported loggedIn=false"
+        ),
         "windows": statusline_windows,
         "usage_summary": {
             "auth_method": auth_status.get("authMethod"),

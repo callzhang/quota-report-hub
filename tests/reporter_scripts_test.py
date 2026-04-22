@@ -205,6 +205,22 @@ Reading additional input from stdin...
         self.assertEqual(payload["usage_summary"]["rate_limit_probe"]["source"], "statusline_snapshot")
         self.assertEqual(payload["usage_summary"]["statusline_snapshot"]["captured_at"], "2026-04-20T04:00:00Z")
 
+    def test_probe_claude_without_email_uses_single_missing_email_id(self):
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(returncode=0, stdout="Login method: Claude Max account\n", stderr="")
+        status_result = mock.Mock(returncode=0, stdout="/status isn't available in this environment.\n", stderr="")
+
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text, status_result]):
+                with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"subscriptionType": "max"}}, "credentials_file")):
+                    with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None):
+                        with mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                            payload = probe_claude(Path("/tmp/claude-home"))
+
+        self.assertEqual(payload["account_id"], "claude-email-missing")
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], "claude auth email unavailable")
+
     def test_probe_claude_auth_commands_drop_env_overrides(self):
         calls = []
 
