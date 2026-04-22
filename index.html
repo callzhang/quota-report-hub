@@ -48,11 +48,30 @@
         gap: 14px;
       }
 
+      .hero-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
       h1 {
         margin: 0;
         font-size: clamp(34px, 7vw, 60px);
         line-height: 0.92;
         font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      }
+
+      .viewer-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.75);
+        color: var(--ink);
+        white-space: nowrap;
       }
 
       .meta { color: var(--muted); }
@@ -267,7 +286,10 @@
   <body>
     <main>
       <section class="hero">
-        <div class="meta">Shared account-level quota intake for archived Codex auth snapshots and Claude reporters</div>
+        <div class="hero-top">
+          <div class="meta">Shared account-level quota intake for archived Codex auth snapshots and Claude reporters</div>
+          <div id="viewer-chip" class="viewer-chip" hidden></div>
+        </div>
         <h1>Quota Report Hub</h1>
         <div class="meta" id="summary">Loading...</div>
         <div class="cards" id="cards"></div>
@@ -312,22 +334,50 @@
       const rows = document.getElementById("rows");
       const empty = document.getElementById("empty");
       const authPanel = document.getElementById("auth-panel");
+      const viewerChip = document.getElementById("viewer-chip");
       const tokenInput = document.getElementById("token-input");
       const saveTokenButton = document.getElementById("save-token");
       const clearTokenButton = document.getElementById("clear-token");
       const authMessage = document.getElementById("auth-message");
-      const STORAGE_KEY = "quota-report-hub-token";
+      const COOKIE_NAME = "quota_report_hub_token";
+
+      function getCookie(name) {
+        const prefix = `${name}=`;
+        return document.cookie
+          .split(";")
+          .map((part) => part.trim())
+          .find((part) => part.startsWith(prefix))
+          ?.slice(prefix.length) || "";
+      }
+
+      function setTokenCookie(token) {
+        const secure = location.protocol === "https:" ? "; Secure" : "";
+        document.cookie = `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax${secure}`;
+      }
+
+      function clearTokenCookie() {
+        document.cookie = `${COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax`;
+      }
 
       function getStoredToken() {
-        return window.localStorage.getItem(STORAGE_KEY) || "";
+        return decodeURIComponent(getCookie(COOKIE_NAME));
       }
 
-      function setStoredToken(token) {
-        if (token) window.localStorage.setItem(STORAGE_KEY, token);
+      function setAuthenticatedView(email) {
+        authPanel.hidden = true;
+        viewerChip.hidden = false;
+        viewerChip.textContent = `Hello ${email}`;
       }
 
-      function clearStoredToken() {
-        window.localStorage.removeItem(STORAGE_KEY);
+      function setLockedView(message) {
+        authPanel.hidden = false;
+        viewerChip.hidden = true;
+        viewerChip.textContent = "";
+        authMessage.textContent = message;
+        summary.textContent = "Locked";
+        cards.innerHTML = "";
+        rows.innerHTML = "";
+        empty.hidden = true;
       }
 
       function formatPercent(value) {
@@ -447,11 +497,7 @@
       async function load() {
         const token = getStoredToken();
         if (!token) {
-          authMessage.textContent = "Token required.";
-          summary.textContent = "Locked";
-          cards.innerHTML = "";
-          rows.innerHTML = "";
-          empty.hidden = true;
+          setLockedView("Token required.");
           return;
         }
 
@@ -463,16 +509,14 @@
         });
 
         if (response.status === 401) {
-          authMessage.textContent = "Token invalid or expired. Request a new token by email and paste the latest one here.";
-          summary.textContent = "Locked";
-          cards.innerHTML = "";
-          rows.innerHTML = "";
-          empty.hidden = true;
+          clearTokenCookie();
+          tokenInput.value = "";
+          setLockedView("Token invalid or expired. Request a new token by email and paste the latest one here.");
           return;
         }
 
         const payload = await response.json();
-        authMessage.textContent = "Access granted.";
+        setAuthenticatedView(payload.viewer_email || "unknown");
         const items = (payload.items || []).sort((a, b) => (b.reported_at || "").localeCompare(a.reported_at || ""));
         summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active accounts: ${payload.report_count || 0}`;
         cards.innerHTML = [
@@ -503,18 +547,14 @@
           authMessage.textContent = "Enter a token first.";
           return;
         }
-        setStoredToken(token);
+        setTokenCookie(token);
         await load();
       });
 
       clearTokenButton.addEventListener("click", () => {
-        clearStoredToken();
+        clearTokenCookie();
         tokenInput.value = "";
-        authMessage.textContent = "Token cleared.";
-        summary.textContent = "Locked";
-        cards.innerHTML = "";
-        rows.innerHTML = "";
-        empty.hidden = true;
+        setLockedView("Token cleared.");
       });
 
       load();
