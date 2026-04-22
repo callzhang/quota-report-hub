@@ -24,15 +24,34 @@ def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args)
     result = fetch_best_auth(config["auth_pool_url"], config["auth_pool_user_token"], exclude_account_ids=args.exclude_account_id)
+    replacement = result.get("replacement")
+
+    if replacement is None:
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "replacement": None,
+                    "reason": result.get("reason") or "no_better_auth_available",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
 
     if args.print_only:
-        safe = dict(result)
-        safe.pop("auth_json", None)
+        safe = {
+            "ok": True,
+            "requested_by": result.get("requested_by"),
+            "replacement": dict(replacement),
+        }
+        safe["replacement"].pop("auth_json", None)
         print(json.dumps(safe, ensure_ascii=False, indent=2))
         return
 
     args.target_auth_path.parent.mkdir(parents=True, exist_ok=True)
-    args.target_auth_path.write_text(result["auth_json"], encoding="utf-8")
+    args.target_auth_path.write_text(replacement["auth_json"], encoding="utf-8")
     args.target_auth_path.chmod(0o600)
     metadata = auth_metadata(args.target_auth_path)
     known_auth = write_known_auth_state(
@@ -49,10 +68,10 @@ def main() -> None:
             {
                 "ok": True,
                 "target_auth_path": str(args.target_auth_path),
-                "account_id": result["account_id"],
-                "email": result["email"],
-                "plan_name": result["plan_name"],
-                "latest_report": result["latest_report"],
+                "account_id": replacement["account_id"],
+                "email": replacement["email"],
+                "plan_name": replacement["plan_name"],
+                "latest_report": replacement["latest_report"],
                 "known_auth": known_auth,
             },
             ensure_ascii=False,

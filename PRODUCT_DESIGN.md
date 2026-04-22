@@ -11,7 +11,6 @@ Quota Report Hub solves a practical multi-machine, multi-account problem:
 
 The system is designed to:
 
-- observe account quota centrally
 - store reusable Codex auth snapshots securely
 - let a machine fetch a better auth when the current one is nearly exhausted
 - keep company-only access for the auth pool
@@ -53,26 +52,6 @@ The auth-pool design fixes this by introducing a shared server-side store of enc
 
 ## System Components
 
-### Dashboard Reports
-
-The existing dashboard stores:
-
-- `quota_report_events`
-  append-only history of all reports
-- `quota_report_latest`
-  merged latest state per `source + account_id`
-
-The latest-state logic intentionally distinguishes:
-
-- soft failures
-  such as `token_count event was present but missing quota details`
-  keep the last known good windows and mark them as stale
-- hard failures
-  such as `auth invalidated (token_invalidated)`
-  clear the old windows immediately
-
-This prevents the dashboard from showing fake `n/a` regressions while also avoiding fake “healthy” windows for invalidated auths.
-
 ### Auth Pool
 
 The auth pool adds a new server-side storage layer:
@@ -88,10 +67,10 @@ Each entry stores:
 - encrypted `auth.json`
 - IV and auth tag for AES-256-GCM
 
-The auth pool is intentionally separate from dashboard reports:
+The auth pool is now the primary product surface:
 
-- reports answer “what is the latest known quota status”
 - auth pool answers “which auth file can be handed back to a machine”
+- dashboard should answer “what does the current cloud auth pool look like”
 
 ### Company Auth
 
@@ -150,13 +129,6 @@ Only the latest token for an email is valid. A user can reuse that latest token 
 
 ## Server-Side API Design
 
-### Existing APIs
-
-- `POST /api/report`
-  ingest dashboard reports
-- `GET /api/status`
-  read latest merged dashboard state
-
 ### New Auth APIs
 
 - `POST /api/auth/issue-token`
@@ -184,13 +156,20 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   auth:
   - personal bearer token
   input:
-  - optional `exclude_account_ids`
+  - `current_account_id`
+  - `current_quota`
+    - `five_h_remaining_percent`
+    - `one_week_remaining_percent`
   behavior:
-  - looks at latest dashboard reports plus stored auth pool entries
+  - looks at stored auth pool entries plus their latest known Codex quota metadata
+  - excludes the current local account
   - excludes hard-invalidated accounts
   - excludes accounts with `5H <= 0` or `1week <= 0`
-  - ranks by highest `5H remaining`, then highest `1week remaining`
-  - returns the decrypted best auth plus the latest report metadata
+  - only considers candidates whose `5H` is strictly better than the current local `5H`
+  - only considers candidates whose `1week` is strictly better than the current local `1week`
+  - returns either:
+    - a decrypted better auth plus latest known quota metadata
+    - or `replacement: null`
 
 - `GET /api/status`
   auth:
@@ -232,16 +211,14 @@ It may contain:
 
 ### Ongoing Machine Behavior
 
-After setup, the local machine does four jobs:
+After setup, the local machine does three jobs:
 
 1. track the current `~/.codex/auth.json` in `~/.agents/auth/known_auth.json`
 2. upload the current auth to the shared auth pool only when the last uploaded `account_id`, `auth_last_refresh`, and `digest` do not already match
-3. probe local Codex and Claude quota
-4. fetch and install a better Codex auth when local quota is low
+3. probe local Codex quota and fetch and install a better Codex auth when local quota is low
 
 Additional operational constraints:
 
-- Claude quota is only available after at least one real interactive Claude request on that machine after the statusline hook is installed.
 - Replacing `~/.codex/auth.json` does not retroactively update already running Codex sessions; new sessions pick up the new auth.
 - If the cloud has no better auth than the currently installed one, the machine does nothing.
 - The local config file must remain private because it stores a personal bearer token.
@@ -253,11 +230,26 @@ Additional operational constraints:
 
 ### Local Rotation Trigger
 
-The local rotation condition remains:
+The local rotation condition is:
 
-- rotate when current live auth is unhealthy
+- rotate only when current live Codex auth is unhealthy
 
 Currently “unhealthy” means:
+
+- current `5H remaining` is below `20%`
+- or current `1week remaining` is `0%`
+- or current auth is hard-invalidated
+
+When the trigger fires, the machine calls `/api/auth/fetch-best` with:
+
+- `current_account_id`
+- `current_quota.five_h_remaining_percent`
+- `current_quota.one_week_remaining_percent`
+
+The server returns:
+
+- a better auth when one exists
+- otherwise `replacement: null`
 
 - `5H < 20%`
 - or `1week == 0`

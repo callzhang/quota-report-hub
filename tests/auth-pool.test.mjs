@@ -87,10 +87,43 @@ test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best 
     { account_id: "best" },
   ];
 
-  const candidate = pickBestAuthPoolCandidate(reports, pool);
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 20,
+      one_week_remaining_percent: 40,
+    },
+  });
 
   assert.equal(candidate.entry.account_id, "best");
   assert.equal(candidate.report.account_id, "best");
+});
+
+test("pickBestAuthPoolCandidate returns null when no candidate beats current quota", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "same-level",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 18 },
+        "1week": { remaining_percent: 80 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+  ];
+  const pool = [{ account_id: "same-level" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 20,
+      one_week_remaining_percent: 50,
+    },
+  });
+
+  assert.equal(candidate, null);
 });
 
 test("shouldReplaceAuthPoolEntry skips duplicate account uploads when incoming refresh is not newer", () => {

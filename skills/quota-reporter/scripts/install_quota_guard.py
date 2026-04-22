@@ -23,7 +23,6 @@ PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 LOG_PATH = Path.home() / ".agents" / "auth" / "quota-guard.log"
 ERROR_LOG_PATH = Path.home() / ".agents" / "auth" / "quota-guard.error.log"
 CRON_MARKER = "# quota-guard-managed"
-CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 
 def write_config(auth_pool_url: str, email: str, auth_pool_user_token: str) -> None:
@@ -40,21 +39,6 @@ def write_config(auth_pool_url: str, email: str, auth_pool_user_token: str) -> N
         + "\n",
         encoding="utf-8",
     )
-
-
-def configure_claude_statusline(python_path: str, skill_scripts_dir: Path) -> dict:
-    statusline_script = skill_scripts_dir / "claude_statusline_probe.py"
-    command = f"{shlex.quote(python_path)} {shlex.quote(str(statusline_script))}"
-
-    CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    settings = json.loads(CLAUDE_SETTINGS_PATH.read_text(encoding="utf-8")) if CLAUDE_SETTINGS_PATH.exists() else {}
-    settings["statusLine"] = {
-        "type": "command",
-        "command": command,
-        "refreshInterval": 60,
-    }
-    CLAUDE_SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-    return settings["statusLine"]
 
 
 def write_plist(python_path: str, worker_script: Path) -> None:
@@ -135,7 +119,6 @@ def ensure_user_token(auth_pool_url: str, email: str | None, auth_pool_user_toke
 def main() -> None:
     args = build_parser().parse_args()
     worker_script = Path(__file__).with_name("quota_guard.py")
-    skill_scripts_dir = Path(__file__).resolve().parent
     email, token = ensure_user_token(
         args.auth_pool_url,
         args.email,
@@ -143,7 +126,6 @@ def main() -> None:
         args.skip_token_request,
     )
     write_config(args.auth_pool_url, email, token)
-    statusline = configure_claude_statusline(args.python_path, skill_scripts_dir)
     system = platform.system()
 
     if system == "Darwin":
@@ -157,8 +139,6 @@ def main() -> None:
                     "config_path": str(CONFIG_PATH),
                     "plist_path": str(PLIST_PATH),
                     "auth_pool_user_email": email,
-                    "claude_statusline_settings_path": str(CLAUDE_SETTINGS_PATH),
-                    "claude_statusline": statusline,
                     "start_interval_seconds": RUN_INTERVAL_SECONDS,
                 },
                 indent=2,
@@ -176,8 +156,6 @@ def main() -> None:
                     "log_path": str(LOG_PATH),
                     "error_log_path": str(ERROR_LOG_PATH),
                     "auth_pool_user_email": email,
-                    "claude_statusline_settings_path": str(CLAUDE_SETTINGS_PATH),
-                    "claude_statusline": statusline,
                     "entries": cron_lines(args.python_path, worker_script),
                 },
                 indent=2,

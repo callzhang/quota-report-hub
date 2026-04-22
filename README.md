@@ -14,10 +14,9 @@ That hub now requires a valid personal access token to read dashboard data. Publ
 
 Typical examples:
 
-- You switch between Codex, Claude, and other coding agents throughout the day
+- You switch between multiple Codex accounts across laptops, desktops, and servers
 - You keep separate accounts on different laptops, desktops, or remote boxes
-- You want one dashboard that normalizes each account to its latest known quota, even if multiple machines touch the same account
-- You also want Claude CLI usage metadata in the same dashboard, even when Claude does not expose resettable remaining quota
+- You want one dashboard that shows the current cloud auth pool and its latest known Codex quota metadata
 - You want each machine to check quota automatically every 15 minutes instead of checking manually before switching agents
 - You want reporting to resume automatically after a laptop reboot or a remote server restart
 
@@ -74,48 +73,38 @@ The intended end-to-end flow inside Codex is:
 10. Every 15 minutes the guard:
    - reads current `~/.codex/auth.json`
    - updates local `~/.agents/auth/known_auth.json`
-   - uploads current auth to the auth pool only when the current digest is new
-   - checks local Codex and Claude quota
-   - fetches and installs a better Codex auth when local quota is low
+   - uploads current auth to the auth pool only when the current `account_id`, `auth_last_refresh`, and digest represent a new version
+   - checks only the current local Codex quota
+   - if local Codex is below threshold, sends the current account and current quota to `/api/auth/fetch-best`
+   - installs a better Codex auth only when the server returns one
 
 Important runtime notes:
 
-- Claude quota requires one real interactive Claude request after install. Until that happens, the statusline snapshot may not contain `5h` or `1week`.
-- Replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions. New auth usually takes effect in the next new session.
-- If the cloud has no better auth than the current one, the guard does nothing and keeps the current auth installed.
-- `~/.agents/auth/quota-reporter.json` should stay private because it contains the user's personal auth-pool token.
-- The hub dashboard also uses the same personal token. Without a valid token, `/api/status` returns `401` and the page stays locked.
-- Every time a user requests a new token by email, the old token is revoked. Only the latest token for that email remains valid, even if that latest token is then reused across multiple machines.
-
-The installer now also configures Claude Code's `statusLine` hook automatically:
-
-- it writes `statusLine.command = python3 .../claude_statusline_probe.py` into `~/.claude/settings.json`
-- Claude then writes the latest quota snapshot to `~/.claude/statusline-rate-limits.json`
-- after install, each machine must complete at least one real interactive Claude request once so Claude starts populating the `rate_limits` snapshot
-- until that first successful Claude request happens, macOS quota checks will skip Claude instead of treating it as a hard failure
-
-Codex and Claude local-guard rules:
-
 - each run reads the current live `~/.codex/auth.json`
 - each machine stores only one local state file: `~/.agents/auth/known_auth.json`
-- it probes the current local Codex auth and current local Claude statusline snapshot
+- the local guard probes only the current local Codex auth
 - if Codex has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine asks the cloud auth pool for a better Codex auth
-- if Claude has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine also asks the cloud auth pool for a better Codex auth
-- the server-side auth pool picks the best usable Codex auth by `5H remaining` first, then `1week remaining`
+- the request to `/api/auth/fetch-best` includes:
+  - the current local `account_id`
+  - the current local `5H remaining percent`
+  - the current local `1week remaining percent`
+- the server only returns a replacement when it is strictly better than the current local auth
 - local upload is skipped only when `known_auth.json` records the same uploaded `account_id`, the same uploaded `auth_last_refresh`, and the same uploaded digest
 - if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy
 - the guard only replaces local `~/.codex/auth.json` when the fetched auth is different from the currently installed auth
+- replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions. New auth usually takes effect in the next new session.
+- if the cloud has no better auth than the current one, the guard does nothing and keeps the current auth installed.
+- `~/.agents/auth/quota-reporter.json` should stay private because it contains the user's personal auth-pool token.
+- the hub dashboard also uses the same personal token. Without a valid token, `/api/status` returns `401` and the page stays locked.
+- every time a user requests a new token by email, the old token is revoked. Only the latest token for that email remains valid, even if that latest token is then reused across multiple machines.
 - old local reporter scripts now live under `skills/quota-reporter/archive/`
 
-The dashboard handles the two sources differently:
+The dashboard is now intended to reflect the cloud auth pool, not arbitrary client report rows:
 
-- Codex reports real `5H` and `1week` quota windows from the current local `~/.codex/auth.json`
-- The hub keeps the latest report metadata per account. Soft Codex probe failures such as missing quota details keep the last good windows and mark them as stale, while hard auth failures such as token invalidation clear the old windows immediately.
-- Claude reports auth tier and cumulative usage statistics, and now reads Claude Code's official `statusLine` JSON snapshot for `rate_limits` instead of relying on unofficial OAuth usage probing.
-- The included `claude_statusline_probe.py` script is wired into `~/.claude/settings.json` as a `statusLine` command. It stores the latest `rate_limits` payload under `~/.claude/statusline-rate-limits.json`, which the local guard reads.
-- The Claude probe still hard-times out the extra `claude auth status` and `claude -p "/status"` commands so one slow local CLI process cannot block the 15-minute guard run.
-- On macOS, if Claude does not currently have `5h` and `1week` windows from the statusline snapshot, the guard skips Claude instead of producing a noisy `n/a` state.
-- The dashboard now keeps the last reported status visible instead of expiring it after one hour, shows how old the report is, and renders each reset time as a live countdown such as `reset in 3h 30m`. Once a reset time has passed, that window is shown in green as `ready now`.
+- each visible row should correspond to one cloud-stored Codex auth entry
+- quota metadata is shown as the latest known Codex quota associated with that cloud auth entry
+- hard-invalidated auths should not remain selectable
+- stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
 
 Auth pool support:
 
@@ -137,15 +126,12 @@ The installer is reboot-safe and runs every 15 minutes:
 
 ## Endpoints
 
-- `POST /api/report`
-  - Requires `Authorization: Bearer <REPORT_INGEST_TOKEN>`
-  - Appends an event row and updates the latest row per `source + account_id`
 - `GET /api/status`
-  - Returns the current merged dataset
+  - Requires a personal bearer token
+  - Returns the current dashboard dataset
 
 ## Required environment variables
 
-- `REPORT_INGEST_TOKEN`
 - `AUTH_POOL_ENCRYPTION_KEY`
 - `MAILGUN_API_KEY`
 - `MAILGUN_DOMAIN`
@@ -207,8 +193,9 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 
 - updates local `known_auth.json`
 - uploads the current local Codex auth to the cloud auth pool only when needed
-- probes local Codex and Claude quota
-- fetches a better Codex auth from `/api/auth/fetch-best` when local quota is low
+- probes local Codex quota
+- when local Codex is low, sends the current account and current quota to `/api/auth/fetch-best`
+- installs a replacement only when the server returns a strictly better auth
 
 5. If needed, you can still fetch the best currently usable auth from the pool without installing it:
 

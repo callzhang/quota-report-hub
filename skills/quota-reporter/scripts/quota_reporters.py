@@ -744,8 +744,21 @@ def sync_current_codex_auth_pool(
     }
 
 
-def fetch_best_auth(auth_pool_url: str, auth_pool_user_token: str, exclude_account_ids: list[str] | None = None) -> dict:
-    body = json.dumps({"exclude_account_ids": exclude_account_ids or []}).encode("utf-8")
+def fetch_best_auth(
+    auth_pool_url: str,
+    auth_pool_user_token: str,
+    *,
+    current_account_id: str | None = None,
+    current_quota: dict | None = None,
+    exclude_account_ids: list[str] | None = None,
+) -> dict:
+    body = json.dumps(
+        {
+            "exclude_account_ids": exclude_account_ids or [],
+            "current_account_id": current_account_id,
+            "current_quota": current_quota or {},
+        }
+    ).encode("utf-8")
     request = urllib.request.Request(
         auth_pool_url.rstrip("/") + "/api/auth/fetch-best",
         data=body,

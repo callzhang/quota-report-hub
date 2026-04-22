@@ -293,12 +293,12 @@ Reading additional input from stdin...
             },
         }
 
-        should_fetch, reasons = quota_guard.should_fetch_replacement(codex_payload, None, 20.0)
+        should_fetch, reasons = quota_guard.should_fetch_replacement(codex_payload, 20.0)
 
         self.assertTrue(should_fetch)
         self.assertEqual(reasons, ["codex"])
 
-    def test_should_fetch_replacement_when_claude_is_low(self):
+    def test_should_not_fetch_replacement_when_codex_is_healthy(self):
         codex_payload = {
             "source": "codex",
             "windows": {
@@ -306,18 +306,11 @@ Reading additional input from stdin...
                 "1week": {"remaining_percent": 50},
             },
         }
-        claude_payload = {
-            "source": "claude",
-            "windows": {
-                "5h": {"remaining_percent": 15},
-                "1week": {"remaining_percent": 40},
-            },
-        }
 
-        should_fetch, reasons = quota_guard.should_fetch_replacement(codex_payload, claude_payload, 20.0)
+        should_fetch, reasons = quota_guard.should_fetch_replacement(codex_payload, 20.0)
 
-        self.assertTrue(should_fetch)
-        self.assertEqual(reasons, ["claude"])
+        self.assertFalse(should_fetch)
+        self.assertEqual(reasons, [])
 
     def test_maybe_replace_codex_auth_replaces_low_quota_live_auth(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -335,12 +328,14 @@ Reading additional input from stdin...
             }
 
             with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
-                "account_id": "best",
-                "digest": "digest-best",
-                "email": "best@example.com",
-                "plan_name": "Pro",
-                "auth_json": json.dumps({"tokens": {"account_id": "best"}}),
-                "latest_report": {"remaining_5h": 88, "remaining_1week": 50},
+                "replacement": {
+                    "account_id": "best",
+                    "digest": "digest-best",
+                    "email": "best@example.com",
+                    "plan_name": "Pro",
+                    "auth_json": json.dumps({"tokens": {"account_id": "best"}}),
+                    "latest_report": {"remaining_5h": 88, "remaining_1week": 50},
+                },
             }):
                 with mock.patch.object(
                     quota_guard,
@@ -401,9 +396,11 @@ Reading additional input from stdin...
             }
 
             with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
-                "account_id": "current",
-                "digest": "digest-same",
-                "auth_json": live_auth.read_text(encoding="utf-8"),
+                "replacement": {
+                    "account_id": "current",
+                    "digest": "digest-same",
+                    "auth_json": live_auth.read_text(encoding="utf-8"),
+                },
             }):
                 with mock.patch.object(
                     quota_guard,
@@ -425,6 +422,28 @@ Reading additional input from stdin...
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "best_auth_already_installed")
 
+    def test_maybe_replace_codex_auth_returns_null_replacement_when_server_has_no_better_auth(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        codex_payload = {
+            "account_id": "current",
+            "windows": {"5h": {"remaining_percent": 10}, "1week": {"remaining_percent": 70}},
+        }
+
+        with mock.patch.object(quota_guard, "fetch_best_auth", return_value={"ok": True, "replacement": None, "reason": "no_better_auth_available"}):
+            replacement = quota_guard.maybe_replace_codex_auth(
+                config,
+                codex_payload,
+                Path("/tmp/auth.json"),
+                Path("/tmp/known_auth.json"),
+                threshold_percent=20.0,
+            )
+
+        self.assertFalse(replacement["replaced"])
+        self.assertEqual(replacement["reason"], "no_better_auth_available")
+
     def test_run_guard_syncs_pool_and_fetches_replacement(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
@@ -441,10 +460,9 @@ Reading additional input from stdin...
             "auth_pool_user_token": "qrp_token",
         }):
             with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
-                with mock.patch.object(quota_guard, "probe_claude", return_value={"source": "claude", "account_id": "claude-1"}):
-                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": True}) as sync_auth_pool:
-                        with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_auth:
-                            result = quota_guard.run_guard(args)
+                with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": True}) as sync_auth_pool:
+                    with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_auth:
+                        result = quota_guard.run_guard(args)
 
         sync_auth_pool.assert_called_once_with(
             "https://quota-report-hub.vercel.app",
@@ -455,6 +473,7 @@ Reading additional input from stdin...
         replace_auth.assert_called_once()
         self.assertEqual(result["auth_pool_sync"], {"ok": True, "uploaded": True})
         self.assertEqual(result["replacement"]["reason"], "healthy")
+        self.assertNotIn("claude", result)
 
     def test_sync_current_codex_auth_pool_skips_when_digest_already_uploaded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -540,21 +559,9 @@ Reading additional input from stdin...
         self.assertEqual(result["known_auth"]["last_uploaded_account_id"], "acct-1")
         self.assertEqual(result["known_auth"]["last_uploaded_auth_last_refresh"], "2026-04-19T22:00:00Z")
 
-    def test_configure_claude_statusline_writes_settings(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            base = Path(temp_dir)
-            settings_path = base / ".claude" / "settings.json"
-            scripts_dir = base / "skill" / "scripts"
-            scripts_dir.mkdir(parents=True)
-            (scripts_dir / "claude_statusline_probe.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
-
-            with mock.patch.object(install_quota_guard, "CLAUDE_SETTINGS_PATH", settings_path):
-                statusline = install_quota_guard.configure_claude_statusline("/usr/bin/python3", scripts_dir)
-
-            self.assertEqual(statusline["type"], "command")
-            self.assertIn("claude_statusline_probe.py", statusline["command"])
-            saved = json.loads(settings_path.read_text(encoding="utf-8"))
-            self.assertEqual(saved["statusLine"]["refreshInterval"], 60)
+    def test_install_output_no_longer_mentions_claude_statusline(self):
+        self.assertFalse(hasattr(install_quota_guard, "configure_claude_statusline"))
+        self.assertFalse(hasattr(install_quota_guard, "CLAUDE_SETTINGS_PATH"))
 
     def test_install_linux_cron_uses_fifteen_minute_interval(self):
         lines = install_quota_guard.cron_lines("/usr/bin/python3", Path("/tmp/quota_guard.py"))

@@ -30,12 +30,17 @@ export default async function handler(req, res) {
 
   const entry = await bestAuthPoolEntry({
     exclude_account_ids: Array.isArray(req.body?.exclude_account_ids) ? req.body.exclude_account_ids : [],
+    current_account_id: req.body?.current_account_id ? String(req.body.current_account_id) : null,
+    current_quota: {
+      five_h_remaining_percent: req.body?.current_quota?.five_h_remaining_percent,
+      one_week_remaining_percent: req.body?.current_quota?.one_week_remaining_percent,
+    },
   });
 
   if (!entry) {
-    res.statusCode = 404;
+    res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ error: "No usable auth available" }));
+    res.end(JSON.stringify({ ok: true, replacement: null, reason: "no_better_auth_available" }));
     return;
   }
 
@@ -45,18 +50,20 @@ export default async function handler(req, res) {
     JSON.stringify({
       ok: true,
       requested_by: authContext.email,
-      source: entry.source,
-      account_id: entry.account_id,
-      email: entry.email,
-      name: entry.name,
-      plan_name: entry.plan_name,
-      auth_last_refresh: entry.auth_last_refresh,
-      digest: entry.digest,
-      uploaded_at: entry.uploaded_at,
-      reporter_name: entry.reporter_name,
-      hostname: entry.hostname,
-      latest_report: entry.report,
-      auth_json: entry.auth_json,
+      replacement: {
+        source: entry.source,
+        account_id: entry.account_id,
+        email: entry.email,
+        name: entry.name,
+        plan_name: entry.plan_name,
+        auth_last_refresh: entry.auth_last_refresh,
+        digest: entry.digest,
+        uploaded_at: entry.uploaded_at,
+        reporter_name: entry.reporter_name,
+        hostname: entry.hostname,
+        latest_report: entry.report,
+        auth_json: entry.auth_json,
+      },
     })
   );
 }
