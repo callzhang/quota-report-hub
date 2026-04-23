@@ -74,7 +74,7 @@ def upsert_vercel_env(name: str, value: str, environment: str, *, cwd: Path) -> 
     add_result = run(
         ["vercel", "env", "add", name, environment],
         cwd=cwd,
-        input_text=value + "\n",
+        input_text=value,
         check=False,
     )
     if add_result.returncode != 0:
