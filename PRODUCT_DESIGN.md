@@ -313,8 +313,6 @@ Accepted formats:
 
 The design keeps secrets separated by function:
 
-- `REPORT_INGEST_TOKEN`
-  protects dashboard report ingestion
 - personal auth-pool user token
   protects auth upload and fetch for one employee
 - `AUTH_POOL_ENCRYPTION_KEY`
@@ -334,14 +332,10 @@ That means:
 
 ## Environment Variables
 
-### Required for Existing Dashboard
-
-- `REPORT_INGEST_TOKEN`
-- `TURSO_DATABASE_URL`
-- `TURSO_AUTH_TOKEN`
-
 ### Required for Auth Pool
 
+- `TURSO_DATABASE_URL`
+- `TURSO_AUTH_TOKEN`
 - `AUTH_POOL_ENCRYPTION_KEY`
 
 ### Required for Email Token Delivery

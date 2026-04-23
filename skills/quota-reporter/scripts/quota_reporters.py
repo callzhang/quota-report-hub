@@ -721,21 +721,6 @@ def load_config(args: argparse.Namespace) -> dict:
     return config
 
 
-def post_report(server_url: str, ingest_token: str, payload: dict) -> dict:
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        server_url.rstrip("/") + "/api/report",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {ingest_token}",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(request) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
 def post_auth_pool_entry(
     auth_pool_url: str,
     auth_pool_user_token: str,
