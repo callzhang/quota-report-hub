@@ -233,6 +233,18 @@ Additional operational constraints:
 - The local machine does not keep a rolling archive of auth snapshots anymore; the cloud auth pool is the durable store.
 - `known_auth.json` is only a local upload filter. It records the last uploaded state separately for each source.
 - If the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload and overwrite the old cloud copy for that source.
+- If the same auth is still installed but the local machine gets a fresh quota probe for that source, the machine uploads again so cloud quota can be refreshed without needing a new auth file.
+- Codex and Claude follow the same upload rule. The system does not keep separate upload semantics per source.
+
+## Cloud Quota Freshness
+
+The current product does not run a server-side 15-minute probe loop.
+
+- the cloud auth pool stores encrypted auth snapshots plus the latest client-known quota for each `source + account_id`
+- `last known` in the dashboard advances only when a client guard uploads a fresh local probe
+- if all client guards are idle, offline, or failing locally, the dashboard can legitimately show `last known 50m ago` or older
+
+This is intentional in the current design. A future server-side probe worker could make the dashboard freshness independent of client activity, but that is not the current system.
 
 ## Rotation Logic
 

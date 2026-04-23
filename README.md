@@ -73,7 +73,9 @@ The intended end-to-end flow inside Codex is:
 10. Every 15 minutes the guard:
    - reads current local auth state for each supported source
    - updates local `~/.agents/auth/known_auth.json`
-   - uploads current auth to the auth pool only when the current `source`, `account_id`, `auth_last_refresh`, and digest represent a new version
+   - uploads current auth to the auth pool when either:
+     - the current `source`, `account_id`, `auth_last_refresh`, and digest represent a new version
+     - or the auth is unchanged but the current local probe produced a fresh quota snapshot for that same source
    - checks the current local Codex quota and Claude quota
    - if a local source is below threshold, sends `source + current account + current quota` to `/api/auth/fetch-best`
    - installs a better auth only when the server returns one for that same source
@@ -92,6 +94,7 @@ Important runtime notes:
   - the current local `1week remaining percent`
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
 - local upload is skipped only when `known_auth.json` records the same uploaded `account_id`, the same uploaded `auth_last_refresh`, and the same uploaded digest
+- codex and claude now use the same upload rule; there is no separate claude-specific skip path anymore
 - if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy
 - the guard only replaces local `~/.codex/auth.json` when the fetched auth is different from the currently installed auth
 - replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions. New auth usually takes effect in the next new session.
@@ -104,9 +107,10 @@ Important runtime notes:
 The dashboard now reflects the cloud auth pool, not arbitrary client report rows:
 
 - each visible row should correspond to one cloud-stored auth entry
-- quota metadata is shown as the latest known quota associated with that cloud auth entry
+- quota metadata is shown as the latest client-known quota associated with that cloud auth entry
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
+- the cloud does not run its own 15-minute quota probe yet; `last known` advances only when a client guard uploads a fresh local probe
 
 Auth pool support:
 

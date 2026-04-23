@@ -751,27 +751,26 @@ def post_auth_pool_entry(
         return json.loads(response.read().decode("utf-8"))
 
 
-def sync_current_codex_auth_pool(
+def sync_current_auth_pool_entry(
+    *,
+    source: str,
     auth_pool_url: str,
     auth_pool_user_token: str,
-    auth_path: Path = SOURCE_AUTH_PATH,
-    known_auth_path: Path = KNOWN_AUTH_PATH,
-    current_codex_payload: dict | None = None,
+    auth_json_text: str,
+    metadata: dict,
+    known_auth_path: Path,
+    quota_payload: dict | None,
 ) -> dict:
-    if not auth_path.exists():
-        return {"ok": True, "uploaded": False, "reason": "missing_auth"}
-
-    metadata = auth_metadata(auth_path)
-    known = known_auth_state_for_source(read_known_auth_state(known_auth_path), "codex")
+    known = known_auth_state_for_source(read_known_auth_state(known_auth_path), source)
     already_uploaded = (
         known.get("last_uploaded_account_id") == metadata["account_id"]
         and known.get("last_uploaded_auth_last_refresh") == metadata["auth_last_refresh"]
         and known.get("last_uploaded_digest") == metadata["digest"]
     )
 
-    if already_uploaded and current_codex_payload is None:
+    if already_uploaded and quota_payload is None:
         state = write_known_auth_state(
-            source="codex",
+            source=source,
             metadata=metadata,
             known_auth_path=known_auth_path,
             last_uploaded_digest=metadata["digest"],
@@ -789,12 +788,12 @@ def sync_current_codex_auth_pool(
     uploaded = post_auth_pool_entry(
         auth_pool_url,
         auth_pool_user_token,
-        source="codex",
-        auth_json_text=auth_path.read_text(encoding="utf-8"),
-        quota_payload=current_codex_payload,
+        source=source,
+        auth_json_text=auth_json_text,
+        quota_payload=quota_payload,
     )
     state = write_known_auth_state(
-        source="codex",
+        source=source,
         metadata=metadata,
         known_auth_path=known_auth_path,
         last_uploaded_digest=metadata["digest"],
@@ -809,6 +808,28 @@ def sync_current_codex_auth_pool(
         "entry": uploaded,
         "known_auth": state,
     }
+
+
+def sync_current_codex_auth_pool(
+    auth_pool_url: str,
+    auth_pool_user_token: str,
+    auth_path: Path = SOURCE_AUTH_PATH,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
+    current_codex_payload: dict | None = None,
+) -> dict:
+    if not auth_path.exists():
+        return {"ok": True, "uploaded": False, "reason": "missing_auth"}
+
+    metadata = auth_metadata(auth_path)
+    return sync_current_auth_pool_entry(
+        source="codex",
+        auth_pool_url=auth_pool_url,
+        auth_pool_user_token=auth_pool_user_token,
+        auth_json_text=auth_path.read_text(encoding="utf-8"),
+        metadata=metadata,
+        known_auth_path=known_auth_path,
+        quota_payload=current_codex_payload,
+    )
 
 
 def sync_current_claude_auth_pool(
@@ -828,55 +849,17 @@ def sync_current_claude_auth_pool(
         }
 
     metadata = claude_auth_blob_metadata(blob_text)
-    known = known_auth_state_for_source(read_known_auth_state(known_auth_path), "claude")
-    already_uploaded = (
-        known.get("last_uploaded_account_id") == metadata["account_id"]
-        and known.get("last_uploaded_auth_last_refresh") == metadata["auth_last_refresh"]
-        and known.get("last_uploaded_digest") == metadata["digest"]
-    )
-
-    if already_uploaded and payload.get("windows") == empty_windows():
-        state = write_known_auth_state(
-            source="claude",
-            metadata=metadata,
-            known_auth_path=known_auth_path,
-            last_uploaded_digest=metadata["digest"],
-            last_uploaded_account_id=metadata["account_id"],
-            last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
-            state_source="unchanged_local_auth",
-        )
-        return {
-            "ok": True,
-            "uploaded": False,
-            "reason": "already_uploaded",
-            "known_auth": state,
-            "claude": payload,
-        }
-
-    uploaded = post_auth_pool_entry(
-        auth_pool_url,
-        auth_pool_user_token,
+    result = sync_current_auth_pool_entry(
         source="claude",
+        auth_pool_url=auth_pool_url,
+        auth_pool_user_token=auth_pool_user_token,
         auth_json_text=blob_text,
-        quota_payload=payload,
-    )
-    state = write_known_auth_state(
-        source="claude",
         metadata=metadata,
         known_auth_path=known_auth_path,
-        last_uploaded_digest=metadata["digest"],
-        last_uploaded_account_id=metadata["account_id"],
-        last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
-        state_source="uploaded_to_auth_pool",
+        quota_payload=payload,
     )
-    return {
-        "ok": True,
-        "uploaded": True,
-        "reason": "quota_refreshed_with_same_auth" if already_uploaded else "uploaded_to_auth_pool",
-        "entry": uploaded,
-        "known_auth": state,
-        "claude": payload,
-    }
+    result["claude"] = payload
+    return result
 
 
 def fetch_best_auth(

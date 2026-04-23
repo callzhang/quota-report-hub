@@ -622,6 +622,85 @@ Reading additional input from stdin...
         self.assertEqual(result["known_auth"]["last_uploaded_account_id"], "acct-1")
         self.assertEqual(result["known_auth"]["last_uploaded_auth_last_refresh"], "2026-04-19T22:00:00Z")
 
+    def test_sync_current_claude_auth_pool_refreshes_quota_when_same_auth_is_still_current(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            claude_home = base / ".claude"
+            credentials_path = claude_home / ".credentials.json"
+            known_auth_path = base / "known_auth.json"
+            claude_home.mkdir(parents=True, exist_ok=True)
+            credentials_path.write_text(
+                json.dumps(
+                    {
+                        "claudeAiOauth": {
+                            "accessToken": "token",
+                            "refreshToken": "refresh",
+                            "expiresAt": "2026-04-23T12:00:00Z",
+                            "scopes": ["openid"],
+                            "subscriptionType": "max",
+                            "rateLimitTier": "default_claude_max_20x",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            blob_text = json.dumps(
+                {
+                    "schema": "claude_credentials_v1",
+                    "account_id": "claude-derek@stardust.ai",
+                    "email": "derek@stardust.ai",
+                    "name": "Derek Zen",
+                    "plan_name": "Max",
+                    "auth_last_refresh": "1776668828033",
+                    "credentials": {
+                        "claudeAiOauth": {
+                            "accessToken": "token",
+                            "refreshToken": "refresh",
+                            "expiresAt": "2026-04-23T12:00:00Z",
+                            "scopes": ["openid"],
+                            "subscriptionType": "max",
+                            "rateLimitTier": "default_claude_max_20x",
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            )
+            metadata = quota_guard.claude_auth_blob_metadata(blob_text)
+            known_auth_path.write_text(
+                json.dumps(
+                    {"sources": {"claude": {
+                        "last_uploaded_account_id": metadata["account_id"],
+                        "last_uploaded_auth_last_refresh": metadata["auth_last_refresh"],
+                        "last_uploaded_digest": metadata["digest"],
+                    }}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            payload = {
+                "source": "claude",
+                "account_id": metadata["account_id"],
+                "email": "derek@stardust.ai",
+                "name": "Derek Zen",
+                "plan_name": "Max",
+                "windows": {"5h": {"remaining_percent": 80}, "1week": {"remaining_percent": 60}},
+            }
+
+            with mock.patch("quota_reporters.build_claude_auth_blob", return_value=(blob_text, payload)):
+                with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": metadata["account_id"]}}) as post_auth_pool_entry:
+                    result = quota_guard.sync_current_claude_auth_pool(
+                        "https://quota-report-hub.vercel.app",
+                        "qrp_token",
+                        claude_home=claude_home,
+                        known_auth_path=known_auth_path,
+                    )
+
+        post_auth_pool_entry.assert_called_once()
+        self.assertTrue(result["uploaded"])
+        self.assertEqual(result["reason"], "quota_refreshed_with_same_auth")
+
     def test_install_supports_claude_statusline_settings(self):
         self.assertTrue(hasattr(install_quota_guard, "configure_claude_statusline"))
         self.assertTrue(hasattr(install_quota_guard, "CLAUDE_SETTINGS_PATH"))
