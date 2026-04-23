@@ -189,7 +189,7 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   auth:
   - cron bearer token via `CRON_SECRET`
   behavior:
-  - Vercel cron hits this every 15 minutes
+  - GitHub Actions hits this every 15 minutes
   - decrypts every stored auth snapshot
   - probes Codex or Claude quota on the server
   - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`

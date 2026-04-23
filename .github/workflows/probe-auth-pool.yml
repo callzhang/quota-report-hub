@@ -1,0 +1,21 @@
+name: Probe Auth Pool
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger cloud auth pool probe
+        env:
+          HUB_PROBE_URL: ${{ secrets.HUB_PROBE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          test -n "$HUB_PROBE_URL"
+          test -n "$CRON_SECRET"
+          curl --fail --show-error --silent \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$HUB_PROBE_URL"

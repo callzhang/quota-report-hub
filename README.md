@@ -116,7 +116,7 @@ Auth pool support:
 - Each email can have only one active token at a time; a newly issued token revokes all older tokens for that email.
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
 - The upload handler immediately runs a server-side probe for the uploaded auth.
-- Vercel cron refreshes the whole auth pool every 15 minutes through `/api/internal/probe-auth-pool`.
+- GitHub Actions refreshes the whole auth pool every 15 minutes by calling `/api/internal/probe-auth-pool`.
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - The dashboard API at `/api/status` also requires the same personal bearer token.
 - The selection logic only compares candidates within the same source, prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
@@ -177,6 +177,17 @@ Important:
 - the script preserves an existing `AUTH_POOL_ENCRYPTION_KEY` by default, because rotating it would make previously encrypted auth-pool rows unreadable
 - use `--rotate-auth-pool-key` only when you intentionally want to invalidate existing encrypted auth-pool entries
 - use `--skip-deploy` if you only want to update Vercel env values without deploying immediately
+
+## Scheduler
+
+The hosted hub uses GitHub Actions, not Vercel cron, for the 15-minute server probe loop.
+
+- workflow file: `.github/workflows/probe-auth-pool.yml`
+- required GitHub secrets:
+  - `HUB_PROBE_URL`
+  - `CRON_SECRET`
+- for the default hosted hub, `HUB_PROBE_URL` should be:
+  - `https://quota-report-hub.vercel.app/api/internal/probe-auth-pool`
 
 ## Auth Pool Workflow
 
