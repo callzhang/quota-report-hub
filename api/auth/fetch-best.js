@@ -29,6 +29,7 @@ export default async function handler(req, res) {
   }
 
   const entry = await bestAuthPoolEntry({
+    source: req.body?.source ? String(req.body.source) : "codex",
     exclude_account_ids: Array.isArray(req.body?.exclude_account_ids) ? req.body.exclude_account_ids : [],
     current_account_id: req.body?.current_account_id ? String(req.body.current_account_id) : null,
     current_quota: {

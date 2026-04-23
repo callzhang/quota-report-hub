@@ -100,25 +100,54 @@ def auth_metadata(path: Path) -> dict:
         "last_refresh_sort_key": last_refresh or "",
     }
 
-def read_known_auth_state(path: Path = KNOWN_AUTH_PATH) -> dict | None:
+def known_auth_state_for_source(state: dict | None, source: str) -> dict:
+    state = state or {}
+    sources = state.get("sources")
+    if isinstance(sources, dict):
+        value = sources.get(source)
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
+def read_known_auth_state(path: Path = KNOWN_AUTH_PATH) -> dict:
     if not path.exists():
-        return None
-    return read_json(path)
+        return {"sources": {}}
+    payload = read_json(path)
+    if not isinstance(payload, dict):
+        return {"sources": {}}
+    if not isinstance(payload.get("sources"), dict):
+        payload["sources"] = {}
+    return payload
+
+
+def claude_auth_blob_metadata(blob_text: str) -> dict:
+    payload = json.loads(blob_text)
+    if payload.get("schema") != "claude_credentials_v1":
+        raise ValueError("unsupported claude auth blob schema")
+    return {
+        "account_id": payload["account_id"],
+        "email": payload.get("email"),
+        "name": payload.get("name"),
+        "plan_name": payload.get("plan_name"),
+        "auth_last_refresh": payload.get("auth_last_refresh"),
+        "auth_path": str(CLAUDE_HOME / ".credentials.json"),
+        "digest": hashlib.sha256(blob_text.encode("utf-8")).hexdigest(),
+        "last_refresh_sort_key": payload.get("auth_last_refresh") or "",
+    }
 
 
 def write_known_auth_state(
-    auth_path: Path = SOURCE_AUTH_PATH,
-    known_auth_path: Path = KNOWN_AUTH_PATH,
     *,
+    source: str,
+    metadata: dict,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
     last_uploaded_digest: str | None,
     last_uploaded_account_id: str | None = None,
     last_uploaded_auth_last_refresh: str | None = None,
     state_source: str,
 ) -> dict | None:
-    if not auth_path.exists():
-        return None
-    metadata = auth_metadata(auth_path)
-    payload = {
+    payload = read_known_auth_state(known_auth_path)
+    source_payload = {
         "account_id": metadata["account_id"],
         "email": metadata["email"],
         "name": metadata["name"],
@@ -132,10 +161,11 @@ def write_known_auth_state(
         "last_uploaded_auth_last_refresh": last_uploaded_auth_last_refresh,
         "state_source": state_source,
     }
+    payload["sources"][source] = source_payload
     known_auth_path.parent.mkdir(parents=True, exist_ok=True)
     known_auth_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     known_auth_path.chmod(0o600)
-    return payload
+    return payload["sources"][source]
 
 
 def latest_token_count_event(codex_home: Path) -> dict | None:
@@ -645,6 +675,39 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
     }
 
 
+def build_claude_auth_blob(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None) -> tuple[str | None, dict | None]:
+    payload = probe_claude(claude_home, claude_bin)
+    if payload.get("status") != "ok" or not payload.get("email"):
+        return None, payload
+
+    credentials, credential_source = read_claude_oauth_credentials(claude_home)
+    if not credentials:
+        return None, {
+            **payload,
+            "status": "error",
+            "error": "claude credentials unavailable",
+        }
+
+    auth_last_refresh = (
+        ((credentials or {}).get("claudeAiOauth") or {}).get("expiresAt")
+        or payload.get("usage_summary", {}).get("oauth_expires_at")
+    )
+    blob = json.dumps(
+        {
+            "schema": "claude_credentials_v1",
+            "account_id": payload["account_id"],
+            "email": payload["email"],
+            "name": payload.get("name"),
+            "plan_name": payload.get("plan_name"),
+            "auth_last_refresh": str(auth_last_refresh) if auth_last_refresh is not None else None,
+            "credential_source": credential_source,
+            "credentials": credentials,
+        },
+        ensure_ascii=False,
+    )
+    return blob, payload
+
+
 def load_config(args: argparse.Namespace) -> dict:
     config = read_json(CONFIG_PATH) if CONFIG_PATH.exists() else {}
     if getattr(args, "server_url", None):
@@ -673,10 +736,19 @@ def post_report(server_url: str, ingest_token: str, payload: dict) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def post_auth_pool_entry(auth_pool_url: str, auth_pool_user_token: str, auth_path: Path) -> dict:
+def post_auth_pool_entry(
+    auth_pool_url: str,
+    auth_pool_user_token: str,
+    *,
+    source: str,
+    auth_json_text: str,
+    quota_payload: dict | None = None,
+) -> dict:
     body = json.dumps(
         {
-            "auth_json": auth_path.read_text(encoding="utf-8"),
+            "source": source,
+            "auth_json": auth_json_text,
+            "quota_payload": quota_payload,
             "reporter_name": reporter_name(),
             "hostname": socket.gethostname(),
         }
@@ -699,12 +771,13 @@ def sync_current_codex_auth_pool(
     auth_pool_user_token: str,
     auth_path: Path = SOURCE_AUTH_PATH,
     known_auth_path: Path = KNOWN_AUTH_PATH,
+    current_codex_payload: dict | None = None,
 ) -> dict:
     if not auth_path.exists():
         return {"ok": True, "uploaded": False, "reason": "missing_auth"}
 
     metadata = auth_metadata(auth_path)
-    known = read_known_auth_state(known_auth_path) or {}
+    known = known_auth_state_for_source(read_known_auth_state(known_auth_path), "codex")
     already_uploaded = (
         known.get("last_uploaded_account_id") == metadata["account_id"]
         and known.get("last_uploaded_auth_last_refresh") == metadata["auth_last_refresh"]
@@ -713,8 +786,9 @@ def sync_current_codex_auth_pool(
 
     if already_uploaded:
         state = write_known_auth_state(
-            auth_path,
-            known_auth_path,
+            source="codex",
+            metadata=metadata,
+            known_auth_path=known_auth_path,
             last_uploaded_digest=metadata["digest"],
             last_uploaded_account_id=metadata["account_id"],
             last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
@@ -727,10 +801,17 @@ def sync_current_codex_auth_pool(
             "known_auth": state,
         }
 
-    uploaded = post_auth_pool_entry(auth_pool_url, auth_pool_user_token, auth_path)
+    uploaded = post_auth_pool_entry(
+        auth_pool_url,
+        auth_pool_user_token,
+        source="codex",
+        auth_json_text=auth_path.read_text(encoding="utf-8"),
+        quota_payload=current_codex_payload,
+    )
     state = write_known_auth_state(
-        auth_path,
-        known_auth_path,
+        source="codex",
+        metadata=metadata,
+        known_auth_path=known_auth_path,
         last_uploaded_digest=metadata["digest"],
         last_uploaded_account_id=metadata["account_id"],
         last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
@@ -744,16 +825,85 @@ def sync_current_codex_auth_pool(
     }
 
 
+def sync_current_claude_auth_pool(
+    auth_pool_url: str,
+    auth_pool_user_token: str,
+    claude_home: Path = CLAUDE_HOME,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
+    claude_bin: str | None = None,
+) -> dict:
+    blob_text, payload = build_claude_auth_blob(claude_home, claude_bin)
+    if blob_text is None:
+        return {
+            "ok": True,
+            "uploaded": False,
+            "reason": payload.get("error") or "missing_auth",
+            "claude": payload,
+        }
+
+    metadata = claude_auth_blob_metadata(blob_text)
+    known = known_auth_state_for_source(read_known_auth_state(known_auth_path), "claude")
+    already_uploaded = (
+        known.get("last_uploaded_account_id") == metadata["account_id"]
+        and known.get("last_uploaded_auth_last_refresh") == metadata["auth_last_refresh"]
+        and known.get("last_uploaded_digest") == metadata["digest"]
+    )
+
+    if already_uploaded:
+        state = write_known_auth_state(
+            source="claude",
+            metadata=metadata,
+            known_auth_path=known_auth_path,
+            last_uploaded_digest=metadata["digest"],
+            last_uploaded_account_id=metadata["account_id"],
+            last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+            state_source="unchanged_local_auth",
+        )
+        return {
+            "ok": True,
+            "uploaded": False,
+            "reason": "already_uploaded",
+            "known_auth": state,
+            "claude": payload,
+        }
+
+    uploaded = post_auth_pool_entry(
+        auth_pool_url,
+        auth_pool_user_token,
+        source="claude",
+        auth_json_text=blob_text,
+        quota_payload=payload,
+    )
+    state = write_known_auth_state(
+        source="claude",
+        metadata=metadata,
+        known_auth_path=known_auth_path,
+        last_uploaded_digest=metadata["digest"],
+        last_uploaded_account_id=metadata["account_id"],
+        last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+        state_source="uploaded_to_auth_pool",
+    )
+    return {
+        "ok": True,
+        "uploaded": True,
+        "entry": uploaded,
+        "known_auth": state,
+        "claude": payload,
+    }
+
+
 def fetch_best_auth(
     auth_pool_url: str,
     auth_pool_user_token: str,
     *,
+    source: str,
     current_account_id: str | None = None,
     current_quota: dict | None = None,
     exclude_account_ids: list[str] | None = None,
 ) -> dict:
     body = json.dumps(
         {
+            "source": source,
             "exclude_account_ids": exclude_account_ids or [],
             "current_account_id": current_account_id,
             "current_quota": current_quota or {},

@@ -23,7 +23,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     config = load_config(args)
-    result = fetch_best_auth(config["auth_pool_url"], config["auth_pool_user_token"], exclude_account_ids=args.exclude_account_id)
+    result = fetch_best_auth(
+        config["auth_pool_url"],
+        config["auth_pool_user_token"],
+        source="codex",
+        exclude_account_ids=args.exclude_account_id,
+    )
     replacement = result.get("replacement")
 
     if replacement is None:
@@ -55,8 +60,9 @@ def main() -> None:
     args.target_auth_path.chmod(0o600)
     metadata = auth_metadata(args.target_auth_path)
     known_auth = write_known_auth_state(
-        args.target_auth_path,
-        args.known_auth_path,
+        source="codex",
+        metadata=metadata,
+        known_auth_path=args.known_auth_path,
         last_uploaded_digest=metadata["digest"],
         last_uploaded_account_id=metadata["account_id"],
         last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],

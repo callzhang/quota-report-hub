@@ -4,14 +4,14 @@
 
 Quota Report Hub solves a practical multi-machine, multi-account problem:
 
-- users switch between several Codex accounts across laptops and servers
+- users switch between several Codex and Claude accounts across laptops and servers
 - each account has rolling quota windows such as `5H` and `1week`
 - the currently active local `~/.codex/auth.json` can run out at any time
 - manually checking quota on every machine is slow and error-prone
 
 The system is designed to:
 
-- store reusable Codex auth snapshots securely
+- store reusable Codex and Claude auth snapshots securely
 - let a machine fetch a better auth when the current one is nearly exhausted
 - keep company-only access for the auth pool
 
@@ -20,7 +20,7 @@ The product has two layers:
 - `quota-report-hub`
   the Vercel + Turso service that stores reports, renders the dashboard, stores encrypted auth snapshots, and issues per-user auth-pool tokens
 - `quota-reporter`
-  the local skill and scripts that run on each machine, track the current `auth.json`, upload it to the hub when it changes, and fetch a better auth when needed
+  the local skill and scripts that run on each machine, track the current auth for each source, upload it to the hub when it changes, and fetch a better auth when needed
 
 ## Problem Statement
 
@@ -34,7 +34,7 @@ The auth-pool design fixes this by introducing a shared server-side store of enc
 
 ## Goals
 
-- allow multiple company machines to contribute Codex auth snapshots
+- allow multiple company machines to contribute Codex and Claude auth snapshots
 - keep auth snapshots encrypted at rest on the server
 - allow only company users to access the auth pool
 - avoid one shared global secret for all employees
@@ -58,6 +58,8 @@ The auth pool adds a new server-side storage layer:
 
 - `auth_pool_entries`
   one latest encrypted auth snapshot per `source + account_id`
+- `auth_pool_quota_latest`
+  one latest known quota snapshot per `source + account_id`
 
 Each entry stores:
 
@@ -146,23 +148,28 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   auth:
   - personal bearer token
   input:
+  - `source`
   - `auth_json`
+  - optional `quota_payload`
   behavior:
-  - derives metadata from the Codex auth
+  - derives metadata from the source-specific auth
   - encrypts the auth
   - stores it in `auth_pool_entries`
+  - stores the latest known quota in `auth_pool_quota_latest`
   - records uploader email
 
 - `POST /api/auth/fetch-best`
   auth:
   - personal bearer token
   input:
+  - `source`
   - `current_account_id`
   - `current_quota`
     - `five_h_remaining_percent`
     - `one_week_remaining_percent`
   behavior:
-  - looks at stored auth pool entries plus their latest known Codex quota metadata
+  - looks at stored auth pool entries plus their latest known quota metadata
+  - only compares candidates from the same source
   - excludes the current local account
   - excludes hard-invalidated accounts
   - excludes accounts with `5H <= 0` or `1week <= 0`
@@ -214,9 +221,9 @@ It may contain:
 
 After setup, the local machine does three jobs:
 
-1. track the current `~/.codex/auth.json` in `~/.agents/auth/known_auth.json`
-2. upload the current auth to the shared auth pool only when the last uploaded `account_id`, `auth_last_refresh`, and `digest` do not already match
-3. probe local Codex quota and fetch and install a better Codex auth when local quota is low
+1. track the current auth for each source in `~/.agents/auth/known_auth.json`
+2. upload the current auth to the shared auth pool only when the last uploaded `source`, `account_id`, `auth_last_refresh`, and `digest` do not already match
+3. probe local quota and fetch and install a better auth from the same source when local quota is low
 
 Additional operational constraints:
 
@@ -224,8 +231,8 @@ Additional operational constraints:
 - If the cloud has no better auth than the currently installed one, the machine does nothing.
 - The local config file must remain private because it stores a personal bearer token.
 - The local machine does not keep a rolling archive of auth snapshots anymore; the cloud auth pool is the durable store.
-- `known_auth.json` is only a local upload filter. It records the last uploaded `account_id`, `auth_last_refresh`, and `digest`.
-- If the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload and overwrite the old cloud copy.
+- `known_auth.json` is only a local upload filter. It records the last uploaded state separately for each source.
+- If the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload and overwrite the old cloud copy for that source.
 
 ## Rotation Logic
 
@@ -233,7 +240,7 @@ Additional operational constraints:
 
 The local rotation condition is:
 
-- rotate only when current live Codex auth is unhealthy
+- rotate only when the current live auth for that source is unhealthy
 
 Currently “unhealthy” means:
 
@@ -243,6 +250,7 @@ Currently “unhealthy” means:
 
 When the trigger fires, the machine calls `/api/auth/fetch-best` with:
 
+- `source`
 - `current_account_id`
 - `current_quota.five_h_remaining_percent`
 - `current_quota.one_week_remaining_percent`

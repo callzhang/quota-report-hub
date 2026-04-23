@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
-import sys
 from pathlib import Path
 
 from quota_reporters import (
+    CLAUDE_HOME,
     KNOWN_AUTH_PATH,
     SOURCE_AUTH_PATH,
     auth_metadata,
+    claude_auth_blob_metadata,
     fetch_best_auth,
     load_config,
+    probe_claude,
     probe_codex,
+    sync_current_claude_auth_pool,
     sync_current_codex_auth_pool,
     write_known_auth_state,
 )
@@ -45,16 +47,20 @@ def codex_needs_replacement(payload: dict, threshold_percent: float) -> bool:
     return five_hour_remaining < threshold_percent or weekly_remaining <= 0.0
 
 
-def should_fetch_replacement(codex_payload: dict | None, threshold_percent: float) -> tuple[bool, list[str]]:
+def should_fetch_replacement(codex_payload: dict | None, claude_payload: dict | None, threshold_percent: float) -> tuple[bool, list[str]]:
     reasons: list[str] = []
     if codex_needs_replacement(codex_payload or {}, threshold_percent):
         reasons.append("codex")
+    if claude_payload and claude_payload.get("status") == "ok":
+        if codex_needs_replacement(claude_payload, threshold_percent):
+            reasons.append("claude")
     return (len(reasons) > 0, reasons)
 
 
 def maybe_replace_codex_auth(
     config: dict,
     current_codex_payload: dict | None,
+    current_claude_payload: dict | None,
     codex_auth_path: Path,
     known_auth_path: Path,
     threshold_percent: float,
@@ -64,13 +70,14 @@ def maybe_replace_codex_auth(
         "five_h_remaining_percent": remaining_percent(current_codex_payload or {}, "5h"),
         "one_week_remaining_percent": remaining_percent(current_codex_payload or {}, "1week"),
     }
-    needs_replacement, reasons = should_fetch_replacement(current_codex_payload, threshold_percent)
+    needs_replacement, reasons = should_fetch_replacement(current_codex_payload, current_claude_payload, threshold_percent)
     if not needs_replacement:
         return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
 
     result = fetch_best_auth(
         config["auth_pool_url"],
         config["auth_pool_user_token"],
+        source="codex",
         current_account_id=current_account_id,
         current_quota=current_quota,
         exclude_account_ids=[],
@@ -106,8 +113,9 @@ def maybe_replace_codex_auth(
     codex_auth_path.chmod(0o600)
     metadata = auth_metadata(codex_auth_path)
     known_auth = write_known_auth_state(
-        codex_auth_path,
-        known_auth_path,
+        source="codex",
+        metadata=metadata,
+        known_auth_path=known_auth_path,
         last_uploaded_digest=metadata["digest"],
         last_uploaded_account_id=metadata["account_id"],
         last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
@@ -127,13 +135,72 @@ def maybe_replace_codex_auth(
     }
 
 
+def maybe_replace_claude_auth(
+    config: dict,
+    current_claude_payload: dict | None,
+    claude_home: Path,
+    known_auth_path: Path,
+    threshold_percent: float,
+) -> dict:
+    if not current_claude_payload or current_claude_payload.get("status") != "ok":
+        return {"ok": True, "replaced": False, "reason": "missing_stable_claude_auth", "triggered_by": []}
+
+    current_account_id = current_claude_payload.get("account_id")
+    current_quota = {
+        "five_h_remaining_percent": remaining_percent(current_claude_payload, "5h"),
+        "one_week_remaining_percent": remaining_percent(current_claude_payload, "1week"),
+    }
+    if not codex_needs_replacement(current_claude_payload, threshold_percent):
+        return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
+
+    result = fetch_best_auth(
+        config["auth_pool_url"],
+        config["auth_pool_user_token"],
+        source="claude",
+        current_account_id=current_account_id,
+        current_quota=current_quota,
+        exclude_account_ids=[],
+    )
+    replacement = result.get("replacement")
+    if replacement is None:
+        return {"ok": True, "replaced": False, "reason": result.get("reason") or "no_better_auth_available", "triggered_by": ["claude"]}
+
+    blob = json.loads(replacement["auth_json"])
+    credentials_path = claude_home / ".credentials.json"
+    credentials_path.parent.mkdir(parents=True, exist_ok=True)
+    credentials_path.write_text(json.dumps(blob["credentials"], indent=2) + "\n", encoding="utf-8")
+    credentials_path.chmod(0o600)
+    metadata = claude_auth_blob_metadata(replacement["auth_json"])
+    known_auth = write_known_auth_state(
+        source="claude",
+        metadata=metadata,
+        known_auth_path=known_auth_path,
+        last_uploaded_digest=metadata["digest"],
+        last_uploaded_account_id=metadata["account_id"],
+        last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+        state_source="fetched_from_auth_pool",
+    )
+    return {
+        "ok": True,
+        "replaced": True,
+        "triggered_by": ["claude"],
+        "from_account_id": current_account_id,
+        "to_account_id": replacement.get("account_id"),
+        "to_email": replacement.get("email"),
+        "to_plan_name": replacement.get("plan_name"),
+        "latest_report": replacement.get("latest_report"),
+        "known_auth": known_auth,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Check local Codex quota every 15 minutes and fetch a better Codex auth when needed."
+        description="Check local Codex and Claude quota every 15 minutes and fetch a better same-source auth when needed."
     )
     parser.add_argument("--auth-pool-url")
     parser.add_argument("--auth-pool-user-token")
     parser.add_argument("--codex-auth-path", type=Path, default=SOURCE_AUTH_PATH)
+    parser.add_argument("--claude-home", type=Path, default=CLAUDE_HOME)
     parser.add_argument("--known-auth-path", type=Path, default=KNOWN_AUTH_PATH)
     parser.add_argument("--threshold-percent", type=float, default=20.0)
     parser.add_argument("--print-only", action="store_true")
@@ -149,20 +216,36 @@ def current_codex_payload(codex_auth_path: Path) -> dict | None:
 def run_guard(args: argparse.Namespace) -> dict:
     config = load_config(args)
     codex_payload = current_codex_payload(args.codex_auth_path)
+    claude_payload = probe_claude(args.claude_home)
 
-    sync_result = None
+    sync_result = {}
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
-        sync_result = sync_current_codex_auth_pool(
+        sync_result["codex"] = sync_current_codex_auth_pool(
             config["auth_pool_url"],
             config["auth_pool_user_token"],
             auth_path=args.codex_auth_path,
             known_auth_path=args.known_auth_path,
+            current_codex_payload=codex_payload,
+        )
+        sync_result["claude"] = sync_current_claude_auth_pool(
+            config["auth_pool_url"],
+            config["auth_pool_user_token"],
+            claude_home=args.claude_home,
+            known_auth_path=args.known_auth_path,
         )
 
-    replacement = maybe_replace_codex_auth(
+    codex_replacement = maybe_replace_codex_auth(
         config,
         codex_payload,
+        claude_payload,
         args.codex_auth_path,
+        args.known_auth_path,
+        args.threshold_percent,
+    )
+    claude_replacement = maybe_replace_claude_auth(
+        config,
+        claude_payload,
+        args.claude_home,
         args.known_auth_path,
         args.threshold_percent,
     )
@@ -171,8 +254,12 @@ def run_guard(args: argparse.Namespace) -> dict:
         "ok": True,
         "threshold_percent": args.threshold_percent,
         "codex": codex_payload,
+        "claude": claude_payload,
         "auth_pool_sync": sync_result,
-        "replacement": replacement,
+        "replacement": {
+            "codex": codex_replacement,
+            "claude": claude_replacement,
+        },
     }
 
 

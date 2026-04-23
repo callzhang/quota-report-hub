@@ -1,5 +1,5 @@
 import { bearerTokenFromHeaders } from "../lib/company-auth.js";
-import { authPoolEntries, authenticateApiToken, dbConfigured, latestReports } from "../lib/db.js";
+import { authPoolEntries, authPoolQuotaLatest, authenticateApiToken, dbConfigured } from "../lib/db.js";
 import { authPoolStatusPayload } from "../lib/reports.js";
 
 function unauthorized(res) {
@@ -21,7 +21,7 @@ export default async function handler(req, res) {
     res.end(JSON.stringify(authPoolStatusPayload([], [])));
     return;
   }
-  const [entries, reports] = await Promise.all([authPoolEntries(), latestReports()]);
+  const [entries, reports] = await Promise.all([authPoolEntries(), authPoolQuotaLatest()]);
   const dataset = authPoolStatusPayload(entries, reports);
   dataset.viewer_email = authContext.email;
   res.statusCode = 200;

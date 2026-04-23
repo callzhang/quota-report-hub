@@ -34,9 +34,16 @@ export default async function handler(req, res) {
     res.end(JSON.stringify({ error: "auth_json is required" }));
     return;
   }
+  if (!req.body?.source) {
+    res.statusCode = 400;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ error: "source is required" }));
+    return;
+  }
 
   const entry = await upsertAuthPoolEntry({
     ...req.body,
+    source: String(req.body.source),
     uploader_email: authContext.email,
   });
   res.statusCode = 200;

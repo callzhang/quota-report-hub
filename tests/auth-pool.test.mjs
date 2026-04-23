@@ -28,6 +28,7 @@ function fakeAuthJson({ accountId, email, name, plan = "pro", lastRefresh = "202
 
 test("deriveAuthPoolEntry extracts codex auth metadata", () => {
   const entry = deriveAuthPoolEntry(
+    "codex",
     fakeAuthJson({
       accountId: "acct-1",
       email: "a@example.com",
@@ -43,6 +44,27 @@ test("deriveAuthPoolEntry extracts codex auth metadata", () => {
   assert.equal(entry.plan_name, "Pro Lite");
   assert.equal(entry.reporter_name, "derek@gpu4");
   assert.equal(entry.hostname, "gpu4");
+});
+
+test("deriveAuthPoolEntry extracts claude auth metadata", () => {
+  const entry = deriveAuthPoolEntry(
+    "claude",
+    JSON.stringify({
+      schema: "claude_credentials_v1",
+      account_id: "claude-a@example.com",
+      email: "a@example.com",
+      name: "Org A",
+      plan_name: "Max",
+      auth_last_refresh: "1776668828033",
+      credentials: { claudeAiOauth: { accessToken: "token" } },
+    }),
+    { reporter_name: "derek@mbp", hostname: "mbp" }
+  );
+
+  assert.equal(entry.source, "claude");
+  assert.equal(entry.account_id, "claude-a@example.com");
+  assert.equal(entry.email, "a@example.com");
+  assert.equal(entry.plan_name, "Max");
 });
 
 test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best usable quota", () => {
@@ -88,6 +110,7 @@ test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best 
   ];
 
   const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
     current_account_id: "current",
     current_quota: {
       five_h_remaining_percent: 20,
@@ -116,6 +139,7 @@ test("pickBestAuthPoolCandidate returns null when no candidate beats current quo
   const pool = [{ account_id: "same-level" }];
 
   const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
     current_account_id: "current",
     current_quota: {
       five_h_remaining_percent: 20,
@@ -124,6 +148,43 @@ test("pickBestAuthPoolCandidate returns null when no candidate beats current quo
   });
 
   assert.equal(candidate, null);
+});
+
+test("pickBestAuthPoolCandidate does not mix codex and claude sources", () => {
+  const reports = [
+    {
+      source: "claude",
+      account_id: "claude-a",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 90 },
+        "1week": { remaining_percent: 80 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+  ];
+  const pool = [{ account_id: "claude-a" }];
+
+  const codexCandidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 10,
+      one_week_remaining_percent: 10,
+    },
+  });
+  const claudeCandidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "claude",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 10,
+      one_week_remaining_percent: 10,
+    },
+  });
+
+  assert.equal(codexCandidate, null);
+  assert.equal(claudeCandidate.entry.account_id, "claude-a");
 });
 
 test("shouldReplaceAuthPoolEntry skips duplicate account uploads when incoming refresh is not newer", () => {
