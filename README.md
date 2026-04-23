@@ -16,7 +16,7 @@ Typical examples:
 
 - You switch between multiple Codex and Claude accounts across laptops, desktops, and servers
 - You keep separate accounts on different laptops, desktops, or remote boxes
-- You want one dashboard that shows the current cloud auth pool and the latest known quota attached to each cloud auth entry
+- You want one dashboard that shows the current cloud auth pool and the latest cloud probe attached to each cloud auth entry
 - You want each machine to check quota automatically every 15 minutes instead of checking manually before switching agents
 - You want reporting to resume automatically after a laptop reboot or a remote server restart
 
@@ -73,9 +73,7 @@ The intended end-to-end flow inside Codex is:
 10. Every 15 minutes the guard:
    - reads current local auth state for each supported source
    - updates local `~/.agents/auth/known_auth.json`
-   - uploads current auth to the auth pool when either:
-     - the current `source`, `account_id`, `auth_last_refresh`, and digest represent a new version
-     - or the auth is unchanged but the current local probe produced a fresh quota snapshot for that same source
+   - uploads current auth to the auth pool only when the current `source`, `account_id`, `auth_last_refresh`, and digest represent a new version
    - checks the current local Codex quota and Claude quota
    - if a local source is below threshold, sends `source + current account + current quota` to `/api/auth/fetch-best`
    - installs a better auth only when the server returns one for that same source
@@ -94,7 +92,6 @@ Important runtime notes:
   - the current local `1week remaining percent`
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
 - local upload is skipped only when `known_auth.json` records the same uploaded `account_id`, the same uploaded `auth_last_refresh`, and the same uploaded digest
-- codex and claude now use the same upload rule; there is no separate claude-specific skip path anymore
 - if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy
 - the guard only replaces local `~/.codex/auth.json` when the fetched auth is different from the currently installed auth
 - replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions. New auth usually takes effect in the next new session.
@@ -107,17 +104,19 @@ Important runtime notes:
 The dashboard now reflects the cloud auth pool, not arbitrary client report rows:
 
 - each visible row should correspond to one cloud-stored auth entry
-- quota metadata is shown as the latest client-known quota associated with that cloud auth entry
+- quota metadata is shown as the latest cloud-owned probe associated with that cloud auth entry
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
-- the cloud does not run its own 15-minute quota probe yet; `last known` advances only when a client guard uploads a fresh local probe
+- the cloud runs its own 15-minute quota probe; the displayed probe time advances when the upload handler probes a new auth or when the cron worker refreshes the auth pool
 
 Auth pool support:
 
 - The hub can now store encrypted Codex and Claude auth snapshots in a server-side auth pool.
 - Employees request a personal auth-pool token by company email through `/api/auth/issue-token`.
 - Each email can have only one active token at a time; a newly issued token revokes all older tokens for that email.
-- Machines upload their current auth to `/api/auth/upload` with an explicit `source`.
+- Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
+- The upload handler immediately runs a server-side probe for the uploaded auth.
+- Vercel cron refreshes the whole auth pool every 15 minutes through `/api/internal/probe-auth-pool`.
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - The dashboard API at `/api/status` also requires the same personal bearer token.
 - The selection logic only compares candidates within the same source, prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
@@ -142,6 +141,7 @@ The installer is reboot-safe and runs every 15 minutes:
 - `MAILGUN_API_KEY`
 - `MAILGUN_DOMAIN`
 - `MAILGUN_FROM`
+- `CRON_SECRET`
 - `TURSO_DATABASE_URL`
 - `TURSO_AUTH_TOKEN`
 
@@ -168,6 +168,7 @@ What it does:
 - derives `MAILGUN_DOMAIN` from the sending email domain
 - sets `MAILGUN_FROM`
 - generates `AUTH_POOL_ENCRYPTION_KEY` only if one does not already exist
+- generates `CRON_SECRET` only if one does not already exist
 - updates `production`, `preview`, and `development`
 - runs `vercel deploy --prod --yes`
 
@@ -198,7 +199,7 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 4. The guard automatically:
 
 - updates local `known_auth.json`
-- uploads the current local auth for each source to the cloud auth pool only when needed
+- uploads the current local auth for each source to the cloud auth pool only when the auth changed
 - probes local Codex and Claude quota
 - when a local source is low, sends `source + current account + current quota` to `/api/auth/fetch-best`
 - installs a replacement only when the server returns a strictly better auth for that same source

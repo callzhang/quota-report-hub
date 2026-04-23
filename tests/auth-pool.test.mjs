@@ -150,6 +150,34 @@ test("pickBestAuthPoolCandidate returns null when no candidate beats current quo
   assert.equal(candidate, null);
 });
 
+test("pickBestAuthPoolCandidate allows lower weekly quota as long as 5H is better and week remains usable", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "better-5h",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 42 },
+        "1week": { remaining_percent: 15 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+  ];
+  const pool = [{ account_id: "better-5h" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 20,
+      one_week_remaining_percent: 50,
+    },
+  });
+
+  assert.equal(candidate.entry.account_id, "better-5h");
+});
+
 test("pickBestAuthPoolCandidate does not mix codex and claude sources", () => {
   const reports = [
     {

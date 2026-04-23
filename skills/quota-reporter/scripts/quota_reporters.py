@@ -727,13 +727,11 @@ def post_auth_pool_entry(
     *,
     source: str,
     auth_json_text: str,
-    quota_payload: dict | None = None,
 ) -> dict:
     body = json.dumps(
         {
             "source": source,
             "auth_json": auth_json_text,
-            "quota_payload": quota_payload,
             "reporter_name": reporter_name(),
             "hostname": socket.gethostname(),
         }
@@ -759,7 +757,6 @@ def sync_current_auth_pool_entry(
     auth_json_text: str,
     metadata: dict,
     known_auth_path: Path,
-    quota_payload: dict | None,
 ) -> dict:
     known = known_auth_state_for_source(read_known_auth_state(known_auth_path), source)
     already_uploaded = (
@@ -768,7 +765,7 @@ def sync_current_auth_pool_entry(
         and known.get("last_uploaded_digest") == metadata["digest"]
     )
 
-    if already_uploaded and quota_payload is None:
+    if already_uploaded:
         state = write_known_auth_state(
             source=source,
             metadata=metadata,
@@ -790,7 +787,6 @@ def sync_current_auth_pool_entry(
         auth_pool_user_token,
         source=source,
         auth_json_text=auth_json_text,
-        quota_payload=quota_payload,
     )
     state = write_known_auth_state(
         source=source,
@@ -815,7 +811,6 @@ def sync_current_codex_auth_pool(
     auth_pool_user_token: str,
     auth_path: Path = SOURCE_AUTH_PATH,
     known_auth_path: Path = KNOWN_AUTH_PATH,
-    current_codex_payload: dict | None = None,
 ) -> dict:
     if not auth_path.exists():
         return {"ok": True, "uploaded": False, "reason": "missing_auth"}
@@ -828,7 +823,6 @@ def sync_current_codex_auth_pool(
         auth_json_text=auth_path.read_text(encoding="utf-8"),
         metadata=metadata,
         known_auth_path=known_auth_path,
-        quota_payload=current_codex_payload,
     )
 
 
@@ -856,7 +850,6 @@ def sync_current_claude_auth_pool(
         auth_json_text=blob_text,
         metadata=metadata,
         known_auth_path=known_auth_path,
-        quota_payload=payload,
     )
     result["claude"] = payload
     return result

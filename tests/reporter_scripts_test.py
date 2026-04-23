@@ -478,7 +478,6 @@ Reading additional input from stdin...
             "qrp_token",
             auth_path=args.codex_auth_path,
             known_auth_path=args.known_auth_path,
-            current_codex_payload={"account_id": "current"},
         )
         sync_claude_auth_pool.assert_called_once()
         replace_codex_auth.assert_called_once()
@@ -526,14 +525,13 @@ Reading additional input from stdin...
                     "qrp_token",
                     auth_path=auth_path,
                     known_auth_path=known_auth_path,
-                    current_codex_payload=None,
                 )
 
         post_auth_pool_entry.assert_not_called()
         self.assertFalse(result["uploaded"])
         self.assertEqual(result["reason"], "already_uploaded")
 
-    def test_sync_current_codex_auth_pool_refreshes_quota_when_same_auth_is_still_current(self):
+    def test_sync_current_codex_auth_pool_skips_when_same_auth_is_still_current(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             auth_path = base / "auth.json"
@@ -569,16 +567,11 @@ Reading additional input from stdin...
                     "qrp_token",
                     auth_path=auth_path,
                     known_auth_path=known_auth_path,
-                    current_codex_payload={
-                        "source": "codex",
-                        "account_id": "acct-1",
-                        "windows": {"5h": {"remaining_percent": 80}, "1week": {"remaining_percent": 60}},
-                    },
                 )
 
-        post_auth_pool_entry.assert_called_once()
-        self.assertTrue(result["uploaded"])
-        self.assertEqual(result["reason"], "quota_refreshed_with_same_auth")
+        post_auth_pool_entry.assert_not_called()
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "already_uploaded")
 
     def test_sync_current_codex_auth_pool_uploads_when_same_account_refreshes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -622,7 +615,7 @@ Reading additional input from stdin...
         self.assertEqual(result["known_auth"]["last_uploaded_account_id"], "acct-1")
         self.assertEqual(result["known_auth"]["last_uploaded_auth_last_refresh"], "2026-04-19T22:00:00Z")
 
-    def test_sync_current_claude_auth_pool_refreshes_quota_when_same_auth_is_still_current(self):
+    def test_sync_current_claude_auth_pool_skips_when_same_auth_is_still_current(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             claude_home = base / ".claude"
@@ -697,9 +690,9 @@ Reading additional input from stdin...
                         known_auth_path=known_auth_path,
                     )
 
-        post_auth_pool_entry.assert_called_once()
-        self.assertTrue(result["uploaded"])
-        self.assertEqual(result["reason"], "quota_refreshed_with_same_auth")
+        post_auth_pool_entry.assert_not_called()
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "already_uploaded")
 
     def test_install_supports_claude_statusline_settings(self):
         self.assertTrue(hasattr(install_quota_guard, "configure_claude_statusline"))

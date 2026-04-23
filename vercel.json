@@ -3,6 +3,15 @@
   "functions": {
     "api/status.js": {
       "maxDuration": 30
+    },
+    "api/internal/probe-auth-pool.js": {
+      "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/internal/probe-auth-pool",
+      "schedule": "*/15 * * * *"
+    }
+  ]
 }

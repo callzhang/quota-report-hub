@@ -1,5 +1,6 @@
 import { authPoolConfigured, bearerTokenFromHeaders } from "../../lib/company-auth.js";
-import { authenticateApiToken, dbConfigured, upsertAuthPoolEntry } from "../../lib/db.js";
+import { authenticateApiToken, dbConfigured, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../../lib/db.js";
+import { probeAuthJson } from "../../lib/auth-pool-probe.js";
 import { readJsonBody } from "../../lib/http.js";
 
 function unauthorized(res) {
@@ -49,6 +50,8 @@ export default async function handler(req, res) {
     source: String(body.source),
     uploader_email: authContext.email,
   });
+  const report = await probeAuthJson(String(body.source), String(body.auth_json));
+  await upsertAuthPoolQuota(report);
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify({ ok: true, entry }));

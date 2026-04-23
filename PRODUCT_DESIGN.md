@@ -59,7 +59,7 @@ The auth pool adds a new server-side storage layer:
 - `auth_pool_entries`
   one latest encrypted auth snapshot per `source + account_id`
 - `auth_pool_quota_latest`
-  one latest known quota snapshot per `source + account_id`
+  one latest cloud-probed quota snapshot per `source + account_id`
 
 Each entry stores:
 
@@ -150,12 +150,12 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   input:
   - `source`
   - `auth_json`
-  - optional `quota_payload`
   behavior:
   - derives metadata from the source-specific auth
   - encrypts the auth
   - stores it in `auth_pool_entries`
-  - stores the latest known quota in `auth_pool_quota_latest`
+  - immediately triggers a server-side probe for that uploaded auth
+  - stores server-owned quota in `auth_pool_quota_latest`
   - records uploader email
 
 - `POST /api/auth/fetch-best`
@@ -168,15 +168,15 @@ Only the latest token for an email is valid. A user can reuse that latest token 
     - `five_h_remaining_percent`
     - `one_week_remaining_percent`
   behavior:
-  - looks at stored auth pool entries plus their latest known quota metadata
+  - looks at stored auth pool entries plus their latest cloud-owned quota metadata
   - only compares candidates from the same source
   - excludes the current local account
   - excludes hard-invalidated accounts
   - excludes accounts with `5H <= 0` or `1week <= 0`
   - only considers candidates whose `5H` is strictly better than the current local `5H`
-  - only considers candidates whose `1week` is strictly better than the current local `1week`
+  - only considers candidates whose `1week` is still above `0`
   - returns either:
-    - a decrypted better auth plus latest known quota metadata
+    - a decrypted better auth plus latest cloud-owned quota metadata
     - or `replacement: null`
 
 - `GET /api/status`
@@ -184,6 +184,15 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   - personal bearer token
   behavior:
   - returns dashboard data only to authenticated users
+
+- `GET /api/internal/probe-auth-pool`
+  auth:
+  - cron bearer token via `CRON_SECRET`
+  behavior:
+  - Vercel cron hits this every 15 minutes
+  - decrypts every stored auth snapshot
+  - probes Codex or Claude quota on the server
+  - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`
 
 ## Local Skill Flow
 
@@ -233,18 +242,14 @@ Additional operational constraints:
 - The local machine does not keep a rolling archive of auth snapshots anymore; the cloud auth pool is the durable store.
 - `known_auth.json` is only a local upload filter. It records the last uploaded state separately for each source.
 - If the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload and overwrite the old cloud copy for that source.
-- If the same auth is still installed but the local machine gets a fresh quota probe for that source, the machine uploads again so cloud quota can be refreshed without needing a new auth file.
-- Codex and Claude follow the same upload rule. The system does not keep separate upload semantics per source.
 
 ## Cloud Quota Freshness
 
-The current product does not run a server-side 15-minute probe loop.
+The product now runs a server-side 15-minute probe loop.
 
-- the cloud auth pool stores encrypted auth snapshots plus the latest client-known quota for each `source + account_id`
-- `last known` in the dashboard advances only when a client guard uploads a fresh local probe
-- if all client guards are idle, offline, or failing locally, the dashboard can legitimately show `last known 50m ago` or older
-
-This is intentional in the current design. A future server-side probe worker could make the dashboard freshness independent of client activity, but that is not the current system.
+- the cloud auth pool stores encrypted auth snapshots plus the latest cloud-owned quota for each `source + account_id`
+- the dashboard probe time advances when the upload handler probes a new auth or when the cron worker refreshes the auth pool
+- dashboard freshness no longer depends on a client re-uploading quota metadata
 
 ## Rotation Logic
 
@@ -285,13 +290,13 @@ This prevents useless swaps where weekly quota is exhausted or 5H would regress.
 
 ### Cloud Selection Rule
 
-Cloud fetch selection is simpler:
+Cloud fetch selection compares against the caller's current local quota:
 
 - exclude hard-invalidated accounts
 - exclude unusable accounts
-- pick highest `5H`, then highest `1week`
-
-This is intentional because cloud selection is not comparing against one specific local account yet; it is just returning the best known usable auth.
+- only keep candidates whose `5H` is strictly higher than the current local `5H`
+- require candidate `1week > 0`
+- among the remaining candidates, pick highest `5H`, then highest `1week`
 
 ### Cloud Deduplication Rule
 
@@ -404,5 +409,4 @@ python3 skills/quota-reporter/scripts/fetch_best_codex_auth.py \
 - add list-my-tokens endpoint
 - add token rotation UI or CLI flow
 - add audit view for upload/download history
-- optionally reduce local dashboard reporting and let cloud-side probing become the primary truth
 - optionally add team or org-level sharing controls instead of one global company pool

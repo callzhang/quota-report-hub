@@ -13,8 +13,9 @@ test("readJsonBody parses string bodies", async () => {
 });
 
 test("readJsonBody parses streamed request bodies", async () => {
-  const req = Readable.from([JSON.stringify({ quota_payload: { windows: { "5h": { remaining_percent: 80 } } } })]);
+  const req = Readable.from([JSON.stringify({ source: "codex", auth_json: "{}" })]);
   assert.deepEqual(await readJsonBody(req), {
-    quota_payload: { windows: { "5h": { remaining_percent: 80 } } },
+    source: "codex",
+    auth_json: "{}",
   });
 });

@@ -225,7 +225,6 @@ def run_guard(args: argparse.Namespace) -> dict:
             config["auth_pool_user_token"],
             auth_path=args.codex_auth_path,
             known_auth_path=args.known_auth_path,
-            current_codex_payload=codex_payload,
         )
         sync_result["claude"] = sync_current_claude_auth_pool(
             config["auth_pool_url"],
