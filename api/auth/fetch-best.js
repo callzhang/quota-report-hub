@@ -1,5 +1,6 @@
 import { authPoolConfigured, bearerTokenFromHeaders } from "../../lib/company-auth.js";
 import { authenticateApiToken, bestAuthPoolEntry, dbConfigured } from "../../lib/db.js";
+import { readJsonBody } from "../../lib/http.js";
 
 function unauthorized(res) {
   res.statusCode = 401;
@@ -28,13 +29,14 @@ export default async function handler(req, res) {
     return;
   }
 
+  const body = await readJsonBody(req);
   const entry = await bestAuthPoolEntry({
-    source: req.body?.source ? String(req.body.source) : "codex",
-    exclude_account_ids: Array.isArray(req.body?.exclude_account_ids) ? req.body.exclude_account_ids : [],
-    current_account_id: req.body?.current_account_id ? String(req.body.current_account_id) : null,
+    source: body?.source ? String(body.source) : "codex",
+    exclude_account_ids: Array.isArray(body?.exclude_account_ids) ? body.exclude_account_ids : [],
+    current_account_id: body?.current_account_id ? String(body.current_account_id) : null,
     current_quota: {
-      five_h_remaining_percent: req.body?.current_quota?.five_h_remaining_percent,
-      one_week_remaining_percent: req.body?.current_quota?.one_week_remaining_percent,
+      five_h_remaining_percent: body?.current_quota?.five_h_remaining_percent,
+      one_week_remaining_percent: body?.current_quota?.one_week_remaining_percent,
     },
   });
 

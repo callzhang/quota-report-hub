@@ -1,5 +1,6 @@
 import { authMailConfigured, authPoolConfigured, companyEmailAllowed, normalizeEmail, sendAccessTokenEmail } from "../../lib/company-auth.js";
 import { dbConfigured, issueApiToken } from "../../lib/db.js";
+import { readJsonBody } from "../../lib/http.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -16,7 +17,8 @@ export default async function handler(req, res) {
     return;
   }
 
-  const email = normalizeEmail(req.body?.email);
+  const body = await readJsonBody(req);
+  const email = normalizeEmail(body?.email);
   if (!email) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json; charset=utf-8");

@@ -1,5 +1,6 @@
 import { authPoolConfigured, bearerTokenFromHeaders } from "../../lib/company-auth.js";
 import { authenticateApiToken, dbConfigured, upsertAuthPoolEntry } from "../../lib/db.js";
+import { readJsonBody } from "../../lib/http.js";
 
 function unauthorized(res) {
   res.statusCode = 401;
@@ -28,13 +29,15 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (!req.body?.auth_json) {
+  const body = await readJsonBody(req);
+
+  if (!body?.auth_json) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ error: "auth_json is required" }));
     return;
   }
-  if (!req.body?.source) {
+  if (!body?.source) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ error: "source is required" }));
@@ -42,8 +45,8 @@ export default async function handler(req, res) {
   }
 
   const entry = await upsertAuthPoolEntry({
-    ...req.body,
-    source: String(req.body.source),
+    ...body,
+    source: String(body.source),
     uploader_email: authContext.email,
   });
   res.statusCode = 200;
