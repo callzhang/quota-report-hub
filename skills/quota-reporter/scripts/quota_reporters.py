@@ -224,7 +224,8 @@ def summarize_codex_exec_error(stdout: str, stderr: str) -> str:
 def probe_codex(auth_path: Path) -> dict:
     metadata = auth_metadata(auth_path)
     checked_at = datetime.now(timezone.utc)
-    with tempfile.TemporaryDirectory(prefix="quota-report-") as temp_dir:
+    temp_dir = tempfile.mkdtemp(prefix="quota-report-")
+    try:
         codex_home = Path(temp_dir)
         shutil.copy2(auth_path, codex_home / "auth.json")
         env = dict(os.environ)
@@ -237,6 +238,8 @@ def probe_codex(auth_path: Path) -> dict:
             check=False,
         )
         token_event = latest_token_count_event(codex_home)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     base = {
         "source": "codex",
