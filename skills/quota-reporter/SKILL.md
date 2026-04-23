@@ -92,7 +92,7 @@ Operational notes:
 - replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions
 - the next new Codex session is the one that should pick up the new auth
 - the local config file contains a personal token and should stay private
-- the cloud dashboard shows the latest cloud probe from the upload handler and the 15-minute cloud probe worker
+- the cloud dashboard shows the latest cloud worker probe from the 15-minute cloud probe worker
 
 ## Output expectations
 

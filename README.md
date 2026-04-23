@@ -16,7 +16,7 @@ Typical examples:
 
 - You switch between multiple Codex and Claude accounts across laptops, desktops, and servers
 - You keep separate accounts on different laptops, desktops, or remote boxes
-- You want one dashboard that shows the current cloud auth pool and the latest cloud probe attached to each cloud auth entry
+- You want one dashboard that shows the current cloud auth pool and the latest cloud worker probe attached to each cloud auth entry
 - You want each machine to check quota automatically every 15 minutes instead of checking manually before switching agents
 - You want reporting to resume automatically after a laptop reboot or a remote server restart
 
@@ -104,10 +104,10 @@ Important runtime notes:
 The dashboard now reflects the cloud auth pool, not arbitrary client report rows:
 
 - each visible row should correspond to one cloud-stored auth entry
-- quota metadata is shown as the latest cloud-owned probe associated with that cloud auth entry
+- quota metadata is shown as the latest cloud worker probe associated with that cloud auth entry
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
-- the cloud runs its own 15-minute quota probe; the displayed probe time advances when the upload handler probes a new auth or when the cron worker refreshes the auth pool
+- the cloud runs its own 15-minute quota probe; the displayed probe time advances when the GitHub Actions worker refreshes the auth pool
 
 Auth pool support:
 
@@ -115,8 +115,7 @@ Auth pool support:
 - Employees request a personal auth-pool token by company email through `/api/auth/issue-token`.
 - Each email can have only one active token at a time; a newly issued token revokes all older tokens for that email.
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
-- The upload handler immediately runs a server-side probe for the uploaded auth.
-- GitHub Actions refreshes the whole auth pool every 15 minutes by calling `/api/internal/probe-auth-pool`.
+- GitHub Actions refreshes the whole auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - The dashboard API at `/api/status` also requires the same personal bearer token.
 - The selection logic only compares candidates within the same source, prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
@@ -141,7 +140,6 @@ The installer is reboot-safe and runs every 15 minutes:
 - `MAILGUN_API_KEY`
 - `MAILGUN_DOMAIN`
 - `MAILGUN_FROM`
-- `CRON_SECRET`
 - `TURSO_DATABASE_URL`
 - `TURSO_AUTH_TOKEN`
 
@@ -168,7 +166,6 @@ What it does:
 - derives `MAILGUN_DOMAIN` from the sending email domain
 - sets `MAILGUN_FROM`
 - generates `AUTH_POOL_ENCRYPTION_KEY` only if one does not already exist
-- generates `CRON_SECRET` only if one does not already exist
 - updates `production`, `preview`, and `development`
 - runs `vercel deploy --prod --yes`
 
@@ -184,10 +181,9 @@ The hosted hub uses GitHub Actions, not Vercel cron, for the 15-minute server pr
 
 - workflow file: `.github/workflows/probe-auth-pool.yml`
 - required GitHub secrets:
-  - `HUB_PROBE_URL`
-  - `CRON_SECRET`
-- for the default hosted hub, `HUB_PROBE_URL` should be:
-  - `https://quota-report-hub.vercel.app/api/internal/probe-auth-pool`
+  - `TURSO_DATABASE_URL`
+  - `TURSO_AUTH_TOKEN`
+  - `AUTH_POOL_ENCRYPTION_KEY`
 
 ## Auth Pool Workflow
 

@@ -154,8 +154,6 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   - derives metadata from the source-specific auth
   - encrypts the auth
   - stores it in `auth_pool_entries`
-  - immediately triggers a server-side probe for that uploaded auth
-  - stores server-owned quota in `auth_pool_quota_latest`
   - records uploader email
 
 - `POST /api/auth/fetch-best`
@@ -185,13 +183,13 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   behavior:
   - returns dashboard data only to authenticated users
 
-- `GET /api/internal/probe-auth-pool`
-  auth:
-  - cron bearer token via `CRON_SECRET`
+- `scripts/probe_auth_pool_worker.mjs`
   behavior:
-  - GitHub Actions hits this every 15 minutes
+  - GitHub Actions runs this every 15 minutes
+  - reads encrypted auth pool entries directly from Turso
   - decrypts every stored auth snapshot
-  - probes Codex or Claude quota on the server
+  - probes Codex on the worker via the backend usage API
+  - probes Claude on the worker by launching Claude CLI and reading its statusline snapshot
   - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`
 
 ## Local Skill Flow
@@ -248,7 +246,7 @@ Additional operational constraints:
 The product now runs a server-side 15-minute probe loop.
 
 - the cloud auth pool stores encrypted auth snapshots plus the latest cloud-owned quota for each `source + account_id`
-- the dashboard probe time advances when the upload handler probes a new auth or when the cron worker refreshes the auth pool
+- the dashboard probe time advances when the GitHub Actions worker refreshes the auth pool
 - dashboard freshness no longer depends on a client re-uploading quota metadata
 
 ## Rotation Logic

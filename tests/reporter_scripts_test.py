@@ -4,12 +4,14 @@ import tempfile
 import unittest
 import io
 import contextlib
+import importlib.util
 from pathlib import Path
 from unittest import mock
 import json
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent.parent / "skills" / "quota-reporter" / "scripts"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import quota_guard  # noqa: E402
@@ -26,6 +28,14 @@ from quota_reporters import (
     summarize_claude_stats,
     write_known_auth_state,
 )  # noqa: E402
+
+CLAUDE_CLOUD_PROBE_SPEC = importlib.util.spec_from_file_location(
+    "probe_claude_auth_blob",
+    REPO_ROOT / "scripts" / "probe_claude_auth_blob.py",
+)
+probe_claude_auth_blob = importlib.util.module_from_spec(CLAUDE_CLOUD_PROBE_SPEC)
+assert CLAUDE_CLOUD_PROBE_SPEC.loader is not None
+CLAUDE_CLOUD_PROBE_SPEC.loader.exec_module(probe_claude_auth_blob)
 
 
 class ReporterScriptsTest(unittest.TestCase):
@@ -718,6 +728,26 @@ Reading additional input from stdin...
             self.assertEqual(saved["auth_pool_url"], "https://quota-report-hub.vercel.app")
             self.assertEqual(saved["auth_pool_user_email"], "derek@stardust.ai")
             self.assertEqual(saved["auth_pool_user_token"], "user-token")
+
+    def test_probe_claude_auth_blob_parses_statusline_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_path = Path(temp_dir) / "statusline-rate-limits.json"
+            snapshot_path.write_text(
+                json.dumps(
+                    {
+                        "rate_limits": {
+                            "five_hour": {"used_percentage": 9, "resets_at": 1776657600},
+                            "seven_day": {"used_percentage": 100, "resets_at": 1776970800},
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            windows = probe_claude_auth_blob.parse_statusline_snapshot(snapshot_path)
+
+        self.assertEqual(windows["5h"]["remaining_percent"], 91.0)
+        self.assertEqual(windows["1week"]["remaining_percent"], 0.0)
 
 
 if __name__ == "__main__":

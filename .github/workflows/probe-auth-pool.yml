@@ -9,13 +9,19 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger cloud auth pool probe
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install app dependencies
+        run: npm ci
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Install Python probe dependencies
+        run: python3 -m pip install --user pexpect
+      - name: Run cloud auth pool probe worker
         env:
-          HUB_PROBE_URL: ${{ secrets.HUB_PROBE_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
-        run: |
-          test -n "$HUB_PROBE_URL"
-          test -n "$CRON_SECRET"
-          curl --fail --show-error --silent \
-            -H "Authorization: Bearer $CRON_SECRET" \
-            "$HUB_PROBE_URL"
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          AUTH_POOL_ENCRYPTION_KEY: ${{ secrets.AUTH_POOL_ENCRYPTION_KEY }}
+        run: node scripts/probe_auth_pool_worker.mjs

@@ -80,6 +80,23 @@ test("probeAuthJson parses codex backend usage windows", async () => {
   }
 });
 
+test("probeAuthJson reports non-json codex responses as errors instead of crashing", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response("<html>login</html>", {
+      status: 200,
+      headers: { "content-type": "text/html" },
+    });
+
+  try {
+    const report = await probeAuthJson("codex", fakeCodexAuthJson());
+    assert.equal(report.status, "error");
+    assert.equal(report.error, "codex usage probe returned non-json response");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("probeAuthJson parses claude unified ratelimit headers", async () => {
   const originalFetch = global.fetch;
   global.fetch = async () =>
