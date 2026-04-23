@@ -749,6 +749,29 @@ Reading additional input from stdin...
         self.assertEqual(windows["5h"]["remaining_percent"], 91.0)
         self.assertEqual(windows["1week"]["remaining_percent"], 0.0)
 
+    def test_probe_claude_auth_blob_report_includes_nullable_fields(self):
+        with mock.patch.object(
+            probe_claude_auth_blob,
+            "warm_statusline_snapshot",
+            return_value=({"5h": {"remaining_percent": 80}, "1week": {"remaining_percent": 50}}, None),
+        ):
+            report = probe_claude_auth_blob.probe_blob(
+                {
+                    "account_id": "claude-test@example.com",
+                    "email": "test@example.com",
+                    "name": "Example",
+                    "plan_name": "Max",
+                    "auth_last_refresh": "1776933220595",
+                    "credentials": {"claudeAiOauth": {"accessToken": "token"}},
+                },
+                claude_bin="claude",
+                timeout_seconds=1,
+            )
+        self.assertIn("auth_path", report)
+        self.assertIsNone(report["auth_path"])
+        self.assertIn("model_context_window", report)
+        self.assertIsNone(report["model_context_window"])
+
 
 if __name__ == "__main__":
     unittest.main()

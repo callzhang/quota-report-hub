@@ -163,9 +163,11 @@ def probe_blob(blob: dict, claude_bin: str, timeout_seconds: int) -> dict:
         "email": blob.get("email"),
         "name": blob.get("name"),
         "plan_name": blob.get("plan_name"),
+        "auth_path": None,
         "auth_last_refresh": blob.get("auth_last_refresh"),
         "status": "ok" if windows["5h"] or windows["1week"] else "error",
         "error": error,
+        "model_context_window": None,
         "windows": windows,
         "usage_summary": {
             "probe_source": "claude_cli_statusline",
