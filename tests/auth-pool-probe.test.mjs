@@ -16,6 +16,7 @@ function fakeCodexAuthJson() {
   return JSON.stringify({
     tokens: {
       account_id: "acct-1",
+      access_token: "access-token",
       id_token: `x.${idPayload}.y`,
     },
     last_refresh: "2026-04-22T00:00:00Z",
@@ -43,8 +44,9 @@ function fakeClaudeAuthJson() {
 
 test("probeAuthJson parses codex backend usage windows", async () => {
   const originalFetch = global.fetch;
-  global.fetch = async () =>
-    new Response(
+  global.fetch = async (_url, options) => {
+    assert.equal(options.headers.Authorization, "Bearer access-token");
+    return new Response(
       JSON.stringify({
         plan_type: "prolite",
         rate_limit: {
@@ -65,6 +67,7 @@ test("probeAuthJson parses codex backend usage windows", async () => {
       }),
       { status: 200, headers: { "content-type": "application/json" } }
     );
+  };
 
   try {
     const report = await probeAuthJson("codex", fakeCodexAuthJson());
