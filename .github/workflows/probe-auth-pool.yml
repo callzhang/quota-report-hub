@@ -15,10 +15,8 @@ jobs:
           node-version: "24"
       - name: Install app dependencies
         run: npm ci
-      - name: Install Claude Code
-        run: npm install -g @anthropic-ai/claude-code
-      - name: Install Python probe dependencies
-        run: python3 -m pip install --user pexpect
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
       - name: Run cloud auth pool probe worker
         env:
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}

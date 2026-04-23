@@ -1,6 +1,32 @@
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { authPoolEntries, upsertAuthPoolQuota } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
+
+function probeCodexAuthJson(authJsonText) {
+  const tempDir = mkdtempSync(join(tmpdir(), "quota-report-codex-"));
+  const authBlobPath = join(tempDir, "auth.json");
+  writeFileSync(authBlobPath, authJsonText, "utf8");
+  try {
+    const result = spawnSync(
+      "python3",
+      [join(process.cwd(), "scripts/probe_codex_auth_blob.py"), "--auth-blob-path", authBlobPath],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      }
+    );
+    if (result.status !== 0) {
+      throw new Error((result.stderr || result.stdout || "codex cloud probe failed").trim());
+    }
+    return JSON.parse(result.stdout);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
 
 function failureReport(entry, error) {
   return {
@@ -41,7 +67,10 @@ async function main() {
     }
     try {
       const authJsonText = decryptAuthJson(entry);
-      report = await probeAuthJson(entry.source, authJsonText);
+      report =
+        entry.source === "codex"
+          ? probeCodexAuthJson(authJsonText)
+          : await probeAuthJson(entry.source, authJsonText);
     } catch (error) {
       report = failureReport(entry, error);
     }
