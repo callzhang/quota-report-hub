@@ -30,6 +30,10 @@ def main() -> None:
     report["hostname"] = "github-actions"
     report["reporter_name"] = f"actions@{socket.gethostname()}"
     report["auth_path"] = None
+    report["model_context_window"] = report.get("model_context_window")
+    report["usage_summary"] = report.get("usage_summary")
+    report["error"] = report.get("error")
+    report["windows"] = report.get("windows") or {"5h": None, "1week": None}
     print(json.dumps(report))
 
 
