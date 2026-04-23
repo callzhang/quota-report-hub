@@ -30,7 +30,7 @@ The original local-only model had three weaknesses:
 2. local `n/a` or partial probe failures could overwrite good dashboard state
 3. auth switching logic depended on whatever snapshots happened to be present on the current machine
 
-The auth-pool design fixes this by introducing a shared server-side store of encrypted auth snapshots plus a single cloud-side selection surface.
+The auth-pool design fixes this by introducing a shared server-side store of encrypted auth snapshots plus a source-aware selection surface.
 
 ## Goals
 
@@ -59,7 +59,7 @@ The auth pool adds a new server-side storage layer:
 - `auth_pool_entries`
   one latest encrypted auth snapshot per `source + account_id`
 - `auth_pool_quota_latest`
-  one latest cloud-probed quota snapshot per `source + account_id`
+  one latest known quota snapshot per `source + account_id`
 
 Each entry stores:
 
@@ -183,14 +183,25 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   behavior:
   - returns dashboard data only to authenticated users
 
+- `POST /api/auth/quota`
+  auth:
+  - personal bearer token
+  input:
+  - `source`
+  - `quota_payload`
+  behavior:
+  - accepts source-aware client quota updates
+  - currently used for Claude because the reliable quota source is the local CLI statusline snapshot
+  - writes the latest known quota snapshot to `auth_pool_quota_latest`
+
 - `scripts/probe_auth_pool_worker.mjs`
   behavior:
   - GitHub Actions runs this every 15 minutes
   - reads encrypted auth pool entries directly from Turso
   - decrypts every stored auth snapshot
   - probes Codex on the worker via the backend usage API
-  - probes Claude on the worker by launching Claude CLI and reading its statusline snapshot
-  - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`
+  - skips Claude entirely
+  - writes the latest cloud-owned Codex quota snapshot to `auth_pool_quota_latest`
 
 ## Local Skill Flow
 
@@ -231,6 +242,7 @@ After setup, the local machine does three jobs:
 1. track the current auth for each source in `~/.agents/auth/known_auth.json`
 2. upload the current auth to the shared auth pool only when the last uploaded `source`, `account_id`, `auth_last_refresh`, and `digest` do not already match
 3. probe local quota and fetch and install a better auth from the same source when local quota is low
+4. send Claude's latest stable local quota to the hub every 15 minutes so the cloud view stays fresh even though Claude does not use server-side probing
 
 Additional operational constraints:
 

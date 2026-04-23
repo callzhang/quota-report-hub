@@ -16,7 +16,7 @@ Typical examples:
 
 - You switch between multiple Codex and Claude accounts across laptops, desktops, and servers
 - You keep separate accounts on different laptops, desktops, or remote boxes
-- You want one dashboard that shows the current cloud auth pool and the latest cloud worker probe attached to each cloud auth entry
+- You want one dashboard that shows the current cloud auth pool and the latest known quota attached to each cloud auth entry
 - You want each machine to check quota automatically every 15 minutes instead of checking manually before switching agents
 - You want reporting to resume automatically after a laptop reboot or a remote server restart
 
@@ -85,6 +85,7 @@ Important runtime notes:
 - the local guard probes the current local Codex auth and Claude auth
 - if Codex has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine asks the cloud auth pool for a better Codex auth
 - if Claude has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine asks the cloud auth pool for a better Claude auth
+- Claude also sends its latest stable local statusline-based quota to the hub every 15 minutes from the same guard run
 - the request to `/api/auth/fetch-best` includes:
   - `source`
   - the current local `account_id`
@@ -107,7 +108,8 @@ The dashboard now reflects the cloud auth pool, not arbitrary client report rows
 - quota metadata is shown as the latest cloud worker probe associated with that cloud auth entry
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
-- the cloud runs its own 15-minute quota probe; the displayed probe time advances when the GitHub Actions worker refreshes the auth pool
+- Codex rows are refreshed by the cloud worker
+- Claude rows are refreshed by local client reports from the 15-minute guard
 
 Auth pool support:
 
@@ -115,7 +117,8 @@ Auth pool support:
 - Employees request a personal auth-pool token by company email through `/api/auth/issue-token`.
 - Each email can have only one active token at a time; a newly issued token revokes all older tokens for that email.
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
-- GitHub Actions refreshes the whole auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
+- GitHub Actions refreshes the Codex portion of the auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
+- Claude does not use the cloud worker because its reliable quota source is the local CLI statusline snapshot.
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - The dashboard API at `/api/status` also requires the same personal bearer token.
 - The selection logic only compares candidates within the same source, prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
@@ -133,6 +136,9 @@ The installer is reboot-safe and runs every 15 minutes:
 - `GET /api/status`
   - Requires a personal bearer token
   - Returns the current dashboard dataset
+- `POST /api/auth/quota`
+  - Requires a personal bearer token
+  - Accepts source-aware client quota updates
 
 ## Required environment variables
 
@@ -177,7 +183,7 @@ Important:
 
 ## Scheduler
 
-The hosted hub uses GitHub Actions, not Vercel cron, for the 15-minute server probe loop.
+The hosted hub uses GitHub Actions, not Vercel cron, for the 15-minute Codex server probe loop.
 
 - workflow file: `.github/workflows/probe-auth-pool.yml`
 - required GitHub secrets:
@@ -208,6 +214,7 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 - updates local `known_auth.json`
 - uploads the current local auth for each source to the cloud auth pool only when the auth changed
 - probes local Codex and Claude quota
+- posts Claude quota to the hub every 15 minutes when it has a stable email-backed identity
 - when a local source is low, sends `source + current account + current quota` to `/api/auth/fetch-best`
 - installs a replacement only when the server returns a strictly better auth for that same source
 

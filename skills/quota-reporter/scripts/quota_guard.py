@@ -14,6 +14,7 @@ from quota_reporters import (
     claude_auth_blob_metadata,
     fetch_best_auth,
     load_config,
+    post_auth_pool_quota,
     probe_claude,
     probe_codex,
     sync_current_claude_auth_pool,
@@ -47,20 +48,23 @@ def codex_needs_replacement(payload: dict, threshold_percent: float) -> bool:
     return five_hour_remaining < threshold_percent or weekly_remaining <= 0.0
 
 
-def should_fetch_replacement(codex_payload: dict | None, claude_payload: dict | None, threshold_percent: float) -> tuple[bool, list[str]]:
-    reasons: list[str] = []
-    if codex_needs_replacement(codex_payload or {}, threshold_percent):
-        reasons.append("codex")
-    if claude_payload and claude_payload.get("status") == "ok":
-        if codex_needs_replacement(claude_payload, threshold_percent):
-            reasons.append("claude")
-    return (len(reasons) > 0, reasons)
+def source_needs_replacement(payload: dict | None, threshold_percent: float) -> bool:
+    return codex_needs_replacement(payload or {}, threshold_percent)
+
+
+def has_stable_quota_identity(payload: dict | None) -> bool:
+    if not payload:
+        return False
+    if not payload.get("account_id") or not payload.get("email"):
+        return False
+    if payload.get("account_id") == "claude-email-missing":
+        return False
+    return True
 
 
 def maybe_replace_codex_auth(
     config: dict,
     current_codex_payload: dict | None,
-    current_claude_payload: dict | None,
     codex_auth_path: Path,
     known_auth_path: Path,
     threshold_percent: float,
@@ -70,8 +74,7 @@ def maybe_replace_codex_auth(
         "five_h_remaining_percent": remaining_percent(current_codex_payload or {}, "5h"),
         "one_week_remaining_percent": remaining_percent(current_codex_payload or {}, "1week"),
     }
-    needs_replacement, reasons = should_fetch_replacement(current_codex_payload, current_claude_payload, threshold_percent)
-    if not needs_replacement:
+    if not source_needs_replacement(current_codex_payload, threshold_percent):
         return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
 
     result = fetch_best_auth(
@@ -88,7 +91,7 @@ def maybe_replace_codex_auth(
             "ok": True,
             "replaced": False,
             "reason": result.get("reason") or "no_better_auth_available",
-            "triggered_by": reasons,
+            "triggered_by": ["codex"],
         }
 
     fetched_account_id = replacement.get("account_id")
@@ -104,7 +107,7 @@ def maybe_replace_codex_auth(
             "ok": True,
             "replaced": False,
             "reason": "best_auth_already_installed",
-            "triggered_by": reasons,
+            "triggered_by": ["codex"],
             "account_id": fetched_account_id,
         }
 
@@ -125,7 +128,7 @@ def maybe_replace_codex_auth(
     return {
         "ok": True,
         "replaced": True,
-        "triggered_by": reasons,
+        "triggered_by": ["codex"],
         "from_account_id": current_account_id,
         "to_account_id": fetched_account_id,
         "to_email": replacement.get("email"),
@@ -150,7 +153,7 @@ def maybe_replace_claude_auth(
         "five_h_remaining_percent": remaining_percent(current_claude_payload, "5h"),
         "one_week_remaining_percent": remaining_percent(current_claude_payload, "1week"),
     }
-    if not codex_needs_replacement(current_claude_payload, threshold_percent):
+    if not source_needs_replacement(current_claude_payload, threshold_percent):
         return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
 
     result = fetch_best_auth(
@@ -193,6 +196,21 @@ def maybe_replace_claude_auth(
     }
 
 
+def maybe_report_claude_quota(config: dict, claude_payload: dict | None) -> dict:
+    if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
+        return {"ok": True, "reported": False, "reason": "auth_pool_not_configured"}
+    if not has_stable_quota_identity(claude_payload):
+        return {"ok": True, "reported": False, "reason": "missing_stable_claude_identity"}
+
+    response = post_auth_pool_quota(
+        config["auth_pool_url"],
+        config["auth_pool_user_token"],
+        source="claude",
+        quota_payload=claude_payload,
+    )
+    return {"ok": True, "reported": True, "response": response}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Check local Codex and Claude quota every 15 minutes and fetch a better same-source auth when needed."
@@ -232,11 +250,11 @@ def run_guard(args: argparse.Namespace) -> dict:
             claude_home=args.claude_home,
             known_auth_path=args.known_auth_path,
         )
+        sync_result["claude_quota"] = maybe_report_claude_quota(config, claude_payload)
 
     codex_replacement = maybe_replace_codex_auth(
         config,
         codex_payload,
-        claude_payload,
         args.codex_auth_path,
         args.known_auth_path,
         args.threshold_percent,

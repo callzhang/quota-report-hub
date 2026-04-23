@@ -749,6 +749,32 @@ def post_auth_pool_entry(
         return json.loads(response.read().decode("utf-8"))
 
 
+def post_auth_pool_quota(
+    auth_pool_url: str,
+    auth_pool_user_token: str,
+    *,
+    source: str,
+    quota_payload: dict,
+) -> dict:
+    body = json.dumps(
+        {
+            "source": source,
+            "quota_payload": quota_payload,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        auth_pool_url.rstrip("/") + "/api/auth/quota",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {auth_pool_user_token}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def sync_current_auth_pool_entry(
     *,
     source: str,

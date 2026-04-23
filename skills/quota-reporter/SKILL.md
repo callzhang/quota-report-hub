@@ -11,7 +11,8 @@ This skill installs and runs the local quota guard for Codex and Claude.
 
 1. Tracks the current local auth state per source in `~/.agents/auth/known_auth.json`
 2. Uploads the current auth for each source to the shared encrypted auth pool only when the auth changed
-4. Probes the current local Codex quota and the current local Claude quota
+3. Probes the current local Codex quota and the current local Claude quota
+4. Sends Claude's stable local quota snapshot to the hub every 15 minutes
 5. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
 6. Installs a reboot-safe scheduler that runs every 15 minutes
 7. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
@@ -92,7 +93,9 @@ Operational notes:
 - replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions
 - the next new Codex session is the one that should pick up the new auth
 - the local config file contains a personal token and should stay private
-- the cloud dashboard shows the latest cloud worker probe from the 15-minute cloud probe worker
+- the cloud dashboard shows the latest known quota for each auth entry
+- Codex rows are refreshed by the cloud worker
+- Claude rows are refreshed by the local 15-minute guard via client quota updates
 
 ## Output expectations
 
