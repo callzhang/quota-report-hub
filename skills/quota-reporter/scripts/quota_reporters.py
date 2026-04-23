@@ -769,7 +769,7 @@ def sync_current_codex_auth_pool(
         and known.get("last_uploaded_digest") == metadata["digest"]
     )
 
-    if already_uploaded:
+    if already_uploaded and current_codex_payload is None:
         state = write_known_auth_state(
             source="codex",
             metadata=metadata,
@@ -805,6 +805,7 @@ def sync_current_codex_auth_pool(
     return {
         "ok": True,
         "uploaded": True,
+        "reason": "quota_refreshed_with_same_auth" if already_uploaded else "uploaded_to_auth_pool",
         "entry": uploaded,
         "known_auth": state,
     }
@@ -834,7 +835,7 @@ def sync_current_claude_auth_pool(
         and known.get("last_uploaded_digest") == metadata["digest"]
     )
 
-    if already_uploaded:
+    if already_uploaded and payload.get("windows") == empty_windows():
         state = write_known_auth_state(
             source="claude",
             metadata=metadata,
@@ -871,6 +872,7 @@ def sync_current_claude_auth_pool(
     return {
         "ok": True,
         "uploaded": True,
+        "reason": "quota_refreshed_with_same_auth" if already_uploaded else "uploaded_to_auth_pool",
         "entry": uploaded,
         "known_auth": state,
         "claude": payload,

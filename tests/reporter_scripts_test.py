@@ -526,11 +526,59 @@ Reading additional input from stdin...
                     "qrp_token",
                     auth_path=auth_path,
                     known_auth_path=known_auth_path,
+                    current_codex_payload=None,
                 )
 
         post_auth_pool_entry.assert_not_called()
         self.assertFalse(result["uploaded"])
         self.assertEqual(result["reason"], "already_uploaded")
+
+    def test_sync_current_codex_auth_pool_refreshes_quota_when_same_auth_is_still_current(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-19T21:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            digest = quota_guard.auth_metadata(auth_path)["digest"]
+            known_auth_path.write_text(
+                json.dumps(
+                    {"sources": {"codex": {
+                        "last_uploaded_account_id": "acct-1",
+                        "last_uploaded_auth_last_refresh": "2026-04-19T21:00:00Z",
+                        "last_uploaded_digest": digest,
+                    }}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": "acct-1"}}) as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                    current_codex_payload={
+                        "source": "codex",
+                        "account_id": "acct-1",
+                        "windows": {"5h": {"remaining_percent": 80}, "1week": {"remaining_percent": 60}},
+                    },
+                )
+
+        post_auth_pool_entry.assert_called_once()
+        self.assertTrue(result["uploaded"])
+        self.assertEqual(result["reason"], "quota_refreshed_with_same_auth")
 
     def test_sync_current_codex_auth_pool_uploads_when_same_account_refreshes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
