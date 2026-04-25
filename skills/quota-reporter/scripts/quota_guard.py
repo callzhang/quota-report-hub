@@ -36,7 +36,7 @@ def is_hard_invalidated(payload: dict) -> bool:
     }
 
 
-def codex_needs_replacement(payload: dict, threshold_percent: float) -> bool:
+def source_needs_replacement(payload: dict, threshold_percent: float, weekly_threshold_percent: float) -> bool:
     if not payload:
         return True
     if is_hard_invalidated(payload):
@@ -45,11 +45,7 @@ def codex_needs_replacement(payload: dict, threshold_percent: float) -> bool:
     weekly_remaining = remaining_percent(payload, "1week")
     if five_hour_remaining < 0 or weekly_remaining < 0:
         return True
-    return five_hour_remaining < threshold_percent or weekly_remaining <= 0.0
-
-
-def source_needs_replacement(payload: dict | None, threshold_percent: float) -> bool:
-    return codex_needs_replacement(payload or {}, threshold_percent)
+    return five_hour_remaining < threshold_percent or weekly_remaining < weekly_threshold_percent
 
 
 def has_stable_quota_identity(payload: dict | None) -> bool:
@@ -68,13 +64,14 @@ def maybe_replace_codex_auth(
     codex_auth_path: Path,
     known_auth_path: Path,
     threshold_percent: float,
+    weekly_threshold_percent: float,
 ) -> dict:
     current_account_id = current_codex_payload.get("account_id") if current_codex_payload else None
     current_quota = {
         "five_h_remaining_percent": remaining_percent(current_codex_payload or {}, "5h"),
         "one_week_remaining_percent": remaining_percent(current_codex_payload or {}, "1week"),
     }
-    if not source_needs_replacement(current_codex_payload, threshold_percent):
+    if not source_needs_replacement(current_codex_payload, threshold_percent, weekly_threshold_percent):
         return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
 
     result = fetch_best_auth(
@@ -144,6 +141,7 @@ def maybe_replace_claude_auth(
     claude_home: Path,
     known_auth_path: Path,
     threshold_percent: float,
+    weekly_threshold_percent: float,
 ) -> dict:
     if not current_claude_payload or current_claude_payload.get("status") != "ok":
         return {"ok": True, "replaced": False, "reason": "missing_stable_claude_auth", "triggered_by": []}
@@ -153,7 +151,7 @@ def maybe_replace_claude_auth(
         "five_h_remaining_percent": remaining_percent(current_claude_payload, "5h"),
         "one_week_remaining_percent": remaining_percent(current_claude_payload, "1week"),
     }
-    if not source_needs_replacement(current_claude_payload, threshold_percent):
+    if not source_needs_replacement(current_claude_payload, threshold_percent, weekly_threshold_percent):
         return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
 
     result = fetch_best_auth(
@@ -221,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--claude-home", type=Path, default=CLAUDE_HOME)
     parser.add_argument("--known-auth-path", type=Path, default=KNOWN_AUTH_PATH)
     parser.add_argument("--threshold-percent", type=float, default=20.0)
+    parser.add_argument("--weekly-threshold-percent", type=float, default=5.0)
     parser.add_argument("--print-only", action="store_true")
     return parser
 
@@ -258,6 +257,7 @@ def run_guard(args: argparse.Namespace) -> dict:
         args.codex_auth_path,
         args.known_auth_path,
         args.threshold_percent,
+        args.weekly_threshold_percent,
     )
     claude_replacement = maybe_replace_claude_auth(
         config,
@@ -265,11 +265,13 @@ def run_guard(args: argparse.Namespace) -> dict:
         args.claude_home,
         args.known_auth_path,
         args.threshold_percent,
+        args.weekly_threshold_percent,
     )
 
     return {
         "ok": True,
         "threshold_percent": args.threshold_percent,
+        "weekly_threshold_percent": args.weekly_threshold_percent,
         "codex": codex_payload,
         "claude": claude_payload,
         "auth_pool_sync": sync_result,

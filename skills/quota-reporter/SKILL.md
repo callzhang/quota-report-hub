@@ -81,7 +81,7 @@ The guard then:
 - updates `~/.agents/auth/known_auth.json`
 - uploads the current auth to the auth pool only when needed
 - probes the current live Codex auth and Claude auth
-- if a local source is below `20%` in `5H` or has `1week = 0`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
+- if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
 - only replaces local source credentials when the fetched auth is different from what is already installed
 - does nothing when the cloud cannot provide a better auth than the current one

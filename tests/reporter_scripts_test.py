@@ -300,7 +300,7 @@ Reading additional input from stdin...
             saved = json.loads(known_auth_path.read_text(encoding="utf-8"))
             self.assertIn("codex", saved["sources"])
 
-    def test_source_needs_replacement_when_quota_is_low(self):
+    def test_source_needs_replacement_when_5h_is_low(self):
         codex_payload = {
             "source": "codex",
             "windows": {
@@ -309,18 +309,29 @@ Reading additional input from stdin...
             },
         }
 
-        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 20.0))
+        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+
+    def test_source_needs_replacement_when_weekly_quota_is_below_threshold(self):
+        codex_payload = {
+            "source": "codex",
+            "windows": {
+                "5h": {"remaining_percent": 80},
+                "1week": {"remaining_percent": 2},
+            },
+        }
+
+        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
 
     def test_source_does_not_need_replacement_when_quota_is_healthy(self):
         codex_payload = {
             "source": "codex",
             "windows": {
                 "5h": {"remaining_percent": 62},
-                "1week": {"remaining_percent": 50},
+                "1week": {"remaining_percent": 5},
             },
         }
 
-        self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0))
+        self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
 
     def test_has_stable_quota_identity_requires_email_and_real_account_id(self):
         self.assertFalse(quota_guard.has_stable_quota_identity(None))
@@ -372,6 +383,7 @@ Reading additional input from stdin...
                             live_auth,
                             known_auth_path,
                             threshold_percent=20.0,
+                            weekly_threshold_percent=5.0,
                         )
 
             self.assertTrue(replacement["replaced"])
@@ -395,6 +407,7 @@ Reading additional input from stdin...
                 Path("/tmp/auth.json"),
                 Path("/tmp/known_auth.json"),
                 threshold_percent=20.0,
+                weekly_threshold_percent=5.0,
             )
 
         fetch_best_auth.assert_not_called()
@@ -436,6 +449,7 @@ Reading additional input from stdin...
                         live_auth,
                         Path(temp_dir) / "known_auth.json",
                         threshold_percent=20.0,
+                        weekly_threshold_percent=5.0,
                     )
 
         self.assertFalse(replacement["replaced"])
@@ -458,6 +472,7 @@ Reading additional input from stdin...
                 Path("/tmp/auth.json"),
                 Path("/tmp/known_auth.json"),
                 threshold_percent=20.0,
+                weekly_threshold_percent=5.0,
             )
 
         self.assertFalse(replacement["replaced"])
@@ -472,6 +487,7 @@ Reading additional input from stdin...
             claude_home=Path("/tmp/claude"),
             claude_bin=None,
             threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
         )
 
         with mock.patch.object(quota_guard, "load_config", return_value={
@@ -510,7 +526,7 @@ Reading additional input from stdin...
         self.assertEqual(result["replacement"]["claude"]["reason"], "healthy")
         self.assertIn("claude", result)
 
-    def test_maybe_replace_codex_auth_ignores_low_claude_quota(self):
+    def test_maybe_replace_codex_auth_stays_put_when_codex_is_above_both_thresholds(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
             "auth_pool_user_token": "qrp_token",
@@ -527,6 +543,7 @@ Reading additional input from stdin...
                 Path("/tmp/auth.json"),
                 Path("/tmp/known_auth.json"),
                 threshold_percent=20.0,
+                weekly_threshold_percent=5.0,
             )
 
         fetch_best_auth.assert_not_called()

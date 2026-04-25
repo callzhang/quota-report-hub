@@ -83,8 +83,8 @@ Important runtime notes:
 - each run reads the current local auth for each supported source
 - each machine stores only one local state file: `~/.agents/auth/known_auth.json`
 - the local guard probes the current local Codex auth and Claude auth
-- if Codex has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine asks the cloud auth pool for a better Codex auth
-- if Claude has less than `20%` remaining in the `5H` window, or its `1week` window is already `0%`, the machine asks the cloud auth pool for a better Claude auth
+- if Codex has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Codex auth
+- if Claude has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Claude auth
 - Claude also sends its latest stable local statusline-based quota to the hub every 15 minutes from the same guard run
 - the request to `/api/auth/fetch-best` includes:
   - `source`

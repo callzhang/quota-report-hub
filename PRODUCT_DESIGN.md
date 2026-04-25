@@ -272,7 +272,7 @@ The local rotation condition is:
 Currently “unhealthy” means:
 
 - current `5H remaining` is below `20%`
-- or current `1week remaining` is `0%`
+- or current `1week remaining` is below `5%`
 - or current auth is hard-invalidated
 
 When the trigger fires, the machine calls `/api/auth/fetch-best` with:
