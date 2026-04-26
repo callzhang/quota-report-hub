@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import signal
 import socket
@@ -26,6 +27,14 @@ CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
 }
+ANSI_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+TRUST_PROMPT_RE = re.compile(r"(?:security(?:.|\n){0,80}guide|trust(?:.|\n){0,120}folder)", re.I)
+THEME_PROMPT_RE = re.compile(r"(?:choose(?:.|\n){0,80}text(?:.|\n){0,80}style|syntax(?:.|\n){0,40}theme|/theme)", re.I)
+LOGIN_PROMPT_RE = re.compile(
+    r"(?:select(?:.|\n){0,80}login(?:.|\n){0,80}method|claude(?:.|\n){0,40}account(?:.|\n){0,80}subscription|anthropic(?:.|\n){0,40}console(?:.|\n){0,40}account)",
+    re.I,
+)
+MAIN_PROMPT_RE = re.compile(r"❯(?:\s|$)")
 
 
 def iso_now() -> str:
@@ -89,15 +98,81 @@ def materialize_credentials(claude_home: Path, blob: dict) -> None:
     credentials_path.chmod(0o600)
 
 
+def materialize_cli_state(home: Path, workdir: Path, blob: dict) -> None:
+    state = blob.get("claude_cli_state")
+    if not isinstance(state, dict):
+        return
+    state = json.loads(json.dumps(state))
+    projects = state.get("projects")
+    if not isinstance(projects, dict):
+        projects = {}
+        state["projects"] = projects
+    projects[str(workdir)] = {
+        "allowedTools": [],
+        "mcpContextUris": [],
+        "enabledMcpjsonServers": [],
+        "disabledMcpjsonServers": [],
+        "hasTrustDialogAccepted": True,
+        "projectOnboardingSeenCount": 1,
+        "hasClaudeMdExternalIncludesApproved": False,
+        "hasClaudeMdExternalIncludesWarningShown": False,
+    }
+    state_path = home / ".claude.json"
+    state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    state_path.chmod(0o600)
+
+
+def normalize_terminal_text(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
+
+def maybe_handle_setup_prompt(child: pexpect.spawn, text: str, state: dict) -> bool:
+    lowered = normalize_terminal_text(text).lower()
+    if not state["trust_handled"] and (
+        "trust this folder" in lowered
+        or "yes, i trust this folder" in lowered
+        or "security guide" in lowered
+    ):
+        child.sendline("")
+        state["trust_handled"] = True
+        state["last_interaction_at"] = time.time()
+        return True
+    if not state["theme_handled"] and (
+        "choose the text style" in lowered
+        or "syntax theme:" in lowered
+        or "/theme" in lowered
+    ):
+        child.sendline("1")
+        state["theme_handled"] = True
+        state["last_interaction_at"] = time.time()
+        return True
+    if not state["login_handled"] and (
+        "select login method" in lowered
+        or "claude account with subscription" in lowered
+        or "anthropic console account" in lowered
+    ):
+        child.sendline("1")
+        state["login_handled"] = True
+        state["last_interaction_at"] = time.time()
+        return True
+    return False
+
+
 def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout_seconds: int) -> tuple[dict, str | None]:
     snapshot_path = home / ".claude" / STATUSLINE_SNAPSHOT
     env = clean_env(home)
     child = pexpect.spawn(claude_bin, cwd=str(workdir), env=env, encoding="utf-8", timeout=5)
     output = []
-    prompt_sent = False
-    trust_handled = False
+    state = {
+        "prompt_sent": False,
+        "trust_handled": False,
+        "theme_handled": False,
+        "login_handled": False,
+        "last_interaction_at": time.time(),
+    }
     deadline = time.time() + timeout_seconds
     error = None
+    patterns = [TRUST_PROMPT_RE, THEME_PROMPT_RE, LOGIN_PROMPT_RE, MAIN_PROMPT_RE, pexpect.TIMEOUT, pexpect.EOF]
 
     try:
         while time.time() < deadline:
@@ -106,23 +181,46 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
                 if windows["5h"] is not None or windows["1week"] is not None:
                     return windows, None
 
-            try:
-                chunk = child.read_nonblocking(size=4096, timeout=1)
-                if chunk:
-                    output.append(chunk)
-                    lowered = chunk.lower()
-                    if (not trust_handled) and ("trust this folder" in lowered or "yes, i trust this folder" in lowered):
-                        child.sendline("1")
-                        trust_handled = True
-                        continue
-                    if (not prompt_sent) and ("❯" in chunk or ">" in chunk or "trust this folder" not in lowered):
-                        child.sendline("reply with ok")
-                        prompt_sent = True
-            except pexpect.TIMEOUT:
-                if not prompt_sent and time.time() + 2 < deadline:
-                    child.sendline("reply with ok")
-                    prompt_sent = True
-            except pexpect.EOF:
+            match_index = child.expect(patterns, timeout=1)
+            if child.before:
+                output.append(child.before)
+            if isinstance(child.after, str):
+                output.append(child.after)
+
+            if match_index == 0:
+                child.send("\r")
+                state["trust_handled"] = True
+                state["last_interaction_at"] = time.time()
+                continue
+            if match_index == 1:
+                child.sendline("1")
+                state["theme_handled"] = True
+                state["last_interaction_at"] = time.time()
+                continue
+            if match_index == 2:
+                child.sendline("1")
+                state["login_handled"] = True
+                state["last_interaction_at"] = time.time()
+                continue
+            if match_index == 3:
+                if not state["prompt_sent"]:
+                    child.send("reply with ok")
+                    time.sleep(0.5)
+                    child.send("\r")
+                    state["prompt_sent"] = True
+                    state["last_interaction_at"] = time.time()
+                continue
+            if match_index == 4:
+                if (not state["prompt_sent"]) and (
+                    time.time() - state["last_interaction_at"] >= 2
+                ) and (time.time() + 2 < deadline):
+                    child.send("reply with ok")
+                    time.sleep(0.5)
+                    child.send("\r")
+                    state["prompt_sent"] = True
+                    state["last_interaction_at"] = time.time()
+                continue
+            if match_index == 5:
                 break
         windows = parse_statusline_snapshot(snapshot_path)
         if windows["5h"] is not None or windows["1week"] is not None:
@@ -151,6 +249,7 @@ def probe_blob(blob: dict, claude_bin: str, timeout_seconds: int) -> dict:
         workdir = Path(temp_dir) / "workspace"
         workdir.mkdir(parents=True, exist_ok=True)
         materialize_credentials(claude_home, blob)
+        materialize_cli_state(home, workdir, blob)
         write_settings(claude_home)
         windows, error = warm_statusline_snapshot(claude_bin, home, workdir, timeout_seconds)
 

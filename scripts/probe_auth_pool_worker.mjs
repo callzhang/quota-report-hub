@@ -28,6 +28,28 @@ function probeCodexAuthJson(authJsonText) {
   }
 }
 
+function probeClaudeAuthJson(authJsonText) {
+  const tempDir = mkdtempSync(join(tmpdir(), "quota-report-claude-"));
+  const authBlobPath = join(tempDir, "auth.json");
+  writeFileSync(authBlobPath, authJsonText, "utf8");
+  try {
+    const result = spawnSync(
+      "python3",
+      [join(process.cwd(), "scripts/probe_claude_auth_blob.py"), "--auth-blob-path", authBlobPath],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+      }
+    );
+    if (result.status !== 0) {
+      throw new Error((result.stderr || result.stdout || "claude cloud probe failed").trim());
+    }
+    return JSON.parse(result.stdout);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function failureReport(entry, error) {
   return {
     source: entry.source,
@@ -56,20 +78,13 @@ async function main() {
 
   for (const entry of entries) {
     let report;
-    if (entry.source === "claude") {
-      items.push({
-        source: entry.source,
-        account_id: entry.account_id,
-        status: "skipped",
-        error: "claude uses client statusline reports",
-      });
-      continue;
-    }
     try {
       const authJsonText = decryptAuthJson(entry);
       report =
         entry.source === "codex"
           ? probeCodexAuthJson(authJsonText)
+          : entry.source === "claude"
+            ? probeClaudeAuthJson(authJsonText)
           : await probeAuthJson(entry.source, authJsonText);
     } catch (error) {
       report = failureReport(entry, error);

@@ -136,6 +136,14 @@ def claude_auth_blob_metadata(blob_text: str) -> dict:
     }
 
 
+def read_claude_cli_state(claude_home: Path = CLAUDE_HOME) -> dict | None:
+    state_path = claude_home.parent / ".claude.json"
+    if not state_path.exists():
+        return None
+    payload = read_json(state_path)
+    return payload if isinstance(payload, dict) else None
+
+
 def write_known_auth_state(
     *,
     source: str,
@@ -695,6 +703,7 @@ def build_claude_auth_blob(claude_home: Path = CLAUDE_HOME, claude_bin: str | No
         ((credentials or {}).get("claudeAiOauth") or {}).get("expiresAt")
         or payload.get("usage_summary", {}).get("oauth_expires_at")
     )
+    cli_state = read_claude_cli_state(claude_home)
     blob = json.dumps(
         {
             "schema": "claude_credentials_v1",
@@ -705,6 +714,7 @@ def build_claude_auth_blob(claude_home: Path = CLAUDE_HOME, claude_bin: str | No
             "auth_last_refresh": str(auth_last_refresh) if auth_last_refresh is not None else None,
             "credential_source": credential_source,
             "credentials": credentials,
+            "claude_cli_state": cli_state,
         },
         ensure_ascii=False,
     )

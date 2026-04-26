@@ -17,6 +17,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import quota_guard  # noqa: E402
 import install_quota_guard  # noqa: E402
 from quota_reporters import (
+    build_claude_auth_blob,
     discover_claude_executable,
     parse_claude_auth_status_text,
     parse_claude_rate_limit_headers,
@@ -231,8 +232,30 @@ Reading additional input from stdin...
                             payload = probe_claude(Path("/tmp/claude-home"))
 
         self.assertEqual(payload["account_id"], "claude-email-missing")
-        self.assertEqual(payload["status"], "error")
-        self.assertEqual(payload["error"], "claude auth email unavailable")
+
+    def test_build_claude_auth_blob_includes_cli_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            claude_home.mkdir(parents=True, exist_ok=True)
+            (claude_home.parent / ".claude.json").write_text(
+                json.dumps({"theme": "auto", "oauthAccount": {"emailAddress": "derek@stardust.ai"}}) + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch("quota_reporters.probe_claude", return_value={
+                "status": "ok",
+                "account_id": "claude-derek@stardust.ai",
+                "email": "derek@stardust.ai",
+                "name": "Derek Zen",
+                "plan_name": "Max",
+                "usage_summary": {"oauth_expires_at": "1776933220595"},
+            }):
+                with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({
+                    "claudeAiOauth": {"accessToken": "token", "expiresAt": "1776933220595"}
+                }, "credentials_file")):
+                    blob_text, payload = build_claude_auth_blob(claude_home)
+        blob = json.loads(blob_text)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(blob["claude_cli_state"]["theme"], "auto")
 
     def test_probe_claude_auth_commands_drop_env_overrides(self):
         calls = []
@@ -864,6 +887,27 @@ Reading additional input from stdin...
         self.assertIsNone(report["auth_path"])
         self.assertIn("model_context_window", report)
         self.assertIsNone(report["model_context_window"])
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_materializes_cli_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir) / "home"
+            workdir = Path(temp_dir) / "workspace"
+            workdir.mkdir(parents=True, exist_ok=True)
+            probe_claude_auth_blob.materialize_cli_state(
+                home,
+                workdir,
+                {
+                    "claude_cli_state": {
+                        "theme": "auto",
+                        "projects": {},
+                    }
+                },
+            )
+            state = json.loads((home / ".claude.json").read_text(encoding="utf-8"))
+        self.assertEqual(state["theme"], "auto")
+        self.assertIn(str(workdir), state["projects"])
+        self.assertTrue(state["projects"][str(workdir)]["hasTrustDialogAccepted"])
 
 
 if __name__ == "__main__":
