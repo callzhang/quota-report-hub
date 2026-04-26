@@ -14,7 +14,6 @@ from quota_reporters import (
     claude_auth_blob_metadata,
     fetch_best_auth,
     load_config,
-    post_auth_pool_quota,
     probe_claude,
     probe_codex,
     sync_current_claude_auth_pool,
@@ -46,16 +45,6 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
     if five_hour_remaining < 0 or weekly_remaining < 0:
         return True
     return five_hour_remaining < threshold_percent or weekly_remaining < weekly_threshold_percent
-
-
-def has_stable_quota_identity(payload: dict | None) -> bool:
-    if not payload:
-        return False
-    if not payload.get("account_id") or not payload.get("email"):
-        return False
-    if payload.get("account_id") == "claude-email-missing":
-        return False
-    return True
 
 
 def maybe_replace_codex_auth(
@@ -194,21 +183,6 @@ def maybe_replace_claude_auth(
     }
 
 
-def maybe_report_claude_quota(config: dict, claude_payload: dict | None) -> dict:
-    if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
-        return {"ok": True, "reported": False, "reason": "auth_pool_not_configured"}
-    if not has_stable_quota_identity(claude_payload):
-        return {"ok": True, "reported": False, "reason": "missing_stable_claude_identity"}
-
-    response = post_auth_pool_quota(
-        config["auth_pool_url"],
-        config["auth_pool_user_token"],
-        source="claude",
-        quota_payload=claude_payload,
-    )
-    return {"ok": True, "reported": True, "response": response}
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Check local Codex and Claude quota every 15 minutes and fetch a better same-source auth when needed."
@@ -249,7 +223,6 @@ def run_guard(args: argparse.Namespace) -> dict:
             claude_home=args.claude_home,
             known_auth_path=args.known_auth_path,
         )
-        sync_result["claude_quota"] = maybe_report_claude_quota(config, claude_payload)
 
     codex_replacement = maybe_replace_codex_auth(
         config,

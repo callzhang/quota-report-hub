@@ -183,25 +183,14 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   behavior:
   - returns dashboard data only to authenticated users
 
-- `POST /api/auth/quota`
-  auth:
-  - personal bearer token
-  input:
-  - `source`
-  - `quota_payload`
-  behavior:
-  - accepts source-aware client quota updates
-  - currently used for Claude because the reliable quota source is the local CLI statusline snapshot
-  - writes the latest known quota snapshot to `auth_pool_quota_latest`
-
 - `scripts/probe_auth_pool_worker.mjs`
   behavior:
   - GitHub Actions runs this every 15 minutes
   - reads encrypted auth pool entries directly from Turso
   - decrypts every stored auth snapshot
-  - probes Codex on the worker via the backend usage API
-  - skips Claude entirely
-  - writes the latest cloud-owned Codex quota snapshot to `auth_pool_quota_latest`
+  - probes Codex on the worker via the Codex CLI
+  - probes Claude on the worker via a headless Claude CLI session plus statusline snapshot
+  - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`
 
 ## Local Skill Flow
 

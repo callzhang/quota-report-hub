@@ -356,15 +356,6 @@ Reading additional input from stdin...
 
         self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
 
-    def test_has_stable_quota_identity_requires_email_and_real_account_id(self):
-        self.assertFalse(quota_guard.has_stable_quota_identity(None))
-        self.assertFalse(quota_guard.has_stable_quota_identity({"account_id": "claude-email-missing", "email": None}))
-        self.assertTrue(
-            quota_guard.has_stable_quota_identity(
-                {"account_id": "claude-leizhang0121@gmail.com", "email": "leizhang0121@gmail.com"}
-            )
-        )
-
     def test_maybe_replace_codex_auth_replaces_low_quota_live_auth(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -521,10 +512,9 @@ Reading additional input from stdin...
                 with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}) as probe_claude_mock:
                     with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": True}) as sync_codex_auth_pool:
                         with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": True}) as sync_claude_auth_pool:
-                            with mock.patch.object(quota_guard, "maybe_report_claude_quota", return_value={"ok": True, "reported": True}) as report_claude_quota:
-                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_codex_auth:
-                                    with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_claude_auth:
-                                        result = quota_guard.run_guard(args)
+                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_codex_auth:
+                                with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_claude_auth:
+                                    result = quota_guard.run_guard(args)
         sync_codex_auth_pool.assert_called_once_with(
             "https://quota-report-hub.vercel.app",
             "qrp_token",
@@ -532,19 +522,11 @@ Reading additional input from stdin...
             known_auth_path=args.known_auth_path,
         )
         sync_claude_auth_pool.assert_called_once()
-        report_claude_quota.assert_called_once_with(
-            {
-                "auth_pool_url": "https://quota-report-hub.vercel.app",
-                "auth_pool_user_token": "qrp_token",
-            },
-            {"account_id": "claude-a", "status": "ok"},
-        )
         replace_codex_auth.assert_called_once()
         replace_claude_auth.assert_called_once()
         probe_claude_mock.assert_called_once_with(args.claude_home)
         self.assertEqual(result["auth_pool_sync"]["codex"], {"ok": True, "uploaded": True})
         self.assertEqual(result["auth_pool_sync"]["claude"], {"ok": True, "uploaded": True})
-        self.assertEqual(result["auth_pool_sync"]["claude_quota"], {"ok": True, "reported": True})
         self.assertEqual(result["replacement"]["codex"]["reason"], "healthy")
         self.assertEqual(result["replacement"]["claude"]["reason"], "healthy")
         self.assertIn("claude", result)
@@ -572,46 +554,6 @@ Reading additional input from stdin...
         fetch_best_auth.assert_not_called()
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "healthy")
-
-    def test_maybe_report_claude_quota_posts_stable_payload(self):
-        config = {
-            "auth_pool_url": "https://quota-report-hub.vercel.app",
-            "auth_pool_user_token": "qrp_token",
-        }
-        claude_payload = {
-            "source": "claude",
-            "account_id": "claude-leizhang0121@gmail.com",
-            "email": "leizhang0121@gmail.com",
-            "status": "ok",
-            "windows": {"5h": {"remaining_percent": 80}, "1week": {"remaining_percent": 50}},
-        }
-
-        with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post_auth_pool_quota:
-            result = quota_guard.maybe_report_claude_quota(config, claude_payload)
-
-        post_auth_pool_quota.assert_called_once_with(
-            "https://quota-report-hub.vercel.app",
-            "qrp_token",
-            source="claude",
-            quota_payload=claude_payload,
-        )
-        self.assertTrue(result["reported"])
-
-    def test_maybe_report_claude_quota_skips_unstable_identity(self):
-        config = {
-            "auth_pool_url": "https://quota-report-hub.vercel.app",
-            "auth_pool_user_token": "qrp_token",
-        }
-
-        with mock.patch.object(quota_guard, "post_auth_pool_quota") as post_auth_pool_quota:
-            result = quota_guard.maybe_report_claude_quota(
-                config,
-                {"account_id": "claude-email-missing", "email": None, "status": "error"},
-            )
-
-        post_auth_pool_quota.assert_not_called()
-        self.assertFalse(result["reported"])
-        self.assertEqual(result["reason"], "missing_stable_claude_identity")
 
     def test_sync_current_codex_auth_pool_skips_when_digest_already_uploaded(self):
         with tempfile.TemporaryDirectory() as temp_dir:

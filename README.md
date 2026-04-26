@@ -109,7 +109,7 @@ The dashboard now reflects the cloud auth pool, not arbitrary client report rows
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
 - Codex rows are refreshed by the cloud worker
-- Claude rows are refreshed by local client reports from the 15-minute guard
+- Claude rows are also refreshed by the cloud worker using a headless Claude CLI statusline probe
 
 Auth pool support:
 
@@ -117,8 +117,8 @@ Auth pool support:
 - Employees request a personal auth-pool token by company email through `/api/auth/issue-token`.
 - Each email can have only one active token at a time; a newly issued token revokes all older tokens for that email.
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
-- GitHub Actions refreshes the Codex portion of the auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
-- Claude does not use the cloud worker because its reliable quota source is the local CLI statusline snapshot.
+- GitHub Actions refreshes both the Codex and Claude portions of the auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
+- Claude quota is probed in the worker by launching Claude CLI headlessly, restoring the saved CLI state, and reading the statusline snapshot after a minimal real request.
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - The dashboard API at `/api/status` also requires the same personal bearer token.
 - The selection logic only compares candidates within the same source, prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
@@ -136,9 +136,6 @@ The installer is reboot-safe and runs every 15 minutes:
 - `GET /api/status`
   - Requires a personal bearer token
   - Returns the current dashboard dataset
-- `POST /api/auth/quota`
-  - Requires a personal bearer token
-  - Accepts source-aware client quota updates
 
 ## Required environment variables
 
