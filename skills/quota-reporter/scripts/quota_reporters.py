@@ -8,6 +8,7 @@ import getpass
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -256,13 +257,38 @@ def codex_usage_limit_reached(rate_limits: dict | None, stderr: str, stdout: str
         return False
 
 
-def zero_remaining_window(window_minutes: int) -> dict:
+def codex_usage_limit_reset_at(stderr: str, stdout: str) -> tuple[str | None, int | None]:
+    combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part)
+    match = re.search(
+        r"try again at ([A-Za-z]{3} \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [AP]M)",
+        combined,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None, None
+
+    raw_value = re.sub(r"(\d)(st|nd|rd|th)", r"\1", match.group(1), flags=re.IGNORECASE)
+    try:
+        parsed = datetime.strptime(raw_value, "%b %d, %Y %I:%M %p")
+    except ValueError:
+        return None, None
+
+    local_tz = datetime.now().astimezone().tzinfo
+    if local_tz is None:
+        return None, None
+    aware = parsed.replace(tzinfo=local_tz)
+    reset_at = aware.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    reset_in_seconds = max(int(aware.timestamp() - datetime.now(local_tz).timestamp()), 0)
+    return reset_at, reset_in_seconds
+
+
+def zero_remaining_window(window_minutes: int, reset_at: str | None = None, reset_in_seconds: int | None = None) -> dict:
     return {
         "used_percent": 100.0,
         "remaining_percent": 0.0,
         "window_minutes": window_minutes,
-        "reset_in_seconds": None,
-        "reset_at": None,
+        "reset_in_seconds": reset_in_seconds,
+        "reset_at": reset_at,
     }
 
 
@@ -331,6 +357,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
     info = token_payload.get("info")
     rate_limits = token_payload.get("rate_limits")
     if rate_limits and rate_limits.get("primary") is None and rate_limits.get("secondary") is None and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
+        reset_at, reset_in_seconds = codex_usage_limit_reset_at(result.stderr, result.stdout)
         payload = {
             **base,
             "model_context_window": info.get("model_context_window") if isinstance(info, dict) else None,
@@ -338,12 +365,13 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
             "status": "ok",
             "error": None,
             "windows": {
-                "5h": zero_remaining_window(300),
-                "1week": zero_remaining_window(10080),
+                "5h": zero_remaining_window(300, reset_at=reset_at, reset_in_seconds=reset_in_seconds),
+                "1week": zero_remaining_window(10080, reset_at=reset_at, reset_in_seconds=reset_in_seconds),
             },
             "usage_summary": {
                 "credits": rate_limits.get("credits"),
                 "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
+                "next_retry_at": reset_at,
             },
         }
         if refresh_capture is not None:

@@ -134,7 +134,10 @@ class ReporterScriptsTest(unittest.TestCase):
             completed = mock.Mock(
                 returncode=1,
                 stdout="",
-                stderr="ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage",
+                stderr=(
+                    "ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+                    "or try again at Apr 28th, 2026 7:19 PM."
+                ),
             )
             with mock.patch("quota_reporters.subprocess.run", return_value=completed):
                 with mock.patch(
@@ -163,6 +166,11 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
         self.assertEqual(report["windows"]["5h"]["used_percent"], 100.0)
         self.assertEqual(report["usage_summary"]["credits"]["balance"], "0")
+        self.assertIsNotNone(report["windows"]["5h"]["reset_at"])
+        self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
+        self.assertIsInstance(report["windows"]["5h"]["reset_in_seconds"], int)
+        self.assertGreaterEqual(report["windows"]["5h"]["reset_in_seconds"], 0)
+        self.assertEqual(report["usage_summary"]["next_retry_at"], report["windows"]["5h"]["reset_at"])
 
     def test_parse_claude_auth_status_text_extracts_account_details(self):
         details = parse_claude_auth_status_text(
