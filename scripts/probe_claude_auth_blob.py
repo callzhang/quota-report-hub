@@ -12,6 +12,7 @@ import socket
 import sys
 import tempfile
 import time
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -243,7 +244,8 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
 
 
 def probe_blob(blob: dict, claude_bin: str, timeout_seconds: int) -> dict:
-    with tempfile.TemporaryDirectory(prefix="claude-cloud-probe-") as temp_dir:
+    temp_dir = tempfile.mkdtemp(prefix="claude-cloud-probe-")
+    try:
         home = Path(temp_dir) / "home"
         claude_home = home / ".claude"
         workdir = Path(temp_dir) / "workspace"
@@ -252,6 +254,8 @@ def probe_blob(blob: dict, claude_bin: str, timeout_seconds: int) -> dict:
         materialize_cli_state(home, workdir, blob)
         write_settings(claude_home)
         windows, error = warm_statusline_snapshot(claude_bin, home, workdir, timeout_seconds)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     return {
         "source": "claude",
