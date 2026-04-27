@@ -20,6 +20,7 @@ from quota_reporters import request_auth_pool_token
 
 LABEL = "com.openai.quota-guard"
 RUN_INTERVAL_SECONDS = 900
+DEFAULT_AUTH_POOL_URL = "https://quota-report-hub.vercel.app/"
 CONFIG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.json"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 LOG_PATH = Path.home() / ".agents" / "auth" / "quota-guard.log"
@@ -202,7 +203,7 @@ def install_windows_task_scheduler(python_path: str, worker_script: Path) -> dic
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install the local quota guard and store a personal auth-pool token.")
-    parser.add_argument("--auth-pool-url", required=True)
+    parser.add_argument("--auth-pool-url", default=DEFAULT_AUTH_POOL_URL)
     parser.add_argument("--email")
     parser.add_argument("--auth-pool-user-token")
     parser.add_argument("--python-path", default=sys.executable)

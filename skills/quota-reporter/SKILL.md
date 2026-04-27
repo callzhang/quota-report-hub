@@ -31,7 +31,7 @@ This skill installs and runs the local quota guard for Codex and Claude on macOS
 
 You need:
 
-- the shared auth-pool URL, for example `https://quota-report-hub.vercel.app`
+- the shared auth-pool URL, which defaults to `https://quota-report-hub.vercel.app/`
 - a personal auth-pool user token issued by company email
 
 That same personal token is also used to unlock the hosted dashboard.
@@ -44,9 +44,10 @@ Run:
 
 ```bash
 python3 scripts/install_quota_guard.py \
-  --auth-pool-url https://your-dashboard.vercel.app \
   --email your.name@stardust.ai
 ```
+
+If the user wants a different hub URL, pass `--auth-pool-url`; otherwise the installer uses `https://quota-report-hub.vercel.app/`.
 
 The installer:
 

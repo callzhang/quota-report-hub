@@ -84,7 +84,7 @@ Company access is based on:
 
 The default hosted hub for the project is:
 
-- `https://quota-report-hub.vercel.app`
+- `https://quota-report-hub.vercel.app/`
 
 Instead of using one shared `AUTH_POOL_TOKEN` for all employees, the system issues a separate personal token per user.
 
@@ -200,11 +200,9 @@ The intended Codex interaction is:
 
 1. user asks Codex to install the skill
 2. Codex installs local scripts
-3. Codex asks whether the user wants to:
-   - use an existing hub URL
-   - or deploy a new hub
+3. Codex uses the default hosted hub unless the user provides a different hub URL
 4. if the user wants a new hub, Codex runs `scripts/deploy_vercel.py`
-5. if the user provides an existing hub URL, Codex verifies the auth-pool APIs exist
+5. if the user provides a different hub URL, Codex verifies the auth-pool APIs exist
 6. Codex asks the user for company email
 7. Codex runs `install_quota_guard.py`
 8. server emails a personal token to the mailbox

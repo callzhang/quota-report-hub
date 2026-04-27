@@ -51,14 +51,12 @@ The intended end-to-end flow inside Codex is:
 
 1. The user asks Codex to install the skill and provides the GitHub repo URL.
 2. Codex installs the `quota-reporter` skill.
-3. Codex asks whether to:
-   - use an existing hub URL
-   - or deploy a new hub on Vercel
+3. Codex uses the default hosted hub at `https://quota-report-hub.vercel.app/` unless the user provides a different hub URL.
 4. If the user wants a new hub, Codex runs `scripts/deploy_vercel.py` with:
    - `allowed domain`
    - `mailgun api key`
    - `sending email`
-5. If the user provides an existing hub URL, Codex should verify that the hub supports:
+5. If the user provides a different hub URL, Codex should verify that the hub supports:
    - `POST /api/auth/issue-token`
    - `POST /api/auth/upload`
    - `POST /api/auth/fetch-best`
@@ -195,9 +193,10 @@ The hosted hub uses GitHub Actions, not Vercel cron, for the 15-minute Codex ser
 
 ```bash
 python3 skills/quota-reporter/scripts/install_quota_guard.py \
-  --auth-pool-url https://quota-report-hub.vercel.app \
   --email your.name@stardust.ai
 ```
+
+If you want to use a different hub URL, pass `--auth-pool-url`. The default is `https://quota-report-hub.vercel.app/`.
 
 2. The installer emails a personal token to `your.name@stardust.ai` and prompts you to paste it locally.
 

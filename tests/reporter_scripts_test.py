@@ -826,6 +826,11 @@ Reading additional input from stdin...
             self.assertEqual(saved["auth_pool_user_email"], "derek@stardust.ai")
             self.assertEqual(saved["auth_pool_user_token"], "user-token")
 
+    def test_install_quota_guard_defaults_to_hosted_hub(self):
+        parser = install_quota_guard.build_parser()
+        args = parser.parse_args([])
+        self.assertEqual(args.auth_pool_url, "https://quota-report-hub.vercel.app/")
+
     @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
     def test_probe_claude_auth_blob_parses_statusline_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:
