@@ -769,6 +769,47 @@ Reading additional input from stdin...
         self.assertTrue(lines[1].startswith("*/15 * * * * /usr/bin/python3 /tmp/quota_guard.py >> "))
         self.assertTrue(lines[1].endswith(" # quota-guard-managed"))
 
+    def test_windows_scheduler_script_includes_startup_and_repetition_triggers(self):
+        script = install_quota_guard.windows_scheduler_script(Path(r"C:\Users\derek\.agents\auth\quota-guard-run.ps1"))
+        self.assertIn("New-ScheduledTaskTrigger -Once", script)
+        self.assertIn("RepetitionInterval (New-TimeSpan -Minutes 15)", script)
+        self.assertIn("New-ScheduledTaskTrigger -AtStartup", script)
+        self.assertIn("Register-ScheduledTask -TaskName $TaskName", script)
+
+    def test_write_windows_runner_writes_power_shell_wrapper(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner_path = Path(temp_dir) / "quota-guard-run.ps1"
+
+            with mock.patch.object(install_quota_guard, "WINDOWS_RUNNER_PATH", runner_path):
+                result = install_quota_guard.write_windows_runner(r"/opt/Python/python.exe", Path(r"C:\repo\quota_guard.py"))
+            self.assertEqual(result, runner_path)
+            content = runner_path.read_text(encoding="utf-8")
+            self.assertIn("$ErrorActionPreference = 'Stop'", content)
+            self.assertIn(r"& '/opt/Python/python.exe' 'C:\repo\quota_guard.py' >>", content)
+            self.assertIn(str(install_quota_guard.LOG_PATH), content)
+            self.assertIn(str(install_quota_guard.ERROR_LOG_PATH), content)
+
+    def test_install_windows_task_scheduler_uses_powershell_and_writes_runner(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner_path = Path(temp_dir) / "quota-guard-run.ps1"
+            with mock.patch.object(install_quota_guard, "WINDOWS_RUNNER_PATH", runner_path):
+                with mock.patch("install_quota_guard.shutil.which", return_value="powershell.exe"):
+                    with mock.patch("install_quota_guard.subprocess.run") as run_mock:
+                        result = install_quota_guard.install_windows_task_scheduler(
+                            r"C:\Python\python.exe",
+                            Path(r"C:\repo\quota_guard.py"),
+                        )
+            self.assertEqual(result["scheduler"], "task_scheduler")
+            self.assertEqual(result["task_name"], install_quota_guard.WINDOWS_TASK_NAME)
+            self.assertTrue(runner_path.exists())
+            runner_content = runner_path.read_text(encoding="utf-8")
+            self.assertIn("& 'C:\\Python\\python.exe' 'C:\\repo\\quota_guard.py' >>", runner_content)
+            self.assertGreaterEqual(run_mock.call_count, 1)
+            first_call = run_mock.call_args_list[0][0][0]
+            self.assertIn("powershell.exe", first_call[0])
+            self.assertIn("-RunnerScript", first_call)
+            self.assertIn(str(runner_path), first_call)
+
     def test_write_config_persists_auth_pool_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "quota-reporter.json"

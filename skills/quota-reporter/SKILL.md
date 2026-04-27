@@ -5,7 +5,7 @@ description: Install and run a local quota guard that checks current Codex and C
 
 # Quota Guard
 
-This skill installs and runs the local quota guard for Codex and Claude.
+This skill installs and runs the local quota guard for Codex and Claude on macOS, Linux, and Windows.
 
 ## What it does
 
@@ -56,6 +56,7 @@ The installer:
 - writes the local config file under `~/.agents/auth/quota-reporter.json`
 - installs the 15-minute scheduler
 - writes Claude Code `statusLine` settings to `~/.claude/settings.json`
+- uses `launchd` on macOS, `crontab` on Linux, and Task Scheduler on Windows
 
 Token rules:
 

@@ -130,6 +130,7 @@ The installer is reboot-safe and runs every 15 minutes:
 
 - macOS uses `launchd` with `RunAtLoad`
 - Linux uses `crontab` with both `@reboot` and `*/15 * * * *` entries
+- Windows uses Task Scheduler with an `AtStartup` trigger plus a 15-minute repeating trigger
 
 ## Endpoints
 

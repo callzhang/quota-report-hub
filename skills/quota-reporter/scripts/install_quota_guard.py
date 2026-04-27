@@ -11,6 +11,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+from textwrap import dedent
 from pathlib import Path
 
 from quota_reporters import request_auth_pool_token
@@ -24,6 +26,8 @@ LOG_PATH = Path.home() / ".agents" / "auth" / "quota-guard.log"
 ERROR_LOG_PATH = Path.home() / ".agents" / "auth" / "quota-guard.error.log"
 CRON_MARKER = "# quota-guard-managed"
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+WINDOWS_RUNNER_PATH = Path.home() / ".agents" / "auth" / "quota-guard-run.ps1"
+WINDOWS_TASK_NAME = LABEL
 
 
 def write_config(auth_pool_url: str, email: str, auth_pool_user_token: str) -> None:
@@ -108,6 +112,94 @@ def install_linux_crontab(python_path: str, worker_script: Path) -> None:
     subprocess.run(["crontab", "-"], input=cron_payload, text=True, check=True)
 
 
+def ps_single_quote(value: str | Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def write_windows_runner(python_path: str, worker_script: Path) -> Path:
+    WINDOWS_RUNNER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    WINDOWS_RUNNER_PATH.write_text(
+        "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"& {ps_single_quote(python_path)} {ps_single_quote(worker_script)} >> {ps_single_quote(LOG_PATH)} 2>> {ps_single_quote(ERROR_LOG_PATH)}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return WINDOWS_RUNNER_PATH
+
+
+def windows_scheduler_script(runner_script: Path) -> str:
+    return dedent(
+        f"""
+        param(
+          [Parameter(Mandatory = $true)][string]$RunnerScript,
+          [Parameter(Mandatory = $true)][string]$TaskName
+        )
+
+        $ErrorActionPreference = 'Stop'
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$RunnerScript`""
+        $repeatTrigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(1)) -RepetitionInterval (New-TimeSpan -Minutes 15) -RepetitionDuration (New-TimeSpan -Days 3650)
+        $startupTrigger = New-ScheduledTaskTrigger -AtStartup
+        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType S4U -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew
+
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($repeatTrigger, $startupTrigger) -Principal $principal -Settings $settings -Force | Out-Null
+        """
+    ).strip()
+
+
+def install_windows_task_scheduler(python_path: str, worker_script: Path) -> dict:
+    powershell_path = (
+        shutil.which("powershell")
+        or shutil.which("powershell.exe")
+        or shutil.which("pwsh")
+        or shutil.which("pwsh.exe")
+    )
+    if powershell_path is None:
+        raise SystemExit("PowerShell command not found; install PowerShell before running the quota guard installer")
+
+    runner_script = write_windows_runner(python_path, worker_script)
+    installer_path: Path | None = None
+    installer_script = tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8")
+    try:
+        installer_script.write(windows_scheduler_script(runner_script))
+        installer_script.flush()
+        installer_path = Path(installer_script.name)
+    finally:
+        installer_script.close()
+
+    try:
+        subprocess.run(
+            [
+                powershell_path,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(installer_path),
+                "-RunnerScript",
+                str(runner_script),
+                "-TaskName",
+                WINDOWS_TASK_NAME,
+            ],
+            check=True,
+        )
+    finally:
+        if installer_path is not None:
+            installer_path.unlink(missing_ok=True)
+
+    return {
+        "scheduler": "task_scheduler",
+        "config_path": str(CONFIG_PATH),
+        "runner_script_path": str(runner_script),
+        "task_name": WINDOWS_TASK_NAME,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Install the local quota guard and store a personal auth-pool token.")
     parser.add_argument("--auth-pool-url", required=True)
@@ -179,6 +271,21 @@ def main() -> None:
                     "claude_statusline_settings_path": str(CLAUDE_SETTINGS_PATH),
                     "claude_statusline": statusline,
                     "entries": cron_lines(args.python_path, worker_script),
+                },
+                indent=2,
+            )
+        )
+        return
+
+    if system == "Windows":
+        windows_result = install_windows_task_scheduler(args.python_path, worker_script)
+        print(
+            json.dumps(
+                {
+                    **windows_result,
+                    "auth_pool_user_email": email,
+                    "claude_statusline_settings_path": str(CLAUDE_SETTINGS_PATH),
+                    "claude_statusline": statusline,
                 },
                 indent=2,
             )

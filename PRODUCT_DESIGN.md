@@ -211,6 +211,9 @@ The intended Codex interaction is:
 9. user pastes the token back into Codex
 10. Codex writes the token into local config
 11. Codex installs or updates the 15-minute scheduler
+   - macOS uses `launchd`
+   - Linux uses `crontab`
+   - Windows uses Task Scheduler
 
 ### Local Config
 
