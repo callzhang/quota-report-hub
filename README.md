@@ -116,6 +116,7 @@ Auth pool support:
 - Each email can have only one active token at a time; a newly issued token revokes all older tokens for that email.
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
 - GitHub Actions refreshes both the Codex and Claude portions of the auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
+- During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.
 - Claude quota is probed in the worker by launching Claude CLI headlessly, restoring the saved CLI state, and reading the statusline snapshot after a minimal real request.
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - The dashboard API at `/api/status` also requires the same personal bearer token.

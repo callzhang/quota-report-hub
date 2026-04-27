@@ -5,6 +5,7 @@ import unittest
 import io
 import contextlib
 import importlib.util
+from base64 import urlsafe_b64encode
 from pathlib import Path
 from unittest import mock
 import json
@@ -18,10 +19,12 @@ import quota_guard  # noqa: E402
 import install_quota_guard  # noqa: E402
 from quota_reporters import (
     build_claude_auth_blob,
+    codex_auth_refresh_delta,
     discover_claude_executable,
     parse_claude_auth_status_text,
     parse_claude_rate_limit_headers,
     parse_claude_statusline_rate_limits,
+    probe_codex,
     probe_claude,
     read_claude_keychain_credentials,
     run_claude_status,
@@ -43,6 +46,124 @@ except ModuleNotFoundError:
 
 
 class ReporterScriptsTest(unittest.TestCase):
+    def test_codex_auth_refresh_delta_requires_same_account(self):
+        delta = codex_auth_refresh_delta(
+            {"account_id": "acct-1", "auth_last_refresh": "2026-04-22T00:00:00Z", "digest": "a"},
+            {"account_id": "acct-2", "auth_last_refresh": "2026-04-22T01:00:00Z", "digest": "b"},
+        )
+
+        self.assertFalse(delta["same_account"])
+        self.assertTrue(delta["account_changed"])
+        self.assertFalse(delta["refreshed"])
+
+    def test_probe_codex_can_capture_same_account_refresh_from_temp_auth(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            payload = {
+                "last_refresh": "2026-04-22T00:00:00Z",
+                "tokens": {
+                    "account_id": "acct-1",
+                    "access_token": "access",
+                    "refresh_token": "refresh",
+                    "id_token": self._jwt(
+                        {
+                            "email": "a@example.com",
+                            "name": "A",
+                            "https://api.openai.com/auth": {"chatgpt_plan_type": "prolite"},
+                        }
+                    ),
+                },
+            }
+            auth_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            def fake_run(args, env=None, capture_output=None, text=None, check=None):
+                temp_auth_path = Path(env["CODEX_HOME"]) / "auth.json"
+                refreshed = json.loads(temp_auth_path.read_text(encoding="utf-8"))
+                refreshed["last_refresh"] = "2026-04-22T01:00:00Z"
+                refreshed["tokens"]["refresh_token"] = "refresh-2"
+                temp_auth_path.write_text(json.dumps(refreshed), encoding="utf-8")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch("quota_reporters.subprocess.run", side_effect=fake_run):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 272000},
+                            "rate_limits": {
+                                "plan_type": "prolite",
+                                "primary": {"used_percent": 5, "window_minutes": 300},
+                                "secondary": {"used_percent": 10, "window_minutes": 10080},
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path, capture_refreshed_auth=True)
+
+        self.assertTrue(report["refresh_capture"]["delta"]["refreshed"])
+        self.assertEqual(
+            report["refresh_capture"]["refreshed_metadata"]["auth_last_refresh"],
+            "2026-04-22T01:00:00Z",
+        )
+        self.assertIn("\"refresh_token\": \"refresh-2\"", report["refresh_capture"]["refreshed_auth_json"])
+
+    def test_probe_codex_maps_usage_limit_event_to_zero_remaining_windows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "prolite"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr="ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage",
+            )
+            with mock.patch("quota_reporters.subprocess.run", return_value=completed):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": None,
+                            "rate_limits": {
+                                "plan_type": None,
+                                "primary": None,
+                                "secondary": None,
+                                "credits": {
+                                    "has_credits": False,
+                                    "unlimited": False,
+                                    "balance": "0",
+                                },
+                                "rate_limit_reached_type": None,
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
+        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
+        self.assertEqual(report["windows"]["5h"]["used_percent"], 100.0)
+        self.assertEqual(report["usage_summary"]["credits"]["balance"], "0")
+
     def test_parse_claude_auth_status_text_extracts_account_details(self):
         details = parse_claude_auth_status_text(
             "Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n"
@@ -256,6 +377,12 @@ Reading additional input from stdin...
         blob = json.loads(blob_text)
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(blob["claude_cli_state"]["theme"], "auto")
+
+    @staticmethod
+    def _jwt(payload):
+        header = urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).decode().rstrip("=")
+        body = urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        return f"{header}.{body}.signature"
 
     def test_probe_claude_auth_commands_drop_env_overrides(self):
         calls = []

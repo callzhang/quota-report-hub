@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    report = probe_codex(args.auth_blob_path)
+    report = probe_codex(args.auth_blob_path, capture_refreshed_auth=True)
     report["hostname"] = "github-actions"
     report["reporter_name"] = f"actions@{socket.gethostname()}"
     report["auth_path"] = None

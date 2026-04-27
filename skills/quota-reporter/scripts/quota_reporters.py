@@ -229,13 +229,53 @@ def summarize_codex_exec_error(stdout: str, stderr: str) -> str:
     return (combined or "codex exec failed")[:240]
 
 
-def probe_codex(auth_path: Path) -> dict:
+def codex_auth_refresh_delta(before: dict, after: dict) -> dict:
+    same_account = before.get("account_id") == after.get("account_id")
+    refresh_changed = before.get("auth_last_refresh") != after.get("auth_last_refresh")
+    digest_changed = before.get("digest") != after.get("digest")
+    return {
+        "same_account": same_account,
+        "account_changed": not same_account,
+        "refresh_changed": refresh_changed,
+        "digest_changed": digest_changed,
+        "refreshed": same_account and (refresh_changed or digest_changed),
+    }
+
+
+def codex_usage_limit_reached(rate_limits: dict | None, stderr: str, stdout: str) -> bool:
+    combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part).lower()
+    if "you've hit your usage limit" in combined:
+        return True
+    credits = (rate_limits or {}).get("credits") or {}
+    if credits.get("has_credits") is False:
+        return True
+    balance = credits.get("balance")
+    try:
+        return balance is not None and float(balance) <= 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def zero_remaining_window(window_minutes: int) -> dict:
+    return {
+        "used_percent": 100.0,
+        "remaining_percent": 0.0,
+        "window_minutes": window_minutes,
+        "reset_in_seconds": None,
+        "reset_at": None,
+    }
+
+
+def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dict:
     metadata = auth_metadata(auth_path)
     checked_at = datetime.now(timezone.utc)
     temp_dir = tempfile.mkdtemp(prefix="quota-report-")
+    refreshed_metadata = None
+    refreshed_auth_text = None
     try:
         codex_home = Path(temp_dir)
-        shutil.copy2(auth_path, codex_home / "auth.json")
+        temp_auth_path = codex_home / "auth.json"
+        shutil.copy2(auth_path, temp_auth_path)
         env = dict(os.environ)
         env["CODEX_HOME"] = str(codex_home)
         result = subprocess.run(
@@ -246,6 +286,9 @@ def probe_codex(auth_path: Path) -> dict:
             check=False,
         )
         token_event = latest_token_count_event(codex_home)
+        if capture_refreshed_auth and temp_auth_path.exists():
+            refreshed_auth_text = temp_auth_path.read_text(encoding="utf-8")
+            refreshed_metadata = auth_metadata(temp_auth_path)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -263,27 +306,63 @@ def probe_codex(auth_path: Path) -> dict:
         "usage_summary": None,
     }
 
+    refresh_capture = None
+    if capture_refreshed_auth and refreshed_metadata is not None and refreshed_auth_text is not None:
+        delta = codex_auth_refresh_delta(metadata, refreshed_metadata)
+        refresh_capture = {
+            "delta": delta,
+            "refreshed_metadata": refreshed_metadata,
+        }
+        if delta["refreshed"]:
+            refresh_capture["refreshed_auth_json"] = refreshed_auth_text
+
     if token_event is None:
-        return {
+        payload = {
             **base,
             "status": "error",
             "error": summarize_codex_exec_error(result.stdout, result.stderr),
             "windows": empty_windows(),
         }
+        if refresh_capture is not None:
+            payload["refresh_capture"] = refresh_capture
+        return payload
 
     token_payload = token_event.get("payload", {})
     info = token_payload.get("info")
     rate_limits = token_payload.get("rate_limits")
+    if rate_limits and rate_limits.get("primary") is None and rate_limits.get("secondary") is None and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
+        payload = {
+            **base,
+            "model_context_window": info.get("model_context_window") if isinstance(info, dict) else None,
+            "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
+            "status": "ok",
+            "error": None,
+            "windows": {
+                "5h": zero_remaining_window(300),
+                "1week": zero_remaining_window(10080),
+            },
+            "usage_summary": {
+                "credits": rate_limits.get("credits"),
+                "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
+            },
+        }
+        if refresh_capture is not None:
+            payload["refresh_capture"] = refresh_capture
+        return payload
+
     if not info or not rate_limits or "primary" not in rate_limits or "secondary" not in rate_limits:
-        return {
+        payload = {
             **base,
             "status": "error",
             "error": "token_count event was present but missing quota details",
             "windows": empty_windows(),
         }
+        if refresh_capture is not None:
+            payload["refresh_capture"] = refresh_capture
+        return payload
 
     now_ts = checked_at.timestamp()
-    return {
+    payload = {
         **base,
         "model_context_window": info.get("model_context_window"),
         "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
@@ -293,6 +372,9 @@ def probe_codex(auth_path: Path) -> dict:
             "1week": normalize_window(rate_limits["secondary"], now_ts),
         },
     }
+    if refresh_capture is not None:
+        payload["refresh_capture"] = refresh_capture
+    return payload
 
 
 def current_codex_payload(source_auth_path: Path = SOURCE_AUTH_PATH) -> dict | None:

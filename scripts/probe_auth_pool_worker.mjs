@@ -2,7 +2,8 @@ import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { authPoolEntries, upsertAuthPoolQuota } from "../lib/db.js";
+import { fileURLToPath } from "node:url";
+import { authPoolEntries, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
 
@@ -72,36 +73,80 @@ function failureReport(entry, error) {
   };
 }
 
-async function main() {
+function withoutSensitiveRefreshCapture(report) {
+  if (!report?.refresh_capture) {
+    return report;
+  }
+  const refreshCapture = { ...report.refresh_capture };
+  delete refreshCapture.refreshed_auth_json;
+  return {
+    ...report,
+    refresh_capture: refreshCapture,
+  };
+}
+
+export async function processAuthPoolEntry(
+  entry,
+  {
+    decryptAuthJsonImpl = decryptAuthJson,
+    probeAuthJsonImpl = probeAuthJson,
+    probeCodexAuthJsonImpl = probeCodexAuthJson,
+    probeClaudeAuthJsonImpl = probeClaudeAuthJson,
+    upsertAuthPoolQuotaImpl = upsertAuthPoolQuota,
+    upsertAuthPoolEntryImpl = upsertAuthPoolEntry,
+  } = {}
+) {
+  let report;
+  try {
+    const authJsonText = decryptAuthJsonImpl(entry);
+    report =
+      entry.source === "codex"
+        ? probeCodexAuthJsonImpl(authJsonText)
+        : entry.source === "claude"
+          ? probeClaudeAuthJsonImpl(authJsonText)
+          : await probeAuthJsonImpl(entry.source, authJsonText);
+  } catch (error) {
+    report = failureReport(entry, error);
+  }
+  let refreshedAuthResult = null;
+  const refreshCapture = report?.refresh_capture;
+  if (entry.source === "codex" && refreshCapture?.delta?.refreshed && refreshCapture?.refreshed_auth_json) {
+    refreshedAuthResult = await upsertAuthPoolEntryImpl({
+      source: "codex",
+      auth_json: refreshCapture.refreshed_auth_json,
+      uploader_email: entry.uploader_email || null,
+      reporter_name: "actions@github-actions",
+      hostname: "github-actions",
+    });
+  }
+  await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
+
+  return {
+    source: entry.source,
+    account_id: entry.account_id,
+    status: report.status,
+    error: report.error,
+    refreshed_auth_written: Boolean(refreshedAuthResult && !refreshedAuthResult.deduplicated),
+    refreshed_auth_result: refreshedAuthResult,
+  };
+}
+
+export async function main() {
   const entries = await authPoolEntries();
   const items = [];
 
   for (const entry of entries) {
-    let report;
-    try {
-      const authJsonText = decryptAuthJson(entry);
-      report =
-        entry.source === "codex"
-          ? probeCodexAuthJson(authJsonText)
-          : entry.source === "claude"
-            ? probeClaudeAuthJson(authJsonText)
-          : await probeAuthJson(entry.source, authJsonText);
-    } catch (error) {
-      report = failureReport(entry, error);
-    }
-    await upsertAuthPoolQuota(report);
-    items.push({
-      source: entry.source,
-      account_id: entry.account_id,
-      status: report.status,
-      error: report.error,
-    });
+    items.push(await processAuthPoolEntry(entry));
   }
 
   console.log(JSON.stringify({ ok: true, count: items.length, items }, null, 2));
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isDirectRun) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
