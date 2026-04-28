@@ -31,6 +31,7 @@ CLAUDE_ENV_DROP_KEYS = {
 OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 ESC_SINGLE_RE = re.compile(r"\x1b[@-_]")
+ESC_78_RE = re.compile(r"\x1b[78]")
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 TRUST_PROMPT_RE = re.compile(r"(?:security(?:.|\n){0,80}guide|trust(?:.|\n){0,120}folder)", re.I)
 THEME_PROMPT_RE = re.compile(r"(?:choose(?:.|\n){0,80}text(?:.|\n){0,80}style|syntax(?:.|\n){0,40}theme|/theme)", re.I)
@@ -129,6 +130,7 @@ def materialize_cli_state(home: Path, workdir: Path, blob: dict) -> None:
 def normalize_terminal_text(text: str) -> str:
     cleaned = OSC_RE.sub("", text)
     cleaned = CSI_RE.sub("", cleaned)
+    cleaned = ESC_78_RE.sub("", cleaned)
     cleaned = ESC_SINGLE_RE.sub("", cleaned)
     cleaned = CONTROL_RE.sub("", cleaned)
     return cleaned
@@ -138,15 +140,23 @@ def summarize_probe_error(text: str) -> str:
     normalized = normalize_terminal_text(text or "")
     compact = re.sub(r"\s+", " ", normalized).strip()
     lowered = compact.lower()
+    lowered_flat = re.sub(r"\s+", "", lowered)
     if not compact:
         return "claude statusline snapshot was not produced"
-    if "trust this folder" in lowered or "security guide" in lowered:
+    if "trust this folder" in lowered or "security guide" in lowered or "trustthisfolder" in lowered_flat or "securityguide" in lowered_flat:
         return "claude probe stalled at trust prompt"
-    if "choose the text style" in lowered or "syntax theme" in lowered or "/theme" in lowered:
+    if "choose the text style" in lowered or "syntax theme" in lowered or "/theme" in lowered or "choosethetextstyle" in lowered_flat or "syntaxtheme" in lowered_flat:
         return "claude probe stalled at theme prompt"
-    if "select login method" in lowered or "claude account with subscription" in lowered or "anthropic console account" in lowered:
+    if "select login method" in lowered or "claude account with subscription" in lowered or "anthropic console account" in lowered or "selectloginmethod" in lowered_flat or "claudeaccountwithsubscription" in lowered_flat or "anthropicconsoleaccount" in lowered_flat:
         return "claude probe stalled at login prompt"
-    if "welcome back" in lowered or "tips for getting started" in lowered or "claude code v" in lowered:
+    if (
+        "welcome back" in lowered
+        or "tips for getting started" in lowered
+        or "claude code v" in lowered
+        or "welcomeback" in lowered_flat
+        or "tipsforgettingstarted" in lowered_flat
+        or "claudecodev" in lowered_flat
+    ):
         return "claude probe reached ui but no statusline snapshot was produced"
     return compact[:200]
 

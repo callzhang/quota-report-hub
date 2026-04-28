@@ -1189,6 +1189,12 @@ Reading additional input from stdin...
         summary = probe_claude_auth_blob.summarize_probe_error(noisy_output)
         self.assertEqual(summary, "claude probe reached ui but no statusline snapshot was produced")
 
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_summarizes_flattened_ui_garbage(self):
+        noisy_output = "787878╭───ClaudeCodev2.1.122────────────────╮││Tipsforgetting││WelcomebackDerek!│started│"
+        summary = probe_claude_auth_blob.summarize_probe_error(noisy_output)
+        self.assertEqual(summary, "claude probe reached ui but no statusline snapshot was produced")
+
 
 if __name__ == "__main__":
     unittest.main()
