@@ -107,6 +107,55 @@ class ReporterScriptsTest(unittest.TestCase):
         )
         self.assertIn("\"refresh_token\": \"refresh-2\"", report["refresh_capture"]["refreshed_auth_json"])
 
+    def test_probe_codex_uses_stable_cache_root_instead_of_tmp(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "prolite"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            seen = {}
+
+            def fake_run(args, env=None, capture_output=None, text=None, check=None):
+                seen["code_home"] = env["CODEX_HOME"]
+                seen["workdir"] = args[args.index("-C") + 1]
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch("quota_reporters.subprocess.run", side_effect=fake_run):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 272000},
+                            "rate_limits": {
+                                "plan_type": "prolite",
+                                "primary": {"used_percent": 5, "window_minutes": 300},
+                                "secondary": {"used_percent": 10, "window_minutes": 10080},
+                            },
+                        }
+                    },
+                ):
+                    probe_codex(auth_path)
+
+        self.assertNotIn("/tmp/", seen["code_home"])
+        self.assertTrue(seen["workdir"].endswith("/workspace"))
+
     def test_probe_codex_maps_usage_limit_event_to_zero_remaining_windows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"

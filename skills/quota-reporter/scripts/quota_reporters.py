@@ -216,6 +216,16 @@ def empty_windows() -> dict:
     return {"5h": None, "1week": None}
 
 
+def codex_probe_temp_root() -> Path:
+    if sys.platform == "darwin":
+        root = Path.home() / "Library" / "Caches" / "quota-report-hub"
+    else:
+        xdg_cache = os.environ.get("XDG_CACHE_HOME")
+        root = Path(xdg_cache) / "quota-report-hub" if xdg_cache else Path.home() / ".cache" / "quota-report-hub"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def summarize_codex_exec_error(stdout: str, stderr: str) -> str:
     combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part).strip()
     lowered = combined.lower()
@@ -295,17 +305,19 @@ def zero_remaining_window(window_minutes: int, reset_at: str | None = None, rese
 def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dict:
     metadata = auth_metadata(auth_path)
     checked_at = datetime.now(timezone.utc)
-    temp_dir = tempfile.mkdtemp(prefix="quota-report-")
+    temp_dir = tempfile.mkdtemp(prefix="quota-report-", dir=str(codex_probe_temp_root()))
     refreshed_metadata = None
     refreshed_auth_text = None
     try:
         codex_home = Path(temp_dir)
+        workspace = codex_home / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
         temp_auth_path = codex_home / "auth.json"
         shutil.copy2(auth_path, temp_auth_path)
         env = dict(os.environ)
         env["CODEX_HOME"] = str(codex_home)
         result = subprocess.run(
-            ["codex", "exec", "--skip-git-repo-check", "-C", "/tmp", CODEx_PROMPT],
+            ["codex", "exec", "--skip-git-repo-check", "-C", str(workspace), CODEx_PROMPT],
             env=env,
             capture_output=True,
             text=True,
