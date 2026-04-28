@@ -1033,6 +1033,17 @@ Reading additional input from stdin...
         self.assertIn(str(workdir), state["projects"])
         self.assertTrue(state["projects"][str(workdir)]["hasTrustDialogAccepted"])
 
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_summarizes_ui_noise_errors(self):
+        noisy_output = (
+            "\x1b]0;✳ Claude Code\x07"
+            "Welcome back Derek!\n"
+            "Tips for getting started\n"
+            "Opus 4.7 (1M context) · Claude Max · Derek Zen\n"
+        )
+        summary = probe_claude_auth_blob.summarize_probe_error(noisy_output)
+        self.assertEqual(summary, "claude probe reached ui but no statusline snapshot was produced")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -127,6 +127,23 @@ def normalize_terminal_text(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
+def summarize_probe_error(text: str) -> str:
+    normalized = normalize_terminal_text(text or "")
+    compact = re.sub(r"\s+", " ", normalized).strip()
+    lowered = compact.lower()
+    if not compact:
+        return "claude statusline snapshot was not produced"
+    if "trust this folder" in lowered or "security guide" in lowered:
+        return "claude probe stalled at trust prompt"
+    if "choose the text style" in lowered or "syntax theme" in lowered or "/theme" in lowered:
+        return "claude probe stalled at theme prompt"
+    if "select login method" in lowered or "claude account with subscription" in lowered or "anthropic console account" in lowered:
+        return "claude probe stalled at login prompt"
+    if "welcome back" in lowered or "tips for getting started" in lowered or "claude code v" in lowered:
+        return "claude probe reached ui but no statusline snapshot was produced"
+    return compact[:200]
+
+
 def maybe_handle_setup_prompt(child: pexpect.spawn, text: str, state: dict) -> bool:
     lowered = normalize_terminal_text(text).lower()
     if not state["trust_handled"] and (
@@ -226,7 +243,7 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
         windows = parse_statusline_snapshot(snapshot_path)
         if windows["5h"] is not None or windows["1week"] is not None:
             return windows, None
-        error = ("".join(output).strip() or "Claude statusline snapshot was not produced")[:1200]
+        error = summarize_probe_error("".join(output))
         return empty_windows(), error
     finally:
         try:
