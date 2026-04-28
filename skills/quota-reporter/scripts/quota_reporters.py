@@ -84,6 +84,10 @@ def human_plan_name(plan_type: str | None) -> str | None:
     }.get(plan_type, plan_type)
 
 
+def is_excluded_free_plan(plan_name: str | None) -> bool:
+    return (plan_name or "").strip().lower() == "free"
+
+
 def auth_metadata(path: Path) -> dict:
     payload = read_json(path)
     identity = decode_jwt_payload(payload["tokens"]["id_token"])
@@ -938,6 +942,23 @@ def sync_current_auth_pool_entry(
     known_auth_path: Path,
 ) -> dict:
     known = known_auth_state_for_source(read_known_auth_state(known_auth_path), source)
+    if is_excluded_free_plan(metadata.get("plan_name")):
+        state = write_known_auth_state(
+            source=source,
+            metadata=metadata,
+            known_auth_path=known_auth_path,
+            last_uploaded_digest=known.get("last_uploaded_digest"),
+            last_uploaded_account_id=known.get("last_uploaded_account_id"),
+            last_uploaded_auth_last_refresh=known.get("last_uploaded_auth_last_refresh"),
+            state_source="free_plan_excluded",
+        )
+        return {
+            "ok": True,
+            "uploaded": False,
+            "reason": "free_plan_excluded",
+            "known_auth": state,
+        }
+
     already_uploaded = (
         known.get("last_uploaded_account_id") == metadata["account_id"]
         and known.get("last_uploaded_auth_last_refresh") == metadata["auth_last_refresh"]

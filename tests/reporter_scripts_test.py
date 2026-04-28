@@ -823,6 +823,38 @@ Reading additional input from stdin...
         self.assertFalse(result["uploaded"])
         self.assertEqual(result["reason"], "already_uploaded")
 
+    def test_sync_current_codex_auth_pool_skips_free_plan_uploads(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-19T21:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-free",
+                            "id_token": "x.eyJlbWFpbCI6ICJmcmVlQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiRnJlZSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogImZyZWUifX0.y",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                )
+
+        post_auth_pool_entry.assert_not_called()
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "free_plan_excluded")
+        self.assertEqual(result["known_auth"]["plan_name"], "Free")
+        self.assertEqual(result["known_auth"]["state_source"], "free_plan_excluded")
+
     def test_sync_current_codex_auth_pool_uploads_when_same_account_refreshes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -944,6 +976,58 @@ Reading additional input from stdin...
         self.assertFalse(result["uploaded"])
         self.assertEqual(result["reason"], "already_uploaded")
         self.assertNotIn("claude", result)
+
+    def test_sync_current_claude_auth_pool_skips_free_plan_uploads(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            claude_home = base / ".claude"
+            known_auth_path = base / "known_auth.json"
+            claude_home.mkdir(parents=True, exist_ok=True)
+
+            blob_text = json.dumps(
+                {
+                    "schema": "claude_credentials_v1",
+                    "account_id": "claude-free@example.com",
+                    "email": "free@example.com",
+                    "name": "Free",
+                    "plan_name": "Free",
+                    "auth_last_refresh": "1776668828033",
+                    "credentials": {
+                        "claudeAiOauth": {
+                            "accessToken": "token",
+                            "refreshToken": "refresh",
+                            "expiresAt": "2026-04-23T12:00:00Z",
+                            "scopes": ["openid"],
+                            "subscriptionType": "free",
+                            "rateLimitTier": "default_free",
+                        }
+                    },
+                },
+                ensure_ascii=False,
+            )
+            payload = {
+                "source": "claude",
+                "account_id": "claude-free@example.com",
+                "email": "free@example.com",
+                "name": "Free",
+                "plan_name": "Free",
+                "windows": {"5h": {"remaining_percent": 80}, "1week": {"remaining_percent": 60}},
+            }
+
+            with mock.patch("quota_reporters.build_claude_auth_blob", return_value=(blob_text, payload)):
+                with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
+                    result = quota_guard.sync_current_claude_auth_pool(
+                        "https://quota-report-hub.vercel.app",
+                        "qrp_token",
+                        claude_home=claude_home,
+                        known_auth_path=known_auth_path,
+                    )
+
+        post_auth_pool_entry.assert_not_called()
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "free_plan_excluded")
+        self.assertEqual(result["known_auth"]["plan_name"], "Free")
+        self.assertEqual(result["known_auth"]["state_source"], "free_plan_excluded")
 
     def test_install_supports_claude_statusline_settings(self):
         self.assertTrue(hasattr(install_quota_guard, "configure_claude_statusline"))
