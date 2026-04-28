@@ -493,6 +493,41 @@ def summarize_claude_stats(stats: dict | None) -> dict | None:
     }
 
 
+def compact_claude_usage_summary(
+    auth_status: dict,
+    auth_text_details: dict,
+    oauth: dict,
+    statusline_snapshot: dict | None,
+    stats_summary: dict | None,
+    windows: dict,
+) -> dict:
+    summary = {
+        "login_method": auth_text_details.get("login_method"),
+        "organization": auth_text_details.get("organization"),
+        "subscription_type": oauth.get("subscriptionType"),
+        "rate_limit_tier": oauth.get("rateLimitTier"),
+        "oauth_expires_at": oauth.get("expiresAt"),
+        "quota_source": "statusline_snapshot" if windows["5h"] is not None or windows["1week"] is not None else "unavailable",
+        "snapshot_reported_at": (statusline_snapshot or {}).get("captured_at"),
+    }
+    if auth_status.get("authMethod"):
+        summary["auth_method"] = auth_status.get("authMethod")
+    if auth_status.get("apiProvider"):
+        summary["api_provider"] = auth_status.get("apiProvider")
+    if stats_summary:
+        summary["stats_summary"] = {
+            "last_computed_date": stats_summary.get("last_computed_date"),
+            "total_sessions": stats_summary.get("total_sessions"),
+            "total_messages": stats_summary.get("total_messages"),
+            "latest_activity_date": stats_summary.get("latest_activity_date"),
+            "total_input_tokens": stats_summary.get("total_input_tokens"),
+            "total_output_tokens": stats_summary.get("total_output_tokens"),
+            "total_cache_read_tokens": stats_summary.get("total_cache_read_tokens"),
+            "total_cache_write_tokens": stats_summary.get("total_cache_write_tokens"),
+        }
+    return summary
+
+
 def run_claude_status(claude_executable: str) -> dict:
     try:
         result = subprocess.run(
@@ -753,14 +788,6 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
     statusline_snapshot = read_claude_statusline_snapshot(claude_home)
     statusline_windows = parse_claude_statusline_rate_limits(statusline_snapshot)
     summary = summarize_claude_stats(stats)
-    status_command = run_claude_status(claude_executable)
-    rate_limit_probe = {
-        "available": statusline_windows["5h"] is not None or statusline_windows["1week"] is not None,
-        "source": "statusline_snapshot",
-        "snapshot_path": str(claude_home / CLAUDE_STATUSLINE_SNAPSHOT_PATH),
-        "snapshot_reported_at": (statusline_snapshot or {}).get("captured_at"),
-    }
-
     return {
         **base,
         "account_id": claude_account_id(auth_text_details),
@@ -776,23 +803,14 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
             else "claude auth status reported loggedIn=false"
         ),
         "windows": statusline_windows,
-        "usage_summary": {
-            "auth_method": auth_status.get("authMethod"),
-            "api_provider": auth_status.get("apiProvider"),
-            "login_method": auth_text_details.get("login_method"),
-            "organization": auth_text_details.get("organization"),
-            "subscription_type": oauth.get("subscriptionType"),
-            "rate_limit_tier": oauth.get("rateLimitTier"),
-            "oauth_expires_at": oauth.get("expiresAt"),
-            "quota_status": status_command,
-            "rate_limit_probe": rate_limit_probe,
-            "statusline_snapshot": {
-                "has_rate_limits": rate_limit_probe["available"],
-                "captured_at": (statusline_snapshot or {}).get("captured_at"),
-                "raw_rate_limits": (statusline_snapshot or {}).get("rate_limits"),
-            },
-            "stats": summary,
-        },
+        "usage_summary": compact_claude_usage_summary(
+            auth_status,
+            auth_text_details,
+            oauth,
+            statusline_snapshot,
+            summary,
+            statusline_windows,
+        ),
     }
 
 
@@ -988,7 +1006,6 @@ def sync_current_claude_auth_pool(
             "ok": True,
             "uploaded": False,
             "reason": payload.get("error") or "missing_auth",
-            "claude": payload,
         }
 
     metadata = claude_auth_blob_metadata(blob_text)
@@ -1000,7 +1017,6 @@ def sync_current_claude_auth_pool(
         metadata=metadata,
         known_auth_path=known_auth_path,
     )
-    result["claude"] = payload
     return result
 
 

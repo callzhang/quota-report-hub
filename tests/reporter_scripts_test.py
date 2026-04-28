@@ -304,15 +304,13 @@ Reading additional input from stdin...
             stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
             stderr="",
         )
-        status_result = mock.Mock(returncode=0, stdout="/status isn't available in this environment.\n", stderr="")
-
         with mock.patch(
             "quota_reporters.discover_claude_executable",
             return_value="/usr/local/bin/claude",
         ):
             with mock.patch(
                 "quota_reporters.subprocess.run",
-                side_effect=[auth_json, auth_text, status_result],
+                side_effect=[auth_json, auth_text],
             ):
                 with mock.patch(
                     "quota_reporters.read_claude_credentials",
@@ -345,16 +343,18 @@ Reading additional input from stdin...
         self.assertEqual(payload["usage_summary"]["organization"], "Derek Zen")
         self.assertEqual(payload["usage_summary"]["login_method"], "Claude Max account")
         self.assertEqual(payload["windows"]["5h"]["used_percent"], 10.0)
-        self.assertEqual(payload["usage_summary"]["rate_limit_probe"]["source"], "statusline_snapshot")
-        self.assertEqual(payload["usage_summary"]["statusline_snapshot"]["captured_at"], "2026-04-20T04:00:00Z")
+        self.assertEqual(payload["usage_summary"]["quota_source"], "statusline_snapshot")
+        self.assertEqual(payload["usage_summary"]["snapshot_reported_at"], "2026-04-20T04:00:00Z")
+        self.assertNotIn("quota_status", payload["usage_summary"])
+        self.assertNotIn("rate_limit_probe", payload["usage_summary"])
+        self.assertNotIn("statusline_snapshot", payload["usage_summary"])
+        self.assertNotIn("stats", payload["usage_summary"])
 
     def test_probe_claude_without_email_uses_single_missing_email_id(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
         auth_text = mock.Mock(returncode=0, stdout="Login method: Claude Max account\n", stderr="")
-        status_result = mock.Mock(returncode=0, stdout="/status isn't available in this environment.\n", stderr="")
-
         with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
-            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text, status_result]):
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
                 with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"subscriptionType": "max"}}, "credentials_file")):
                     with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None):
                         with mock.patch("quota_reporters.read_claude_stats", return_value=None):
@@ -418,8 +418,8 @@ Reading additional input from stdin...
                             with mock.patch("quota_reporters.read_claude_stats", return_value=None):
                                 probe_claude(Path("/tmp/claude-home"))
 
-        self.assertGreaterEqual(len(calls), 3)
-        for env in calls[:3]:
+        self.assertEqual(len(calls), 2)
+        for env in calls:
             self.assertNotIn("ANTHROPIC_AUTH_TOKEN", env)
             self.assertNotIn("ANTHROPIC_BASE_URL", env)
 
@@ -894,6 +894,7 @@ Reading additional input from stdin...
         post_auth_pool_entry.assert_not_called()
         self.assertFalse(result["uploaded"])
         self.assertEqual(result["reason"], "already_uploaded")
+        self.assertNotIn("claude", result)
 
     def test_install_supports_claude_statusline_settings(self):
         self.assertTrue(hasattr(install_quota_guard, "configure_claude_statusline"))
