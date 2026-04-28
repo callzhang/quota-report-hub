@@ -196,7 +196,7 @@ test("mergeLatestReport accepts newer non-null windows", () => {
   assert.equal(merged.windows["1week"].remaining_percent, 65);
 });
 
-test("mergeLatestReport clears old windows on hard auth invalidation", () => {
+test("mergeLatestReport preserves old windows as stale on hard auth invalidation", () => {
   const previous = sanitizeReport({
     source: "codex",
     hostname: "gpu4",
@@ -223,9 +223,11 @@ test("mergeLatestReport clears old windows on hard auth invalidation", () => {
   const merged = mergeLatestReport(previous, incoming);
 
   assert.equal(merged.reported_at, "2026-04-21T04:15:00Z");
-  assert.equal(merged.windows_stale, false);
-  assert.equal(merged.windows["5h"], null);
-  assert.equal(merged.windows["1week"], null);
+  assert.equal(merged.windows_stale, true);
+  assert.equal(merged.windows["5h"].remaining_percent, 75);
+  assert.equal(merged.windows["1week"].remaining_percent, 60);
+  assert.equal(merged.error, "auth invalidated (token_invalidated)");
+  assert.equal(merged.status, "error");
 });
 
 test("authPoolStatusPayload only includes cloud auth pool entries", () => {
