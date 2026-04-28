@@ -28,7 +28,10 @@ CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
 }
-ANSI_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+ESC_SINGLE_RE = re.compile(r"\x1b[@-_]")
+CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 TRUST_PROMPT_RE = re.compile(r"(?:security(?:.|\n){0,80}guide|trust(?:.|\n){0,120}folder)", re.I)
 THEME_PROMPT_RE = re.compile(r"(?:choose(?:.|\n){0,80}text(?:.|\n){0,80}style|syntax(?:.|\n){0,40}theme|/theme)", re.I)
 LOGIN_PROMPT_RE = re.compile(
@@ -124,7 +127,11 @@ def materialize_cli_state(home: Path, workdir: Path, blob: dict) -> None:
 
 
 def normalize_terminal_text(text: str) -> str:
-    return ANSI_RE.sub("", text)
+    cleaned = OSC_RE.sub("", text)
+    cleaned = CSI_RE.sub("", cleaned)
+    cleaned = ESC_SINGLE_RE.sub("", cleaned)
+    cleaned = CONTROL_RE.sub("", cleaned)
+    return cleaned
 
 
 def summarize_probe_error(text: str) -> str:

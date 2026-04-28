@@ -1093,6 +1093,18 @@ Reading additional input from stdin...
         summary = probe_claude_auth_blob.summarize_probe_error(noisy_output)
         self.assertEqual(summary, "claude probe reached ui but no statusline snapshot was produced")
 
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_strips_esc7_esc8_and_osc_noise(self):
+        noisy_output = (
+            "\x1b7\x1b8\x1b]11;?\x07"
+            "\x1b7\x1b8\x1b]11;?\x07"
+            "\x1b]0;✳ Claude Code\x07"
+            "╭───ClaudeCodev2.1.122────────────────────╮\n"
+            "│ Welcome back Derek! │ Tips for getting started │\n"
+        )
+        summary = probe_claude_auth_blob.summarize_probe_error(noisy_output)
+        self.assertEqual(summary, "claude probe reached ui but no statusline snapshot was produced")
+
 
 if __name__ == "__main__":
     unittest.main()
