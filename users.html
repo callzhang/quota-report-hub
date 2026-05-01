@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Users · Quota Report Hub</title>
+    <style>
+      :root {
+        --bg: #f4efe7;
+        --panel: rgba(255, 251, 245, 0.92);
+        --ink: #1d1915;
+        --muted: #6d6154;
+        --line: rgba(75, 52, 31, 0.14);
+        --accent: #1f6d68;
+        --accent-2: #ce6030;
+        --warn: #cf7a1b;
+        --bad: #b23a32;
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top left, rgba(31, 109, 104, 0.18), transparent 26%),
+          radial-gradient(circle at top right, rgba(206, 96, 48, 0.18), transparent 28%),
+          linear-gradient(180deg, #f9f4ea 0%, #ece0ce 100%);
+        color: var(--ink);
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+      }
+
+      main {
+        max-width: 1520px;
+        margin: 0 auto;
+        padding: 28px 24px 48px;
+      }
+
+      .hero, .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: 0 18px 54px rgba(77, 58, 37, 0.09);
+      }
+
+      .hero {
+        padding: 28px;
+        display: grid;
+        gap: 14px;
+      }
+
+      .hero-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(34px, 7vw, 60px);
+        line-height: 0.92;
+        font-family: "Iowan Old Style", "Palatino Linotype", serif;
+      }
+
+      .nav-links { display: flex; gap: 12px; }
+      .nav-links a {
+        color: var(--accent);
+        text-decoration: none;
+        border-bottom: 1px dashed var(--accent);
+      }
+
+      .viewer-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 38px;
+        padding: 8px 14px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.75);
+        color: var(--ink);
+        white-space: nowrap;
+      }
+
+      .meta { color: var(--muted); }
+      .cards {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        padding: 18px;
+        background: rgba(255, 255, 255, 0.5);
+      }
+
+      .card strong {
+        display: block;
+        margin-top: 8px;
+        font-size: 30px;
+        line-height: 1.1;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .section {
+        margin-top: 18px;
+        padding: 20px;
+      }
+
+      .auth-panel { display: grid; gap: 12px; }
+      .auth-panel[hidden] { display: none; }
+
+      .auth-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .auth-input {
+        width: min(680px, 100%);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 12px 14px;
+        font: inherit;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.82);
+      }
+
+      .button {
+        appearance: none;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 10px 16px;
+        font: inherit;
+        cursor: pointer;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.85);
+      }
+
+      .button.primary {
+        color: #fff8f0;
+        background: var(--accent);
+        border-color: transparent;
+      }
+
+      .table-shell {
+        overflow-x: auto;
+        border-radius: 18px;
+      }
+
+      .section h2 {
+        margin: 0 0 14px 0;
+        font-size: 18px;
+      }
+
+      table {
+        width: 100%;
+        min-width: 1200px;
+        border-collapse: collapse;
+      }
+
+      th, td {
+        text-align: left;
+        padding: 14px 12px;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+      }
+
+      th {
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      tr:last-child td { border-bottom: 0; }
+      .mono { font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; }
+      .wrap {
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .empty { color: var(--muted); }
+
+      .source-tag {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .source-tag.codex {
+        color: #0f5a56;
+        background: rgba(31, 109, 104, 0.12);
+        border-color: rgba(31, 109, 104, 0.18);
+      }
+
+      .source-tag.claude {
+        color: #9b451d;
+        background: rgba(206, 96, 48, 0.12);
+        border-color: rgba(206, 96, 48, 0.2);
+      }
+
+      .reason-tag {
+        display: inline-flex;
+        align-items: center;
+        padding: 3px 9px;
+        border-radius: 999px;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        background: rgba(29, 25, 21, 0.06);
+      }
+      .reason-tag.served { color: var(--accent); background: rgba(31, 109, 104, 0.1); }
+      .reason-tag.no_better_auth_available { color: var(--muted); }
+
+      .self-row { background: rgba(206, 96, 48, 0.05); }
+      .self-mark {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        font-size: 10px;
+        border-radius: 6px;
+        background: rgba(206, 96, 48, 0.18);
+        color: #9b451d;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div class="hero-top">
+          <div class="meta">
+            Token holders and auth fetch audit log.
+            <span class="nav-links"><a href="./">← back to dashboard</a></span>
+          </div>
+          <div id="viewer-chip" class="viewer-chip" hidden></div>
+        </div>
+        <h1>Users &amp; Audit</h1>
+        <div class="meta" id="summary">Loading...</div>
+        <div class="cards" id="cards"></div>
+      </section>
+
+      <section class="panel section auth-panel" id="auth-panel">
+        <h2>Access Token</h2>
+        <div class="meta">Enter your personal access token from the email sent by the hub.</div>
+        <input id="token-input" class="auth-input" type="password" placeholder="qrp_..." autocomplete="off" />
+        <div class="auth-actions">
+          <button id="save-token" class="button primary">Unlock Hub</button>
+          <button id="clear-token" class="button">Clear Token</button>
+        </div>
+        <div class="meta wrap" id="auth-message"></div>
+      </section>
+
+      <section class="panel section">
+        <h2>Token Holders</h2>
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>First Issued</th>
+                <th>Latest Token Issued</th>
+                <th>Token Last Used</th>
+                <th>Auth Fetches</th>
+                <th>Last Fetch</th>
+              </tr>
+            </thead>
+            <tbody id="users-rows"></tbody>
+          </table>
+        </div>
+        <div id="users-empty" class="empty" hidden>No users yet.</div>
+      </section>
+
+      <section class="panel section">
+        <h2>Auth Fetch Log</h2>
+        <div class="meta" id="fetch-log-meta"></div>
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Requester</th>
+                <th>Source</th>
+                <th>Result</th>
+                <th>Served Account</th>
+                <th>Originally Uploaded By</th>
+                <th>Their Current Quota</th>
+              </tr>
+            </thead>
+            <tbody id="log-rows"></tbody>
+          </table>
+        </div>
+        <div id="log-empty" class="empty" hidden>No fetch events yet.</div>
+      </section>
+    </main>
+
+    <script>
+      const summary = document.getElementById("summary");
+      const cards = document.getElementById("cards");
+      const usersRows = document.getElementById("users-rows");
+      const usersEmpty = document.getElementById("users-empty");
+      const logRows = document.getElementById("log-rows");
+      const logEmpty = document.getElementById("log-empty");
+      const fetchLogMeta = document.getElementById("fetch-log-meta");
+      const viewerChip = document.getElementById("viewer-chip");
+      const authPanel = document.getElementById("auth-panel");
+      const tokenInput = document.getElementById("token-input");
+      const saveTokenButton = document.getElementById("save-token");
+      const clearTokenButton = document.getElementById("clear-token");
+      const authMessage = document.getElementById("auth-message");
+
+      const COOKIE_NAME = "quota_report_hub_token";
+      let currentToken = "";
+      let viewerEmail = "";
+
+      function getCookie(name) {
+        const prefix = `${name}=`;
+        return document.cookie
+          .split(";")
+          .map((part) => part.trim())
+          .find((part) => part.startsWith(prefix))
+          ?.slice(prefix.length) || "";
+      }
+
+      function setTokenCookie(token) {
+        const secure = location.protocol === "https:" ? "; Secure" : "";
+        document.cookie = `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax${secure}`;
+      }
+
+      function clearTokenCookie() {
+        document.cookie = `${COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax`;
+      }
+
+      function getStoredToken() {
+        return decodeURIComponent(getCookie(COOKIE_NAME));
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        }[ch]));
+      }
+
+      function formatDate(value) {
+        if (!value) return "n/a";
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return escapeHtml(value);
+        return date.toLocaleString();
+      }
+
+      function formatRelative(value) {
+        if (!value) return "never";
+        const then = new Date(value).getTime();
+        if (Number.isNaN(then)) return "n/a";
+        const diff = (Date.now() - then) / 1000;
+        if (diff < 60) return `${Math.max(0, Math.floor(diff))}s ago`;
+        if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+        if (diff < 86400) return `${(diff / 3600).toFixed(1)}h ago`;
+        return `${(diff / 86400).toFixed(1)}d ago`;
+      }
+
+      function sourceTag(value) {
+        const normalized = String(value || "unknown").toLowerCase();
+        return `<span class="source-tag ${escapeHtml(normalized)}">${escapeHtml(normalized)}</span>`;
+      }
+
+      function reasonTag(reason) {
+        const normalized = String(reason || "").toLowerCase();
+        const label = normalized === "served" ? "served" : normalized === "no_better_auth_available" ? "no match" : normalized;
+        return `<span class="reason-tag ${escapeHtml(normalized)}">${escapeHtml(label)}</span>`;
+      }
+
+      function quotaText(fiveH, oneWeek) {
+        const parts = [];
+        if (fiveH !== null && fiveH !== undefined) parts.push(`5h: ${Number(fiveH).toFixed(0)}%`);
+        if (oneWeek !== null && oneWeek !== undefined) parts.push(`1w: ${Number(oneWeek).toFixed(0)}%`);
+        return parts.length ? parts.join(" · ") : "—";
+      }
+
+      function setLockedView(message) {
+        cards.innerHTML = "";
+        usersRows.innerHTML = "";
+        logRows.innerHTML = "";
+        usersEmpty.hidden = true;
+        logEmpty.hidden = true;
+        summary.textContent = message || "Token required.";
+        authPanel.hidden = false;
+        viewerChip.hidden = true;
+        if (message) authMessage.textContent = message;
+      }
+
+      function setAuthenticatedView(email) {
+        viewerEmail = email || "unknown";
+        authPanel.hidden = true;
+        viewerChip.hidden = false;
+        viewerChip.textContent = `Signed in as ${viewerEmail}`;
+        authMessage.textContent = "";
+      }
+
+      async function load() {
+        const token = currentToken || getStoredToken();
+        if (!token) {
+          setLockedView("Token required.");
+          return;
+        }
+
+        const response = await fetch("/api/users", {
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (response.status === 401) {
+          currentToken = "";
+          clearTokenCookie();
+          tokenInput.value = "";
+          setLockedView("Token invalid or expired. Request a new token by email and paste the latest one here.");
+          return;
+        }
+
+        const payload = await response.json();
+        setAuthenticatedView(payload.viewer_email);
+
+        const users = payload.users || [];
+        const log = payload.fetch_log || [];
+
+        const totalFetches = users.reduce((acc, u) => acc + (u.fetch_count || 0), 0);
+        const activeTokens = users.filter((u) => u.has_active_token).length;
+
+        summary.textContent = `Generated ${formatDate(payload.generated_at)} · ${users.length} users · ${activeTokens} active tokens · ${totalFetches} total fetches recorded`;
+        cards.innerHTML = [
+          `<article class="card"><div class="meta">Token holders</div><strong>${users.length}</strong><div class="meta">Email-issued personal tokens</div></article>`,
+          `<article class="card"><div class="meta">Active tokens</div><strong>${activeTokens}</strong><div class="meta">Latest token still valid</div></article>`,
+          `<article class="card"><div class="meta">Total fetches</div><strong>${totalFetches}</strong><div class="meta">Lifetime auth pool fetches</div></article>`,
+          `<article class="card"><div class="meta">Most recent fetch</div><strong>${formatRelative(log[0]?.fetched_at)}</strong><div class="meta wrap">${escapeHtml(log[0]?.requester_email || "—")}</div></article>`,
+        ].join("");
+
+        usersRows.innerHTML = users.map((u) => {
+          const isSelf = u.email && u.email === viewerEmail;
+          return `
+            <tr class="${isSelf ? "self-row" : ""}">
+              <td>
+                <div class="wrap">${escapeHtml(u.email || "-")}${isSelf ? '<span class="self-mark">you</span>' : ""}</div>
+              </td>
+              <td><div class="wrap">${formatDate(u.created_at)}</div></td>
+              <td>
+                <div class="wrap">${formatDate(u.last_token_issued_at)}</div>
+                <div class="meta wrap">${u.has_active_token ? "active" : "no active token"}</div>
+              </td>
+              <td>
+                <div class="wrap">${formatDate(u.token_last_used_at)}</div>
+                <div class="meta wrap">${formatRelative(u.token_last_used_at)}</div>
+              </td>
+              <td><div class="wrap">${u.fetch_count || 0}</div></td>
+              <td>
+                <div class="wrap">${formatDate(u.last_fetched_at)}</div>
+                <div class="meta wrap">${formatRelative(u.last_fetched_at)}</div>
+              </td>
+            </tr>
+          `;
+        }).join("");
+        usersEmpty.hidden = users.length !== 0;
+
+        fetchLogMeta.textContent = `Showing latest ${log.length} fetch event${log.length === 1 ? "" : "s"}`;
+        logRows.innerHTML = log.map((row) => {
+          const isSelfRequester = row.requester_email && row.requester_email === viewerEmail;
+          const isOwnAuthServed = row.served_uploader_email && row.served_uploader_email === viewerEmail;
+          return `
+            <tr class="${isOwnAuthServed ? "self-row" : ""}">
+              <td>
+                <div class="wrap">${formatDate(row.fetched_at)}</div>
+                <div class="meta wrap">${formatRelative(row.fetched_at)}</div>
+              </td>
+              <td>
+                <div class="wrap">${escapeHtml(row.requester_email || "-")}${isSelfRequester ? '<span class="self-mark">you</span>' : ""}</div>
+              </td>
+              <td>${sourceTag(row.source)}</td>
+              <td>${reasonTag(row.reason)}</td>
+              <td>
+                <div class="wrap">${escapeHtml(row.served_email || row.served_account_id || "—")}</div>
+                <div class="mono wrap">${escapeHtml(row.served_account_id || "")}</div>
+              </td>
+              <td>
+                <div class="wrap">${escapeHtml(row.served_uploader_email || "—")}${isOwnAuthServed ? '<span class="self-mark">your auth</span>' : ""}</div>
+              </td>
+              <td>
+                <div class="wrap">${quotaText(row.current_five_h_remaining, row.current_one_week_remaining)}</div>
+                <div class="mono wrap">${escapeHtml(row.current_account_id || "")}</div>
+              </td>
+            </tr>
+          `;
+        }).join("");
+        logEmpty.hidden = log.length !== 0;
+      }
+
+      currentToken = getStoredToken();
+      tokenInput.value = currentToken;
+
+      saveTokenButton.addEventListener("click", async () => {
+        const token = tokenInput.value.trim();
+        if (!token) {
+          authMessage.textContent = "Enter a token first.";
+          return;
+        }
+        currentToken = token;
+        setTokenCookie(token);
+        await load();
+      });
+
+      clearTokenButton.addEventListener("click", () => {
+        currentToken = "";
+        clearTokenCookie();
+        tokenInput.value = "";
+        setLockedView("Token cleared.");
+      });
+
+      load();
+      setInterval(load, 60000);
+    </script>
+  </body>
+</html>
