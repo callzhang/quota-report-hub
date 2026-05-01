@@ -5,7 +5,7 @@ description: Install and run a local quota guard that checks current Codex and C
 
 # Quota Guard
 
-This skill installs and runs the local quota guard for Codex and Claude on macOS, Linux, and Windows.
+This skill installs and runs the local quota guard for Codex and Claude.
 
 ## What it does
 
@@ -25,13 +25,14 @@ This skill installs and runs the local quota guard for Codex and Claude on macOS
 - Auth pool token request: `scripts/request_auth_pool_token.py`
 - Auth pool sync: `scripts/sync_codex_auth_pool.py`
 - Auth pool fetch/install: `scripts/fetch_best_codex_auth.py`
+- Remote worker trigger/watch: `scripts/trigger_remote_probe.py`
 - Archived legacy scripts: `archive/`
 
 ## Required inputs
 
 You need:
 
-- the shared auth-pool URL, which defaults to `https://quota-report-hub.vercel.app/`
+- the shared auth-pool URL, for example `https://quota-report-hub.vercel.app`
 - a personal auth-pool user token issued by company email
 
 That same personal token is also used to unlock the hosted dashboard.
@@ -44,10 +45,9 @@ Run:
 
 ```bash
 python3 scripts/install_quota_guard.py \
+  --auth-pool-url https://your-dashboard.vercel.app \
   --email your.name@stardust.ai
 ```
-
-If the user wants a different hub URL, pass `--auth-pool-url`; otherwise the installer uses `https://quota-report-hub.vercel.app/`.
 
 The installer:
 
@@ -57,7 +57,6 @@ The installer:
 - writes the local config file under `~/.agents/auth/quota-reporter.json`
 - installs the 15-minute scheduler
 - writes Claude Code `statusLine` settings to `~/.claude/settings.json`
-- uses `launchd` on macOS, `crontab` on Linux, and Task Scheduler on Windows
 
 Token rules:
 
@@ -78,12 +77,32 @@ If the user is not already using a compatible hub, the correct order is:
 python3 scripts/quota_guard.py
 ```
 
+### Trigger one remote cloud probe
+
+```bash
+python3 scripts/trigger_remote_probe.py
+```
+
+This script:
+
+- triggers the GitHub Actions workflow `probe-auth-pool.yml`
+- waits for the newly created `workflow_dispatch` run on `main`
+- prints the run id as JSON
+- watches the run until it finishes
+- then fetches the hub status and returns a compact result row for each auth
+
+If you only want the run id and do not want to attach to the live log:
+
+```bash
+python3 scripts/trigger_remote_probe.py --no-watch
+```
+
 The guard then:
 
 - updates `~/.agents/auth/known_auth.json`
 - uploads the current auth to the auth pool only when needed
 - probes the current live Codex auth and Claude auth
-- if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
+- if a local source is below `20%` in `5H` or has `1week = 0`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
 - only replaces local source credentials when the fetched auth is different from what is already installed
 - does nothing when the cloud cannot provide a better auth than the current one
