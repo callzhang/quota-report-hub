@@ -230,6 +230,47 @@ test("mergeLatestReport preserves old windows as stale on hard auth invalidation
   assert.equal(merged.status, "error");
 });
 
+test("statusPayload keeps last invalidated quota window before reset and marks it stale", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows_stale: true,
+      account_id: "acct-1",
+      reported_at: "2026-04-21T04:15:00Z",
+      windows: {
+        "5h": { used_percent: 25, remaining_percent: 75, reset_at: "2026-04-21T09:00:00Z" },
+        "1week": { used_percent: 40, remaining_percent: 60, reset_at: "2026-04-27T09:00:00Z" },
+      },
+    },
+  ], "2026-04-21T05:00:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 75);
+  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
+});
+
+test("statusPayload infers a gray 100 percent window after reset for stale invalidated auth", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows_stale: true,
+      account_id: "acct-1",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": { used_percent: 100, remaining_percent: 0, reset_at: "2026-04-21T10:00:00Z" },
+        "1week": { used_percent: 40, remaining_percent: 60, reset_at: "2026-04-27T09:00:00Z" },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 100);
+  assert.equal(payload.items[0].display_windows["5h"].used_percent, 0);
+  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, true);
+});
+
 test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   const payload = authPoolStatusPayload(
     [
@@ -273,4 +314,5 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   assert.equal(payload.items[0].email, "a@example.com");
   assert.equal(payload.items[0].uploader_email, "derek@stardust.ai");
   assert.equal(payload.items[0].windows["5h"].remaining_percent, 80);
+  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 80);
 });

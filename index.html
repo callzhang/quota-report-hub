@@ -210,6 +210,7 @@
       .fill.low { background: linear-gradient(90deg, var(--warn), #f0b35f); }
       .fill.critical { background: linear-gradient(90deg, var(--bad), #e96d61); }
       .fill.ready { background: linear-gradient(90deg, #2f8f4e, #89d37f); }
+      .fill.inferred { background: linear-gradient(90deg, #8b867f, #cbc6bd); }
 
       .progress-row {
         display: flex;
@@ -425,13 +426,15 @@
           return `<div class="meta">n/a</div>`;
         }
         const remaining = Number(window.remaining_percent);
-        const isReady = window.reset_at && Date.parse(window.reset_at) <= Date.now();
+        const isInferredReady = Boolean(window.inferred_ready);
+        const isReady = !isInferredReady && window.reset_at && Date.parse(window.reset_at) <= Date.now();
         let level = "";
-        if (isReady) level = "ready";
+        if (isInferredReady) level = "inferred";
+        else if (isReady) level = "ready";
         else if (remaining <= 10) level = "critical";
         else if (remaining <= 30) level = "low";
         const label = isReady ? "ready now" : formatPercent(remaining);
-        const resetLabel = formatResetCountdown(window.reset_at);
+        const resetLabel = isInferredReady ? "likely reset after last known window" : formatResetCountdown(window.reset_at);
         return `
           <div class="progress">
             <div class="progress-row">
@@ -439,6 +442,7 @@
               <strong>${label}</strong>
             </div>
             <div class="meta">${resetLabel}</div>
+            ${isInferredReady ? `<div class="meta">inferred from stale invalidated auth</div>` : ""}
             ${isStale ? `<div class="meta">stale quota snapshot</div>` : ""}
           </div>
         `;
@@ -512,11 +516,11 @@
           <tr>
             <td>${sourceTag(item.source)}</td>
             <td><div class="wrap">${item.uploader_email || item.reporter_name || "-"}</div><div class="mono wrap">${item.hostname || ""}</div></td>
-            <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div></td>
-            <td>${item.windows?.["5h"] ? progressCell(item.windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
-            <td>${item.windows?.["1week"] ? progressCell(item.windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
+            <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div><div class="mono wrap">${item.account_id || ""}</div></td>
+            <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
+            <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${usageCell(item)}</td>
-            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="meta wrap">${item.error || ""}</div><div class="mono wrap">${item.account_id || ""}</div></td>
+            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="meta wrap">${item.error || ""}</div></td>
           </tr>
         `).join("");
 
