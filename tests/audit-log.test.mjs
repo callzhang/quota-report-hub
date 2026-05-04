@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createClient } from "@libsql/client";
 
 async function loadDbWithTempStore() {
   const tempDir = mkdtempSync(join(tmpdir(), "qrh-audit-test-"));
@@ -119,6 +120,31 @@ test("authUsersList joins active tokens and fetch counts per user", async () => 
 
     assert.equal(byEmail["bob@stardust.ai"].fetch_count, 1);
     assert.equal(byEmail["bob@stardust.ai"].has_active_token, true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("authUsersList collapses duplicate token rows for the same email", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.issueApiToken("derek@stardust.ai");
+    const client = createClient({
+      url: process.env.TURSO_DATABASE_URL,
+      authToken: process.env.TURSO_AUTH_TOKEN,
+    });
+    await client.execute({
+      sql: `
+        INSERT INTO auth_api_tokens (token_hash, email, created_at, last_used_at)
+        VALUES (?, ?, ?, ?)
+      `,
+      args: ["legacy-token-hash", "derek@stardust.ai", "2026-05-03T00:00:00Z", "2026-05-03T01:00:00Z"],
+    });
+
+    const users = await mod.authUsersList();
+    const derekUsers = users.filter((u) => u.email === "derek@stardust.ai");
+    assert.equal(derekUsers.length, 1);
+    assert.equal(derekUsers[0].has_active_token, true);
   } finally {
     cleanup();
   }
