@@ -196,6 +196,9 @@
 
       .progress.inferred {
         color: var(--muted);
+        padding: 8px 10px;
+        border-radius: 12px;
+        background: rgba(29, 25, 21, 0.04);
       }
 
       .progress.inferred strong,
@@ -225,6 +228,21 @@
         display: flex;
         align-items: center;
         gap: 10px;
+      }
+
+      .info-dot {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 999px;
+        border: 1px solid rgba(29, 25, 21, 0.18);
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1;
+        cursor: help;
+        flex: 0 0 auto;
       }
 
       .empty {
@@ -444,14 +462,17 @@
         else if (remaining <= 30) level = "low";
         const label = isReady ? "ready now" : formatPercent(remaining);
         const resetLabel = isInferredReady ? "likely reset after last known window" : formatResetCountdown(window.reset_at);
+        const inferenceInfo = isInferredReady
+          ? `<span class="info-dot" title="Likely reset after the last known window. This value is inferred from a stale invalidated auth, not a fresh probe.">(i)</span>`
+          : "";
         return `
           <div class="progress ${isInferredReady ? "inferred" : ""}">
             <div class="progress-row">
               <div class="track"><div class="fill ${level}" style="width: ${isReady ? 100 : remaining}%"></div></div>
               <strong>${label}</strong>
+              ${inferenceInfo}
             </div>
             <div class="meta">${resetLabel}</div>
-            ${isInferredReady ? `<div class="meta">inferred from stale invalidated auth</div>` : ""}
             ${isStale ? `<div class="meta">stale quota snapshot</div>` : ""}
           </div>
         `;
