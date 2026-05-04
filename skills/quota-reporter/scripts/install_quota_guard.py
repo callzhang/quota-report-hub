@@ -202,12 +202,36 @@ def install_windows_task_scheduler(python_path: str, worker_script: Path) -> dic
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Install the local quota guard and store a personal auth-pool token.")
-    parser.add_argument("--auth-pool-url", default=DEFAULT_AUTH_POOL_URL)
-    parser.add_argument("--email")
-    parser.add_argument("--auth-pool-user-token")
-    parser.add_argument("--python-path", default=sys.executable)
-    parser.add_argument("--skip-token-request", action="store_true")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Install the local quota guard, configure the Claude statusline hook, "
+            "and store the user's personal auth-pool access token for future scheduled runs."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--auth-pool-url",
+        default=DEFAULT_AUTH_POOL_URL,
+        help="Hub base URL used for auth upload, fetch-best, status, and emailed token issuance.",
+    )
+    parser.add_argument(
+        "--email",
+        help="Company email address that should receive or own the personal auth-pool token. Prompts interactively if omitted.",
+    )
+    parser.add_argument(
+        "--auth-pool-user-token",
+        help="Existing personal auth-pool token to store locally instead of prompting for a pasted token.",
+    )
+    parser.add_argument(
+        "--python-path",
+        default=sys.executable,
+        help="Python interpreter used by the scheduled guard job and Claude statusline hook.",
+    )
+    parser.add_argument(
+        "--skip-token-request",
+        action="store_true",
+        help="Skip the email token issuance API call. Use this when the token was already requested and you only need to paste it.",
+    )
     return parser
 
 

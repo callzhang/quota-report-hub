@@ -371,38 +371,24 @@ That means:
 
 ## Usage Examples
 
-### Request Personal Token
+### Install Local Guard And Request Personal Token
 
 ```bash
-python3 skills/quota-reporter/scripts/request_auth_pool_token.py \
+python3 skills/quota-reporter/scripts/install_quota_guard.py \
   --auth-pool-url https://quota-report-hub.vercel.app \
   --email your.name@stardust.ai
 ```
 
-### Upload Local Auth Snapshots
+### Run One Local Guard Cycle
 
 ```bash
-python3 skills/quota-reporter/scripts/sync_codex_auth_pool.py \
-  --auth-pool-url https://quota-report-hub.vercel.app \
-  --auth-pool-user-token YOUR_PERSONAL_TOKEN
+python3 skills/quota-reporter/scripts/quota_guard.py
 ```
 
-### Fetch Best Auth Without Installing
+### Trigger One Remote Cloud Probe
 
 ```bash
-python3 skills/quota-reporter/scripts/fetch_best_codex_auth.py \
-  --auth-pool-url https://quota-report-hub.vercel.app \
-  --auth-pool-user-token YOUR_PERSONAL_TOKEN \
-  --print-only
-```
-
-### Fetch Best Auth And Install It
-
-```bash
-python3 skills/quota-reporter/scripts/fetch_best_codex_auth.py \
-  --auth-pool-url https://quota-report-hub.vercel.app \
-  --auth-pool-user-token YOUR_PERSONAL_TOKEN \
-  --archive-current
+python3 skills/quota-reporter/scripts/trigger_remote_probe.py
 ```
 
 ## Future Work

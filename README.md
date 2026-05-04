@@ -33,11 +33,12 @@ npx skills add https://github.com/callzhang/quota-report-hub --skill quota-repor
 Skill files live under:
 
 - `skills/quota-reporter/SKILL.md`
+- `skills/quota-reporter/README.md`
 - `skills/quota-reporter/scripts/quota_guard.py`
 - `skills/quota-reporter/scripts/install_quota_guard.py`
-- `skills/quota-reporter/scripts/request_auth_pool_token.py`
-- `skills/quota-reporter/scripts/sync_codex_auth_pool.py`
-- `skills/quota-reporter/scripts/fetch_best_codex_auth.py`
+- `skills/quota-reporter/scripts/trigger_remote_probe.py`
+- `skills/quota-reporter/scripts/claude_statusline_probe.py`
+- `skills/quota-reporter/scripts/quota_reporters.py`
 - `skills/quota-reporter/archive/`
 
 After install, teammates can either:
@@ -83,7 +84,6 @@ Important runtime notes:
 - the local guard probes the current local Codex auth and Claude auth
 - if Codex has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Codex auth
 - if Claude has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Claude auth
-- Claude also sends its latest stable local statusline-based quota to the hub every 15 minutes from the same guard run
 - the request to `/api/auth/fetch-best` includes:
   - `source`
   - the current local `account_id`
@@ -214,25 +214,13 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 - updates local `known_auth.json`
 - uploads the current local auth for each source to the cloud auth pool only when the auth changed
 - probes local Codex and Claude quota
-- posts Claude quota to the hub every 15 minutes when it has a stable email-backed identity
 - when a local source is low, sends `source + current account + current quota` to `/api/auth/fetch-best`
 - installs a replacement only when the server returns a strictly better auth for that same source
 
-5. If needed, you can still fetch the best currently usable auth from the pool without installing it:
+5. If needed, trigger one immediate cloud probe cycle and watch the GitHub worker:
 
 ```bash
-python3 skills/quota-reporter/scripts/fetch_best_codex_auth.py \
-  --auth-pool-url https://quota-report-hub.vercel.app \
-  --auth-pool-user-token YOUR_PERSONAL_TOKEN \
-  --print-only
-```
-
-6. Or fetch and install the best auth into `~/.codex/auth.json` directly:
-
-```bash
-python3 skills/quota-reporter/scripts/fetch_best_codex_auth.py \
-  --auth-pool-url https://quota-report-hub.vercel.app \
-  --auth-pool-user-token YOUR_PERSONAL_TOKEN \
+python3 skills/quota-reporter/scripts/trigger_remote_probe.py
 ```
 
 ## Local test

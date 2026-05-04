@@ -142,16 +142,38 @@ def summarize_status_items(items: list[dict]) -> list[dict]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Trigger the remote auth-pool probe workflow and optionally watch the run."
+        description=(
+            "Trigger the remote GitHub Actions auth-pool probe workflow, optionally watch the run, "
+            "and optionally fetch the latest compact per-auth results from the hub afterwards."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--repo", default=DEFAULT_REPO)
-    parser.add_argument("--workflow", default=DEFAULT_WORKFLOW)
-    parser.add_argument("--ref", default=DEFAULT_REF)
-    parser.add_argument("--timeout-seconds", type=int, default=60)
-    parser.add_argument("--config-path", type=Path, default=DEFAULT_CONFIG_PATH)
-    parser.add_argument("--no-watch", action="store_true")
-    parser.add_argument("--no-exit-status", action="store_true")
-    parser.add_argument("--no-results", action="store_true")
+    parser.add_argument("--repo", default=DEFAULT_REPO, help="GitHub repository that hosts the probe workflow.")
+    parser.add_argument("--workflow", default=DEFAULT_WORKFLOW, help="GitHub Actions workflow filename to trigger.")
+    parser.add_argument("--ref", default=DEFAULT_REF, help="Git ref or branch name for the triggered workflow run.")
+    parser.add_argument(
+        "--timeout-seconds",
+        type=int,
+        default=60,
+        help="Maximum time to wait for GitHub to create the workflow_dispatch run after triggering it.",
+    )
+    parser.add_argument(
+        "--config-path",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="Local quota-reporter config used to read the hub URL and personal token when fetching post-run results.",
+    )
+    parser.add_argument("--no-watch", action="store_true", help="Trigger the workflow but do not attach to the live GitHub Actions log.")
+    parser.add_argument(
+        "--no-exit-status",
+        action="store_true",
+        help="When watching, do not propagate the workflow conclusion as the script exit code.",
+    )
+    parser.add_argument(
+        "--no-results",
+        action="store_true",
+        help="Do not query the hub for compact per-auth results after the workflow is triggered or watched.",
+    )
     return parser
 
 

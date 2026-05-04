@@ -194,16 +194,55 @@ def maybe_replace_claude_auth(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Check local Codex and Claude quota every 15 minutes and fetch a better same-source auth when needed."
+        description=(
+            "Run one local quota-guard cycle: probe current Codex and Claude state, upload changed auths, "
+            "and fetch a better same-source auth when the current quota falls below threshold."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--auth-pool-url")
-    parser.add_argument("--auth-pool-user-token")
-    parser.add_argument("--codex-auth-path", type=Path, default=SOURCE_AUTH_PATH)
-    parser.add_argument("--claude-home", type=Path, default=CLAUDE_HOME)
-    parser.add_argument("--known-auth-path", type=Path, default=KNOWN_AUTH_PATH)
-    parser.add_argument("--threshold-percent", type=float, default=20.0)
-    parser.add_argument("--weekly-threshold-percent", type=float, default=5.0)
-    parser.add_argument("--print-only", action="store_true")
+    parser.add_argument(
+        "--auth-pool-url",
+        help="Hub base URL. If omitted, falls back to ~/.agents/auth/quota-reporter.json.",
+    )
+    parser.add_argument(
+        "--auth-pool-user-token",
+        help="Personal auth-pool token. If omitted, falls back to ~/.agents/auth/quota-reporter.json.",
+    )
+    parser.add_argument(
+        "--codex-auth-path",
+        type=Path,
+        default=SOURCE_AUTH_PATH,
+        help="Local Codex auth.json path to probe, upload, and replace when a better Codex auth is fetched.",
+    )
+    parser.add_argument(
+        "--claude-home",
+        type=Path,
+        default=CLAUDE_HOME,
+        help="Claude home directory containing .credentials.json, settings.json, and statusline snapshots.",
+    )
+    parser.add_argument(
+        "--known-auth-path",
+        type=Path,
+        default=KNOWN_AUTH_PATH,
+        help="State file that remembers the last uploaded auth metadata for each source.",
+    )
+    parser.add_argument(
+        "--threshold-percent",
+        type=float,
+        default=20.0,
+        help="Rotate to a better same-source auth when the current 5H remaining quota is below this percentage.",
+    )
+    parser.add_argument(
+        "--weekly-threshold-percent",
+        type=float,
+        default=5.0,
+        help="Rotate to a better same-source auth when the current 1week remaining quota is below this percentage.",
+    )
+    parser.add_argument(
+        "--print-only",
+        action="store_true",
+        help="Print the full guard result JSON for this run. This is not a dry-run; uploads and replacements still occur.",
+    )
     return parser
 
 

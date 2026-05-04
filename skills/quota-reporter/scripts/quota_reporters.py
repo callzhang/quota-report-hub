@@ -1141,3 +1141,44 @@ def request_auth_pool_token(auth_pool_url: str, email: str) -> dict:
     )
     with urllib.request.urlopen(request) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Internal quota-reporter helper library. This script is normally imported by the other quota-reporter "
+            "commands instead of being run directly."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--show-paths",
+        action="store_true",
+        help="Print the key local file and directory paths used by quota-reporter, then exit.",
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    if args.show_paths:
+        print(
+            json.dumps(
+                {
+                    "config_path": str(CONFIG_PATH),
+                    "known_auth_path": str(KNOWN_AUTH_PATH),
+                    "codex_auth_path": str(SOURCE_AUTH_PATH),
+                    "claude_home": str(CLAUDE_HOME),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+    print(
+        "quota_reporters.py is an internal helper library. Use -h for usage or run one of the user-facing scripts such as quota_guard.py, install_quota_guard.py, or trigger_remote_probe.py."
+    )
+
+
+if __name__ == "__main__":
+    main()

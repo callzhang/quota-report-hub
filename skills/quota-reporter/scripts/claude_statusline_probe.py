@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from datetime import datetime, timezone
@@ -37,7 +38,25 @@ def build_summary(payload: dict) -> str:
     return f"[{model}] usage snapshot active"
 
 
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Read Claude Code statusline JSON from stdin, write a compact quota snapshot to disk, "
+            "and print a short terminal summary for the status line."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--snapshot-path",
+        type=Path,
+        default=SNAPSHOT_PATH,
+        help="Output path for the captured Claude statusline snapshot JSON.",
+    )
+    return parser
+
+
 def main() -> None:
+    args = build_parser().parse_args()
     raw = sys.stdin.read()
     if not raw.strip():
         print("[Claude] statusline waiting")
@@ -57,7 +76,8 @@ def main() -> None:
         "context_window": payload.get("context_window"),
         "cost": payload.get("cost"),
     }
-    SNAPSHOT_PATH.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
+    args.snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    args.snapshot_path.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
     print(build_summary(payload))
 
 

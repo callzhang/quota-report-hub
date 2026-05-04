@@ -11,22 +11,20 @@ This skill installs and runs the local quota guard for Codex and Claude.
 
 1. Tracks the current local auth state per source in `~/.agents/auth/known_auth.json`
 2. Uploads the current auth for each source to the shared encrypted auth pool only when the auth changed
-3. Probes the current local Codex quota and the current local Claude quota
-4. Sends Claude's stable local quota snapshot to the hub every 15 minutes
-5. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
-6. Installs a reboot-safe scheduler that runs every 15 minutes
-7. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
+3. Probes the current local Codex quota and the current local Claude quota to decide whether the current machine should rotate
+4. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
+5. Installs a reboot-safe scheduler that runs every 15 minutes
+6. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
 
 ## Files
 
 - Combined local guard: `scripts/quota_guard.py`
 - Installer: `scripts/install_quota_guard.py`
 - Claude statusline hook: `scripts/claude_statusline_probe.py`
-- Auth pool token request: `scripts/request_auth_pool_token.py`
-- Auth pool sync: `scripts/sync_codex_auth_pool.py`
-- Auth pool fetch/install: `scripts/fetch_best_codex_auth.py`
+- Internal shared helper library: `scripts/quota_reporters.py`
 - Remote worker trigger/watch: `scripts/trigger_remote_probe.py`
 - Archived legacy scripts: `archive/`
+- Skill overview: `README.md`
 
 ## Required inputs
 
@@ -71,7 +69,7 @@ If the user is not already using a compatible hub, the correct order is:
 3. then paste the emailed token
 4. then let the scheduled guard handle the rest
 
-### Run one manual check
+### Run one manual guard cycle
 
 ```bash
 python3 scripts/quota_guard.py
@@ -102,7 +100,7 @@ The guard then:
 - updates `~/.agents/auth/known_auth.json`
 - uploads the current auth to the auth pool only when needed
 - probes the current live Codex auth and Claude auth
-- if a local source is below `20%` in `5H` or has `1week = 0`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
+- if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
 - only replaces local source credentials when the fetched auth is different from what is already installed
 - does nothing when the cloud cannot provide a better auth than the current one
@@ -114,7 +112,7 @@ Operational notes:
 - replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions
 - the next new Codex session is the one that should pick up the new auth
 - the local config file contains a personal token and should stay private
-- the cloud dashboard shows the latest known quota for each auth entry
+- the cloud dashboard shows the latest cloud-worker probe for each auth entry
 - Codex rows are refreshed by the cloud worker
 - Claude rows are refreshed by the cloud worker only when the local machine is using a direct Claude subscription. If `~/.claude/settings.json` injects `ANTHROPIC_*` provider credentials, the skill skips Claude cloud uploads for that machine.
 
