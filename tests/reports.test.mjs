@@ -247,7 +247,10 @@ test("statusPayload keeps last invalidated quota window before reset and marks i
   ], "2026-04-21T05:00:00Z");
 
   assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 75);
+  assert.equal(payload.items[0].display_windows["5h"].invalidated_stale, true);
   assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
+  assert.equal(payload.items[0].display_windows["1week"].invalidated_stale, true);
+  assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
 });
 
 test("statusPayload infers a gray 100 percent window after reset for stale invalidated auth", () => {

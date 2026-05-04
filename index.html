@@ -453,20 +453,21 @@
           return `<div class="meta">n/a</div>`;
         }
         const remaining = Number(window.remaining_percent);
+        const isInvalidatedStale = Boolean(window.invalidated_stale);
         const isInferredReady = Boolean(window.inferred_ready);
         const isReady = !isInferredReady && window.reset_at && Date.parse(window.reset_at) <= Date.now();
         let level = "";
-        if (isInferredReady) level = "inferred";
+        if (isInvalidatedStale) level = "inferred";
         else if (isReady) level = "ready";
         else if (remaining <= 10) level = "critical";
         else if (remaining <= 30) level = "low";
         const label = isReady ? "ready now" : formatPercent(remaining);
         const resetLabel = isInferredReady ? "likely reset after last known window" : formatResetCountdown(window.reset_at);
-        const inferenceInfo = isInferredReady
+        const inferenceInfo = isInvalidatedStale
           ? `<span class="info-dot" title="Likely reset after the last known window. This value is inferred from a stale invalidated auth, not a fresh probe.">(i)</span>`
           : "";
         return `
-          <div class="progress ${isInferredReady ? "inferred" : ""}">
+          <div class="progress ${isInvalidatedStale ? "inferred" : ""}">
             <div class="progress-row">
               <div class="track"><div class="fill ${level}" style="width: ${isReady ? 100 : remaining}%"></div></div>
               <strong>${label}</strong>
