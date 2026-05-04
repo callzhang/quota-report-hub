@@ -271,6 +271,29 @@ test("statusPayload infers a gray 100 percent window after reset for stale inval
   assert.equal(payload.items[0].display_windows["5h"].inferred_ready, true);
 });
 
+test("statusPayload also infers the weekly window independently after weekly reset", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows_stale: true,
+      account_id: "acct-1",
+      reported_at: "2026-04-28T10:15:00Z",
+      windows: {
+        "5h": { used_percent: 20, remaining_percent: 80, reset_at: "2026-04-28T15:00:00Z" },
+        "1week": { used_percent: 100, remaining_percent: 0, reset_at: "2026-04-28T10:00:00Z" },
+      },
+    },
+  ], "2026-04-28T10:30:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 80);
+  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
+  assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 100);
+  assert.equal(payload.items[0].display_windows["1week"].used_percent, 0);
+  assert.equal(payload.items[0].display_windows["1week"].inferred_ready, true);
+});
+
 test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   const payload = authPoolStatusPayload(
     [

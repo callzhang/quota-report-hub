@@ -194,6 +194,15 @@
         min-width: 220px;
       }
 
+      .progress.inferred {
+        color: var(--muted);
+      }
+
+      .progress.inferred strong,
+      .progress.inferred .meta {
+        color: var(--muted);
+      }
+
       .track {
         width: 140px;
         height: 10px;
@@ -436,7 +445,7 @@
         const label = isReady ? "ready now" : formatPercent(remaining);
         const resetLabel = isInferredReady ? "likely reset after last known window" : formatResetCountdown(window.reset_at);
         return `
-          <div class="progress">
+          <div class="progress ${isInferredReady ? "inferred" : ""}">
             <div class="progress-row">
               <div class="track"><div class="fill ${level}" style="width: ${isReady ? 100 : remaining}%"></div></div>
               <strong>${label}</strong>
