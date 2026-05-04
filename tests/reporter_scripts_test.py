@@ -1167,6 +1167,21 @@ Reading additional input from stdin...
         self.assertTrue(state["projects"][str(workdir)]["hasTrustDialogAccepted"])
 
     @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_uses_fast_statusline_refresh_for_worker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            probe_claude_auth_blob.write_settings(claude_home)
+            settings = json.loads((claude_home / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            settings["statusLine"]["refreshInterval"],
+            probe_claude_auth_blob.PROBE_STATUSLINE_REFRESH_SECONDS,
+        )
+        self.assertLess(
+            settings["statusLine"]["refreshInterval"],
+            45,
+        )
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
     def test_probe_claude_auth_blob_summarizes_ui_noise_errors(self):
         noisy_output = (
             "\x1b]0;✳ Claude Code\x07"

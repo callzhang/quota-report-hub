@@ -22,6 +22,7 @@ import pexpect
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATUSLINE_SCRIPT = REPO_ROOT / "skills" / "quota-reporter" / "scripts" / "claude_statusline_probe.py"
 STATUSLINE_SNAPSHOT = "statusline-rate-limits.json"
+PROBE_STATUSLINE_REFRESH_SECONDS = 2
 CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -90,7 +91,7 @@ def write_settings(claude_home: Path) -> None:
         "statusLine": {
             "type": "command",
             "command": f"{shlex.quote(sys.executable)} {shlex.quote(str(STATUSLINE_SCRIPT))}",
-            "refreshInterval": 60,
+            "refreshInterval": PROBE_STATUSLINE_REFRESH_SECONDS,
         }
     }
     settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")

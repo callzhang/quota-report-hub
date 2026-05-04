@@ -118,6 +118,7 @@ Auth pool support:
 - GitHub Actions refreshes both the Codex and Claude portions of the auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
 - During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.
 - Claude quota is probed in the worker by launching Claude CLI headlessly, restoring the saved CLI state, and reading the statusline snapshot after a minimal real request.
+- The Claude worker uses a short statusline refresh interval during probing so the snapshot is emitted before the worker timeout expires.
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - The dashboard API at `/api/status` also requires the same personal bearer token.
 - The selection logic only compares candidates within the same source, prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
