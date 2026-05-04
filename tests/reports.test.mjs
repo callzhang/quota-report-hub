@@ -364,3 +364,62 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   assert.equal(payload.items[0].windows["5h"].remaining_percent, 80);
   assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 80);
 });
+
+test("authPoolStatusPayload hides hard-invalidated auths older than 48 hours", () => {
+  const payload = authPoolStatusPayload(
+    [
+      {
+        source: "codex",
+        account_id: "old-invalid",
+        email: "old@example.com",
+        plan_name: "Team",
+        digest: "digest-1",
+        auth_last_refresh: "2026-04-20T09:00:00Z",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "derek@gpu4",
+        hostname: "gpu4",
+        uploaded_at: "2026-04-20T10:00:00Z",
+      },
+      {
+        source: "codex",
+        account_id: "fresh-invalid",
+        email: "fresh@example.com",
+        plan_name: "Team",
+        digest: "digest-2",
+        auth_last_refresh: "2026-04-22T09:00:00Z",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "derek@gpu4",
+        hostname: "gpu4",
+        uploaded_at: "2026-04-22T10:00:00Z",
+      },
+    ],
+    [
+      sanitizeReport({
+        source: "codex",
+        hostname: "gpu4",
+        reporter_name: "derek@gpu4",
+        reported_at: "2026-04-20T12:00:00Z",
+        account_id: "old-invalid",
+        status: "error",
+        error: "auth invalidated (token_invalidated)",
+        windows: { "5h": null, "1week": null },
+      }),
+      sanitizeReport({
+        source: "codex",
+        hostname: "gpu4",
+        reporter_name: "derek@gpu4",
+        reported_at: "2026-04-22T12:00:02Z",
+        account_id: "fresh-invalid",
+        status: "error",
+        error: "auth invalidated (token_invalidated)",
+        windows: { "5h": null, "1week": null },
+      }),
+    ],
+    "2026-04-24T12:00:01Z"
+  );
+
+  assert.equal(payload.auth_pool_count, 1);
+  assert.equal(payload.report_count, 1);
+  assert.equal(payload.items.length, 1);
+  assert.equal(payload.items[0].account_id, "fresh-invalid");
+});
