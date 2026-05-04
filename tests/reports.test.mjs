@@ -253,6 +253,28 @@ test("statusPayload keeps last invalidated quota window before reset and marks i
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
 });
 
+test("statusPayload marks preserved invalidated windows gray even when windows_stale is false", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows_stale: false,
+      account_id: "acct-1",
+      reported_at: "2026-04-21T05:15:00Z",
+      windows: {
+        "5h": { used_percent: 60, remaining_percent: 40, reset_at: "2026-04-21T09:00:00Z" },
+        "1week": { used_percent: 20, remaining_percent: 80, reset_at: "2026-04-27T09:00:00Z" },
+      },
+    },
+  ], "2026-04-21T06:00:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].invalidated_stale, true);
+  assert.equal(payload.items[0].display_windows["1week"].invalidated_stale, true);
+  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
+  assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
+});
+
 test("statusPayload infers a gray 100 percent window after reset for stale invalidated auth", () => {
   const payload = statusPayload([
     {
