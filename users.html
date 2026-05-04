@@ -295,8 +295,6 @@
                 <th>Source</th>
                 <th>Result</th>
                 <th>Served Account</th>
-                <th>Originally Uploaded By</th>
-                <th>Their Current Quota</th>
               </tr>
             </thead>
             <tbody id="log-rows"></tbody>
@@ -488,18 +486,14 @@
               </td>
               <td>
                 <div class="wrap">${escapeHtml(row.requester_email || "-")}${isSelfRequester ? '<span class="self-mark">you</span>' : ""}</div>
-              </td>
+                <div class="meta wrap">${quotaText(row.current_five_h_remaining, row.current_one_week_remaining)}</div>
+                </td>
               <td>${sourceTag(row.source)}</td>
               <td>${reasonTag(row.reason)}</td>
               <td>
                 <div class="wrap">${escapeHtml(row.served_email || row.served_account_id || "—")}</div>
                 <div class="mono wrap">${escapeHtml(row.served_account_id || "")}</div>
-              </td>
-              <td>
                 <div class="wrap">${escapeHtml(row.served_uploader_email || "—")}${isOwnAuthServed ? '<span class="self-mark">your auth</span>' : ""}</div>
-              </td>
-              <td>
-                <div class="wrap">${quotaText(row.current_five_h_remaining, row.current_one_week_remaining)}</div>
                 <div class="mono wrap">${escapeHtml(row.current_account_id || "")}</div>
               </td>
             </tr>
