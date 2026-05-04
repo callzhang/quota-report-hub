@@ -190,6 +190,7 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   - decrypts every stored auth snapshot
   - probes Codex on the worker via the Codex CLI
   - probes Claude on the worker via a headless Claude CLI session plus statusline snapshot
+  - only uploads Claude auths from machines that are using a direct Claude subscription; clients configured with custom `ANTHROPIC_*` provider settings are excluded from the cloud Claude pool because their active login path cannot be replayed reliably on the worker
   - the Claude worker uses a short statusline refresh interval so the snapshot is produced within the probe timeout instead of lagging behind the CLI session
   - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`
 

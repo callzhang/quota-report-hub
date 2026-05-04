@@ -20,6 +20,7 @@ import install_quota_guard  # noqa: E402
 from quota_reporters import (
     build_claude_auth_blob,
     codex_auth_refresh_delta,
+    detect_claude_custom_provider_env,
     discover_claude_executable,
     parse_claude_auth_status_text,
     parse_claude_rate_limit_headers,
@@ -435,6 +436,60 @@ Reading additional input from stdin...
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(blob["claude_cli_state"]["theme"], "auto")
 
+    def test_detect_claude_custom_provider_env_reads_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            claude_home.mkdir(parents=True, exist_ok=True)
+            (claude_home / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "env": {
+                            "ANTHROPIC_BASE_URL": "https://api.minimaxi.com/anthropic",
+                            "ANTHROPIC_AUTH_TOKEN": "token",
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            detected = detect_claude_custom_provider_env(claude_home)
+
+        self.assertEqual(detected["settings_key"], "env")
+        self.assertEqual(detected["env"]["ANTHROPIC_BASE_URL"], "https://api.minimaxi.com/anthropic")
+        self.assertIn("ANTHROPIC_AUTH_TOKEN", detected["env"])
+
+    def test_build_claude_auth_blob_skips_custom_provider_settings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            claude_home.mkdir(parents=True, exist_ok=True)
+            (claude_home / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "env1": {
+                            "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+                            "ANTHROPIC_AUTH_TOKEN": "token",
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch("quota_reporters.probe_claude", return_value={
+                "status": "ok",
+                "account_id": "claude-derek@stardust.ai",
+                "email": "derek@stardust.ai",
+                "name": "Derek Zen",
+                "plan_name": "Max",
+                "usage_summary": {"oauth_expires_at": "1776933220595"},
+            }):
+                blob_text, payload = build_claude_auth_blob(claude_home)
+
+        self.assertIsNone(blob_text)
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("custom ANTHROPIC_* settings", payload["error"])
+        self.assertEqual(payload["usage_summary"]["custom_provider_env"]["settings_key"], "env1")
+
     @staticmethod
     def _jwt(payload):
         header = urlsafe_b64encode(json.dumps({"alg": "none", "typ": "JWT"}).encode()).decode().rstrip("=")
@@ -675,6 +730,36 @@ Reading additional input from stdin...
 
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "no_better_auth_available")
+
+    def test_maybe_replace_claude_auth_skips_custom_provider_settings(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        claude_payload = {
+            "account_id": "claude-derek@stardust.ai",
+            "status": "ok",
+            "windows": {"5h": {"remaining_percent": 1}, "1week": {"remaining_percent": 1}},
+        }
+
+        with mock.patch.object(
+            quota_guard,
+            "detect_claude_custom_provider_env",
+            return_value={"settings_key": "env", "env": {"ANTHROPIC_AUTH_TOKEN": "token"}},
+        ):
+            with mock.patch.object(quota_guard, "fetch_best_auth") as fetch_best_auth:
+                replacement = quota_guard.maybe_replace_claude_auth(
+                    config,
+                    claude_payload,
+                    Path("/tmp/claude"),
+                    Path("/tmp/known_auth.json"),
+                    threshold_percent=20.0,
+                    weekly_threshold_percent=5.0,
+                )
+
+        fetch_best_auth.assert_not_called()
+        self.assertFalse(replacement["replaced"])
+        self.assertEqual(replacement["reason"], "unsupported_custom_provider")
 
     def test_run_guard_syncs_pool_and_fetches_replacement(self):
         args = mock.Mock(

@@ -107,7 +107,7 @@ The dashboard now reflects the cloud auth pool, not arbitrary client report rows
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
 - Codex rows are refreshed by the cloud worker
-- Claude rows are also refreshed by the cloud worker using a headless Claude CLI statusline probe
+- Claude rows are refreshed by the cloud worker only for direct Claude subscription auths
 
 Auth pool support:
 
@@ -115,9 +115,10 @@ Auth pool support:
 - Employees request a personal auth-pool token by company email through `/api/auth/issue-token`.
 - Each email can have only one active token at a time; a newly issued token revokes all older tokens for that email.
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
-- GitHub Actions refreshes both the Codex and Claude portions of the auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
+- GitHub Actions refreshes the cloud auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
 - During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.
 - Claude quota is probed in the worker by launching Claude CLI headlessly, restoring the saved CLI state, and reading the statusline snapshot after a minimal real request.
+- Claude auth snapshots are uploaded to the cloud pool only when the local machine is using a direct Claude subscription. Machines that inject `ANTHROPIC_*` credentials through `~/.claude/settings.json` are skipped because their active provider is not the worker's official Claude login path.
 - The Claude worker uses a short statusline refresh interval during probing so the snapshot is emitted before the worker timeout expires.
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - The dashboard API at `/api/status` also requires the same personal bearer token.

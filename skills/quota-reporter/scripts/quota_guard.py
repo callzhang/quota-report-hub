@@ -12,6 +12,7 @@ from quota_reporters import (
     SOURCE_AUTH_PATH,
     auth_metadata,
     claude_auth_blob_metadata,
+    detect_claude_custom_provider_env,
     fetch_best_auth,
     load_config,
     probe_claude,
@@ -132,6 +133,14 @@ def maybe_replace_claude_auth(
     threshold_percent: float,
     weekly_threshold_percent: float,
 ) -> dict:
+    custom_provider = detect_claude_custom_provider_env(claude_home)
+    if custom_provider is not None:
+        return {
+            "ok": True,
+            "replaced": False,
+            "reason": "unsupported_custom_provider",
+            "triggered_by": [],
+        }
     if not current_claude_payload or current_claude_payload.get("status") != "ok":
         return {"ok": True, "replaced": False, "reason": "missing_stable_claude_auth", "triggered_by": []}
 

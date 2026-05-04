@@ -116,7 +116,7 @@ Operational notes:
 - the local config file contains a personal token and should stay private
 - the cloud dashboard shows the latest known quota for each auth entry
 - Codex rows are refreshed by the cloud worker
-- Claude rows are refreshed by the local 15-minute guard via client quota updates
+- Claude rows are refreshed by the cloud worker only when the local machine is using a direct Claude subscription. If `~/.claude/settings.json` injects `ANTHROPIC_*` provider credentials, the skill skips Claude cloud uploads for that machine.
 
 ## Output expectations
 

@@ -149,6 +149,36 @@ def read_claude_cli_state(claude_home: Path = CLAUDE_HOME) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def read_claude_settings(claude_home: Path = CLAUDE_HOME) -> dict | None:
+    settings_path = claude_home / "settings.json"
+    if not settings_path.exists():
+        return None
+    payload = read_json(settings_path)
+    return payload if isinstance(payload, dict) else None
+
+
+def detect_claude_custom_provider_env(claude_home: Path = CLAUDE_HOME) -> dict | None:
+    settings = read_claude_settings(claude_home)
+    if not isinstance(settings, dict):
+        return None
+    for key, value in settings.items():
+        if not key.startswith("env"):
+            continue
+        if not isinstance(value, dict):
+            continue
+        provider_env = {
+            env_key: value.get(env_key)
+            for env_key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL")
+            if value.get(env_key)
+        }
+        if provider_env:
+            return {
+                "settings_key": key,
+                "env": provider_env,
+            }
+    return None
+
+
 def write_known_auth_state(
     *,
     source: str,
@@ -834,6 +864,22 @@ def build_claude_auth_blob(claude_home: Path = CLAUDE_HOME, claude_bin: str | No
     payload = probe_claude(claude_home, claude_bin)
     if payload.get("status") != "ok" or not payload.get("email"):
         return None, payload
+
+    custom_provider = detect_claude_custom_provider_env(claude_home)
+    if custom_provider is not None:
+        return None, {
+            **payload,
+            "status": "error",
+            "error": "claude active provider uses custom ANTHROPIC_* settings; cloud auth pool only supports direct Claude subscriptions",
+            "usage_summary": {
+                **(payload.get("usage_summary") or {}),
+                "custom_provider_env": {
+                    "settings_key": custom_provider["settings_key"],
+                    "keys": sorted(custom_provider["env"].keys()),
+                    "base_url": custom_provider["env"].get("ANTHROPIC_BASE_URL"),
+                },
+            },
+        }
 
     credentials, credential_source = read_claude_oauth_credentials(claude_home)
     if not credentials:
