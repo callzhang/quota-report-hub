@@ -1208,6 +1208,16 @@ Reading additional input from stdin...
         self.assertEqual(windows["1week"]["remaining_percent"], 0.0)
 
     @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_ignores_partial_statusline_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_path = Path(temp_dir) / "statusline-rate-limits.json"
+            snapshot_path.write_text("", encoding="utf-8")
+            windows = probe_claude_auth_blob.parse_statusline_snapshot(snapshot_path)
+
+        self.assertIsNone(windows["5h"])
+        self.assertIsNone(windows["1week"])
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
     def test_probe_claude_auth_blob_parses_usage_screen_windows(self):
         usage_text = """
         Status   Config   Usage   Stats
@@ -1318,6 +1328,67 @@ Reading additional input from stdin...
         noisy_output = "787878╭───ClaudeCodev2.1.122────────────────╮││Tipsforgetting││WelcomebackDerek!│started│"
         summary = probe_claude_auth_blob.summarize_probe_error(noisy_output)
         self.assertEqual(summary, "claude probe reached ui but no statusline snapshot was produced")
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_summarizes_authentication_errors(self):
+        noisy_output = (
+            "Please run /login · API Error: 401 "
+            '{"type":"error","error":{"type":"authentication_error","message":"Invalid authentication credentials"}}'
+        )
+        summary = probe_claude_auth_blob.summarize_probe_error(noisy_output)
+        self.assertEqual(summary, "claude auth invalid (authentication_error)")
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_selects_yes_for_trust_prompt(self):
+        class FakeChild:
+            def __init__(self):
+                self.sent = []
+                self.before = ""
+                self.after = "Do you trust this folder?"
+
+            def expect(self, patterns, timeout=1):
+                return 0
+
+            def sendline(self, value):
+                self.sent.append(("sendline", value))
+
+            def send(self, value):
+                self.sent.append(("send", value))
+
+            def sendcontrol(self, value):
+                pass
+
+            def kill(self, sig):
+                pass
+
+            def close(self, force=True):
+                pass
+
+        fake_child = FakeChild()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir) / "home"
+            workdir = Path(temp_dir) / "workspace"
+            workdir.mkdir(parents=True)
+            with mock.patch.object(probe_claude_auth_blob.pexpect, "spawn", return_value=fake_child):
+                probe_claude_auth_blob.warm_statusline_snapshot(
+                    "claude",
+                    home,
+                    workdir,
+                    timeout_seconds=1,
+                )
+        self.assertIn(("send", "1\r"), fake_child.sent)
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_prepares_local_claude_binary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir) / "home"
+            binary = Path(temp_dir) / "claude-real"
+            binary.write_text("#!/bin/sh\n", encoding="utf-8")
+            binary.chmod(0o755)
+
+            prepared = probe_claude_auth_blob.prepare_claude_binary(home, str(binary))
+
+        self.assertEqual(Path(prepared), home / ".local" / "bin" / "claude")
 
 
 if __name__ == "__main__":

@@ -29,6 +29,7 @@ CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 }
 OSC_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -43,6 +44,7 @@ LOGIN_PROMPT_RE = re.compile(
 )
 MAIN_PROMPT_RE = re.compile(r"❯(?:\s|$)")
 USAGE_PAGE_RE = re.compile(r"(?:current\s+session|current\s+week|extra\s+usage)", re.I)
+STATUS_TABS_RE = re.compile(r"Status\s*Config\s*Usage\s*Stats", re.I)
 
 
 def iso_now() -> str:
@@ -66,7 +68,10 @@ def build_window(used_percentage: float, resets_at: int, window_minutes: int) ->
 def parse_statusline_snapshot(snapshot_path: Path) -> dict:
     if not snapshot_path.exists():
         return empty_windows()
-    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return empty_windows()
     rate_limits = payload.get("rate_limits") or {}
     windows = empty_windows()
     five_hour = rate_limits.get("five_hour")
@@ -168,9 +173,25 @@ def parse_usage_windows(text: str, now: datetime | None = None) -> dict:
 def clean_env(home: Path) -> dict:
     env = dict(os.environ)
     env["HOME"] = str(home)
+    env["PATH"] = f"{home / '.local' / 'bin'}{os.pathsep}{env.get('PATH', '')}"
     for key in CLAUDE_ENV_DROP_KEYS:
         env.pop(key, None)
     return env
+
+
+def prepare_claude_binary(home: Path, claude_bin: str) -> str:
+    resolved = shutil.which(claude_bin) or claude_bin
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True, exist_ok=True)
+    link_path = local_bin / "claude"
+    try:
+        if link_path.exists() or link_path.is_symlink():
+            link_path.unlink()
+        link_path.symlink_to(Path(resolved))
+    except OSError:
+        shutil.copy2(resolved, link_path)
+        link_path.chmod(0o755)
+    return str(link_path)
 
 
 def write_settings(claude_home: Path) -> None:
@@ -234,6 +255,14 @@ def summarize_probe_error(text: str) -> str:
     lowered_flat = re.sub(r"\s+", "", lowered)
     if not compact:
         return "claude statusline snapshot was not produced"
+    if (
+        "authentication_error" in lowered
+        or "invalid authentication credentials" in lowered
+        or "invalidauthenticationcredentials" in lowered_flat
+        or "please run /login" in lowered
+        or "pleaserun/login" in lowered_flat
+    ):
+        return "claude auth invalid (authentication_error)"
     if "trust this folder" in lowered or "security guide" in lowered or "trustthisfolder" in lowered_flat or "securityguide" in lowered_flat:
         return "claude probe stalled at trust prompt"
     if "choose the text style" in lowered or "syntax theme" in lowered or "/theme" in lowered or "choosethetextstyle" in lowered_flat or "syntaxtheme" in lowered_flat:
@@ -295,11 +324,23 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
         "theme_handled": False,
         "login_handled": False,
         "usage_requested": False,
+        "usage_status_seen": False,
+        "usage_nav_count": 0,
+        "usage_closed_for_prompt": False,
         "last_interaction_at": time.time(),
     }
     deadline = time.time() + timeout_seconds
     error = None
-    patterns = [TRUST_PROMPT_RE, THEME_PROMPT_RE, LOGIN_PROMPT_RE, MAIN_PROMPT_RE, pexpect.TIMEOUT, pexpect.EOF]
+    patterns = [
+        TRUST_PROMPT_RE,
+        THEME_PROMPT_RE,
+        LOGIN_PROMPT_RE,
+        USAGE_PAGE_RE,
+        STATUS_TABS_RE,
+        MAIN_PROMPT_RE,
+        pexpect.TIMEOUT,
+        pexpect.EOF,
+    ]
 
     try:
         while time.time() < deadline:
@@ -311,6 +352,9 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
             usage_windows = parse_usage_windows("".join(output))
             if usage_windows["5h"] is not None or usage_windows["1week"] is not None:
                 return usage_windows, None
+            normalized_output = normalize_terminal_text("".join(output))
+            if "StatusConfigUsageStats" in re.sub(r"\s+", "", normalized_output):
+                state["usage_status_seen"] = True
 
             match_index = child.expect(patterns, timeout=1)
             if child.before:
@@ -319,7 +363,7 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
                 output.append(child.after)
 
             if match_index == 0:
-                child.send("\r")
+                child.send("1\r")
                 state["trust_handled"] = True
                 state["last_interaction_at"] = time.time()
                 continue
@@ -334,46 +378,59 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
                 state["last_interaction_at"] = time.time()
                 continue
             if match_index == 3:
-                if not state["usage_requested"]:
-                    child.send("/status")
-                    time.sleep(0.5)
-                    child.send("\r")
-                    time.sleep(1)
-                    child.send("\x1b[C")
-                    time.sleep(0.2)
-                    child.send("\x1b[C")
-                    state["usage_requested"] = True
-                    state["last_interaction_at"] = time.time()
-                elif not state["prompt_sent"] and time.time() - state["last_interaction_at"] >= 6:
-                    child.send("reply with ok")
-                    time.sleep(0.5)
-                    child.send("\r")
-                    state["prompt_sent"] = True
-                    state["last_interaction_at"] = time.time()
+                usage_windows = parse_usage_windows("".join(output))
+                if usage_windows["5h"] is not None or usage_windows["1week"] is not None:
+                    return usage_windows, None
                 continue
             if match_index == 4:
-                if (not state["usage_requested"]) and (
-                    time.time() - state["last_interaction_at"] >= 2
-                ) and (time.time() + 2 < deadline):
-                    child.send("/status")
-                    time.sleep(0.5)
-                    child.send("\r")
-                    time.sleep(1)
+                usage_windows = parse_usage_windows("".join(output))
+                if usage_windows["5h"] is not None or usage_windows["1week"] is not None:
+                    return usage_windows, None
+                state["usage_status_seen"] = True
+                if state["usage_nav_count"] < 2:
                     child.send("\x1b[C")
-                    time.sleep(0.2)
-                    child.send("\x1b[C")
-                    state["usage_requested"] = True
-                    state["last_interaction_at"] = time.time()
-                elif state["usage_requested"] and (not state["prompt_sent"]) and (
-                    time.time() - state["last_interaction_at"] >= 6
-                ) and (time.time() + 2 < deadline):
-                    child.send("reply with ok")
-                    time.sleep(0.5)
-                    child.send("\r")
-                    state["prompt_sent"] = True
+                    state["usage_nav_count"] += 1
                     state["last_interaction_at"] = time.time()
                 continue
             if match_index == 5:
+                if not state["prompt_sent"]:
+                    child.send("reply with ok")
+                    time.sleep(0.5)
+                    child.send("\r")
+                    state["prompt_sent"] = True
+                    state["last_interaction_at"] = time.time()
+                elif not state["usage_requested"] and time.time() - state["last_interaction_at"] >= 8:
+                    child.send("/usage")
+                    time.sleep(0.5)
+                    child.send("\r")
+                    state["usage_requested"] = True
+                    state["last_interaction_at"] = time.time()
+                continue
+            if match_index == 6:
+                if state["usage_requested"] and state["usage_status_seen"] and state["usage_nav_count"] < 2 and (
+                    time.time() - state["last_interaction_at"] >= 1
+                ):
+                    child.send("\x1b[C")
+                    state["usage_nav_count"] += 1
+                    state["last_interaction_at"] = time.time()
+                elif (not state["prompt_sent"]) and (
+                    time.time() - state["last_interaction_at"] >= 2
+                ) and (time.time() + 2 < deadline):
+                    child.send("reply with ok")
+                    time.sleep(0.5)
+                    child.send("\r")
+                    state["prompt_sent"] = True
+                    state["last_interaction_at"] = time.time()
+                elif state["prompt_sent"] and (not state["usage_requested"]) and (
+                    time.time() - state["last_interaction_at"] >= 8
+                ) and (time.time() + 2 < deadline):
+                    child.send("/usage")
+                    time.sleep(0.5)
+                    child.send("\r")
+                    state["usage_requested"] = True
+                    state["last_interaction_at"] = time.time()
+                continue
+            if match_index == 7:
                 break
         windows = parse_statusline_snapshot(snapshot_path)
         if windows["5h"] is not None or windows["1week"] is not None:
@@ -381,7 +438,9 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
         windows = parse_usage_windows("".join(output))
         if windows["5h"] is not None or windows["1week"] is not None:
             return windows, None
-        error = summarize_probe_error("".join(output))
+        full_output = normalize_terminal_text("".join(output))
+        auth_error = summarize_probe_error(full_output)
+        error = auth_error if auth_error == "claude auth invalid (authentication_error)" else summarize_probe_error(full_output[-4000:])
         return empty_windows(), error
     finally:
         try:
@@ -408,7 +467,8 @@ def probe_blob(blob: dict, claude_bin: str, timeout_seconds: int) -> dict:
         materialize_credentials(claude_home, blob)
         materialize_cli_state(home, workdir, blob)
         write_settings(claude_home)
-        windows, error = warm_statusline_snapshot(claude_bin, home, workdir, timeout_seconds)
+        prepared_claude_bin = prepare_claude_binary(home, claude_bin)
+        windows, error = warm_statusline_snapshot(prepared_claude_bin, home, workdir, timeout_seconds)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
