@@ -5,6 +5,7 @@ import unittest
 import io
 import contextlib
 import importlib.util
+from datetime import datetime, timezone
 from base64 import urlsafe_b64encode
 from pathlib import Path
 from unittest import mock
@@ -1205,6 +1206,29 @@ Reading additional input from stdin...
 
         self.assertEqual(windows["5h"]["remaining_percent"], 91.0)
         self.assertEqual(windows["1week"]["remaining_percent"], 0.0)
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_parses_usage_screen_windows(self):
+        usage_text = """
+        Status   Config   Usage   Stats
+
+        Current session
+        █████                                              10% used
+        Resets 9pm (America/Los_Angeles)
+
+        Current week (all models)
+        ██████████████████████████████████████████████████ 100% used
+        Resets Apr 23, 12pm (America/Los_Angeles)
+        """
+        windows = probe_claude_auth_blob.parse_usage_windows(
+            usage_text,
+            now=datetime(2026, 4, 20, 20, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(windows["5h"]["remaining_percent"], 90.0)
+        self.assertEqual(windows["5h"]["reset_at"], "2026-04-21T04:00:00Z")
+        self.assertEqual(windows["1week"]["remaining_percent"], 0.0)
+        self.assertEqual(windows["1week"]["reset_at"], "2026-04-23T19:00:00Z")
 
     @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
     def test_probe_claude_auth_blob_report_includes_nullable_fields(self):

@@ -13,7 +13,8 @@ import sys
 import tempfile
 import time
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 import pexpect
@@ -41,6 +42,7 @@ LOGIN_PROMPT_RE = re.compile(
     re.I,
 )
 MAIN_PROMPT_RE = re.compile(r"❯(?:\s|$)")
+USAGE_PAGE_RE = re.compile(r"(?:current\s+session|current\s+week|extra\s+usage)", re.I)
 
 
 def iso_now() -> str:
@@ -73,6 +75,93 @@ def parse_statusline_snapshot(snapshot_path: Path) -> dict:
         windows["5h"] = build_window(float(five_hour["used_percentage"]), int(float(five_hour["resets_at"])), 300)
     if isinstance(seven_day, dict) and seven_day.get("used_percentage") is not None and seven_day.get("resets_at") is not None:
         windows["1week"] = build_window(float(seven_day["used_percentage"]), int(float(seven_day["resets_at"])), 10080)
+    return windows
+
+
+def parse_reset_text(reset_text: str, timezone_name: str | None, now: datetime | None = None) -> int | None:
+    now = now or datetime.now(timezone.utc)
+    tz = ZoneInfo(timezone_name or "UTC")
+    local_now = now.astimezone(tz)
+    text = re.sub(r"\s+", " ", reset_text.strip())
+
+    time_match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", text, re.I)
+    if not time_match:
+        return None
+
+    hour = int(time_match.group(1))
+    minute = int(time_match.group(2) or "0")
+    meridiem = time_match.group(3).lower()
+    if meridiem == "pm" and hour != 12:
+        hour += 12
+    if meridiem == "am" and hour == 12:
+        hour = 0
+
+    month_match = re.search(
+        r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+(\d{1,2})\b",
+        text,
+        re.I,
+    )
+    if month_match:
+        month_names = {
+            "jan": 1,
+            "feb": 2,
+            "mar": 3,
+            "apr": 4,
+            "may": 5,
+            "jun": 6,
+            "jul": 7,
+            "aug": 8,
+            "sep": 9,
+            "sept": 9,
+            "oct": 10,
+            "nov": 11,
+            "dec": 12,
+        }
+        month = month_names[month_match.group(1).lower()]
+        day = int(month_match.group(2))
+        candidate = datetime(local_now.year, month, day, hour, minute, tzinfo=tz)
+        if candidate < local_now:
+            candidate = datetime(local_now.year + 1, month, day, hour, minute, tzinfo=tz)
+        return int(candidate.astimezone(timezone.utc).timestamp())
+
+    candidate = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate < local_now:
+        candidate = candidate + timedelta(days=1)
+    return int(candidate.astimezone(timezone.utc).timestamp())
+
+
+def parse_usage_windows(text: str, now: datetime | None = None) -> dict:
+    cleaned = normalize_terminal_text(text)
+    windows = empty_windows()
+
+    timezone_match = re.search(r"\(([^()]+/[A-Za-z_]+)\)", cleaned)
+    timezone_name = timezone_match.group(1) if timezone_match else "UTC"
+
+    def parse_section(label_pattern: str, window_key: str, window_minutes: int) -> None:
+        pattern = re.compile(
+            label_pattern
+            + r"(?P<body>[\s\S]{0,500}?)(?P<used>\d{1,3}(?:\.\d+)?)%\s*used[\s\S]{0,180}?Resets\s+(?P<reset>[^\n\r]+)",
+            re.I,
+        )
+        match = pattern.search(cleaned)
+        if not match:
+            return
+        used = min(max(float(match.group("used")), 0.0), 100.0)
+        reset_text = match.group("reset").split("Current ")[0].strip()
+        resets_at = parse_reset_text(reset_text, timezone_name, now=now)
+        if resets_at is None:
+            windows[window_key] = {
+                "used_percent": round(used, 1),
+                "remaining_percent": round(max(0.0, 100.0 - used), 1),
+                "window_minutes": window_minutes,
+                "reset_in_seconds": None,
+                "reset_at": None,
+            }
+            return
+        windows[window_key] = build_window(used, resets_at, window_minutes)
+
+    parse_section(r"Current\s+session", "5h", 300)
+    parse_section(r"Current\s+week\s+\(all\s+models\)", "1week", 10080)
     return windows
 
 
@@ -205,6 +294,7 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
         "trust_handled": False,
         "theme_handled": False,
         "login_handled": False,
+        "usage_requested": False,
         "last_interaction_at": time.time(),
     }
     deadline = time.time() + timeout_seconds
@@ -217,6 +307,10 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
                 windows = parse_statusline_snapshot(snapshot_path)
                 if windows["5h"] is not None or windows["1week"] is not None:
                     return windows, None
+
+            usage_windows = parse_usage_windows("".join(output))
+            if usage_windows["5h"] is not None or usage_windows["1week"] is not None:
+                return usage_windows, None
 
             match_index = child.expect(patterns, timeout=1)
             if child.before:
@@ -240,7 +334,17 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
                 state["last_interaction_at"] = time.time()
                 continue
             if match_index == 3:
-                if not state["prompt_sent"]:
+                if not state["usage_requested"]:
+                    child.send("/status")
+                    time.sleep(0.5)
+                    child.send("\r")
+                    time.sleep(1)
+                    child.send("\x1b[C")
+                    time.sleep(0.2)
+                    child.send("\x1b[C")
+                    state["usage_requested"] = True
+                    state["last_interaction_at"] = time.time()
+                elif not state["prompt_sent"] and time.time() - state["last_interaction_at"] >= 6:
                     child.send("reply with ok")
                     time.sleep(0.5)
                     child.send("\r")
@@ -248,8 +352,20 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
                     state["last_interaction_at"] = time.time()
                 continue
             if match_index == 4:
-                if (not state["prompt_sent"]) and (
+                if (not state["usage_requested"]) and (
                     time.time() - state["last_interaction_at"] >= 2
+                ) and (time.time() + 2 < deadline):
+                    child.send("/status")
+                    time.sleep(0.5)
+                    child.send("\r")
+                    time.sleep(1)
+                    child.send("\x1b[C")
+                    time.sleep(0.2)
+                    child.send("\x1b[C")
+                    state["usage_requested"] = True
+                    state["last_interaction_at"] = time.time()
+                elif state["usage_requested"] and (not state["prompt_sent"]) and (
+                    time.time() - state["last_interaction_at"] >= 6
                 ) and (time.time() + 2 < deadline):
                     child.send("reply with ok")
                     time.sleep(0.5)
@@ -260,6 +376,9 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
             if match_index == 5:
                 break
         windows = parse_statusline_snapshot(snapshot_path)
+        if windows["5h"] is not None or windows["1week"] is not None:
+            return windows, None
+        windows = parse_usage_windows("".join(output))
         if windows["5h"] is not None or windows["1week"] is not None:
             return windows, None
         error = summarize_probe_error("".join(output))
