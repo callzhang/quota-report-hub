@@ -97,6 +97,37 @@ test("probeAuthJson reports non-json codex responses as errors instead of crashi
   }
 });
 
+test("probeAuthJson rejects codex usage windows without reset times", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        plan_type: "prolite",
+        rate_limit: {
+          primary_window: {
+            used_percent: 100,
+            limit_window_seconds: 18000,
+          },
+          secondary_window: {
+            used_percent: 100,
+            limit_window_seconds: 604800,
+          },
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+
+  try {
+    const report = await probeAuthJson("codex", fakeCodexAuthJson());
+    assert.equal(report.status, "error");
+    assert.equal(report.error, "codex usage response was missing reset times");
+    assert.equal(report.windows["5h"], null);
+    assert.equal(report.windows["1week"], null);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("probeAuthJson parses claude unified ratelimit headers", async () => {
   const originalFetch = global.fetch;
   global.fetch = async () =>

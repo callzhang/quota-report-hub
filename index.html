@@ -146,7 +146,8 @@
       }
 
       .table-shell {
-        overflow-x: auto;
+        width: 100%;
+        overflow-x: hidden;
         border-radius: 18px;
       }
 
@@ -157,7 +158,7 @@
 
       table {
         width: 100%;
-        min-width: 1500px;
+        table-layout: fixed;
         border-collapse: collapse;
       }
 
@@ -166,7 +167,18 @@
         padding: 14px 12px;
         border-bottom: 1px solid var(--line);
         vertical-align: top;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
       }
+
+      th:nth-child(1), td:nth-child(1) { width: 9%; }
+      th:nth-child(2), td:nth-child(2) { width: 16%; }
+      th:nth-child(3), td:nth-child(3) { width: 20%; }
+      th:nth-child(4), td:nth-child(4) { width: 14%; }
+      th:nth-child(5), td:nth-child(5) { width: 14%; }
+      th:nth-child(6), td:nth-child(6) { width: 14%; }
+      th:nth-child(7), td:nth-child(7) { width: 13%; }
 
       th {
         font-size: 12px;
@@ -191,7 +203,8 @@
       }
 
       .progress {
-        min-width: 220px;
+        width: 100%;
+        min-width: 0;
       }
 
       .progress.inferred {
@@ -204,7 +217,9 @@
       }
 
       .track {
-        width: 140px;
+        width: min(140px, 100%);
+        min-width: 64px;
+        flex: 1 1 96px;
         height: 10px;
         border-radius: 999px;
         overflow: hidden;
@@ -225,6 +240,8 @@
         display: flex;
         align-items: center;
         gap: 10px;
+        min-width: 0;
+        flex-wrap: wrap;
       }
 
       .empty {
@@ -234,7 +251,7 @@
       .usage-block {
         display: grid;
         gap: 4px;
-        min-width: 220px;
+        min-width: 0;
       }
 
       .source-tag {
@@ -434,6 +451,12 @@
         if (!window || window.remaining_percent === null || window.remaining_percent === undefined) {
           return `<div class="meta">n/a</div>`;
         }
+        if (window.reset_unavailable_reason === "auth_invalidated") {
+          return `<div class="meta">auth invalidated</div>`;
+        }
+        if (window.reset_unavailable_reason === "probe_missing_reset") {
+          return `<div class="meta">quota not available</div><div class="meta">quota reset time not found</div>`;
+        }
         const remaining = Number(window.remaining_percent);
         const isInvalidatedStale = Boolean(window.invalidated_stale);
         const isInferredReady = Boolean(window.inferred_ready);
@@ -444,7 +467,13 @@
         else if (remaining <= 10) level = "critical";
         else if (remaining <= 30) level = "low";
         const label = isReady ? "ready now" : formatPercent(remaining);
-        const resetLabel = isInferredReady ? "likely reset after last known window" : formatResetCountdown(window.reset_at);
+        const resetLabel = isInferredReady
+          ? "likely reset after last known window"
+          : window.reset_unavailable_reason === "auth_invalidated"
+            ? "auth invalidated"
+            : window.reset_unavailable_reason === "probe_missing_reset"
+              ? "quota reset time not found"
+              : formatResetCountdown(window.reset_at);
         const hoverTitle = isInvalidatedStale
           ? "Likely reset after the last known window. This value is inferred from a stale invalidated auth, not a fresh probe."
           : "";

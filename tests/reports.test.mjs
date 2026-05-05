@@ -319,6 +319,43 @@ test("statusPayload also infers the weekly window independently after weekly res
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, true);
 });
 
+test("statusPayload classifies missing reset time on invalidated stale windows", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      account_id: "acct-1",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": { used_percent: 100, remaining_percent: 0, reset_at: null },
+        "1week": { used_percent: 100, remaining_percent: 0, reset_at: null },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "auth_invalidated");
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "auth_invalidated");
+});
+
+test("statusPayload classifies missing reset time as probe failure for non-invalidated windows", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "ok",
+      account_id: "acct-1",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": { used_percent: 100, remaining_percent: 0, reset_at: null },
+        "1week": { used_percent: 100, remaining_percent: 0, reset_at: null },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "probe_missing_reset");
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "probe_missing_reset");
+});
+
 test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   const payload = authPoolStatusPayload(
     [

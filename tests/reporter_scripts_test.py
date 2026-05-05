@@ -223,6 +223,63 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertGreaterEqual(report["windows"]["5h"]["reset_in_seconds"], 0)
         self.assertEqual(report["usage_summary"]["next_retry_at"], report["windows"]["5h"]["reset_at"])
 
+    def test_probe_codex_does_not_create_zero_windows_without_reset_time(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "prolite"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr="ERROR: You've hit your usage limit.",
+            )
+            with mock.patch("quota_reporters.subprocess.run", return_value=completed):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": None,
+                            "rate_limits": {
+                                "plan_type": None,
+                                "primary": None,
+                                "secondary": None,
+                                "credits": {
+                                    "has_credits": False,
+                                    "unlimited": False,
+                                    "balance": "0",
+                                },
+                                "rate_limit_reached_type": None,
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(report["error"], "codex usage limit reached but reset time was not found")
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertIsNone(report["windows"]["1week"])
+        self.assertIsNone(report["usage_summary"]["next_retry_at"])
+
     def test_parse_claude_auth_status_text_extracts_account_details(self):
         details = parse_claude_auth_status_text(
             "Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n"

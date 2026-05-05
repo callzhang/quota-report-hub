@@ -404,6 +404,23 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
     rate_limits = token_payload.get("rate_limits")
     if rate_limits and rate_limits.get("primary") is None and rate_limits.get("secondary") is None and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
         reset_at, reset_in_seconds = codex_usage_limit_reset_at(result.stderr, result.stdout)
+        if reset_at is None:
+            payload = {
+                **base,
+                "model_context_window": info.get("model_context_window") if isinstance(info, dict) else None,
+                "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
+                "status": "error",
+                "error": "codex usage limit reached but reset time was not found",
+                "windows": empty_windows(),
+                "usage_summary": {
+                    "credits": rate_limits.get("credits"),
+                    "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
+                    "next_retry_at": None,
+                },
+            }
+            if refresh_capture is not None:
+                payload["refresh_capture"] = refresh_capture
+            return payload
         payload = {
             **base,
             "model_context_window": info.get("model_context_window") if isinstance(info, dict) else None,
