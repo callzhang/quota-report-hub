@@ -21,6 +21,7 @@ import install_quota_guard  # noqa: E402
 from quota_reporters import (
     build_claude_auth_blob,
     codex_auth_refresh_delta,
+    codex_usage_limit_reset_at,
     detect_claude_custom_provider_env,
     discover_claude_executable,
     parse_claude_auth_status_text,
@@ -279,6 +280,18 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(report["windows"]["5h"])
         self.assertIsNone(report["windows"]["1week"])
         self.assertIsNone(report["usage_summary"]["next_retry_at"])
+
+    def test_codex_usage_limit_reset_at_parses_time_only_cli_message(self):
+        reset_at, reset_in_seconds = codex_usage_limit_reset_at(
+            "ERROR: You've hit your usage limit, or try again at 4:26 PM.",
+            "",
+            now=datetime.now(timezone.utc),
+        )
+
+        self.assertIsNotNone(reset_at)
+        self.assertIsInstance(reset_in_seconds, int)
+        self.assertGreater(reset_in_seconds, 0)
+        self.assertLessEqual(reset_in_seconds, 24 * 60 * 60)
 
     def test_parse_claude_auth_status_text_extracts_account_details(self):
         details = parse_claude_auth_status_text(

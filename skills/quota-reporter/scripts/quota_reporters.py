@@ -16,7 +16,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -301,28 +301,44 @@ def codex_usage_limit_reached(rate_limits: dict | None, stderr: str, stdout: str
         return False
 
 
-def codex_usage_limit_reset_at(stderr: str, stdout: str) -> tuple[str | None, int | None]:
+def codex_usage_limit_reset_at(stderr: str, stdout: str, now: datetime | None = None) -> tuple[str | None, int | None]:
     combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part)
-    match = re.search(
+    full_date_match = re.search(
         r"try again at ([A-Za-z]{3} \d{1,2}(?:st|nd|rd|th)?, \d{4} \d{1,2}:\d{2} [AP]M)",
         combined,
         flags=re.IGNORECASE,
     )
-    if not match:
-        return None, None
-
-    raw_value = re.sub(r"(\d)(st|nd|rd|th)", r"\1", match.group(1), flags=re.IGNORECASE)
-    try:
-        parsed = datetime.strptime(raw_value, "%b %d, %Y %I:%M %p")
-    except ValueError:
-        return None, None
-
     local_tz = datetime.now().astimezone().tzinfo
     if local_tz is None:
         return None, None
-    aware = parsed.replace(tzinfo=local_tz)
+    now_value = now.astimezone(local_tz) if now is not None and now.tzinfo is not None else (now or datetime.now(local_tz))
+
+    if full_date_match:
+        raw_value = re.sub(r"(\d)(st|nd|rd|th)", r"\1", full_date_match.group(1), flags=re.IGNORECASE)
+        try:
+            parsed = datetime.strptime(raw_value, "%b %d, %Y %I:%M %p")
+        except ValueError:
+            return None, None
+        aware = parsed.replace(tzinfo=local_tz)
+    else:
+        time_match = re.search(r"try again at (\d{1,2}:\d{2}\s*[AP]M)", combined, flags=re.IGNORECASE)
+        if not time_match:
+            return None, None
+        try:
+            parsed_time = datetime.strptime(re.sub(r"\s+", " ", time_match.group(1).upper()), "%I:%M %p").time()
+        except ValueError:
+            return None, None
+        aware = now_value.replace(
+            hour=parsed_time.hour,
+            minute=parsed_time.minute,
+            second=0,
+            microsecond=0,
+        )
+        if aware <= now_value:
+            aware += timedelta(days=1)
+
     reset_at = aware.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    reset_in_seconds = max(int(aware.timestamp() - datetime.now(local_tz).timestamp()), 0)
+    reset_in_seconds = max(int(aware.timestamp() - now_value.timestamp()), 0)
     return reset_at, reset_in_seconds
 
 
