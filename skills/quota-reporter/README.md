@@ -10,6 +10,7 @@ The skill installs a local 15-minute quota guard that:
 - uploads only changed auth snapshots to the shared cloud auth pool
 - checks whether the current local source is low on quota
 - fetches and installs a strictly better auth from the same source when needed
+- shows a desktop notification after a successful local auth replacement so the user knows to quit the current Codex or Claude Code session and start a new one
 - can trigger a remote cloud-worker probe on demand
 
 The guard is source-aware:

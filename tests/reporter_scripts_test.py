@@ -871,6 +871,71 @@ Reading additional input from stdin...
         self.assertEqual(result["replacement"]["claude"]["reason"], "healthy")
         self.assertIn("claude", result)
 
+    def test_run_guard_notifies_after_successful_replacement(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=False,
+        )
+        codex_replacement = {
+            "ok": True,
+            "replaced": True,
+            "to_account_id": "acct-best",
+            "to_email": "best@example.com",
+            "to_plan_name": "Pro",
+        }
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value=codex_replacement):
+                                with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                    with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                                        result = quota_guard.run_guard(args)
+
+        notify.assert_called_once()
+        self.assertTrue(result["notifications"]["codex"]["shown"])
+        self.assertIn("Quit the current Codex session", result["notifications"]["codex"]["message"])
+        self.assertEqual(result["notifications"]["claude"]["reason"], "not_replaced")
+
+    def test_run_guard_can_disable_replacement_toasts(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+        )
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": True}):
+                                with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False}):
+                                    with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
+                                        result = quota_guard.run_guard(args)
+
+        notify.assert_not_called()
+        self.assertEqual(result["notifications"], {})
+
     def test_maybe_replace_codex_auth_stays_put_when_codex_is_above_both_thresholds(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",

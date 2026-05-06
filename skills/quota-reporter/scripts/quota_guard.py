@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
+import shutil
+import subprocess
 from pathlib import Path
 
 from quota_reporters import (
@@ -46,6 +49,60 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
     if five_hour_remaining < 0 or weekly_remaining < 0:
         return True
     return five_hour_remaining < threshold_percent or weekly_remaining < weekly_threshold_percent
+
+
+def replacement_toast_message(source: str, replacement: dict) -> str:
+    display_name = replacement.get("to_email") or replacement.get("to_account_id") or "the new account"
+    plan_name = replacement.get("to_plan_name")
+    account_label = f"{display_name} ({plan_name})" if plan_name else str(display_name)
+    app_name = "Codex" if source == "codex" else "Claude Code" if source == "claude" else source
+    return f"{app_name} account switched to {account_label}. Quit the current {app_name} session and start a new one to use it."
+
+
+def show_desktop_notification(title: str, message: str) -> bool:
+    system = platform.system().lower()
+    try:
+        if system == "darwin":
+            subprocess.run(
+                ["osascript", "-e", f'display notification {json.dumps(message)} with title {json.dumps(title)}'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return True
+        if system == "linux" and shutil.which("notify-send"):
+            subprocess.run(
+                ["notify-send", title, message],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            return True
+        if system == "windows":
+            powershell = shutil.which("powershell") or shutil.which("powershell.exe") or shutil.which("pwsh")
+            if powershell:
+                script = (
+                    "$wshell = New-Object -ComObject WScript.Shell; "
+                    f"$wshell.Popup({json.dumps(message)}, 8, {json.dumps(title)}, 64) | Out-Null"
+                )
+                subprocess.run(
+                    [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def notify_replacement_success(source: str, replacement: dict) -> dict:
+    if not replacement.get("replaced"):
+        return {"shown": False, "reason": "not_replaced"}
+    message = replacement_toast_message(source, replacement)
+    shown = show_desktop_notification("Quota Guard", message)
+    return {"shown": shown, "message": message}
 
 
 def maybe_replace_codex_auth(
@@ -243,6 +300,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the full guard result JSON for this run. This is not a dry-run; uploads and replacements still occur.",
     )
+    parser.add_argument(
+        "--no-toast",
+        action="store_true",
+        help="Do not show a desktop notification after a successful auth replacement.",
+    )
     return parser
 
 
@@ -288,6 +350,10 @@ def run_guard(args: argparse.Namespace) -> dict:
         args.threshold_percent,
         args.weekly_threshold_percent,
     )
+    notifications = {}
+    if not getattr(args, "no_toast", False):
+        notifications["codex"] = notify_replacement_success("codex", codex_replacement)
+        notifications["claude"] = notify_replacement_success("claude", claude_replacement)
 
     return {
         "ok": True,
@@ -300,6 +366,7 @@ def run_guard(args: argparse.Namespace) -> dict:
             "codex": codex_replacement,
             "claude": claude_replacement,
         },
+        "notifications": notifications,
     }
 
 

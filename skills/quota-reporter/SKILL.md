@@ -103,6 +103,7 @@ The guard then:
 - if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
 - only replaces local source credentials when the fetched auth is different from what is already installed
+- shows a desktop notification after a successful local replacement so the user knows to quit the current Codex or Claude Code session and start a new one
 - does nothing when the cloud cannot provide a better auth than the current one
 - relies on the cloud auth pool to deduplicate repeated uploads for the same `account_id`, even when raw files differ
 - if the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload
