@@ -418,7 +418,10 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
     token_payload = token_event.get("payload", {})
     info = token_payload.get("info")
     rate_limits = token_payload.get("rate_limits")
-    if rate_limits and rate_limits.get("primary") is None and rate_limits.get("secondary") is None and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
+    primary_window = rate_limits.get("primary") if isinstance(rate_limits, dict) else None
+    secondary_window = rate_limits.get("secondary") if isinstance(rate_limits, dict) else None
+    has_complete_windows = isinstance(primary_window, dict) and isinstance(secondary_window, dict)
+    if rate_limits and not has_complete_windows and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
         reset_at, reset_in_seconds = codex_usage_limit_reset_at(result.stderr, result.stdout)
         if reset_at is None:
             payload = {
@@ -457,7 +460,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
             payload["refresh_capture"] = refresh_capture
         return payload
 
-    if not info or not rate_limits or "primary" not in rate_limits or "secondary" not in rate_limits:
+    if not info or not rate_limits or not has_complete_windows:
         payload = {
             **base,
             "status": "error",
@@ -475,8 +478,8 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
         "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
         "status": "ok",
         "windows": {
-            "5h": normalize_window(rate_limits["primary"], now_ts),
-            "1week": normalize_window(rate_limits["secondary"], now_ts),
+            "5h": normalize_window(primary_window, now_ts),
+            "1week": normalize_window(secondary_window, now_ts),
         },
     }
     if refresh_capture is not None:

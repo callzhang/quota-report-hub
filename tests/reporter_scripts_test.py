@@ -281,6 +281,64 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(report["windows"]["1week"])
         self.assertIsNone(report["usage_summary"]["next_retry_at"])
 
+    def test_probe_codex_maps_partial_missing_window_usage_limit_to_zero_remaining_windows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "prolite"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr="ERROR: You've hit your usage limit, or try again at 4:26 PM.",
+            )
+            with mock.patch("quota_reporters.subprocess.run", return_value=completed):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 272000},
+                            "rate_limits": {
+                                "plan_type": None,
+                                "primary": {"used_percent": 100, "window_minutes": 300},
+                                "secondary": None,
+                                "credits": {
+                                    "has_credits": False,
+                                    "unlimited": False,
+                                    "balance": None,
+                                },
+                                "rate_limit_reached_type": None,
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "ok")
+        self.assertIsNone(report["error"])
+        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
+        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
+        self.assertIsNotNone(report["windows"]["5h"]["reset_at"])
+        self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
+
     def test_codex_usage_limit_reset_at_parses_time_only_cli_message(self):
         reset_at, reset_in_seconds = codex_usage_limit_reset_at(
             "ERROR: You've hit your usage limit, or try again at 4:26 PM.",
