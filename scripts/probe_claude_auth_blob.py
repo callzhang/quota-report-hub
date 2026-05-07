@@ -273,9 +273,13 @@ def summarize_probe_error(text: str) -> str:
         "welcome back" in lowered
         or "tips for getting started" in lowered
         or "claude code v" in lowered
+        or "status config usage stats" in lowered
+        or "session total cost" in lowered
         or "welcomeback" in lowered_flat
         or "tipsforgettingstarted" in lowered_flat
         or "claudecodev" in lowered_flat
+        or "statusconfigusagestats" in lowered_flat
+        or "sessiontotalcost" in lowered_flat
     ):
         return "claude probe reached ui but no statusline snapshot was produced"
     return compact[:200]

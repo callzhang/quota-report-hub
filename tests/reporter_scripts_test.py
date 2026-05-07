@@ -1595,6 +1595,16 @@ Reading additional input from stdin...
         self.assertEqual(summary, "claude probe reached ui but no statusline snapshot was produced")
 
     @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_summarizes_stats_page_noise(self):
+        noisy_output = (
+            "─────── Status Config Usage Stats Session Total cost: $0.0000 "
+            "Toal duration(API):0s Total duration (wall): 11s "
+            "Totalcodechanges:0lines added, 0insremove Uage:0input, 0 output,0 cachered, 0 cache write"
+        )
+        summary = probe_claude_auth_blob.summarize_probe_error(noisy_output)
+        self.assertEqual(summary, "claude probe reached ui but no statusline snapshot was produced")
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
     def test_probe_claude_auth_blob_summarizes_authentication_errors(self):
         noisy_output = (
             "Please run /login · API Error: 401 "
