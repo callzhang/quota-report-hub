@@ -149,3 +149,44 @@ test("authUsersList collapses duplicate token rows for the same email", async ()
     cleanup();
   }
 });
+
+test("invalidated auth notification state preserves first invalidated time and clears on recovery", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const first = await mod.upsertInvalidatedAuthState({
+      source: "codex",
+      accountId: "acct-1",
+      invalidatedAt: "2026-05-06T00:00:00Z",
+      error: "auth invalidated (token_invalidated)",
+    });
+    assert.equal(first.first_invalidated_at, "2026-05-06T00:00:00Z");
+    assert.equal(first.last_notified_at, null);
+
+    await mod.markInvalidatedAuthNotified({
+      source: "codex",
+      accountId: "acct-1",
+      notifiedAt: "2026-05-07T01:00:00Z",
+    });
+
+    const second = await mod.upsertInvalidatedAuthState({
+      source: "codex",
+      accountId: "acct-1",
+      invalidatedAt: "2026-05-07T02:00:00Z",
+      error: "auth invalidated (token_invalidated)",
+    });
+    assert.equal(second.first_invalidated_at, "2026-05-06T00:00:00Z");
+    assert.equal(second.last_notified_at, "2026-05-07T01:00:00Z");
+
+    await mod.clearInvalidatedAuthState({ source: "codex", accountId: "acct-1" });
+    const third = await mod.upsertInvalidatedAuthState({
+      source: "codex",
+      accountId: "acct-1",
+      invalidatedAt: "2026-05-08T00:00:00Z",
+      error: "auth invalidated (token_invalidated)",
+    });
+    assert.equal(third.first_invalidated_at, "2026-05-08T00:00:00Z");
+    assert.equal(third.last_notified_at, null);
+  } finally {
+    cleanup();
+  }
+});

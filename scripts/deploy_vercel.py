@@ -97,6 +97,14 @@ def ensure_auth_pool_key(*, cwd: Path, rotate: bool) -> tuple[str, bool]:
     return secrets.token_hex(32), True
 
 
+def ensure_cron_secret(*, cwd: Path, rotate: bool) -> tuple[str, bool]:
+    production_env = current_vercel_env("production", cwd=cwd)
+    existing = production_env.get("CRON_SECRET")
+    if existing and not rotate:
+        return existing, False
+    return secrets.token_urlsafe(32), True
+
+
 def deploy_production(*, cwd: Path) -> None:
     result = run(["vercel", "deploy", "--prod", "--yes"], cwd=cwd, check=False)
     if result.returncode != 0:
@@ -125,6 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate and replace AUTH_POOL_ENCRYPTION_KEY even if one already exists",
     )
     parser.add_argument(
+        "--rotate-cron-secret",
+        action="store_true",
+        help="Generate and replace CRON_SECRET even if one already exists",
+    )
+    parser.add_argument(
         "--skip-deploy",
         action="store_true",
         help="Update Vercel env only and do not trigger vercel deploy --prod",
@@ -141,12 +154,14 @@ def main() -> None:
 
     sending_domain = email_domain(args.sending_email)
     auth_pool_key, rotated_key = ensure_auth_pool_key(cwd=args.cwd, rotate=args.rotate_auth_pool_key)
+    cron_secret, rotated_cron_secret = ensure_cron_secret(cwd=args.cwd, rotate=args.rotate_cron_secret)
     shared_values = {
         "AUTH_ALLOWED_EMAIL_DOMAIN": args.allowed_domain.lower(),
         "MAILGUN_API_KEY": args.mailgun_api_key,
         "MAILGUN_DOMAIN": sending_domain,
         "MAILGUN_FROM": args.sending_email,
         "AUTH_POOL_ENCRYPTION_KEY": auth_pool_key,
+        "CRON_SECRET": cron_secret,
     }
 
     for environment in environments:
@@ -165,6 +180,7 @@ def main() -> None:
                 f"Mailgun sending domain: {sending_domain}",
                 f"Mailgun from: {args.sending_email}",
                 f"Auth pool key rotated: {'yes' if rotated_key else 'no'}",
+                f"Cron secret rotated: {'yes' if rotated_cron_secret else 'no'}",
             ]
         )
     )

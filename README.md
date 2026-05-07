@@ -117,6 +117,7 @@ Auth pool support:
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
 - GitHub Actions refreshes the cloud auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
 - During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.
+- A Vercel cron endpoint checks the cloud probe results daily. If a cloud auth stays hard-invalidated for more than 24 hours, Vercel emails the uploader and asks them to log in again. It sends at most one reminder per account per 24 hours until the auth recovers.
 - Claude quota is probed in the worker by launching Claude CLI headlessly, restoring the saved CLI state, and reading the statusline snapshot after a minimal real request.
 - Claude auth snapshots are uploaded to the cloud pool only when the local machine is using a direct Claude subscription. Machines that inject `ANTHROPIC_*` credentials through `~/.claude/settings.json` are skipped because their active provider is not the worker's official Claude login path.
 - The Claude worker uses a short statusline refresh interval during probing so the snapshot is emitted before the worker timeout expires.
@@ -145,6 +146,7 @@ The installer is reboot-safe and runs every 15 minutes:
 - `MAILGUN_API_KEY`
 - `MAILGUN_DOMAIN`
 - `MAILGUN_FROM`
+- `CRON_SECRET`
 - `TURSO_DATABASE_URL`
 - `TURSO_AUTH_TOKEN`
 

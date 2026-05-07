@@ -194,6 +194,16 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   - the Claude worker uses a short statusline refresh interval so the snapshot is produced within the probe timeout instead of lagging behind the CLI session
   - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`
 
+- `GET /api/cron/invalidated-auth-notifications`
+  auth:
+  - Vercel cron bearer token from `CRON_SECRET`
+  behavior:
+  - runs on Vercel, where the Mailgun environment variables live
+  - reads auth pool entries plus latest cloud probe results from Turso
+  - records the first time each `source + account_id` becomes hard-invalidated
+  - emails the auth uploader after a hard invalidation remains unresolved for more than 24 hours
+  - repeats that reminder at most once per 24 hours until a later successful/non-invalidated probe clears the notification state
+
 ## Local Skill Flow
 
 ### Installation Flow
