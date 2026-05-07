@@ -18,6 +18,7 @@ from quota_reporters import (
     detect_claude_custom_provider_env,
     fetch_best_auth,
     load_config,
+    post_auth_pool_quota,
     probe_claude,
     probe_codex,
     sync_current_claude_auth_pool,
@@ -49,6 +50,43 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
     if five_hour_remaining < 0 or weekly_remaining < 0:
         return True
     return five_hour_remaining < threshold_percent or weekly_remaining < weekly_threshold_percent
+
+
+def quota_payload_has_window(payload: dict) -> bool:
+    if not payload:
+        return False
+    for window_key in ("5h", "1week"):
+        window = (payload.get("windows") or {}).get(window_key) or {}
+        if window.get("remaining_percent") is not None:
+            return True
+    return False
+
+
+def quota_payload_should_report(payload: dict | None) -> bool:
+    if not payload or not payload.get("account_id"):
+        return False
+    if is_hard_invalidated(payload):
+        return True
+    return payload.get("status") == "ok" and quota_payload_has_window(payload)
+
+
+def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict | None) -> dict:
+    if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
+        return {"ok": True, "reported": False, "reason": "missing_auth_pool_config"}
+    if not quota_payload_should_report(payload):
+        return {"ok": True, "reported": False, "reason": "quota_unavailable"}
+    result = post_auth_pool_quota(
+        config["auth_pool_url"],
+        config["auth_pool_user_token"],
+        source=source,
+        quota_payload=payload,
+    )
+    return {
+        "ok": True,
+        "reported": True,
+        "account_id": payload.get("account_id"),
+        "result": result,
+    }
 
 
 def replacement_toast_message(source: str, replacement: dict) -> str:
@@ -320,6 +358,7 @@ def run_guard(args: argparse.Namespace) -> dict:
     claude_payload = probe_claude(args.claude_home)
 
     sync_result = {}
+    quota_report_result = {}
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
         sync_result["codex"] = sync_current_codex_auth_pool(
             config["auth_pool_url"],
@@ -327,6 +366,8 @@ def run_guard(args: argparse.Namespace) -> dict:
             auth_path=args.codex_auth_path,
             known_auth_path=args.known_auth_path,
         )
+        quota_report_result["codex"] = report_current_quota_to_auth_pool(config, "codex", codex_payload)
+        quota_report_result["claude"] = report_current_quota_to_auth_pool(config, "claude", claude_payload)
         sync_result["claude"] = sync_current_claude_auth_pool(
             config["auth_pool_url"],
             config["auth_pool_user_token"],
@@ -362,6 +403,7 @@ def run_guard(args: argparse.Namespace) -> dict:
         "codex": codex_payload,
         "claude": claude_payload,
         "auth_pool_sync": sync_result,
+        "quota_report": quota_report_result,
         "replacement": {
             "codex": codex_replacement,
             "claude": claude_replacement,

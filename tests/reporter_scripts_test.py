@@ -724,6 +724,78 @@ Reading additional input from stdin...
 
         self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
 
+    def test_quota_payload_should_report_valid_windows_and_hard_invalidations_only(self):
+        self.assertTrue(
+            quota_guard.quota_payload_should_report(
+                {
+                    "status": "ok",
+                    "account_id": "acct-1",
+                    "windows": {"5h": {"remaining_percent": 42}, "1week": None},
+                }
+            )
+        )
+        self.assertTrue(
+            quota_guard.quota_payload_should_report(
+                {
+                    "status": "error",
+                    "error": "auth invalidated (token_invalidated)",
+                    "account_id": "acct-1",
+                    "windows": {"5h": None, "1week": None},
+                }
+            )
+        )
+        self.assertFalse(
+            quota_guard.quota_payload_should_report(
+                {
+                    "status": "ok",
+                    "account_id": "acct-1",
+                    "windows": {"5h": None, "1week": None},
+                }
+            )
+        )
+
+    def test_report_current_quota_to_auth_pool_posts_valid_local_probe(self):
+        payload = {
+            "source": "codex",
+            "status": "ok",
+            "account_id": "acct-1",
+            "windows": {"5h": {"remaining_percent": 42}, "1week": {"remaining_percent": 80}},
+        }
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+
+        with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post_auth_pool_quota:
+            result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
+
+        self.assertTrue(result["reported"])
+        post_auth_pool_quota.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            source="codex",
+            quota_payload=payload,
+        )
+
+    def test_report_current_quota_to_auth_pool_skips_unavailable_quota(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        payload = {
+            "source": "claude",
+            "status": "ok",
+            "account_id": "claude-acct-1",
+            "windows": {"5h": None, "1week": None},
+        }
+
+        with mock.patch.object(quota_guard, "post_auth_pool_quota") as post_auth_pool_quota:
+            result = quota_guard.report_current_quota_to_auth_pool(config, "claude", payload)
+
+        self.assertFalse(result["reported"])
+        self.assertEqual(result["reason"], "quota_unavailable")
+        post_auth_pool_quota.assert_not_called()
+
     def test_maybe_replace_codex_auth_replaces_low_quota_live_auth(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
