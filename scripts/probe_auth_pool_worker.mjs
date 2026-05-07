@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { authPoolEntries, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../lib/db.js";
+import { authPoolEntries, deleteAuthPoolEntry, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
 
@@ -85,6 +85,20 @@ function withoutSensitiveRefreshCapture(report) {
   };
 }
 
+function isFreePlan(value) {
+  return String(value || "").trim().toLowerCase() === "free";
+}
+
+function shouldDeleteUnusableAuthPoolEntry(entry, report) {
+  if (entry.source !== "codex") {
+    return false;
+  }
+  if (isFreePlan(entry.plan_name) || isFreePlan(report?.plan_name) || isFreePlan(report?.refresh_capture?.refreshed_metadata?.plan_name)) {
+    return true;
+  }
+  return report?.error === "token_count event was present but missing quota details";
+}
+
 export async function processAuthPoolEntry(
   entry,
   {
@@ -94,6 +108,7 @@ export async function processAuthPoolEntry(
     probeClaudeAuthJsonImpl = probeClaudeAuthJson,
     upsertAuthPoolQuotaImpl = upsertAuthPoolQuota,
     upsertAuthPoolEntryImpl = upsertAuthPoolEntry,
+    deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
   } = {}
 ) {
   let report;
@@ -107,6 +122,21 @@ export async function processAuthPoolEntry(
           : await probeAuthJsonImpl(entry.source, authJsonText);
   } catch (error) {
     report = failureReport(entry, error);
+  }
+  if (shouldDeleteUnusableAuthPoolEntry(entry, report)) {
+    const deleteResult = await deleteAuthPoolEntryImpl({ source: entry.source, accountId: entry.account_id });
+    return {
+      source: entry.source,
+      account_id: entry.account_id,
+      status: report.status,
+      error: report.error,
+      deleted_from_auth_pool: Boolean(deleteResult?.deleted),
+      delete_reason: isFreePlan(entry.plan_name) || isFreePlan(report?.plan_name) || isFreePlan(report?.refresh_capture?.refreshed_metadata?.plan_name)
+        ? "free_plan"
+        : "missing_quota_details",
+      refreshed_auth_written: false,
+      refreshed_auth_result: null,
+    };
   }
   let refreshedAuthResult = null;
   const refreshCapture = report?.refresh_capture;

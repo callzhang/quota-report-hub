@@ -108,3 +108,87 @@ test("processAuthPoolEntry does not write back when codex probe did not refresh 
   assert.equal(authWrites.length, 0);
   assert.equal(result.refreshed_auth_written, false);
 });
+
+test("processAuthPoolEntry deletes unusable codex auths with missing quota details", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const quotaReports = [];
+  const deletions = [];
+
+  const result = await processAuthPoolEntry(
+    {
+      source: "codex",
+      account_id: "acct-missing-quota",
+      email: "lili.zhang@stardust.ai",
+      plan_name: "Pro Lite",
+    },
+    {
+      decryptAuthJsonImpl: () => '{"tokens":{"account_id":"acct-missing-quota"}}',
+      probeCodexAuthJsonImpl: () => ({
+        source: "codex",
+        account_id: "acct-missing-quota",
+        email: "lili.zhang@stardust.ai",
+        plan_name: "Pro Lite",
+        status: "error",
+        error: "token_count event was present but missing quota details",
+        windows: { "5h": null, "1week": null },
+      }),
+      upsertAuthPoolQuotaImpl: async (report) => {
+        quotaReports.push(report);
+      },
+      deleteAuthPoolEntryImpl: async (payload) => {
+        deletions.push(payload);
+        return { deleted: true, ...payload };
+      },
+    }
+  );
+
+  assert.equal(result.deleted_from_auth_pool, true);
+  assert.equal(result.delete_reason, "missing_quota_details");
+  assert.deepEqual(deletions, [{ source: "codex", accountId: "acct-missing-quota" }]);
+  assert.equal(quotaReports.length, 0);
+});
+
+test("processAuthPoolEntry deletes codex auths when refreshed metadata shows Free plan", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const authWrites = [];
+  const deletions = [];
+
+  const result = await processAuthPoolEntry(
+    {
+      source: "codex",
+      account_id: "acct-free",
+      email: "derekz@stardust.ai",
+      plan_name: "Pro Lite",
+    },
+    {
+      decryptAuthJsonImpl: () => '{"tokens":{"account_id":"acct-free"}}',
+      probeCodexAuthJsonImpl: () => ({
+        source: "codex",
+        account_id: "acct-free",
+        email: "derekz@stardust.ai",
+        plan_name: "Pro Lite",
+        status: "error",
+        error: "token_count event was present but missing quota details",
+        windows: { "5h": null, "1week": null },
+        refresh_capture: {
+          delta: { refreshed: true },
+          refreshed_metadata: { plan_name: "Free" },
+          refreshed_auth_json: '{"tokens":{"account_id":"acct-free"}}',
+        },
+      }),
+      upsertAuthPoolEntryImpl: async (entry) => {
+        authWrites.push(entry);
+        return { deduplicated: false };
+      },
+      deleteAuthPoolEntryImpl: async (payload) => {
+        deletions.push(payload);
+        return { deleted: true, ...payload };
+      },
+    }
+  );
+
+  assert.equal(result.deleted_from_auth_pool, true);
+  assert.equal(result.delete_reason, "free_plan");
+  assert.equal(authWrites.length, 0);
+  assert.deepEqual(deletions, [{ source: "codex", accountId: "acct-free" }]);
+});
