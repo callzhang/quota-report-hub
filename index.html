@@ -360,13 +360,36 @@
         </div>
         <div id="empty" class="empty" hidden>No reports yet.</div>
       </section>
+
+      <section class="panel section">
+        <h2>Archived Invalidated Auths</h2>
+        <div class="meta">Auths that have been continuously hard-invalidated for more than 48 hours are kept here instead of the active rotation table. A successful probe resets the timer.</div>
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Uploaded By</th>
+                <th>Account</th>
+                <th>First Invalidated</th>
+                <th>Last Probe</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody id="archived-rows"></tbody>
+          </table>
+        </div>
+        <div id="archived-empty" class="empty" hidden>No archived invalidated auths.</div>
+      </section>
     </main>
 
     <script>
       const summary = document.getElementById("summary");
       const cards = document.getElementById("cards");
       const rows = document.getElementById("rows");
+      const archivedRows = document.getElementById("archived-rows");
       const empty = document.getElementById("empty");
+      const archivedEmpty = document.getElementById("archived-empty");
       const authPanel = document.getElementById("auth-panel");
       const viewerChip = document.getElementById("viewer-chip");
       const tokenInput = document.getElementById("token-input");
@@ -412,7 +435,9 @@
         summary.textContent = "Locked";
         cards.innerHTML = "";
         rows.innerHTML = "";
+        archivedRows.innerHTML = "";
         empty.hidden = true;
+        archivedEmpty.hidden = true;
       }
 
       function formatPercent(value) {
@@ -546,10 +571,12 @@
         const payload = await response.json();
         setAuthenticatedView(payload.viewer_email || "unknown");
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
-        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Cloud auth entries: ${payload.auth_pool_count || 0}`;
+        const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
+        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Cloud auth entries: ${payload.auth_pool_count || 0} · Archived invalidated: ${payload.archived_invalidated_count || 0}`;
         cards.innerHTML = [
           `<article class="card"><div class="meta">Cloud auth entries</div><strong>${payload.auth_pool_count || 0}</strong><div class="meta">One latest encrypted auth per account</div></article>`,
           `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Cloud auth pool sources</div></article>`,
+          `<article class="card"><div class="meta">Archived invalidated</div><strong>${payload.archived_invalidated_count || 0}</strong><div class="meta">Hidden from active rotation</div></article>`,
           `<article class="card"><div class="meta">Latest upload</div><strong>${items[0]?.email || items[0]?.uploader_email || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.uploaded_at)}</div></article>`
         ].join("");
 
@@ -566,6 +593,17 @@
         `).join("");
 
         empty.hidden = items.length !== 0;
+        archivedRows.innerHTML = archivedItems.map((item) => `
+          <tr>
+            <td>${sourceTag(item.source)}</td>
+            <td><div class="wrap">${item.uploader_email || item.reporter_name || "-"}</div><div class="mono wrap">${item.hostname || ""}</div></td>
+            <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div><div class="mono wrap">${item.account_id || ""}</div></td>
+            <td><div class="wrap">${formatDate(item.first_invalidated_at)}</div></td>
+            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div></td>
+            <td><div class="meta wrap">${item.error || ""}</div></td>
+          </tr>
+        `).join("");
+        archivedEmpty.hidden = archivedItems.length !== 0;
       }
 
       currentToken = getStoredToken();

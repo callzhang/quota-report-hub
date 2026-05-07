@@ -190,3 +190,60 @@ test("invalidated auth notification state preserves first invalidated time and c
     cleanup();
   }
 });
+
+test("upsertAuthPoolQuota tracks continuous invalidated episodes and clears them on recovery", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T00:00:00Z",
+      account_id: "acct-invalid",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "acct-invalid",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+    let states = await mod.authPoolInvalidatedNotifications();
+    assert.equal(states.length, 1);
+    assert.equal(states[0].first_invalidated_at, "2026-05-06T00:00:00Z");
+
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T02:00:00Z",
+      account_id: "acct-invalid",
+      status: "ok",
+      windows: { "5h": { remaining_percent: 80 }, "1week": { remaining_percent: 60 } },
+    });
+    states = await mod.authPoolInvalidatedNotifications();
+    assert.equal(states.length, 0);
+
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T03:00:00Z",
+      account_id: "acct-invalid",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+    states = await mod.authPoolInvalidatedNotifications();
+    assert.equal(states.length, 1);
+    assert.equal(states[0].first_invalidated_at, "2026-05-06T03:00:00Z");
+  } finally {
+    cleanup();
+  }
+});

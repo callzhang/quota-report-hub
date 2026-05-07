@@ -406,7 +406,7 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 80);
 });
 
-test("authPoolStatusPayload hides hard-invalidated auths older than 48 hours", () => {
+test("authPoolStatusPayload archives hard-invalidated auths older than 48 hours by first invalidation time", () => {
   const payload = authPoolStatusPayload(
     [
       {
@@ -456,11 +456,77 @@ test("authPoolStatusPayload hides hard-invalidated auths older than 48 hours", (
         windows: { "5h": null, "1week": null },
       }),
     ],
-    "2026-04-24T12:00:01Z"
+    "2026-04-24T12:00:01Z",
+    [
+      {
+        source: "codex",
+        account_id: "old-invalid",
+        first_invalidated_at: "2026-04-20T12:00:00Z",
+        last_notified_at: "2026-04-22T12:00:00Z",
+        last_error: "auth invalidated (token_invalidated)",
+      },
+      {
+        source: "codex",
+        account_id: "fresh-invalid",
+        first_invalidated_at: "2026-04-23T12:00:02Z",
+        last_notified_at: null,
+        last_error: "auth invalidated (token_invalidated)",
+      },
+    ]
   );
 
   assert.equal(payload.auth_pool_count, 1);
   assert.equal(payload.report_count, 1);
   assert.equal(payload.items.length, 1);
   assert.equal(payload.items[0].account_id, "fresh-invalid");
+  assert.equal(payload.items[0].first_invalidated_at, "2026-04-23T12:00:02Z");
+  assert.equal(payload.archived_invalidated_count, 1);
+  assert.equal(payload.archived_invalidated_items.length, 1);
+  assert.equal(payload.archived_invalidated_items[0].account_id, "old-invalid");
+  assert.equal(payload.archived_invalidated_items[0].first_invalidated_at, "2026-04-20T12:00:00Z");
+});
+
+test("authPoolStatusPayload archives old invalidations even when latest probe is fresh", () => {
+  const payload = authPoolStatusPayload(
+    [
+      {
+        source: "codex",
+        account_id: "old-invalid-fresh-probe",
+        email: "old@example.com",
+        plan_name: "Team",
+        digest: "digest-1",
+        auth_last_refresh: "2026-04-20T09:00:00Z",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "derek@gpu4",
+        hostname: "gpu4",
+        uploaded_at: "2026-04-20T10:00:00Z",
+      },
+    ],
+    [
+      sanitizeReport({
+        source: "codex",
+        hostname: "github-actions",
+        reporter_name: "actions@github-actions",
+        reported_at: "2026-04-24T11:55:00Z",
+        account_id: "old-invalid-fresh-probe",
+        status: "error",
+        error: "auth invalidated (token_invalidated)",
+        windows: { "5h": null, "1week": null },
+      }),
+    ],
+    "2026-04-24T12:00:01Z",
+    [
+      {
+        source: "codex",
+        account_id: "old-invalid-fresh-probe",
+        first_invalidated_at: "2026-04-20T12:00:00Z",
+        last_notified_at: null,
+        last_error: "auth invalidated (token_invalidated)",
+      },
+    ]
+  );
+
+  assert.equal(payload.items.length, 0);
+  assert.equal(payload.archived_invalidated_items.length, 1);
+  assert.equal(payload.archived_invalidated_items[0].account_id, "old-invalid-fresh-probe");
 });
