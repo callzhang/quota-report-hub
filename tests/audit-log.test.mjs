@@ -10,8 +10,10 @@ async function loadDbWithTempStore() {
   const dbPath = join(tempDir, "audit.db");
   const previousUrl = process.env.TURSO_DATABASE_URL;
   const previousToken = process.env.TURSO_AUTH_TOKEN;
+  const previousEncryptionKey = process.env.AUTH_POOL_ENCRYPTION_KEY;
   process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
   process.env.TURSO_AUTH_TOKEN = "test-token";
+  process.env.AUTH_POOL_ENCRYPTION_KEY = "0".repeat(64);
   try {
     const mod = await import(`../lib/db.js?ts=${Date.now()}`);
     return {
@@ -26,6 +28,11 @@ async function loadDbWithTempStore() {
           delete process.env.TURSO_AUTH_TOKEN;
         } else {
           process.env.TURSO_AUTH_TOKEN = previousToken;
+        }
+        if (previousEncryptionKey === undefined) {
+          delete process.env.AUTH_POOL_ENCRYPTION_KEY;
+        } else {
+          process.env.AUTH_POOL_ENCRYPTION_KEY = previousEncryptionKey;
         }
         rmSync(tempDir, { recursive: true, force: true });
       },
@@ -243,6 +250,42 @@ test("upsertAuthPoolQuota tracks continuous invalidated episodes and clears them
     states = await mod.authPoolInvalidatedNotifications();
     assert.equal(states.length, 1);
     assert.equal(states[0].first_invalidated_at, "2026-05-06T03:00:00Z");
+  } finally {
+    cleanup();
+  }
+});
+
+test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const authJson = JSON.stringify({
+      last_refresh: "2026-05-06T00:00:00Z",
+      tokens: {
+        account_id: "acct-delete",
+        id_token: "x.eyJlbWFpbCI6ICJkZWxldGVAZXhhbXBsZS5jb20iLCAibmFtZSI6ICJEZWxldGUiLCAiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjogeyJjaGF0Z3B0X3BsYW5fdHlwZSI6ICJ0ZWFtIn19.y",
+      },
+    });
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: authJson,
+      uploader_email: "derek@stardust.ai",
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "acct-delete",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+
+    const result = await mod.deleteAuthPoolEntry({ source: "codex", accountId: "acct-delete" });
+    assert.equal(result.deleted, true);
+    assert.equal(await mod.authPoolEntry("codex", "acct-delete"), null);
+    assert.equal((await mod.authPoolQuotaLatest()).filter((row) => row.account_id === "acct-delete").length, 0);
+    assert.equal((await mod.authPoolInvalidatedNotifications()).filter((row) => row.account_id === "acct-delete").length, 0);
   } finally {
     cleanup();
   }

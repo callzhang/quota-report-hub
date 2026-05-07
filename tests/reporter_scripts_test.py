@@ -1193,16 +1193,24 @@ Reading additional input from stdin...
             )
 
             with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
-                result = quota_guard.sync_current_codex_auth_pool(
-                    "https://quota-report-hub.vercel.app",
-                    "qrp_token",
-                    auth_path=auth_path,
-                    known_auth_path=known_auth_path,
-                )
+                with mock.patch("quota_reporters.delete_auth_pool_entry", return_value={"ok": True, "deleted": True}) as delete_auth_pool_entry:
+                    result = quota_guard.sync_current_codex_auth_pool(
+                        "https://quota-report-hub.vercel.app",
+                        "qrp_token",
+                        auth_path=auth_path,
+                        known_auth_path=known_auth_path,
+                    )
 
         post_auth_pool_entry.assert_not_called()
+        delete_auth_pool_entry.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            source="codex",
+            account_id="acct-free",
+        )
         self.assertFalse(result["uploaded"])
-        self.assertEqual(result["reason"], "free_plan_excluded")
+        self.assertTrue(result["deleted"])
+        self.assertEqual(result["reason"], "free_plan_removed_from_auth_pool")
         self.assertEqual(result["known_auth"]["plan_name"], "Free")
         self.assertEqual(result["known_auth"]["state_source"], "free_plan_excluded")
 
@@ -1367,16 +1375,24 @@ Reading additional input from stdin...
 
             with mock.patch("quota_reporters.build_claude_auth_blob", return_value=(blob_text, payload)):
                 with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
-                    result = quota_guard.sync_current_claude_auth_pool(
-                        "https://quota-report-hub.vercel.app",
-                        "qrp_token",
-                        claude_home=claude_home,
-                        known_auth_path=known_auth_path,
-                    )
+                    with mock.patch("quota_reporters.delete_auth_pool_entry", return_value={"ok": True, "deleted": True}) as delete_auth_pool_entry:
+                        result = quota_guard.sync_current_claude_auth_pool(
+                            "https://quota-report-hub.vercel.app",
+                            "qrp_token",
+                            claude_home=claude_home,
+                            known_auth_path=known_auth_path,
+                        )
 
         post_auth_pool_entry.assert_not_called()
+        delete_auth_pool_entry.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            source="claude",
+            account_id="claude-free@example.com",
+        )
         self.assertFalse(result["uploaded"])
-        self.assertEqual(result["reason"], "free_plan_excluded")
+        self.assertTrue(result["deleted"])
+        self.assertEqual(result["reason"], "free_plan_removed_from_auth_pool")
         self.assertEqual(result["known_auth"]["plan_name"], "Free")
         self.assertEqual(result["known_auth"]["state_source"], "free_plan_excluded")
 

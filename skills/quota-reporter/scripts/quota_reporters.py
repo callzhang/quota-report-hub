@@ -1014,6 +1014,32 @@ def post_auth_pool_quota(
         return json.loads(response.read().decode("utf-8"))
 
 
+def delete_auth_pool_entry(
+    auth_pool_url: str,
+    auth_pool_user_token: str,
+    *,
+    source: str,
+    account_id: str,
+) -> dict:
+    body = json.dumps(
+        {
+            "source": source,
+            "account_id": account_id,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        auth_pool_url.rstrip("/") + "/api/auth/delete",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {auth_pool_user_token}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def sync_current_auth_pool_entry(
     *,
     source: str,
@@ -1025,6 +1051,12 @@ def sync_current_auth_pool_entry(
 ) -> dict:
     known = known_auth_state_for_source(read_known_auth_state(known_auth_path), source)
     if is_excluded_free_plan(metadata.get("plan_name")):
+        deleted = delete_auth_pool_entry(
+            auth_pool_url,
+            auth_pool_user_token,
+            source=source,
+            account_id=metadata["account_id"],
+        )
         state = write_known_auth_state(
             source=source,
             metadata=metadata,
@@ -1037,7 +1069,9 @@ def sync_current_auth_pool_entry(
         return {
             "ok": True,
             "uploaded": False,
-            "reason": "free_plan_excluded",
+            "deleted": bool(deleted.get("deleted")),
+            "reason": "free_plan_removed_from_auth_pool" if deleted.get("deleted") else "free_plan_excluded",
+            "delete_result": deleted,
             "known_auth": state,
         }
 
