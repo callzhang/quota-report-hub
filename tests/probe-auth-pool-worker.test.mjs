@@ -59,6 +59,7 @@ test("processAuthPoolEntry writes refreshed codex auth back to the pool", async 
         authWrites.push(entry);
         return { deduplicated: false, account_id: "acct-1" };
       },
+      authPoolQuotaLatestForEntryImpl: async () => null,
     }
   );
 
@@ -102,6 +103,7 @@ test("processAuthPoolEntry does not write back when codex probe did not refresh 
         authWrites.push(entry);
         return { deduplicated: false };
       },
+      authPoolQuotaLatestForEntryImpl: async () => null,
     }
   );
 
@@ -139,6 +141,7 @@ test("processAuthPoolEntry deletes unusable codex auths with missing quota detai
         deletions.push(payload);
         return { deleted: true, ...payload };
       },
+      authPoolQuotaLatestForEntryImpl: async () => null,
     }
   );
 
@@ -189,6 +192,7 @@ test("processAuthPoolEntry deletes codex auths when refreshed metadata shows Fre
         deletions.push(payload);
         return { deleted: true, ...payload };
       },
+      authPoolQuotaLatestForEntryImpl: async () => null,
     }
   );
 
@@ -198,4 +202,93 @@ test("processAuthPoolEntry deletes codex auths when refreshed metadata shows Fre
   assert.equal(quotaReports.length, 1);
   assert.equal(quotaReports[0].refresh_capture.refreshed_auth_json, undefined);
   assert.deepEqual(deletions, [{ source: "codex", accountId: "acct-free" }]);
+});
+
+test("processAuthPoolEntry deletes codex auths after consecutive 401 probes", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const quotaReports = [];
+  const deletions = [];
+
+  const result = await processAuthPoolEntry(
+    {
+      source: "codex",
+      account_id: "acct-401",
+      email: "mrderekzen@gmail.com",
+      plan_name: "Pro Lite",
+    },
+    {
+      decryptAuthJsonImpl: () => '{"tokens":{"account_id":"acct-401"}}',
+      probeCodexAuthJsonImpl: () => ({
+        source: "codex",
+        account_id: "acct-401",
+        email: "mrderekzen@gmail.com",
+        plan_name: "Pro Lite",
+        status: "error",
+        error: "auth failed (401 unauthorized)",
+        windows: { "5h": null, "1week": null },
+      }),
+      authPoolQuotaLatestForEntryImpl: async () => ({
+        source: "codex",
+        account_id: "acct-401",
+        email: "mrderekzen@gmail.com",
+        plan_name: "Pro Lite",
+        status: "error",
+        error: "auth failed (401 unauthorized)",
+        windows: { "5h": null, "1week": null },
+      }),
+      upsertAuthPoolQuotaImpl: async (report) => {
+        quotaReports.push(report);
+      },
+      deleteAuthPoolEntryImpl: async (payload) => {
+        deletions.push(payload);
+        return { deleted: true, ...payload };
+      },
+    }
+  );
+
+  assert.equal(result.deleted_from_auth_pool, true);
+  assert.equal(result.delete_reason, "continuous_401");
+  assert.equal(quotaReports.length, 1);
+  assert.equal(quotaReports[0].error, "auth failed (401 unauthorized)");
+  assert.deepEqual(deletions, [{ source: "codex", accountId: "acct-401" }]);
+});
+
+test("processAuthPoolEntry keeps first 401 probe in the pool", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const quotaReports = [];
+  const deletions = [];
+
+  const result = await processAuthPoolEntry(
+    {
+      source: "codex",
+      account_id: "acct-first-401",
+      email: "mrderekzen@gmail.com",
+      plan_name: "Pro Lite",
+    },
+    {
+      decryptAuthJsonImpl: () => '{"tokens":{"account_id":"acct-first-401"}}',
+      probeCodexAuthJsonImpl: () => ({
+        source: "codex",
+        account_id: "acct-first-401",
+        email: "mrderekzen@gmail.com",
+        plan_name: "Pro Lite",
+        status: "error",
+        error: "auth failed (401 unauthorized)",
+        windows: { "5h": null, "1week": null },
+      }),
+      authPoolQuotaLatestForEntryImpl: async () => null,
+      upsertAuthPoolQuotaImpl: async (report) => {
+        quotaReports.push(report);
+      },
+      deleteAuthPoolEntryImpl: async (payload) => {
+        deletions.push(payload);
+        return { deleted: true, ...payload };
+      },
+    }
+  );
+
+  assert.equal(result.deleted_from_auth_pool, undefined);
+  assert.equal(result.status, "error");
+  assert.equal(quotaReports.length, 1);
+  assert.equal(deletions.length, 0);
 });

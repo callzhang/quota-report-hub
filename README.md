@@ -118,6 +118,7 @@ Auth pool support:
 - GitHub Actions refreshes the cloud auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
 - During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.
 - Every probe result is appended to `auth_pool_quota_events` before the latest row is updated or an unusable auth is removed, so invalidation windows and audit views can be reconstructed from Turso instead of GitHub Actions logs.
+- Codex auths are removed from the active pool after consecutive `auth failed (401 unauthorized)` worker probes, because repeated 401 means the saved token cannot be reused by the pool.
 - A Vercel cron endpoint checks the cloud probe results daily. If a cloud auth stays hard-invalidated for more than 24 hours, Vercel emails the uploader and asks them to log in again. It sends at most one reminder per account per 24 hours until the auth recovers.
 - Claude quota is probed in the worker by launching Claude CLI headlessly, restoring the saved CLI state, and reading the statusline snapshot after a minimal real request.
 - Claude auth snapshots are uploaded to the cloud pool only when the local machine is using a direct Claude subscription. Machines that inject `ANTHROPIC_*` credentials through `~/.claude/settings.json` are skipped because their active provider is not the worker's official Claude login path.

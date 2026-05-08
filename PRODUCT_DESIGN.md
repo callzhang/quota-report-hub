@@ -196,6 +196,7 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   - the Claude worker uses a short statusline refresh interval so the snapshot is produced within the probe timeout instead of lagging behind the CLI session
   - writes every raw probe result to `auth_pool_quota_events`
   - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`
+  - removes Codex auths from the active pool after consecutive `auth failed (401 unauthorized)` worker probes
 
 - `GET /api/cron/invalidated-auth-notifications`
   auth:

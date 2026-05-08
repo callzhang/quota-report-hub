@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { authPoolEntries, deleteAuthPoolEntry, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../lib/db.js";
+import {
+  authPoolEntries,
+  authPoolQuotaLatestForEntry,
+  deleteAuthPoolEntry,
+  upsertAuthPoolEntry,
+  upsertAuthPoolQuota,
+} from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
 
@@ -89,14 +95,31 @@ function isFreePlan(value) {
   return String(value || "").trim().toLowerCase() === "free";
 }
 
-function shouldDeleteUnusableAuthPoolEntry(entry, report) {
+function isAuthFailed401(report) {
+  return report?.error === "auth failed (401 unauthorized)";
+}
+
+function shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport = null) {
   if (entry.source !== "codex") {
     return false;
   }
   if (isFreePlan(entry.plan_name) || isFreePlan(report?.plan_name) || isFreePlan(report?.refresh_capture?.refreshed_metadata?.plan_name)) {
     return true;
   }
+  if (isAuthFailed401(report) && isAuthFailed401(previousReport)) {
+    return true;
+  }
   return report?.error === "token_count event was present but missing quota details";
+}
+
+function deleteReason(entry, report, previousReport = null) {
+  if (isFreePlan(entry.plan_name) || isFreePlan(report?.plan_name) || isFreePlan(report?.refresh_capture?.refreshed_metadata?.plan_name)) {
+    return "free_plan";
+  }
+  if (isAuthFailed401(report) && isAuthFailed401(previousReport)) {
+    return "continuous_401";
+  }
+  return "missing_quota_details";
 }
 
 export async function processAuthPoolEntry(
@@ -109,6 +132,7 @@ export async function processAuthPoolEntry(
     upsertAuthPoolQuotaImpl = upsertAuthPoolQuota,
     upsertAuthPoolEntryImpl = upsertAuthPoolEntry,
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
+    authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
   } = {}
 ) {
   let report;
@@ -123,7 +147,8 @@ export async function processAuthPoolEntry(
   } catch (error) {
     report = failureReport(entry, error);
   }
-  if (shouldDeleteUnusableAuthPoolEntry(entry, report)) {
+  const previousReport = await authPoolQuotaLatestForEntryImpl({ source: entry.source, accountId: entry.account_id });
+  if (shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport)) {
     await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
     const deleteResult = await deleteAuthPoolEntryImpl({ source: entry.source, accountId: entry.account_id });
     return {
@@ -132,9 +157,7 @@ export async function processAuthPoolEntry(
       status: report.status,
       error: report.error,
       deleted_from_auth_pool: Boolean(deleteResult?.deleted),
-      delete_reason: isFreePlan(entry.plan_name) || isFreePlan(report?.plan_name) || isFreePlan(report?.refresh_capture?.refreshed_metadata?.plan_name)
-        ? "free_plan"
-        : "missing_quota_details",
+      delete_reason: deleteReason(entry, report, previousReport),
       refreshed_auth_written: false,
       refreshed_auth_result: null,
     };
