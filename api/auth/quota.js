@@ -1,5 +1,5 @@
 import { authPoolConfigured, bearerTokenFromHeaders } from "../../lib/company-auth.js";
-import { authenticateApiToken, dbConfigured, upsertAuthPoolQuota } from "../../lib/db.js";
+import { authenticateApiToken, dbConfigured, deleteAuthPoolEntry, upsertAuthPoolQuota } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 
 function unauthorized(res) {
@@ -100,7 +100,17 @@ export default async function handler(req, res) {
   }
 
   await upsertAuthPoolQuota(payload);
+  const deletedFromAuthPool = [];
+  if (source === "codex" && isHardInvalidation(payload)) {
+    const accountIds = new Set([payload.account_id]);
+    if (payload.provider_account_id) {
+      accountIds.add(String(payload.provider_account_id));
+    }
+    for (const accountId of accountIds) {
+      deletedFromAuthPool.push(await deleteAuthPoolEntry({ source, accountId }));
+    }
+  }
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify({ ok: true, source, account_id: payload.account_id }));
+  res.end(JSON.stringify({ ok: true, source, account_id: payload.account_id, deleted_from_auth_pool: deletedFromAuthPool }));
 }
