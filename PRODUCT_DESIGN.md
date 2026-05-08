@@ -60,6 +60,8 @@ The auth pool adds a new server-side storage layer:
   one latest encrypted auth snapshot per `source + account_id`
 - `auth_pool_quota_latest`
   one latest known quota snapshot per `source + account_id`
+- `auth_pool_quota_events`
+  append-only probe history; every cloud or client quota probe is recorded before the latest row is updated or an unusable auth is deleted from the active pool
 
 Each entry stores:
 
@@ -192,6 +194,7 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   - probes Claude on the worker via a headless Claude CLI session plus statusline snapshot
   - only uploads Claude auths from machines that are using a direct Claude subscription; clients configured with custom `ANTHROPIC_*` provider settings are excluded from the cloud Claude pool because their active login path cannot be replayed reliably on the worker
   - the Claude worker uses a short statusline refresh interval so the snapshot is produced within the probe timeout instead of lagging behind the CLI session
+  - writes every raw probe result to `auth_pool_quota_events`
   - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`
 
 - `GET /api/cron/invalidated-auth-notifications`
@@ -200,7 +203,7 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   behavior:
   - runs on Vercel, where the Mailgun environment variables live
   - reads auth pool entries plus latest cloud probe results from Turso
-  - records the first time each `source + account_id` becomes hard-invalidated
+  - records the first time each `source + account_id` becomes continuously hard-invalidated, using `auth_pool_quota_events` instead of only the latest row
   - emails the auth uploader after a hard invalidation remains unresolved for more than 24 hours
   - repeats that reminder at most once per 24 hours until a later successful/non-invalidated probe clears the notification state
 

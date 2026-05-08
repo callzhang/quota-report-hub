@@ -145,12 +145,14 @@ test("processAuthPoolEntry deletes unusable codex auths with missing quota detai
   assert.equal(result.deleted_from_auth_pool, true);
   assert.equal(result.delete_reason, "missing_quota_details");
   assert.deepEqual(deletions, [{ source: "codex", accountId: "acct-missing-quota" }]);
-  assert.equal(quotaReports.length, 0);
+  assert.equal(quotaReports.length, 1);
+  assert.equal(quotaReports[0].error, "token_count event was present but missing quota details");
 });
 
 test("processAuthPoolEntry deletes codex auths when refreshed metadata shows Free plan", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const authWrites = [];
+  const quotaReports = [];
   const deletions = [];
 
   const result = await processAuthPoolEntry(
@@ -180,6 +182,9 @@ test("processAuthPoolEntry deletes codex auths when refreshed metadata shows Fre
         authWrites.push(entry);
         return { deduplicated: false };
       },
+      upsertAuthPoolQuotaImpl: async (report) => {
+        quotaReports.push(report);
+      },
       deleteAuthPoolEntryImpl: async (payload) => {
         deletions.push(payload);
         return { deleted: true, ...payload };
@@ -190,5 +195,7 @@ test("processAuthPoolEntry deletes codex auths when refreshed metadata shows Fre
   assert.equal(result.deleted_from_auth_pool, true);
   assert.equal(result.delete_reason, "free_plan");
   assert.equal(authWrites.length, 0);
+  assert.equal(quotaReports.length, 1);
+  assert.equal(quotaReports[0].refresh_capture.refreshed_auth_json, undefined);
   assert.deepEqual(deletions, [{ source: "codex", accountId: "acct-free" }]);
 });

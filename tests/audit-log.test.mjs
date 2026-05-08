@@ -255,6 +255,55 @@ test("upsertAuthPoolQuota tracks continuous invalidated episodes and clears them
   }
 });
 
+test("upsertAuthPoolQuota records every probe event and derives continuous invalidation from history", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "github-actions",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T00:00:00Z",
+      account_id: "acct-history",
+      status: "ok",
+      windows: { "5h": { remaining_percent: 90 }, "1week": { remaining_percent: 80 } },
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "github-actions",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "acct-history",
+      status: "error",
+      error: "auth failed (401 unauthorized)",
+      windows: { "5h": null, "1week": null },
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "github-actions",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T02:00:00Z",
+      account_id: "acct-history",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+
+    const events = await mod.authPoolQuotaEvents({ source: "codex", accountId: "acct-history", limit: 10 });
+    assert.equal(events.length, 3);
+    assert.deepEqual(
+      events.map((event) => event.reported_at),
+      ["2026-05-06T02:00:00Z", "2026-05-06T01:00:00Z", "2026-05-06T00:00:00Z"]
+    );
+
+    const states = await mod.authPoolInvalidatedNotifications();
+    assert.equal(states.length, 1);
+    assert.equal(states[0].first_invalidated_at, "2026-05-06T01:00:00Z");
+    assert.equal(states[0].last_error, "auth invalidated (token_invalidated)");
+  } finally {
+    cleanup();
+  }
+});
+
 test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
@@ -286,6 +335,7 @@ test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", a
     assert.equal(await mod.authPoolEntry("codex", "acct-delete"), null);
     assert.equal((await mod.authPoolQuotaLatest()).filter((row) => row.account_id === "acct-delete").length, 0);
     assert.equal((await mod.authPoolInvalidatedNotifications()).filter((row) => row.account_id === "acct-delete").length, 0);
+    assert.equal((await mod.authPoolQuotaEvents({ source: "codex", accountId: "acct-delete" })).length, 1);
   } finally {
     cleanup();
   }

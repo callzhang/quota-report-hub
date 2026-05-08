@@ -124,6 +124,7 @@ export async function processAuthPoolEntry(
     report = failureReport(entry, error);
   }
   if (shouldDeleteUnusableAuthPoolEntry(entry, report)) {
+    await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
     const deleteResult = await deleteAuthPoolEntryImpl({ source: entry.source, accountId: entry.account_id });
     return {
       source: entry.source,
