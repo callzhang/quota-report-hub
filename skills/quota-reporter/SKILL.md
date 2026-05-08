@@ -12,7 +12,7 @@ This skill installs and runs the local quota guard for Codex and Claude.
 1. Tracks the current local auth state per source in `~/.agents/auth/known_auth.json`
 2. Uploads the current auth for each source to the shared encrypted auth pool only when the auth changed
 3. Probes the current local Codex quota and the current local Claude quota to decide whether the current machine should rotate
-4. Keeps local Codex quota as a rotation-only signal instead of pushing it back to the hub, while Claude can still publish a stable local quota snapshot when available
+4. Publishes stable local quota snapshots back to the hub when available, with stricter completeness checks for Codex
 5. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
 6. Installs a reboot-safe scheduler that runs every 15 minutes
 7. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
@@ -101,8 +101,8 @@ The guard then:
 - updates `~/.agents/auth/known_auth.json`
 - uploads the current auth to the auth pool only when needed
 - probes the current live Codex auth and Claude auth
-- does not push Codex quota back to the hub; Codex dashboard state is cloud-worker-owned
-- may push a stable local Claude quota snapshot back to the hub when Claude is available locally
+- may push stable local quota snapshots back to the hub when available
+- for Codex, only complete windows or hard invalidations are uploaded, so partial local probes do not overwrite good hub data
 - if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
 - only replaces local source credentials when the fetched auth is different from what is already installed
@@ -117,8 +117,8 @@ Operational notes:
 - replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions
 - the next new Codex session is the one that should pick up the new auth
 - the local config file contains a personal token and should stay private
-- the cloud dashboard shows the latest cloud-worker probe for each auth entry
-- Codex rows are refreshed only by the cloud worker; client Codex quota reports are ignored
+- the cloud dashboard shows the latest effective quota for each auth entry
+- Codex rows may be refreshed by either the cloud worker or a stable local client report; a newer worker soft failure does not replace an existing good local Codex quota snapshot
 - Claude rows may come from the cloud worker or from a stable local client snapshot, depending on whether the current Claude environment can be replayed reliably on the worker. If `~/.claude/settings.json` injects `ANTHROPIC_*` provider credentials, the skill skips Claude cloud uploads for that machine.
 
 ## Output expectations

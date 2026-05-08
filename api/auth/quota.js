@@ -8,6 +8,39 @@ function unauthorized(res) {
   res.end(JSON.stringify({ error: "Unauthorized" }));
 }
 
+function isHardInvalidation(payload) {
+  return (
+    payload?.status === "error" &&
+    (
+      payload?.error === "auth invalidated (token_invalidated)" ||
+      payload?.error === "auth failed (401 unauthorized)"
+    )
+  );
+}
+
+function hasCompleteWindow(window) {
+  return Boolean(
+    window &&
+    window.remaining_percent !== null &&
+    window.remaining_percent !== undefined &&
+    window.reset_at
+  );
+}
+
+function codexClientPayloadAccepted(payload) {
+  if (!payload?.account_id) {
+    return false;
+  }
+  if (isHardInvalidation(payload)) {
+    return true;
+  }
+  return (
+    payload?.status === "ok" &&
+    hasCompleteWindow(payload?.windows?.["5h"]) &&
+    hasCompleteWindow(payload?.windows?.["1week"])
+  );
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.statusCode = 405;
@@ -44,15 +77,10 @@ export default async function handler(req, res) {
   }
 
   const source = String(body.source);
-  if (source === "codex") {
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: true, source, ignored: true, reason: "cloud_worker_owned_source" }));
-    return;
-  }
   const payload = {
     ...body.quota_payload,
     source,
+    report_origin: "client",
     reporter_name: body.quota_payload.reporter_name || authContext.email,
     hostname: body.quota_payload.hostname || "client-report",
   };
@@ -61,6 +89,13 @@ export default async function handler(req, res) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ error: "quota_payload.account_id is required" }));
+    return;
+  }
+
+  if (source === "codex" && !codexClientPayloadAccepted(payload)) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: true, source, ignored: true, reason: "quota_unavailable" }));
     return;
   }
 

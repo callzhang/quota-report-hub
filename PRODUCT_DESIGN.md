@@ -168,7 +168,7 @@ Only the latest token for an email is valid. A user can reuse that latest token 
     - `five_h_remaining_percent`
     - `one_week_remaining_percent`
   behavior:
-  - looks at stored auth pool entries plus their latest cloud-owned quota metadata
+  - looks at stored auth pool entries plus their latest effective quota metadata
   - only compares candidates from the same source
   - excludes the current local account
   - excludes hard-invalidated accounts
@@ -176,7 +176,7 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   - only considers candidates whose `5H` is strictly better than the current local `5H`
   - only considers candidates whose `1week` is still above `0`
   - returns either:
-    - a decrypted better auth plus latest cloud-owned quota metadata
+    - a decrypted better auth plus latest effective quota metadata
     - or `replacement: null`
 
 - `GET /api/status`
@@ -195,7 +195,7 @@ Only the latest token for an email is valid. A user can reuse that latest token 
   - only uploads Claude auths from machines that are using a direct Claude subscription; clients configured with custom `ANTHROPIC_*` provider settings are excluded from the cloud Claude pool because their active login path cannot be replayed reliably on the worker
   - the Claude worker uses a short statusline refresh interval so the snapshot is produced within the probe timeout instead of lagging behind the CLI session
   - writes every raw probe result to `auth_pool_quota_events`
-  - writes the latest cloud-owned quota snapshot to `auth_pool_quota_latest`
+  - writes worker probe results into the same latest-quota merge path used by client reports
   - removes Codex auths from the active pool after consecutive `auth failed (401 unauthorized)` worker probes
 
 - `GET /api/cron/invalidated-auth-notifications`
@@ -248,11 +248,13 @@ After setup, the local machine does three jobs:
 1. track the current auth for each source in `~/.agents/auth/known_auth.json`
 2. upload the current auth to the shared auth pool only when the last uploaded `source`, `account_id`, `auth_last_refresh`, and `digest` do not already match
 3. probe local quota and fetch and install a better auth from the same source when local quota is low
-4. send Claude's latest stable local quota to the hub every 15 minutes only when a usable local Claude snapshot exists
+4. send stable local quota snapshots to the hub every 15 minutes when a usable local snapshot exists
 
 Additional source-specific rules:
 
-- Codex local quota probes are used only for local rotation decisions. The hub ignores client-sent Codex quota because Codex dashboard state is cloud-worker-owned.
+- Codex local quota probes can also update the hub, because the current local auth is often the most accurate signal for that exact account.
+- The server accepts Codex client quota only when both windows are complete or the local auth is hard-invalidated, so partial client probes cannot overwrite good hub data.
+- A newer worker soft failure does not replace an existing good client Codex quota snapshot.
 - Claude can still supplement the hub with stable local quota snapshots because some Claude environments cannot be replayed reliably by the worker.
 - Codex auth identity is normalized to the lowercased account email when one is available, instead of relying on the raw provider account UUID, because Team accounts can share provider-side identifiers across multiple humans.
 
@@ -269,9 +271,10 @@ Additional operational constraints:
 
 The product now runs a server-side 15-minute probe loop.
 
-- the cloud auth pool stores encrypted auth snapshots plus the latest cloud-owned quota for each `source + account_id`
+- the cloud auth pool stores encrypted auth snapshots plus the latest effective quota for each `source + account_id`
+- the cloud auth pool stores encrypted auth snapshots plus the latest effective quota for each `source + account_id`
 - the dashboard probe time advances when the GitHub Actions worker refreshes the auth pool
-- dashboard freshness no longer depends on a client re-uploading quota metadata
+- dashboard freshness can be driven by either a fresh local client quota snapshot or the GitHub Actions worker
 
 ## Rotation Logic
 

@@ -62,6 +62,16 @@ def quota_payload_has_window(payload: dict) -> bool:
     return False
 
 
+def quota_payload_has_complete_windows(payload: dict) -> bool:
+    if not payload:
+        return False
+    for window_key in ("5h", "1week"):
+        window = (payload.get("windows") or {}).get(window_key) or {}
+        if window.get("remaining_percent") is None or not window.get("reset_at"):
+            return False
+    return True
+
+
 def quota_payload_should_report(payload: dict | None) -> bool:
     if not payload or not payload.get("account_id"):
         return False
@@ -74,8 +84,11 @@ def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict |
     if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
         return {"ok": True, "reported": False, "reason": "missing_auth_pool_config"}
     if source == "codex":
-        return {"ok": True, "reported": False, "reason": "cloud_worker_owned_source"}
-    if not quota_payload_should_report(payload):
+        if not payload or not payload.get("account_id"):
+            return {"ok": True, "reported": False, "reason": "quota_unavailable"}
+        if not (is_hard_invalidated(payload) or (payload.get("status") == "ok" and quota_payload_has_complete_windows(payload))):
+            return {"ok": True, "reported": False, "reason": "quota_unavailable"}
+    elif not quota_payload_should_report(payload):
         return {"ok": True, "reported": False, "reason": "quota_unavailable"}
     result = post_auth_pool_quota(
         config["auth_pool_url"],

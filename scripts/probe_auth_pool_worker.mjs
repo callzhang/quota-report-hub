@@ -60,6 +60,7 @@ function probeClaudeAuthJson(authJsonText) {
 function failureReport(entry, error) {
   return {
     source: entry.source,
+    report_origin: "worker",
     hostname: "github-actions",
     reporter_name: "actions@github-actions",
     reported_at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
@@ -144,6 +145,10 @@ export async function processAuthPoolEntry(
         : entry.source === "claude"
           ? probeClaudeAuthJsonImpl(authJsonText)
           : await probeAuthJsonImpl(entry.source, authJsonText);
+    report = {
+      ...report,
+      report_origin: "worker",
+    };
   } catch (error) {
     report = failureReport(entry, error);
   }

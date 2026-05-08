@@ -61,6 +61,20 @@ test("sanitizeReport preserves claude usage summary payloads", () => {
   assert.equal(sanitized.usage_summary.stats.total_sessions, 31);
 });
 
+test("sanitizeReport normalizes explicit report origin", () => {
+  const sanitized = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    report_origin: "CLIENT",
+    windows: {
+      "5h": { remaining_percent: 42, reset_at: "2026-04-22T15:00:00Z" },
+      "1week": { remaining_percent: 80, reset_at: "2026-04-28T15:00:00Z" },
+    },
+  });
+
+  assert.equal(sanitized.report_origin, "client");
+});
+
 test("statusPayload counts reports and sources", () => {
   const payload = statusPayload([
     { source: "codex", reported_at: "2026-04-19T20:00:00Z" },
@@ -228,6 +242,43 @@ test("mergeLatestReport preserves old windows as stale on hard auth invalidation
   assert.equal(merged.windows["1week"].remaining_percent, 60);
   assert.equal(merged.error, "auth invalidated (token_invalidated)");
   assert.equal(merged.status, "error");
+});
+
+test("mergeLatestReport keeps good client codex quota when a newer worker soft-fails", () => {
+  const previous = sanitizeReport({
+    source: "codex",
+    report_origin: "client",
+    hostname: "gpu4",
+    reporter_name: "derek@gpu4",
+    reported_at: "2026-04-21T04:10:00Z",
+    account_id: "acct-1",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 20, remaining_percent: 80, reset_at: "2026-04-21T09:00:00Z" },
+      "1week": { used_percent: 35, remaining_percent: 65, reset_at: "2026-04-27T09:00:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    report_origin: "worker",
+    hostname: "github-actions",
+    reporter_name: "actions@github-actions",
+    reported_at: "2026-04-21T04:15:00Z",
+    account_id: "acct-1",
+    status: "error",
+    error: "token_count event was present but missing quota details",
+    windows: { "5h": null, "1week": null },
+    usage_summary: { probe_source: "github_actions_worker" },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.report_origin, "client");
+  assert.equal(merged.reported_at, "2026-04-21T04:10:00Z");
+  assert.equal(merged.status, "ok");
+  assert.equal(merged.error, null);
+  assert.equal(merged.windows["5h"].remaining_percent, 80);
+  assert.equal(merged.windows["1week"].remaining_percent, 65);
 });
 
 test("statusPayload keeps last invalidated quota window before reset and marks it stale", () => {

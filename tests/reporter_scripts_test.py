@@ -810,7 +810,33 @@ Reading additional input from stdin...
             )
         )
 
-    def test_report_current_quota_to_auth_pool_skips_codex_because_cloud_worker_owns_it(self):
+    def test_report_current_quota_to_auth_pool_posts_complete_codex_windows(self):
+        payload = {
+            "source": "codex",
+            "status": "ok",
+            "account_id": "acct-1",
+            "windows": {
+                "5h": {"remaining_percent": 42, "reset_at": "2026-04-22T15:00:00Z"},
+                "1week": {"remaining_percent": 80, "reset_at": "2026-04-28T15:00:00Z"},
+            },
+        }
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+
+        with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post_auth_pool_quota:
+            result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
+
+        self.assertTrue(result["reported"])
+        post_auth_pool_quota.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            source="codex",
+            quota_payload=payload,
+        )
+
+    def test_report_current_quota_to_auth_pool_skips_incomplete_codex_windows(self):
         payload = {
             "source": "codex",
             "status": "ok",
@@ -826,7 +852,7 @@ Reading additional input from stdin...
             result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
 
         self.assertFalse(result["reported"])
-        self.assertEqual(result["reason"], "cloud_worker_owned_source")
+        self.assertEqual(result["reason"], "quota_unavailable")
         post_auth_pool_quota.assert_not_called()
 
     def test_report_current_quota_to_auth_pool_skips_unavailable_quota(self):
