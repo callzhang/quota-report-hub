@@ -116,6 +116,7 @@ test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best 
       five_h_remaining_percent: 20,
       one_week_remaining_percent: 40,
     },
+    now: "2026-04-22T08:30:00Z",
   });
 
   assert.equal(candidate.entry.account_id, "best");
@@ -145,6 +146,7 @@ test("pickBestAuthPoolCandidate returns null when no candidate beats current quo
       five_h_remaining_percent: 20,
       one_week_remaining_percent: 50,
     },
+    now: "2026-04-22T08:30:00Z",
   });
 
   assert.equal(candidate, null);
@@ -173,6 +175,7 @@ test("pickBestAuthPoolCandidate allows lower weekly quota as long as 5H is bette
       five_h_remaining_percent: 20,
       one_week_remaining_percent: 50,
     },
+    now: "2026-04-22T08:30:00Z",
   });
 
   assert.equal(candidate.entry.account_id, "better-5h");
@@ -201,6 +204,7 @@ test("pickBestAuthPoolCandidate does not mix codex and claude sources", () => {
       five_h_remaining_percent: 10,
       one_week_remaining_percent: 10,
     },
+    now: "2026-04-22T08:30:00Z",
   });
   const claudeCandidate = pickBestAuthPoolCandidate(reports, pool, {
     source: "claude",
@@ -209,10 +213,80 @@ test("pickBestAuthPoolCandidate does not mix codex and claude sources", () => {
       five_h_remaining_percent: 10,
       one_week_remaining_percent: 10,
     },
+    now: "2026-04-22T08:30:00Z",
   });
 
   assert.equal(codexCandidate, null);
   assert.equal(claudeCandidate.entry.account_id, "claude-a");
+});
+
+test("pickBestAuthPoolCandidate skips stale quota reports", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "stale-best",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 99 },
+        "1week": { remaining_percent: 90 },
+      },
+      reported_at: "2026-04-21T18:00:00Z",
+    },
+    {
+      source: "codex",
+      account_id: "fresh-good",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 60 },
+        "1week": { remaining_percent: 50 },
+      },
+      reported_at: "2026-04-22T07:45:00Z",
+    },
+  ];
+  const pool = [{ account_id: "stale-best" }, { account_id: "fresh-good" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 20,
+      one_week_remaining_percent: 20,
+    },
+    now: "2026-04-22T08:30:00Z",
+  });
+
+  assert.equal(candidate.entry.account_id, "fresh-good");
+});
+
+test("pickBestAuthPoolCandidate returns null when all better quota reports are stale", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "stale-best",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 99 },
+        "1week": { remaining_percent: 90 },
+      },
+      reported_at: "2026-04-21T18:00:00Z",
+    },
+  ];
+  const pool = [{ account_id: "stale-best" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 20,
+      one_week_remaining_percent: 20,
+    },
+    now: "2026-04-22T08:30:00Z",
+  });
+
+  assert.equal(candidate, null);
 });
 
 test("shouldReplaceAuthPoolEntry skips duplicate account uploads when incoming refresh is not newer", () => {
