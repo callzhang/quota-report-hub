@@ -7,6 +7,7 @@ This directory contains the reusable `quota-reporter` skill published from this 
 The skill installs a local 15-minute quota guard that:
 
 - tracks the current local Codex and Claude auth state
+- self-updates the installed skill from GitHub before each guard cycle
 - uploads only changed auth snapshots to the shared cloud auth pool
 - checks whether the current local source is low on quota
 - can push stable local Codex and Claude quota snapshots to the hub when available
@@ -29,6 +30,7 @@ The guard is source-aware:
   - configures Claude statusline capture
 - `scripts/quota_guard.py`
   - runs one full local guard cycle
+  - checks GitHub `main` and updates the installed skill before probing
   - uploads changed auths
   - probes current local quota
   - fetches and installs a better auth if the current source is below threshold
@@ -59,6 +61,8 @@ Older report-oriented scripts remain under `archive/` only for reference.
 3. Let the scheduled guard run every 15 minutes
 4. Optionally run `quota_guard.py` manually after a login change
 5. Optionally run `trigger_remote_probe.py` to force one cloud probe cycle
+
+Use `quota_guard.py --skip-self-update` only when debugging a local edit and you do not want the script to replace itself from GitHub first.
 
 ## Help Output
 

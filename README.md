@@ -70,6 +70,7 @@ The intended end-to-end flow inside Codex is:
    into `~/.agents/auth/quota-reporter.json`
 9. Codex installs the 15-minute scheduler.
 10. Every 15 minutes the guard:
+   - checks GitHub for the latest `quota-reporter` skill code and updates the local installed skill when `main` has changed
    - reads current local auth state for each supported source
    - updates local `~/.agents/auth/known_auth.json`
    - uploads current auth to the auth pool only when the current `source`, `account_id`, `auth_last_refresh`, and digest represent a new version
@@ -81,6 +82,7 @@ The intended end-to-end flow inside Codex is:
 Important runtime notes:
 
 - each run reads the current local auth for each supported source
+- each run self-updates the installed skill from `https://github.com/callzhang/quota-report-hub` before probing, unless `--skip-self-update` is passed for debugging
 - each machine stores only one local state file: `~/.agents/auth/known_auth.json`
 - the local guard probes the current local Codex auth and Claude auth
 - if Codex has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Codex auth

@@ -7,6 +7,9 @@ import json
 import platform
 import shutil
 import subprocess
+import tarfile
+import tempfile
+import urllib.request
 from pathlib import Path
 
 from quota_reporters import (
@@ -25,6 +28,113 @@ from quota_reporters import (
     sync_current_codex_auth_pool,
     write_known_auth_state,
 )
+
+DEFAULT_SELF_UPDATE_REPO = "callzhang/quota-report-hub"
+DEFAULT_SELF_UPDATE_REF = "main"
+SELF_UPDATE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-self-update.json"
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+
+
+def read_self_update_state(state_path: Path = SELF_UPDATE_STATE_PATH) -> dict:
+    if not state_path.exists():
+        return {}
+    try:
+        return json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def write_self_update_state(state: dict, state_path: Path = SELF_UPDATE_STATE_PATH) -> dict:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    state_path.chmod(0o600)
+    return state
+
+
+def github_latest_sha(repo: str = DEFAULT_SELF_UPDATE_REPO, ref: str = DEFAULT_SELF_UPDATE_REF, timeout: int = 20) -> str:
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/commits/{ref}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "quota-reporter-self-update",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    sha = payload.get("sha")
+    if not sha:
+        raise RuntimeError(f"GitHub response did not include a commit sha for {repo}@{ref}")
+    return str(sha)
+
+
+def download_github_tarball(repo: str, sha: str, destination: Path, timeout: int = 60) -> Path:
+    archive_path = destination / "quota-report-hub.tar.gz"
+    request = urllib.request.Request(
+        f"https://codeload.github.com/{repo}/tar.gz/{sha}",
+        headers={"User-Agent": "quota-reporter-self-update"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        archive_path.write_bytes(response.read())
+    return archive_path
+
+
+def unpack_skill_from_tarball(archive_path: Path, destination: Path) -> Path:
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive.getmembers():
+            member_path = (destination / member.name).resolve()
+            if destination.resolve() not in [member_path, *member_path.parents]:
+                raise RuntimeError(f"Unsafe path in downloaded archive: {member.name}")
+        archive.extractall(destination)
+    candidates = sorted(destination.glob("*/skills/quota-reporter"))
+    if not candidates:
+        raise RuntimeError("Downloaded repository did not contain skills/quota-reporter")
+    return candidates[0]
+
+
+def copy_skill_tree(source: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    for item in source.iterdir():
+        target = destination / item.name
+        if item.is_dir():
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(item, target)
+        else:
+            shutil.copy2(item, target)
+
+
+def self_update_skill(
+    *,
+    repo: str = DEFAULT_SELF_UPDATE_REPO,
+    ref: str = DEFAULT_SELF_UPDATE_REF,
+    skill_root: Path = SKILL_ROOT,
+    state_path: Path = SELF_UPDATE_STATE_PATH,
+) -> dict:
+    try:
+        latest_sha = github_latest_sha(repo=repo, ref=ref)
+        state = read_self_update_state(state_path)
+        current_sha = state.get("last_applied_sha")
+        if current_sha == latest_sha:
+            return {"ok": True, "updated": False, "reason": "already_current", "sha": latest_sha}
+
+        with tempfile.TemporaryDirectory(prefix="quota-reporter-update-") as temp_dir:
+            temp_path = Path(temp_dir)
+            archive_path = download_github_tarball(repo, latest_sha, temp_path)
+            downloaded_skill = unpack_skill_from_tarball(archive_path, temp_path)
+            copy_skill_tree(downloaded_skill, skill_root)
+
+        write_self_update_state(
+            {
+                "repo": repo,
+                "ref": ref,
+                "last_applied_sha": latest_sha,
+                "skill_root": str(skill_root),
+            },
+            state_path,
+        )
+        return {"ok": True, "updated": True, "from_sha": current_sha, "to_sha": latest_sha}
+    except Exception as error:
+        return {"ok": False, "updated": False, "error": str(error)}
 
 
 def remaining_percent(payload: dict, window_key: str) -> float:
@@ -358,6 +468,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not show a desktop notification after a successful auth replacement.",
     )
+    parser.add_argument(
+        "--skip-self-update",
+        action="store_true",
+        help="Skip the startup check that updates this installed skill from GitHub before running the guard.",
+    )
     return parser
 
 
@@ -429,7 +544,13 @@ def run_guard(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     args = build_parser().parse_args()
+    self_update = (
+        {"ok": True, "updated": False, "reason": "skipped"}
+        if args.skip_self_update
+        else self_update_skill()
+    )
     result = run_guard(args)
+    result["self_update"] = self_update
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

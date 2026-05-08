@@ -10,12 +10,13 @@ This skill installs and runs the local quota guard for Codex and Claude.
 ## What it does
 
 1. Tracks the current local auth state per source in `~/.agents/auth/known_auth.json`
-2. Uploads the current auth for each source to the shared encrypted auth pool only when the auth changed
-3. Probes the current local Codex quota and the current local Claude quota to decide whether the current machine should rotate
-4. Publishes stable local quota snapshots back to the hub when available, with stricter completeness checks for Codex
-5. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
-6. Installs a reboot-safe scheduler that runs every 15 minutes
-7. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
+2. Self-updates the installed skill from GitHub before each guard cycle
+3. Uploads the current auth for each source to the shared encrypted auth pool only when the auth changed
+4. Probes the current local Codex quota and the current local Claude quota to decide whether the current machine should rotate
+5. Publishes stable local quota snapshots back to the hub when available, with stricter completeness checks for Codex
+6. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
+7. Installs a reboot-safe scheduler that runs every 15 minutes
+8. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
 
 ## Files
 
@@ -98,6 +99,7 @@ python3 scripts/trigger_remote_probe.py --no-watch
 
 The guard then:
 
+- checks GitHub `main` for a newer `quota-reporter` skill and updates the installed skill unless `--skip-self-update` is passed
 - updates `~/.agents/auth/known_auth.json`
 - uploads the current auth to the auth pool only when needed
 - probes the current live Codex auth and Claude auth

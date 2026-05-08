@@ -1144,6 +1144,59 @@ Reading additional input from stdin...
         notify.assert_not_called()
         self.assertEqual(result["notifications"], {})
 
+    def test_quota_guard_parser_supports_skip_self_update(self):
+        parser = quota_guard.build_parser()
+        args = parser.parse_args(["--skip-self-update"])
+
+        self.assertTrue(args.skip_self_update)
+
+    def test_self_update_skill_skips_when_already_current(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "state.json"
+            quota_guard.write_self_update_state(
+                {"last_applied_sha": "sha-1"},
+                state_path=state_path,
+            )
+
+            with mock.patch.object(quota_guard, "github_latest_sha", return_value="sha-1"):
+                result = quota_guard.self_update_skill(
+                    skill_root=Path(temp_dir) / "quota-reporter",
+                    state_path=state_path,
+                )
+
+        self.assertFalse(result["updated"])
+        self.assertEqual(result["reason"], "already_current")
+
+    def test_self_update_skill_copies_downloaded_skill_and_records_sha(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            state_path = base / "state.json"
+            skill_root = base / "installed" / "quota-reporter"
+            source_skill = base / "downloaded" / "skills" / "quota-reporter"
+            (source_skill / "scripts").mkdir(parents=True)
+            (source_skill / "SKILL.md").write_text("new skill\n", encoding="utf-8")
+            (source_skill / "scripts" / "quota_guard.py").write_text("new guard\n", encoding="utf-8")
+            skill_root.mkdir(parents=True)
+            (skill_root / "SKILL.md").write_text("old skill\n", encoding="utf-8")
+
+            with mock.patch.object(quota_guard, "github_latest_sha", return_value="sha-2"):
+                with mock.patch.object(quota_guard, "download_github_tarball", return_value=base / "archive.tar.gz"):
+                    with mock.patch.object(quota_guard, "unpack_skill_from_tarball", return_value=source_skill):
+                        result = quota_guard.self_update_skill(
+                            skill_root=skill_root,
+                            state_path=state_path,
+                        )
+
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            skill_text = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+            guard_text = (skill_root / "scripts" / "quota_guard.py").read_text(encoding="utf-8")
+
+        self.assertTrue(result["updated"])
+        self.assertEqual(result["to_sha"], "sha-2")
+        self.assertEqual(skill_text, "new skill\n")
+        self.assertEqual(guard_text, "new guard\n")
+        self.assertEqual(state["last_applied_sha"], "sha-2")
+
     def test_maybe_replace_codex_auth_stays_put_when_codex_is_above_both_thresholds(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
