@@ -429,6 +429,7 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
         account_id: "acct-1",
         hostname: "quota-host",
         reporter_name: "quota-reporter@quota-host",
+        report_origin: "client",
         status: "ok",
         reported_at: "2026-04-22T10:30:00Z",
         windows: {
@@ -453,6 +454,7 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   assert.equal(payload.items[0].uploader_email, "derek@stardust.ai");
   assert.equal(payload.items[0].hostname, "quota-host");
   assert.equal(payload.items[0].reporter_name, "quota-reporter@quota-host");
+  assert.equal(payload.items[0].report_origin, "client");
   assert.equal(payload.items[0].windows["5h"].remaining_percent, 80);
   assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 80);
 });
