@@ -74,6 +74,7 @@ The intended end-to-end flow inside Codex is:
    - updates local `~/.agents/auth/known_auth.json`
    - uploads current auth to the auth pool only when the current `source`, `account_id`, `auth_last_refresh`, and digest represent a new version
    - checks the current local Codex quota and Claude quota
+   - reports only stable local Claude quota snapshots back to the hub when available; local Codex quota is never authoritative for the hub
    - if a local source is below threshold, sends `source + current account + current quota` to `/api/auth/fetch-best`
    - installs a better auth only when the server returns one for that same source
 
@@ -92,6 +93,7 @@ Important runtime notes:
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
 - local upload is skipped only when `known_auth.json` records the same uploaded `account_id`, the same uploaded `auth_last_refresh`, and the same uploaded digest
 - if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy
+- Codex auth-pool identity is normalized to the lowercased account email when the email is available, so Team users who share a provider-side account UUID do not overwrite each other in the pool
 - the guard only replaces local `~/.codex/auth.json` when the fetched auth is different from the currently installed auth
 - replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions. New auth usually takes effect in the next new session.
 - if the cloud has no better auth than the current one, the guard does nothing and keeps the current auth installed.
@@ -106,8 +108,8 @@ The dashboard now reflects the cloud auth pool, not arbitrary client report rows
 - quota metadata is shown as the latest cloud worker probe associated with that cloud auth entry
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
-- Codex rows are refreshed by the cloud worker
-- Claude rows are refreshed by the cloud worker only for direct Claude subscription auths
+- Codex rows are refreshed only by the cloud worker; client Codex quota reports are ignored
+- Claude rows can be refreshed by the cloud worker for direct Claude subscriptions, or by stable local client reports when Claude is running in an environment that the worker cannot replay reliably
 
 Auth pool support:
 
@@ -115,6 +117,7 @@ Auth pool support:
 - Employees request a personal auth-pool token by company email through `/api/auth/issue-token`.
 - Each email can have only one active token at a time; a newly issued token revokes all older tokens for that email.
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
+- Codex uploads are keyed by normalized email when available, not by the raw provider account UUID, so different Team users do not collide in the pool.
 - GitHub Actions refreshes the cloud auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
 - During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.
 - Every probe result is appended to `auth_pool_quota_events` before the latest row is updated or an unusable auth is removed, so invalidation windows and audit views can be reconstructed from Turso instead of GitHub Actions logs.
@@ -218,6 +221,8 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 - updates local `known_auth.json`
 - uploads the current local auth for each source to the cloud auth pool only when the auth changed
 - probes local Codex and Claude quota
+- skips pushing Codex quota back to the hub because Codex dashboard state is cloud-worker-owned
+- may push a stable local Claude quota snapshot to the hub when available
 - when a local source is low, sends `source + current account + current quota` to `/api/auth/fetch-best`
 - installs a replacement only when the server returns a strictly better auth for that same source
 

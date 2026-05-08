@@ -248,7 +248,13 @@ After setup, the local machine does three jobs:
 1. track the current auth for each source in `~/.agents/auth/known_auth.json`
 2. upload the current auth to the shared auth pool only when the last uploaded `source`, `account_id`, `auth_last_refresh`, and `digest` do not already match
 3. probe local quota and fetch and install a better auth from the same source when local quota is low
-4. send Claude's latest stable local quota to the hub every 15 minutes so the cloud view stays fresh even though Claude does not use server-side probing
+4. send Claude's latest stable local quota to the hub every 15 minutes only when a usable local Claude snapshot exists
+
+Additional source-specific rules:
+
+- Codex local quota probes are used only for local rotation decisions. The hub ignores client-sent Codex quota because Codex dashboard state is cloud-worker-owned.
+- Claude can still supplement the hub with stable local quota snapshots because some Claude environments cannot be replayed reliably by the worker.
+- Codex auth identity is normalized to the lowercased account email when one is available, instead of relying on the raw provider account UUID, because Team accounts can share provider-side identifiers across multiple humans.
 
 Additional operational constraints:
 

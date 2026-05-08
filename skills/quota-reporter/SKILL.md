@@ -12,9 +12,10 @@ This skill installs and runs the local quota guard for Codex and Claude.
 1. Tracks the current local auth state per source in `~/.agents/auth/known_auth.json`
 2. Uploads the current auth for each source to the shared encrypted auth pool only when the auth changed
 3. Probes the current local Codex quota and the current local Claude quota to decide whether the current machine should rotate
-4. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
-5. Installs a reboot-safe scheduler that runs every 15 minutes
-6. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
+4. Keeps local Codex quota as a rotation-only signal instead of pushing it back to the hub, while Claude can still publish a stable local quota snapshot when available
+5. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
+6. Installs a reboot-safe scheduler that runs every 15 minutes
+7. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
 
 ## Files
 
@@ -100,6 +101,8 @@ The guard then:
 - updates `~/.agents/auth/known_auth.json`
 - uploads the current auth to the auth pool only when needed
 - probes the current live Codex auth and Claude auth
+- does not push Codex quota back to the hub; Codex dashboard state is cloud-worker-owned
+- may push a stable local Claude quota snapshot back to the hub when Claude is available locally
 - if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
 - only replaces local source credentials when the fetched auth is different from what is already installed
@@ -107,6 +110,7 @@ The guard then:
 - does nothing when the cloud cannot provide a better auth than the current one
 - relies on the cloud auth pool to deduplicate repeated uploads for the same `account_id`, even when raw files differ
 - if the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload
+- for Codex, the cloud `account_id` is normalized to the lowercased email when available so Team users do not collide on a shared provider-side UUID
 
 Operational notes:
 
@@ -114,8 +118,8 @@ Operational notes:
 - the next new Codex session is the one that should pick up the new auth
 - the local config file contains a personal token and should stay private
 - the cloud dashboard shows the latest cloud-worker probe for each auth entry
-- Codex rows are refreshed by the cloud worker
-- Claude rows are refreshed by the cloud worker only when the local machine is using a direct Claude subscription. If `~/.claude/settings.json` injects `ANTHROPIC_*` provider credentials, the skill skips Claude cloud uploads for that machine.
+- Codex rows are refreshed only by the cloud worker; client Codex quota reports are ignored
+- Claude rows may come from the cloud worker or from a stable local client snapshot, depending on whether the current Claude environment can be replayed reliably on the worker. If `~/.claude/settings.json` injects `ANTHROPIC_*` provider credentials, the skill skips Claude cloud uploads for that machine.
 
 ## Output expectations
 

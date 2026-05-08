@@ -88,15 +88,25 @@ def is_excluded_free_plan(plan_name: str | None) -> bool:
     return (plan_name or "").strip().lower() == "free"
 
 
+def canonical_codex_account_id(raw_account_id: str | None, email: str | None) -> str:
+    normalized_email = (email or "").strip().lower()
+    if normalized_email:
+        return normalized_email
+    return str(raw_account_id or "codex-email-missing")
+
+
 def auth_metadata(path: Path) -> dict:
     payload = read_json(path)
     identity = decode_jwt_payload(payload["tokens"]["id_token"])
     auth_claim = identity.get("https://api.openai.com/auth", {})
     plan_type = auth_claim.get("chatgpt_plan_type")
     last_refresh = payload.get("last_refresh")
+    provider_account_id = payload["tokens"]["account_id"]
+    email = identity.get("email")
     return {
-        "account_id": payload["tokens"]["account_id"],
-        "email": identity.get("email"),
+        "account_id": canonical_codex_account_id(provider_account_id, email),
+        "provider_account_id": provider_account_id,
+        "email": email,
         "name": identity.get("name"),
         "plan_name": human_plan_name(plan_type),
         "auth_last_refresh": last_refresh,
@@ -291,14 +301,10 @@ def codex_usage_limit_reached(rate_limits: dict | None, stderr: str, stdout: str
     combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part).lower()
     if "you've hit your usage limit" in combined:
         return True
-    credits = (rate_limits or {}).get("credits") or {}
-    if credits.get("has_credits") is False:
+    if "try again at " in combined and "usage limit" in combined:
         return True
-    balance = credits.get("balance")
-    try:
-        return balance is not None and float(balance) <= 0.0
-    except (TypeError, ValueError):
-        return False
+    reached_type = (rate_limits or {}).get("rate_limit_reached_type")
+    return reached_type not in (None, "")
 
 
 def codex_usage_limit_reset_at(stderr: str, stdout: str, now: datetime | None = None) -> tuple[str | None, int | None]:
@@ -386,6 +392,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
         "reporter_name": reporter_name(),
         "reported_at": checked_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "account_id": metadata["account_id"],
+        "provider_account_id": metadata["provider_account_id"],
         "email": metadata["email"],
         "name": metadata["name"],
         "plan_name": metadata["plan_name"],
@@ -1104,6 +1111,15 @@ def sync_current_auth_pool_entry(
         source=source,
         auth_json_text=auth_json_text,
     )
+    previous_account_id = known.get("last_uploaded_account_id")
+    cleanup_result = None
+    if previous_account_id and previous_account_id != metadata["account_id"]:
+        cleanup_result = delete_auth_pool_entry(
+            auth_pool_url,
+            auth_pool_user_token,
+            source=source,
+            account_id=previous_account_id,
+        )
     state = write_known_auth_state(
         source=source,
         metadata=metadata,
@@ -1118,6 +1134,7 @@ def sync_current_auth_pool_entry(
         "uploaded": True,
         "reason": "quota_refreshed_with_same_auth" if already_uploaded else "uploaded_to_auth_pool",
         "entry": uploaded,
+        "cleanup_result": cleanup_result,
         "known_auth": state,
     }
 

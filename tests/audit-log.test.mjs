@@ -324,18 +324,18 @@ test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", a
       hostname: "gpu4",
       reporter_name: "worker",
       reported_at: "2026-05-06T01:00:00Z",
-      account_id: "acct-delete",
+      account_id: "delete@example.com",
       status: "error",
       error: "auth invalidated (token_invalidated)",
       windows: { "5h": null, "1week": null },
     });
 
-    const result = await mod.deleteAuthPoolEntry({ source: "codex", accountId: "acct-delete" });
+    const result = await mod.deleteAuthPoolEntry({ source: "codex", accountId: "delete@example.com" });
     assert.equal(result.deleted, true);
-    assert.equal(await mod.authPoolEntry("codex", "acct-delete"), null);
-    assert.equal((await mod.authPoolQuotaLatest()).filter((row) => row.account_id === "acct-delete").length, 0);
-    assert.equal((await mod.authPoolInvalidatedNotifications()).filter((row) => row.account_id === "acct-delete").length, 0);
-    assert.equal((await mod.authPoolQuotaEvents({ source: "codex", accountId: "acct-delete" })).length, 1);
+    assert.equal(await mod.authPoolEntry("codex", "delete@example.com"), null);
+    assert.equal((await mod.authPoolQuotaLatest()).filter((row) => row.account_id === "delete@example.com").length, 0);
+    assert.equal((await mod.authPoolInvalidatedNotifications()).filter((row) => row.account_id === "delete@example.com").length, 0);
+    assert.equal((await mod.authPoolQuotaEvents({ source: "codex", accountId: "delete@example.com" })).length, 1);
   } finally {
     cleanup();
   }

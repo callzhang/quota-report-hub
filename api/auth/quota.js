@@ -44,6 +44,12 @@ export default async function handler(req, res) {
   }
 
   const source = String(body.source);
+  if (source === "codex") {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: true, source, ignored: true, reason: "cloud_worker_owned_source" }));
+    return;
+  }
   const payload = {
     ...body.quota_payload,
     source,

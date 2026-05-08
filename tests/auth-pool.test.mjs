@@ -38,7 +38,7 @@ test("deriveAuthPoolEntry extracts codex auth metadata", () => {
     { reporter_name: "derek@gpu4", hostname: "gpu4" }
   );
 
-  assert.equal(entry.account_id, "acct-1");
+  assert.equal(entry.account_id, "a@example.com");
   assert.equal(entry.email, "a@example.com");
   assert.equal(entry.name, "A");
   assert.equal(entry.plan_name, "Pro Lite");

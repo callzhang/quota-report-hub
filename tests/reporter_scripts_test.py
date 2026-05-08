@@ -339,6 +339,62 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNotNone(report["windows"]["5h"]["reset_at"])
         self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
 
+    def test_probe_codex_does_not_treat_creditless_team_account_as_zero_remaining_without_usage_limit_signal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "team@example.com",
+                                    "name": "Team User",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "team"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr="Visit https://chatgpt.com/codex/settings/usage for up-to-date information.",
+            )
+            with mock.patch("quota_reporters.subprocess.run", return_value=completed):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": None,
+                            "rate_limits": {
+                                "plan_type": "team",
+                                "primary": None,
+                                "secondary": None,
+                                "credits": {
+                                    "has_credits": False,
+                                    "unlimited": False,
+                                    "balance": None,
+                                },
+                                "rate_limit_reached_type": None,
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(report["error"], "token_count event was present but missing quota details")
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertIsNone(report["windows"]["1week"])
+
     def test_codex_usage_limit_reset_at_parses_time_only_cli_message(self):
         reset_at, reset_in_seconds = codex_usage_limit_reset_at(
             "ERROR: You've hit your usage limit, or try again at 4:26 PM.",
@@ -682,7 +738,7 @@ Reading additional input from stdin...
                 state_source="uploaded_to_auth_pool",
             )
 
-            self.assertEqual(state["account_id"], "acct-1")
+            self.assertEqual(state["account_id"], "a@example.com")
             self.assertEqual(state["last_uploaded_digest"], "digest-1")
             self.assertIsNone(state["last_uploaded_account_id"])
             self.assertIsNone(state["last_uploaded_auth_last_refresh"])
@@ -754,7 +810,7 @@ Reading additional input from stdin...
             )
         )
 
-    def test_report_current_quota_to_auth_pool_posts_valid_local_probe(self):
+    def test_report_current_quota_to_auth_pool_skips_codex_because_cloud_worker_owns_it(self):
         payload = {
             "source": "codex",
             "status": "ok",
@@ -769,13 +825,9 @@ Reading additional input from stdin...
         with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post_auth_pool_quota:
             result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
 
-        self.assertTrue(result["reported"])
-        post_auth_pool_quota.assert_called_once_with(
-            "https://quota-report-hub.vercel.app",
-            "qrp_token",
-            source="codex",
-            quota_payload=payload,
-        )
+        self.assertFalse(result["reported"])
+        self.assertEqual(result["reason"], "cloud_worker_owned_source")
+        post_auth_pool_quota.assert_not_called()
 
     def test_report_current_quota_to_auth_pool_skips_unavailable_quota(self):
         config = {
@@ -1111,7 +1163,7 @@ Reading additional input from stdin...
             known_auth_path.write_text(
                 json.dumps(
                     {"sources": {"codex": {
-                        "last_uploaded_account_id": "acct-1",
+                        "last_uploaded_account_id": "a@example.com",
                         "last_uploaded_auth_last_refresh": "2026-04-19T21:00:00Z",
                         "last_uploaded_digest": digest,
                     }}}
@@ -1153,7 +1205,7 @@ Reading additional input from stdin...
             known_auth_path.write_text(
                 json.dumps(
                     {"sources": {"codex": {
-                        "last_uploaded_account_id": "acct-1",
+                        "last_uploaded_account_id": "a@example.com",
                         "last_uploaded_auth_last_refresh": "2026-04-19T21:00:00Z",
                         "last_uploaded_digest": digest,
                     }}}
@@ -1162,7 +1214,7 @@ Reading additional input from stdin...
                 encoding="utf-8",
             )
 
-            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": "acct-1"}}) as post_auth_pool_entry:
+            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": "a@example.com"}}) as post_auth_pool_entry:
                 result = quota_guard.sync_current_codex_auth_pool(
                     "https://quota-report-hub.vercel.app",
                     "qrp_token",
@@ -1206,7 +1258,7 @@ Reading additional input from stdin...
             "https://quota-report-hub.vercel.app",
             "qrp_token",
             source="codex",
-            account_id="acct-free",
+            account_id="free@example.com",
         )
         self.assertFalse(result["uploaded"])
         self.assertTrue(result["deleted"])
@@ -1215,6 +1267,48 @@ Reading additional input from stdin...
         self.assertEqual(result["known_auth"]["state_source"], "free_plan_excluded")
 
     def test_sync_current_codex_auth_pool_uploads_when_same_account_refreshes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-19T22:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            known_auth_path.write_text(
+                json.dumps(
+                    {"sources": {"codex": {
+                        "last_uploaded_account_id": "a@example.com",
+                        "last_uploaded_auth_last_refresh": "2026-04-19T21:00:00Z",
+                        "last_uploaded_digest": "old-digest",
+                    }}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": "a@example.com"}}) as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                )
+
+        post_auth_pool_entry.assert_called_once()
+        self.assertTrue(result["uploaded"])
+        self.assertEqual(result["known_auth"]["last_uploaded_account_id"], "a@example.com")
+        self.assertEqual(result["known_auth"]["last_uploaded_auth_last_refresh"], "2026-04-19T22:00:00Z")
+
+    def test_sync_current_codex_auth_pool_deletes_previous_raw_account_id_after_email_key_migration(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             auth_path = base / "auth.json"
@@ -1243,18 +1337,22 @@ Reading additional input from stdin...
                 encoding="utf-8",
             )
 
-            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": "acct-1"}}) as post_auth_pool_entry:
-                result = quota_guard.sync_current_codex_auth_pool(
-                    "https://quota-report-hub.vercel.app",
-                    "qrp_token",
-                    auth_path=auth_path,
-                    known_auth_path=known_auth_path,
-                )
+            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": "a@example.com"}}):
+                with mock.patch("quota_reporters.delete_auth_pool_entry", return_value={"ok": True, "deleted": True}) as delete_auth_pool_entry:
+                    result = quota_guard.sync_current_codex_auth_pool(
+                        "https://quota-report-hub.vercel.app",
+                        "qrp_token",
+                        auth_path=auth_path,
+                        known_auth_path=known_auth_path,
+                    )
 
-        post_auth_pool_entry.assert_called_once()
-        self.assertTrue(result["uploaded"])
-        self.assertEqual(result["known_auth"]["last_uploaded_account_id"], "acct-1")
-        self.assertEqual(result["known_auth"]["last_uploaded_auth_last_refresh"], "2026-04-19T22:00:00Z")
+        delete_auth_pool_entry.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            source="codex",
+            account_id="acct-1",
+        )
+        self.assertEqual(result["cleanup_result"], {"ok": True, "deleted": True})
 
     def test_sync_current_claude_auth_pool_skips_when_same_auth_is_still_current(self):
         with tempfile.TemporaryDirectory() as temp_dir:
