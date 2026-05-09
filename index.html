@@ -173,12 +173,11 @@
       }
 
       th:nth-child(1), td:nth-child(1) { width: 9%; }
-      th:nth-child(2), td:nth-child(2) { width: 16%; }
-      th:nth-child(3), td:nth-child(3) { width: 20%; }
+      th:nth-child(2), td:nth-child(2) { width: 27%; }
+      th:nth-child(3), td:nth-child(3) { width: 14%; }
       th:nth-child(4), td:nth-child(4) { width: 14%; }
-      th:nth-child(5), td:nth-child(5) { width: 14%; }
-      th:nth-child(6), td:nth-child(6) { width: 14%; }
-      th:nth-child(7), td:nth-child(7) { width: 13%; }
+      th:nth-child(5), td:nth-child(5) { width: 20%; }
+      th:nth-child(6), td:nth-child(6) { width: 16%; }
 
       th {
         font-size: 12px;
@@ -347,8 +346,7 @@
             <thead>
               <tr>
                 <th>Source</th>
-                <th>Uploaded By</th>
-                <th>Account</th>
+                <th>Account &amp; Uploader</th>
                 <th>5H</th>
                 <th>1week</th>
                 <th>Cloud Info</th>
@@ -572,6 +570,13 @@
         setAuthenticatedView(payload.viewer_email || "unknown");
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
         const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
+        const fetchLogByAccount = new Map();
+        for (const log of (payload.fetch_log || [])) {
+          const key = `${log.source}:${log.served_account_id}`;
+          if (!fetchLogByAccount.has(key)) {
+            fetchLogByAccount.set(key, log);
+          }
+        }
         summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Cloud auth entries: ${payload.auth_pool_count || 0} · Archived invalidated: ${payload.archived_invalidated_count || 0}`;
         cards.innerHTML = [
           `<article class="card"><div class="meta">Cloud auth entries</div><strong>${payload.auth_pool_count || 0}</strong><div class="meta">One latest encrypted auth per account</div></article>`,
@@ -583,8 +588,20 @@
         rows.innerHTML = items.map((item) => `
           <tr>
             <td>${sourceTag(item.source)}</td>
-            <td><div class="wrap">${item.uploader_email || item.reporter_name || "-"}</div><div class="mono wrap">${item.hostname || ""}</div></td>
-            <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div><div class="mono wrap">${item.account_id || ""}</div></td>
+            <td>
+              <div class="wrap"><strong>${item.email || item.account_id}</strong></div>
+              <div class="meta wrap">${item.plan_name || "-"}</div>
+              <div class="meta wrap">uploaded by ${item.uploader_email || item.reporter_name || "-"}${item.hostname ? ` / ${item.hostname}` : ""}</div>
+              ${(() => {
+                const fl = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
+                if (!fl) return "";
+                const age = Math.max(0, Math.floor((Date.now() - Date.parse(fl.fetched_at || "")) / 1000));
+                const server = fl.requester_email || "";
+                const reason = fl.reason === "served" ? "" : ` (${fl.reason})`;
+                return `<div class="meta wrap">fetched by ${server}${reason} ${formatAge(age)}</div>`;
+              })()}
+              <div class="mono wrap" style="font-size:10px">${item.account_id || ""}</div>
+            </td>
             <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${usageCell(item)}</td>

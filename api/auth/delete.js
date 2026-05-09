@@ -40,6 +40,7 @@ export default async function handler(req, res) {
   const result = await deleteAuthPoolEntry({
     source: body.source,
     accountId: body.account_id,
+    sessionId: body.session_id || null,
   });
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -49,6 +50,7 @@ export default async function handler(req, res) {
       requested_by: authContext.email,
       source: result.source,
       account_id: result.account_id,
+      session_id: result.session_id,
       deleted: result.deleted,
     })
   );

@@ -82,6 +82,7 @@ export default async function handler(req, res) {
       replacement: {
         source: entry.source,
         account_id: entry.account_id,
+        session_id: entry.session_id || "",
         email: entry.email,
         name: entry.name,
         plan_name: entry.plan_name,
