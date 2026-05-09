@@ -600,9 +600,10 @@
             fetchLogByAccount.set(key, log);
           }
         }
-        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Cloud auth entries: ${payload.auth_pool_count || 0} · Archived invalidated: ${payload.archived_invalidated_count || 0}`;
+        const totalActive = (payload.auth_pool_count || 0) + (payload.orphaned_count || 0);
+        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active quota monitors: ${totalActive} · Archived invalidated: ${payload.archived_invalidated_count || 0}`;
         cards.innerHTML = [
-          `<article class="card"><div class="meta">Cloud auth entries</div><strong>${payload.auth_pool_count || 0}</strong><div class="meta">One latest encrypted auth per account</div></article>`,
+          `<article class="card"><div class="meta">Cloud auth entries</div><strong>${payload.auth_pool_count || 0}</strong><div class="meta">Encrypted auths in pool${payload.orphaned_count ? ` + ${payload.orphaned_count} orphaned` : ""}</div></article>`,
           `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Cloud auth pool sources</div></article>`,
           `<article class="card"><div class="meta">Archived invalidated</div><strong>${payload.archived_invalidated_count || 0}</strong><div class="meta">Hidden from active rotation</div></article>`,
           `<article class="card"><div class="meta">Latest upload</div><strong>${items[0]?.email || items[0]?.uploader_email || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.uploaded_at)}</div></article>`
@@ -612,7 +613,7 @@
           <tr>
             <td>${sourceTag(item.source)}</td>
             <td>
-              <div class="wrap"><strong>${item.email || item.account_id}</strong></div>
+              <div class="wrap"><strong>${item.email || item.account_id}</strong>${!item.digest ? ' <span class="meta">(orphaned)</span>' : ''}</div>
               <div class="meta wrap">${item.plan_name || "-"}</div>
               <div class="meta wrap">uploaded by ${item.uploader_email || item.reporter_name || "-"}${item.hostname ? ` / ${item.hostname}` : ""}</div>
             </td>

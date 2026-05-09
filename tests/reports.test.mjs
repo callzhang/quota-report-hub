@@ -448,15 +448,26 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   );
 
   assert.equal(payload.auth_pool_count, 1);
-  assert.equal(payload.report_count, 1);
-  assert.equal(payload.items[0].account_id, "acct-1");
-  assert.equal(payload.items[0].email, "a@example.com");
-  assert.equal(payload.items[0].uploader_email, "derek@stardust.ai");
-  assert.equal(payload.items[0].hostname, "quota-host");
-  assert.equal(payload.items[0].reporter_name, "quota-reporter@quota-host");
-  assert.equal(payload.items[0].report_origin, "client");
-  assert.equal(payload.items[0].windows["5h"].remaining_percent, 80);
-  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 80);
+  assert.equal(payload.orphaned_count, 1);
+  assert.equal(payload.report_count, 2);
+  // First item is the entry-backed report
+  const entryItem = payload.items.find((item) => item.account_id === "acct-1");
+  assert.equal(entryItem.email, "a@example.com");
+  assert.equal(entryItem.uploader_email, "derek@stardust.ai");
+  assert.equal(entryItem.hostname, "quota-host");
+  assert.equal(entryItem.reporter_name, "quota-reporter@quota-host");
+  assert.equal(entryItem.report_origin, "client");
+  assert.equal(entryItem.windows["5h"].remaining_percent, 80);
+  assert.equal(entryItem.display_windows["5h"].remaining_percent, 80);
+  assert.equal(entryItem.digest, "digest-1");
+  // Second item is the orphaned Claude report
+  const orphanedItem = payload.items.find((item) => item.account_id === "claude-x");
+  assert.ok(orphanedItem);
+  assert.equal(orphanedItem.source, "claude");
+  assert.equal(orphanedItem.status, "ok");
+  assert.equal(orphanedItem.digest, null);
+  assert.equal(orphanedItem.uploaded_at, null);
+  assert.equal(orphanedItem.uploader_email, null);
 });
 
 test("authPoolStatusPayload archives hard-invalidated auths older than 48 hours by first invalidation time", () => {
