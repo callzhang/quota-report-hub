@@ -100,6 +100,17 @@ function isAuthFailed401(report) {
   return report?.error === "auth failed (401 unauthorized)";
 }
 
+function isAccountIdMigrated(entry, report) {
+  // Detect when a probe returns a different account_id than the pool entry,
+  // which happens when canonicalCodexAccountId switched UUID→email format.
+  return (
+    entry.source === "codex" &&
+    report?.account_id &&
+    report.account_id !== entry.account_id &&
+    report.account_id === entry.email
+  );
+}
+
 function shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport = null) {
   if (entry.source !== "codex") {
     return false;
@@ -110,7 +121,15 @@ function shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport = null)
   if (isAuthFailed401(report) && isAuthFailed401(previousReport)) {
     return true;
   }
-  return report?.error === "token_count event was present but missing quota details";
+  if (report?.error === "token_count event was present but missing quota details") {
+    return true;
+  }
+  // Old UUID-based entry where probe returns email-based account_id — the
+  // email-based entry (or its upsert) covers this auth now.
+  if (isAccountIdMigrated(entry, report)) {
+    return true;
+  }
+  return false;
 }
 
 function deleteReason(entry, report, previousReport = null) {
@@ -120,7 +139,13 @@ function deleteReason(entry, report, previousReport = null) {
   if (isAuthFailed401(report) && isAuthFailed401(previousReport)) {
     return "continuous_401";
   }
-  return "missing_quota_details";
+  if (report?.error === "token_count event was present but missing quota details") {
+    return "missing_quota_details";
+  }
+  if (isAccountIdMigrated(entry, report)) {
+    return "account_id_migrated";
+  }
+  return "unknown";
 }
 
 export async function processAuthPoolEntry(
