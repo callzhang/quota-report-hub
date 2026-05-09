@@ -176,8 +176,7 @@
       th:nth-child(2), td:nth-child(2) { width: 27%; }
       th:nth-child(3), td:nth-child(3) { width: 14%; }
       th:nth-child(4), td:nth-child(4) { width: 14%; }
-      th:nth-child(5), td:nth-child(5) { width: 20%; }
-      th:nth-child(6), td:nth-child(6) { width: 16%; }
+      th:nth-child(5), td:nth-child(5) { width: 36%; }
 
       th {
         font-size: 12px;
@@ -349,8 +348,7 @@
                 <th>Account &amp; Uploader</th>
                 <th>5H</th>
                 <th>1week</th>
-                <th>Cloud Info</th>
-                <th>Cloud Probe At</th>
+                <th>Cloud Status</th>
               </tr>
             </thead>
             <tbody id="rows"></tbody>
@@ -522,12 +520,15 @@
       }
 
       function usageCell(item) {
+        const probeTime = item.reported_at ? formatDate(item.reported_at) : "n/a";
+        const probeAge = formatAge(item.age_seconds);
+        const refresh = item.auth_last_refresh ? formatDate(item.auth_last_refresh) : "n/a";
+        const error = item.error ? `<div class="meta wrap" style="color:var(--red)">${item.error}</div>` : "";
         return `
           <div class="usage-block">
-            <div>${item.plan_name || "unknown plan"}</div>
-            <div class="meta wrap">digest ${item.digest ? item.digest.slice(0, 12) : "n/a"}</div>
-            <div class="meta wrap">uploaded ${formatDate(item.uploaded_at)}</div>
-            <div class="meta wrap">refresh ${item.auth_last_refresh || "unknown"}</div>
+            <div class="wrap">probed ${probeTime} (${probeAge})</div>
+            <div class="meta wrap">refresh ${refresh}</div>
+            ${error}
           </div>
         `;
       }
@@ -605,7 +606,6 @@
             <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${usageCell(item)}</td>
-            <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div><div class="meta wrap">${item.error || ""}</div></td>
           </tr>
         `).join("");
 
