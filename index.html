@@ -172,11 +172,12 @@
         word-break: break-word;
       }
 
-      th:nth-child(1), td:nth-child(1) { width: 9%; }
-      th:nth-child(2), td:nth-child(2) { width: 27%; }
-      th:nth-child(3), td:nth-child(3) { width: 14%; }
-      th:nth-child(4), td:nth-child(4) { width: 14%; }
-      th:nth-child(5), td:nth-child(5) { width: 36%; }
+      th:nth-child(1), td:nth-child(1) { width: 8%; }
+      th:nth-child(2), td:nth-child(2) { width: 22%; }
+      th:nth-child(3), td:nth-child(3) { width: 13%; }
+      th:nth-child(4), td:nth-child(4) { width: 13%; }
+      th:nth-child(5), td:nth-child(5) { width: 12%; }
+      th:nth-child(6), td:nth-child(6) { width: 32%; }
 
       th {
         font-size: 12px;
@@ -277,6 +278,16 @@
         border-color: rgba(206, 96, 48, 0.2);
       }
 
+      .email-tag {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 500;
+        color: var(--text);
+        border: 1px solid rgba(128, 128, 128, 0.25);
+      }
+
       .status-chip {
         display: inline-flex;
         align-items: center;
@@ -348,6 +359,7 @@
                 <th>Account &amp; Uploader</th>
                 <th>5H</th>
                 <th>1week</th>
+                <th>Fetched By</th>
                 <th>Cloud Status</th>
               </tr>
             </thead>
@@ -520,17 +532,27 @@
       }
 
       function usageCell(item) {
-        const probeTime = item.reported_at ? formatDate(item.reported_at) : "n/a";
         const probeAge = formatAge(item.age_seconds);
-        const refresh = item.auth_last_refresh ? formatDate(item.auth_last_refresh) : "n/a";
+        const refreshAge = item.auth_last_refresh
+          ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(item.auth_last_refresh)) / 1000)))
+          : "n/a";
         const error = item.error ? `<div class="meta wrap" style="color:var(--red)">${item.error}</div>` : "";
         return `
           <div class="usage-block">
-            <div class="wrap">probed ${probeTime} (${probeAge})</div>
-            <div class="meta wrap">refresh ${refresh}</div>
+            <div class="wrap">probe ${probeAge}</div>
+            <div class="meta wrap">refresh ${refreshAge}</div>
             ${error}
           </div>
         `;
+      }
+
+      function emailColor(email) {
+        let hash = 0;
+        for (let i = 0; i < email.length; i++) {
+          hash = email.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        const hue = Math.abs(hash) % 360;
+        return `hsl(${hue}, 45%, 88%)`;
       }
 
       function sourceTag(value) {
@@ -593,18 +615,15 @@
               <div class="wrap"><strong>${item.email || item.account_id}</strong></div>
               <div class="meta wrap">${item.plan_name || "-"}</div>
               <div class="meta wrap">uploaded by ${item.uploader_email || item.reporter_name || "-"}${item.hostname ? ` / ${item.hostname}` : ""}</div>
-              ${(() => {
-                const fl = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
-                if (!fl) return "";
-                const age = Math.max(0, Math.floor((Date.now() - Date.parse(fl.fetched_at || "")) / 1000));
-                const server = fl.requester_email || "";
-                const reason = fl.reason === "served" ? "" : ` (${fl.reason})`;
-                return `<div class="meta wrap">fetched by ${server}${reason} ${formatAge(age)}</div>`;
-              })()}
-              <div class="mono wrap" style="font-size:10px">${item.account_id || ""}</div>
             </td>
             <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
+            <td>${(() => {
+                const fl = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
+                if (!fl || fl.reason !== "served") return `<div class="meta">-</div>`;
+                const age = Math.max(0, Math.floor((Date.now() - Date.parse(fl.fetched_at || "")) / 1000));
+                return `<div class="wrap"><span class="email-tag" style="background:${emailColor(fl.requester_email)}">${fl.requester_email}</span></div><div class="meta wrap">${formatAge(age)}</div>`;
+              })()}</td>
             <td>${usageCell(item)}</td>
           </tr>
         `).join("");
