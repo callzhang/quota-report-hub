@@ -11,9 +11,11 @@ async function loadDbWithTempStore() {
   const previousUrl = process.env.TURSO_DATABASE_URL;
   const previousToken = process.env.TURSO_AUTH_TOKEN;
   const previousEncryptionKey = process.env.AUTH_POOL_ENCRYPTION_KEY;
+  const previousTokenIssueKey = process.env.TOKEN_ISSUE_KEY;
   process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
   process.env.TURSO_AUTH_TOKEN = "test-token";
   process.env.AUTH_POOL_ENCRYPTION_KEY = "0".repeat(64);
+  process.env.TOKEN_ISSUE_KEY = "test-token-issue-key-32-bytes!!!";
   try {
     const mod = await import(`../lib/db.js?ts=${Date.now()}`);
     return {
@@ -33,6 +35,11 @@ async function loadDbWithTempStore() {
           delete process.env.AUTH_POOL_ENCRYPTION_KEY;
         } else {
           process.env.AUTH_POOL_ENCRYPTION_KEY = previousEncryptionKey;
+        }
+        if (previousTokenIssueKey === undefined) {
+          delete process.env.TOKEN_ISSUE_KEY;
+        } else {
+          process.env.TOKEN_ISSUE_KEY = previousTokenIssueKey;
         }
         rmSync(tempDir, { recursive: true, force: true });
       },
