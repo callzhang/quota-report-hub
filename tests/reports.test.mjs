@@ -448,8 +448,8 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   );
 
   assert.equal(payload.auth_pool_count, 1);
-  assert.equal(payload.orphaned_count, 1);
-  assert.equal(payload.report_count, 2);
+  assert.equal(payload.orphaned_count, 0);
+  assert.equal(payload.report_count, 1);
   // First item is the entry-backed report
   const entryItem = payload.items.find((item) => item.account_id === "acct-1");
   assert.equal(entryItem.email, "a@example.com");
@@ -460,14 +460,15 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   assert.equal(entryItem.windows["5h"].remaining_percent, 80);
   assert.equal(entryItem.display_windows["5h"].remaining_percent, 80);
   assert.equal(entryItem.digest, "digest-1");
-  // Second item is the orphaned Claude report
-  const orphanedItem = payload.items.find((item) => item.account_id === "claude-x");
-  assert.ok(orphanedItem);
-  assert.equal(orphanedItem.source, "claude");
-  assert.equal(orphanedItem.status, "ok");
-  assert.equal(orphanedItem.digest, null);
-  assert.equal(orphanedItem.uploaded_at, null);
-  assert.equal(orphanedItem.uploader_email, null);
+  // Orphaned Claude report moves to archived
+  assert.equal(payload.archived_invalidated_count, 1);
+  const archivedItem = payload.archived_invalidated_items.find((item) => item.account_id === "claude-x");
+  assert.ok(archivedItem);
+  assert.equal(archivedItem.source, "claude");
+  assert.equal(archivedItem.status, "ok");
+  assert.equal(archivedItem.digest, null);
+  assert.equal(archivedItem.uploaded_at, null);
+  assert.equal(archivedItem.uploader_email, null);
 });
 
 test("authPoolStatusPayload archives hard-invalidated auths older than 48 hours by first invalidation time", () => {
