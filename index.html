@@ -500,13 +500,16 @@
         else if (remaining <= 10) level = "critical";
         else if (remaining <= 30) level = "low";
         const label = isReady ? "ready now" : formatPercent(remaining);
+        const staleTag = isInvalidatedStale && !isInferredReady ? " · stale" : "";
         const resetLabel = isInferredReady
           ? "likely reset after last known window"
-          : window.reset_unavailable_reason === "auth_invalidated"
-            ? "auth invalidated"
-            : window.reset_unavailable_reason === "probe_missing_reset"
-              ? "quota reset time not found"
-              : formatResetCountdown(window.reset_at);
+          : isInvalidatedStale
+            ? "stale data from before invalidation"
+            : window.reset_unavailable_reason === "auth_invalidated"
+              ? "auth invalidated"
+              : window.reset_unavailable_reason === "probe_missing_reset"
+                ? "quota reset time not found"
+                : formatResetCountdown(window.reset_at);
         const hoverTitle = isInvalidatedStale
           ? "Likely reset after the last known window. This value is inferred from a stale invalidated auth, not a fresh probe."
           : "";
@@ -514,7 +517,7 @@
           <div class="progress ${isInvalidatedStale ? "inferred" : ""}" title="${hoverTitle}">
             <div class="progress-row">
               <div class="track"><div class="fill ${level}" style="width: ${isReady ? 100 : remaining}%"></div></div>
-              <strong>${label}</strong>
+              <strong>${label}${staleTag}</strong>
             </div>
             <div class="meta">${resetLabel}</div>
             ${isStale ? `<div class="meta">stale quota snapshot</div>` : ""}
