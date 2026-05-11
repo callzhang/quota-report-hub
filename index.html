@@ -533,14 +533,19 @@
 
       function usageCell(item) {
         const probeAge = formatAge(item.age_seconds);
-        const refreshAge = item.auth_last_refresh
-          ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(item.auth_last_refresh)) / 1000)))
-          : "n/a";
+        const refreshAge = item.auth_expires_at
+          ? (() => {
+              const remaining = Math.max(0, Math.floor((Date.parse(item.auth_expires_at) - Date.now()) / 1000));
+              return remaining > 0 ? formatAge(remaining) : "expired";
+            })()
+          : item.auth_last_refresh
+            ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(item.auth_last_refresh)) / 1000))) + " ago"
+            : "n/a";
         const error = item.error ? `<div class="meta wrap" style="color:var(--red)">${item.error}</div>` : "";
         return `
           <div class="usage-block">
             <div class="wrap">probe ${probeAge}</div>
-            <div class="meta wrap">refresh ${refreshAge}</div>
+            <div class="meta wrap">${item.auth_expires_at ? "next refresh" : "refresh"} ${refreshAge}</div>
             ${error}
           </div>
         `;
