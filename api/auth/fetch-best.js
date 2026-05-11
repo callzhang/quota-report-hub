@@ -4,6 +4,7 @@ import {
   bestAuthPoolEntry,
   dbConfigured,
   getInvalidatedUploaderEntry,
+  hasUploadedAuth,
   recordAuthPoolFetch,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
@@ -81,6 +82,31 @@ export default async function handler(req, res) {
         },
         reason: "auth_invalidated_return_to_uploader",
         message: "Your uploaded auth for this account has been invalidated. Please re-login to this account and upload fresh credentials.",
+      })
+    );
+    return;
+  }
+
+  const uploaded = await hasUploadedAuth({ source, uploaderEmail: authContext.email });
+  if (!uploaded) {
+    await recordAuthPoolFetch({
+      requesterEmail: authContext.email,
+      source,
+      servedEntry: null,
+      reason: "no_uploaded_auth",
+      currentAccountId,
+      currentQuota,
+    });
+
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(
+      JSON.stringify({
+        ok: true,
+        requested_by: authContext.email,
+        replacement: null,
+        reason: "must_upload_auth_to_pool",
+        message: "You must upload at least one healthy auth to the pool before you can fetch. Bring your own auth to exchange.",
       })
     );
     return;
