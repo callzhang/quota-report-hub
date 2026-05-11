@@ -533,8 +533,8 @@
 
       function usageCell(item) {
         const probeAge = formatAge(item.age_seconds);
-        const refreshAge = item.auth_last_refresh
-          ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(item.auth_last_refresh)) / 1000)))
+        const refreshAge = item.uploaded_at
+          ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(item.uploaded_at)) / 1000)))
           : "n/a";
         const error = item.error ? `<div class="meta wrap" style="color:var(--red)">${item.error}</div>` : "";
         return `
