@@ -598,9 +598,13 @@
         const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
         const fetchLogByAccount = new Map();
         for (const log of (payload.fetch_log || [])) {
+          if (log.reason !== "served") continue;
           const key = `${log.source}:${log.served_account_id}`;
-          if (!fetchLogByAccount.has(key)) {
-            fetchLogByAccount.set(key, log);
+          const list = fetchLogByAccount.get(key);
+          if (!list) {
+            fetchLogByAccount.set(key, [log]);
+          } else if (!list.some((l) => l.requester_email === log.requester_email)) {
+            list.push(log);
           }
         }
         const totalActive = payload.auth_pool_count || 0;
@@ -623,10 +627,12 @@
             <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${(() => {
-                const fl = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
-                if (!fl || fl.reason !== "served") return `<div class="meta">-</div>`;
-                const age = Math.max(0, Math.floor((Date.now() - Date.parse(fl.fetched_at || "")) / 1000));
-                return `<div class="wrap"><span class="email-tag" style="background:${emailColor(fl.requester_email)}">${fl.requester_email}</span></div><div class="meta wrap">${formatAge(age)}</div>`;
+                const flList = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
+                if (!flList || !flList.length) return `<div class="meta">-</div>`;
+                const age = Math.max(0, Math.floor((Date.now() - Date.parse(flList[0].fetched_at || "")) / 1000));
+                return flList.map((fl) =>
+                  `<div class="wrap"><span class="email-tag" style="background:${emailColor(fl.requester_email)}">${fl.requester_email}</span></div>`
+                ).join("") + `<div class="meta wrap">${formatAge(age)}</div>`;
               })()}</td>
             <td>${usageCell(item)}</td>
           </tr>
