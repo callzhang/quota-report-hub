@@ -3,6 +3,7 @@ import {
   authenticateApiToken,
   bestAuthPoolEntry,
   dbConfigured,
+  getInvalidatedUploaderEntry,
   recordAuthPoolFetch,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
@@ -41,6 +42,49 @@ export default async function handler(req, res) {
     five_h_remaining_percent: body?.current_quota?.five_h_remaining_percent,
     one_week_remaining_percent: body?.current_quota?.one_week_remaining_percent,
   };
+
+  const invalidatedEntry = await getInvalidatedUploaderEntry({
+    source,
+    uploaderEmail: authContext.email,
+  });
+
+  if (invalidatedEntry) {
+    await recordAuthPoolFetch({
+      requesterEmail: authContext.email,
+      source,
+      servedEntry: invalidatedEntry,
+      reason: "returned_for_reauth",
+      currentAccountId,
+      currentQuota,
+    });
+
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(
+      JSON.stringify({
+        ok: true,
+        requested_by: authContext.email,
+        replacement: {
+          source: invalidatedEntry.source,
+          account_id: invalidatedEntry.account_id,
+          session_id: invalidatedEntry.session_id || "",
+          email: invalidatedEntry.email,
+          name: invalidatedEntry.name,
+          plan_name: invalidatedEntry.plan_name,
+          auth_last_refresh: invalidatedEntry.auth_last_refresh,
+          digest: invalidatedEntry.digest,
+          uploaded_at: invalidatedEntry.uploaded_at,
+          reporter_name: invalidatedEntry.reporter_name,
+          hostname: invalidatedEntry.hostname,
+          latest_report: null,
+          auth_json: invalidatedEntry.auth_json,
+        },
+        reason: "auth_invalidated_return_to_uploader",
+        message: "Your uploaded auth for this account has been invalidated. Please re-login to this account and upload fresh credentials.",
+      })
+    );
+    return;
+  }
 
   const entry = await bestAuthPoolEntry({
     source,
