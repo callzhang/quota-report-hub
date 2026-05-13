@@ -87,6 +87,47 @@ test("authPoolFetchLog shows only the latest fetch per requester and source", as
   }
 });
 
+test("authPoolFetchLog can show raw repair auth events without requester dedupe", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "derek@stardust.ai",
+      source: "codex",
+      servedEntry: {
+        account_id: "invalid@example.com",
+        email: "invalid@example.com",
+        uploader_email: "derek@stardust.ai",
+        digest: "bad-digest",
+      },
+      reason: "repair_auth_returned",
+      currentAccountId: "current@example.com",
+      currentQuota: { five_h_remaining_percent: 1, one_week_remaining_percent: 1 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "derek@stardust.ai",
+      source: "codex",
+      servedEntry: null,
+      reason: "no_better_auth_available",
+      currentAccountId: "current@example.com",
+      currentQuota: { five_h_remaining_percent: 1, one_week_remaining_percent: 1 },
+    });
+
+    const deduped = await mod.authPoolFetchLog({ limit: 10 });
+    assert.equal(deduped.length, 1);
+    assert.equal(deduped[0].reason, "no_better_auth_available");
+
+    const raw = await mod.authPoolFetchLog({ limit: 10, dedupe: false });
+    assert.equal(raw.length, 2);
+    const repair = raw.find((row) => row.reason === "repair_auth_returned");
+    assert.ok(repair);
+    assert.equal(repair.served_account_id, "invalid@example.com");
+    assert.equal(repair.served_uploader_email, "derek@stardust.ai");
+  } finally {
+    cleanup();
+  }
+});
+
 test("authUsersList joins active tokens and fetch counts per user", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {

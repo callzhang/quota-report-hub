@@ -231,6 +231,7 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 - when a local source is low, sends `source + current account + current quota` to `/api/auth/fetch-best`
 - installs a replacement only when the server returns a strictly better auth for that same source
 - if the uploader has an invalidated auth, the server returns it separately as `repair_auth`; it is for re-login/refresh, not for automatic replacement
+- each `repair_auth` return is also written to the audit log as `repair_auth_returned` and appears in the Users & Audit page
 
 5. If needed, trigger one immediate cloud probe cycle and watch the GitHub worker:
 

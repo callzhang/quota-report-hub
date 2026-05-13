@@ -223,6 +223,7 @@
         background: rgba(29, 25, 21, 0.06);
       }
       .reason-tag.served { color: var(--accent); background: rgba(31, 109, 104, 0.1); }
+      .reason-tag.repair_auth_returned { color: #9b451d; background: rgba(206, 96, 48, 0.13); }
       .reason-tag.no_better_auth_available { color: var(--muted); }
 
       .self-row { background: rgba(206, 96, 48, 0.05); }
@@ -387,7 +388,12 @@
 
       function reasonTag(reason) {
         const normalized = String(reason || "").toLowerCase();
-        const label = normalized === "served" ? "served" : normalized === "no_better_auth_available" ? "no match" : normalized;
+        const label =
+          normalized === "served" ? "served" :
+          normalized === "repair_auth_returned" ? "repair auth" :
+          normalized === "no_better_auth_available" ? "no match" :
+          normalized === "no_uploaded_auth" ? "no uploaded auth" :
+          normalized;
         return `<span class="reason-tag ${escapeHtml(normalized)}">${escapeHtml(label)}</span>`;
       }
 

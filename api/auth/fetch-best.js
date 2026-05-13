@@ -44,6 +44,16 @@ export default async function handler(req, res) {
     uploaderEmail: authContext.email,
   });
   const repairAuth = invalidatedEntryToRepairAuth(invalidatedEntry);
+  if (invalidatedEntry) {
+    await recordAuthPoolFetch({
+      requesterEmail: authContext.email,
+      source,
+      servedEntry: invalidatedEntry,
+      reason: "repair_auth_returned",
+      currentAccountId,
+      currentQuota,
+    });
+  }
 
   const uploaded = await hasUploadedAuth({ source, uploaderEmail: authContext.email });
   if (!uploaded) {

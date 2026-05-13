@@ -31,7 +31,7 @@ export default async function handler(req, res) {
 
   const [users, fetchLog] = await Promise.all([
     authUsersList(),
-    authPoolFetchLog({ limit }),
+    authPoolFetchLog({ limit, dedupe: false }),
   ]);
 
   res.statusCode = 200;
