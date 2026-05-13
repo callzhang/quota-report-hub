@@ -430,6 +430,13 @@
         return decodeURIComponent(getCookie(COOKIE_NAME));
       }
 
+      function applyTokenUpgrade(payload) {
+        if (!payload?.auth_pool_user_token) return;
+        currentToken = payload.auth_pool_user_token;
+        tokenInput.value = currentToken;
+        setTokenCookie(currentToken);
+      }
+
       function setAuthenticatedView(email) {
         authPanel.hidden = true;
         viewerChip.hidden = false;
@@ -594,6 +601,7 @@
         }
 
         const payload = await response.json();
+        applyTokenUpgrade(payload);
         setAuthenticatedView(payload.viewer_email || "unknown");
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
         const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));

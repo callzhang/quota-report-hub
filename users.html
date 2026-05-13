@@ -345,6 +345,13 @@
         return decodeURIComponent(getCookie(COOKIE_NAME));
       }
 
+      function applyTokenUpgrade(payload) {
+        if (!payload?.auth_pool_user_token) return;
+        currentToken = payload.auth_pool_user_token;
+        tokenInput.value = currentToken;
+        setTokenCookie(currentToken);
+      }
+
       function escapeHtml(value) {
         return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
           "&": "&amp;",
@@ -432,6 +439,7 @@
         }
 
         const payload = await response.json();
+        applyTokenUpgrade(payload);
         setAuthenticatedView(payload.viewer_email);
 
         const users = payload.users || [];

@@ -62,6 +62,8 @@ Older report-oriented scripts remain under `archive/` only for reference.
 4. Optionally run `quota_guard.py` manually after a login change
 5. Optionally run `trigger_remote_probe.py` to force one cloud probe cycle
 
+If the hub returns a newer personal token during upload, quota report, or fetch, the helper library writes it back into `~/.agents/auth/quota-reporter.json` automatically. A deleted legacy opaque `qrp_...` token still needs one fresh email-token setup because the hub cannot identify its owner from the token string alone.
+
 Use `quota_guard.py --skip-self-update` only when debugging a local edit and you do not want the script to replace itself from GitHub first.
 
 ## Help Output

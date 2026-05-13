@@ -132,6 +132,8 @@ This proves mailbox control without adding a browser login dependency.
 
 Only the latest token for an email is valid. A user can reuse that latest token on multiple machines, but asking for a new token revokes the previous one everywhere.
 
+If a request presents an older hub-signed token, the server can verify the embedded email and return a newly issued latest token in the same authenticated response. Local scripts and the dashboard store that replacement token automatically. This is not possible for a deleted legacy opaque `qrp_...` token because the token string itself does not contain a verifiable email; that case must request a fresh token by email.
+
 ## Server-Side API Design
 
 ### New Auth APIs

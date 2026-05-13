@@ -27,6 +27,7 @@ from quota_reporters import (
     parse_claude_auth_status_text,
     parse_claude_rate_limit_headers,
     parse_claude_statusline_rate_limits,
+    persist_auth_pool_token_upgrade,
     probe_codex,
     probe_claude,
     read_claude_keychain_credentials,
@@ -109,6 +110,35 @@ class ReporterScriptsTest(unittest.TestCase):
             "2026-04-22T01:00:00Z",
         )
         self.assertIn("\"refresh_token\": \"refresh-2\"", report["refresh_capture"]["refreshed_auth_json"])
+
+    def test_persist_auth_pool_token_upgrade_updates_local_config(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "quota-reporter.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "auth_pool_url": "https://quota-report-hub.vercel.app",
+                        "auth_pool_user_email": "old@stardust.ai",
+                        "auth_pool_user_token": "old-token",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("quota_reporters.CONFIG_PATH", config_path):
+                result = persist_auth_pool_token_upgrade(
+                    {
+                        "auth_pool_user_token": "new-token",
+                        "token_upgrade": {
+                            "email": "derek@stardust.ai",
+                            "reason": "legacy_token_upgraded",
+                        },
+                    }
+                )
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertTrue(result["updated"])
+            self.assertEqual(saved["auth_pool_user_token"], "new-token")
+            self.assertEqual(saved["auth_pool_user_email"], "derek@stardust.ai")
 
     def test_probe_codex_uses_stable_cache_root_instead_of_tmp(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -102,6 +102,8 @@ Important runtime notes:
 - `~/.agents/auth/quota-reporter.json` should stay private because it contains the user's personal auth-pool token.
 - the hub dashboard also uses the same personal token. Without a valid token, `/api/status` returns `401` and the page stays locked.
 - every time a user requests a new token by email, the old token is revoked. Only the latest token for that email remains valid, even if that latest token is then reused across multiple machines.
+- when a request uses an older hub-signed token, the hub returns a fresh latest token in the response and the local guard/dashboard updates stored token state automatically.
+- deleted legacy opaque `qrp_...` tokens cannot be upgraded in-band because they do not carry a verifiable email; request a fresh token by email once on that machine.
 - old local reporter scripts now live under `skills/quota-reporter/archive/`
 
 The dashboard now reflects the cloud auth pool, not arbitrary client report rows:

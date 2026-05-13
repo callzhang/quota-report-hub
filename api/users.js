@@ -1,21 +1,14 @@
-import { bearerTokenFromHeaders } from "../lib/company-auth.js";
+import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../lib/api-auth.js";
 import {
   authPoolFetchLog,
   authUsersList,
-  authenticateApiToken,
   dbConfigured,
 } from "../lib/db.js";
 
-function unauthorized(res) {
-  res.statusCode = 401;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify({ error: "Unauthorized" }));
-}
-
 export default async function handler(req, res) {
-  const authContext = await authenticateApiToken(bearerTokenFromHeaders(req.headers));
+  const authContext = await authenticateApiRequest(req);
   if (!authContext) {
-    unauthorized(res);
+    sendUnauthorized(res);
     return;
   }
 
@@ -23,12 +16,12 @@ export default async function handler(req, res) {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(
-      JSON.stringify({
+      JSON.stringify(withTokenUpgrade({
         viewer_email: authContext.email,
         generated_at: new Date().toISOString(),
         users: [],
         fetch_log: [],
-      })
+      }, authContext))
     );
     return;
   }
@@ -44,11 +37,11 @@ export default async function handler(req, res) {
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(
-    JSON.stringify({
+    JSON.stringify(withTokenUpgrade({
       viewer_email: authContext.email,
       generated_at: new Date().toISOString(),
       users,
       fetch_log: fetchLog,
-    })
+    }, authContext))
   );
 }

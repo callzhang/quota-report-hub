@@ -63,6 +63,8 @@ Token rules:
 - only the latest token for an email remains valid
 - requesting a new token revokes the old one
 - the latest token can still be reused on multiple machines
+- if a request uses an older hub-signed token, the hub can return a new latest token and the local scripts store it automatically
+- deleted legacy opaque `qrp_...` tokens cannot be upgraded in-band because they do not include a verifiable email
 
 If the user is not already using a compatible hub, the correct order is:
 

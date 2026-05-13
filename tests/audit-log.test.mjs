@@ -50,7 +50,7 @@ async function loadDbWithTempStore() {
   }
 }
 
-test("recordAuthPoolFetch persists served entries and shows them in authPoolFetchLog", async () => {
+test("authPoolFetchLog shows only the latest fetch per requester and source", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
     await mod.recordAuthPoolFetch({
@@ -76,22 +76,12 @@ test("recordAuthPoolFetch persists served entries and shows them in authPoolFetc
     });
 
     const log = await mod.authPoolFetchLog({ limit: 10 });
-    assert.equal(log.length, 2);
-    const [latest, earliest] = log;
+    assert.equal(log.length, 1);
+    const [latest] = log;
     assert.equal(latest.reason, "no_better_auth_available");
     assert.equal(latest.served_account_id, null);
     assert.equal(latest.requester_email, "alice@stardust.ai");
     assert.equal(latest.current_five_h_remaining, null);
-
-    assert.equal(earliest.reason, "served");
-    assert.equal(earliest.served_account_id, "acct-1");
-    assert.equal(earliest.served_email, "shared@stardust.ai");
-    assert.equal(earliest.served_uploader_email, "bob@stardust.ai");
-    assert.equal(earliest.served_digest, "deadbeef");
-    assert.equal(earliest.requester_email, "alice@stardust.ai", "email should be normalized");
-    assert.equal(earliest.current_account_id, "acct-2");
-    assert.equal(earliest.current_five_h_remaining, 12);
-    assert.equal(earliest.current_one_week_remaining, 80);
   } finally {
     cleanup();
   }
@@ -159,6 +149,26 @@ test("authUsersList collapses duplicate token rows for the same email", async ()
     const derekUsers = users.filter((u) => u.email === "derek@stardust.ai");
     assert.equal(derekUsers.length, 1);
     assert.equal(derekUsers[0].has_active_token, true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("authenticateOrUpgradeApiToken reissues signed stale tokens", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const first = await mod.issueApiToken("alice@stardust.ai");
+    const second = await mod.issueApiToken("alice@stardust.ai");
+
+    assert.equal(await mod.authenticateApiToken(first.token), null);
+    assert.equal((await mod.authenticateApiToken(second.token)).email, "alice@stardust.ai");
+
+    const upgraded = await mod.authenticateOrUpgradeApiToken(first.token);
+    assert.equal(upgraded.email, "alice@stardust.ai");
+    assert.equal(upgraded.token_upgrade.reason, "signed_token_reissued");
+    assert.match(upgraded.token_upgrade.auth_pool_user_token, /^qrp\./);
+    assert.notEqual(upgraded.token_upgrade.auth_pool_user_token, first.token);
+    assert.notEqual(upgraded.token_upgrade.auth_pool_user_token, second.token);
   } finally {
     cleanup();
   }

@@ -1,12 +1,7 @@
-import { authPoolConfigured, bearerTokenFromHeaders } from "../../lib/company-auth.js";
-import { authenticateApiToken, dbConfigured, deleteAuthPoolEntry } from "../../lib/db.js";
+import { authPoolConfigured } from "../../lib/company-auth.js";
+import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
+import { dbConfigured, deleteAuthPoolEntry } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
-
-function unauthorized(res) {
-  res.statusCode = 401;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify({ error: "Unauthorized" }));
-}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -16,9 +11,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const authContext = await authenticateApiToken(bearerTokenFromHeaders(req.headers));
+  const authContext = await authenticateApiRequest(req);
   if (!authContext) {
-    unauthorized(res);
+    sendUnauthorized(res);
     return;
   }
 
@@ -45,13 +40,13 @@ export default async function handler(req, res) {
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(
-    JSON.stringify({
+    JSON.stringify(withTokenUpgrade({
       ok: true,
       requested_by: authContext.email,
       source: result.source,
       account_id: result.account_id,
       session_id: result.session_id,
       deleted: result.deleted,
-    })
+    }, authContext))
   );
 }

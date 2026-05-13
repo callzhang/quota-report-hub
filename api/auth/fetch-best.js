@@ -1,6 +1,6 @@
-import { authPoolConfigured, bearerTokenFromHeaders } from "../../lib/company-auth.js";
+import { authPoolConfigured } from "../../lib/company-auth.js";
+import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
 import {
-  authenticateApiToken,
   bestAuthPoolEntry,
   dbConfigured,
   getInvalidatedUploaderEntry,
@@ -8,12 +8,6 @@ import {
   recordAuthPoolFetch,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
-
-function unauthorized(res) {
-  res.statusCode = 401;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify({ error: "Unauthorized" }));
-}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -23,9 +17,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const authContext = await authenticateApiToken(bearerTokenFromHeaders(req.headers));
+  const authContext = await authenticateApiRequest(req);
   if (!authContext) {
-    unauthorized(res);
+    sendUnauthorized(res);
     return;
   }
 
@@ -62,7 +56,7 @@ export default async function handler(req, res) {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(
-      JSON.stringify({
+      JSON.stringify(withTokenUpgrade({
         ok: true,
         requested_by: authContext.email,
         replacement: {
@@ -82,7 +76,7 @@ export default async function handler(req, res) {
         },
         reason: "auth_invalidated_return_to_uploader",
         message: "Your uploaded auth for this account has been invalidated. Please re-login to this account and upload fresh credentials.",
-      })
+      }, authContext))
     );
     return;
   }
@@ -101,13 +95,13 @@ export default async function handler(req, res) {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(
-      JSON.stringify({
+      JSON.stringify(withTokenUpgrade({
         ok: true,
         requested_by: authContext.email,
         replacement: null,
         reason: "must_upload_auth_to_pool",
         message: "You must upload at least one healthy auth to the pool before you can fetch. Bring your own auth to exchange.",
-      })
+      }, authContext))
     );
     return;
   }
@@ -130,7 +124,7 @@ export default async function handler(req, res) {
     });
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ ok: true, replacement: null, reason: "no_better_auth_available" }));
+    res.end(JSON.stringify(withTokenUpgrade({ ok: true, replacement: null, reason: "no_better_auth_available" }, authContext)));
     return;
   }
 
@@ -146,7 +140,7 @@ export default async function handler(req, res) {
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(
-    JSON.stringify({
+    JSON.stringify(withTokenUpgrade({
       ok: true,
       requested_by: authContext.email,
       replacement: {
@@ -164,6 +158,6 @@ export default async function handler(req, res) {
         latest_report: entry.report,
         auth_json: entry.auth_json,
       },
-    })
+    }, authContext))
   );
 }

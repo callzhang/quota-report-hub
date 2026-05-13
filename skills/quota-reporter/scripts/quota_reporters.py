@@ -967,6 +967,34 @@ def load_config(args: argparse.Namespace) -> dict:
     return config
 
 
+def persist_auth_pool_token_upgrade(payload: dict) -> dict:
+    token = payload.get("auth_pool_user_token")
+    if not token:
+        return {"updated": False, "reason": "no_token_upgrade"}
+
+    config = read_json(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    config["auth_pool_user_token"] = token
+    email = (payload.get("token_upgrade") or {}).get("email")
+    if email:
+        config["auth_pool_user_email"] = email
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    CONFIG_PATH.chmod(0o600)
+    return {
+        "updated": True,
+        "email": email,
+        "reason": (payload.get("token_upgrade") or {}).get("reason"),
+    }
+
+
+def read_auth_pool_response(response) -> dict:
+    payload = json.loads(response.read().decode("utf-8"))
+    upgrade = persist_auth_pool_token_upgrade(payload)
+    if upgrade.get("updated"):
+        payload["local_token_upgrade"] = upgrade
+    return payload
+
+
 def post_auth_pool_entry(
     auth_pool_url: str,
     auth_pool_user_token: str,
@@ -992,7 +1020,7 @@ def post_auth_pool_entry(
         method="POST",
     )
     with urllib.request.urlopen(request) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return read_auth_pool_response(response)
 
 
 def post_auth_pool_quota(
@@ -1018,7 +1046,7 @@ def post_auth_pool_quota(
         method="POST",
     )
     with urllib.request.urlopen(request) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return read_auth_pool_response(response)
 
 
 def delete_auth_pool_entry(
@@ -1044,7 +1072,7 @@ def delete_auth_pool_entry(
         method="POST",
     )
     with urllib.request.urlopen(request) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return read_auth_pool_response(response)
 
 
 def sync_current_auth_pool_entry(
@@ -1213,7 +1241,7 @@ def fetch_best_auth(
         method="POST",
     )
     with urllib.request.urlopen(request) as response:
-        return json.loads(response.read().decode("utf-8"))
+        return read_auth_pool_response(response)
 
 
 def request_auth_pool_token(auth_pool_url: str, email: str) -> dict:
