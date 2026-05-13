@@ -8,6 +8,7 @@ import {
   recordAuthPoolFetch,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
+import { shouldReturnInvalidatedUploaderEntry } from "../../lib/fetch-best.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -43,7 +44,7 @@ export default async function handler(req, res) {
     uploaderEmail: authContext.email,
   });
 
-  if (invalidatedEntry) {
+  if (shouldReturnInvalidatedUploaderEntry(invalidatedEntry, currentAccountId)) {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
       source,
