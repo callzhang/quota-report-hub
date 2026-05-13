@@ -171,6 +171,8 @@ If a request presents an older hub-signed token, the server can verify the embed
     - `one_week_remaining_percent`
   behavior:
   - looks at stored auth pool entries plus their latest effective quota metadata
+  - if the requester owns an invalidated auth, returns that auth as `repair_auth` so the owner can re-login and refresh it
+  - does not treat `repair_auth` as a usable replacement candidate
   - only compares candidates from the same source
   - excludes the current local account
   - excludes hard-invalidated accounts
@@ -180,6 +182,7 @@ If a request presents an older hub-signed token, the server can verify the embed
   - returns either:
     - a decrypted better auth plus latest effective quota metadata
     - or `replacement: null`
+  - may also return `repair_auth` when the requester has an invalidated upload that needs repair
 
 - `GET /api/status`
   auth:

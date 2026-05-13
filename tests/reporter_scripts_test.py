@@ -961,7 +961,6 @@ Reading additional input from stdin...
                     "one_week_remaining_percent": 70.0,
                 },
                 exclude_account_ids=[],
-                allow_invalidated_reauth=False,
             )
 
     def test_maybe_replace_codex_auth_skips_when_current_quota_is_healthy(self):

@@ -8,7 +8,7 @@ import {
   recordAuthPoolFetch,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
-import { shouldReturnInvalidatedUploaderEntry } from "../../lib/fetch-best.js";
+import { invalidatedEntryToRepairAuth } from "../../lib/fetch-best.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -38,50 +38,12 @@ export default async function handler(req, res) {
     five_h_remaining_percent: body?.current_quota?.five_h_remaining_percent,
     one_week_remaining_percent: body?.current_quota?.one_week_remaining_percent,
   };
-  const allowInvalidatedReauth = body?.allow_invalidated_reauth !== false;
 
   const invalidatedEntry = await getInvalidatedUploaderEntry({
     source,
     uploaderEmail: authContext.email,
   });
-
-  if (shouldReturnInvalidatedUploaderEntry(invalidatedEntry, { allowInvalidatedReauth })) {
-    await recordAuthPoolFetch({
-      requesterEmail: authContext.email,
-      source,
-      servedEntry: invalidatedEntry,
-      reason: "returned_for_reauth",
-      currentAccountId,
-      currentQuota,
-    });
-
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(
-      JSON.stringify(withTokenUpgrade({
-        ok: true,
-        requested_by: authContext.email,
-        replacement: {
-          source: invalidatedEntry.source,
-          account_id: invalidatedEntry.account_id,
-          session_id: invalidatedEntry.session_id || "",
-          email: invalidatedEntry.email,
-          name: invalidatedEntry.name,
-          plan_name: invalidatedEntry.plan_name,
-          auth_last_refresh: invalidatedEntry.auth_last_refresh,
-          digest: invalidatedEntry.digest,
-          uploaded_at: invalidatedEntry.uploaded_at,
-          reporter_name: invalidatedEntry.reporter_name,
-          hostname: invalidatedEntry.hostname,
-          latest_report: null,
-          auth_json: invalidatedEntry.auth_json,
-        },
-        reason: "auth_invalidated_return_to_uploader",
-        message: "Your uploaded auth for this account has been invalidated. Please re-login to this account and upload fresh credentials.",
-      }, authContext))
-    );
-    return;
-  }
+  const repairAuth = invalidatedEntryToRepairAuth(invalidatedEntry);
 
   const uploaded = await hasUploadedAuth({ source, uploaderEmail: authContext.email });
   if (!uploaded) {
@@ -101,6 +63,7 @@ export default async function handler(req, res) {
         ok: true,
         requested_by: authContext.email,
         replacement: null,
+        repair_auth: repairAuth,
         reason: "must_upload_auth_to_pool",
         message: "You must upload at least one healthy auth to the pool before you can fetch. Bring your own auth to exchange.",
       }, authContext))
@@ -126,7 +89,15 @@ export default async function handler(req, res) {
     });
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(withTokenUpgrade({ ok: true, replacement: null, reason: "no_better_auth_available" }, authContext)));
+    res.end(JSON.stringify(withTokenUpgrade({
+      ok: true,
+      replacement: null,
+      repair_auth: repairAuth,
+      reason: repairAuth ? "uploaded_auth_requires_reauth" : "no_better_auth_available",
+      message: repairAuth
+        ? "Your uploaded auth has been invalidated. Re-login this auth and upload fresh credentials."
+        : undefined,
+    }, authContext)));
     return;
   }
 
@@ -145,6 +116,7 @@ export default async function handler(req, res) {
     JSON.stringify(withTokenUpgrade({
       ok: true,
       requested_by: authContext.email,
+      repair_auth: repairAuth,
       replacement: {
         source: entry.source,
         account_id: entry.account_id,

@@ -291,7 +291,6 @@ def maybe_replace_codex_auth(
         current_account_id=current_account_id,
         current_quota=current_quota,
         exclude_account_ids=[],
-        allow_invalidated_reauth=False,
     )
     replacement = result.get("replacement")
     if replacement is None:
@@ -380,7 +379,6 @@ def maybe_replace_claude_auth(
         current_account_id=current_account_id,
         current_quota=current_quota,
         exclude_account_ids=[],
-        allow_invalidated_reauth=False,
     )
     replacement = result.get("replacement")
     if replacement is None:

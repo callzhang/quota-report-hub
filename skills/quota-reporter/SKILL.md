@@ -109,6 +109,7 @@ The guard then:
 - for Codex, only complete windows or hard invalidations are uploaded, so partial local probes do not overwrite good hub data
 - if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
+- if the server also returns `repair_auth`, that auth is for the uploader to re-login and refresh; the guard must not install it as a replacement
 - only replaces local source credentials when the fetched auth is different from what is already installed
 - shows a desktop notification after a successful local replacement so the user knows to quit the current Codex or Claude Code session and start a new one
 - does nothing when the cloud cannot provide a better auth than the current one

@@ -64,6 +64,8 @@ Older report-oriented scripts remain under `archive/` only for reference.
 
 If the hub returns a newer personal token during upload, quota report, or fetch, the helper library writes it back into `~/.agents/auth/quota-reporter.json` automatically. A deleted legacy opaque `qrp_...` token still needs one fresh email-token setup because the hub cannot identify its owner from the token string alone.
 
+`fetch-best` may return `repair_auth` when one of the user's uploaded auths has been invalidated. That value is a repair target for re-login and refresh, not an automatic replacement candidate for the guard.
+
 Use `quota_guard.py --skip-self-update` only when debugging a local edit and you do not want the script to replace itself from GitHub first.
 
 ## Help Output
