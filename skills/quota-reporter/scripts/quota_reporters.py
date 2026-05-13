@@ -1222,6 +1222,7 @@ def fetch_best_auth(
     current_account_id: str | None = None,
     current_quota: dict | None = None,
     exclude_account_ids: list[str] | None = None,
+    allow_invalidated_reauth: bool = True,
 ) -> dict:
     body = json.dumps(
         {
@@ -1229,6 +1230,7 @@ def fetch_best_auth(
             "exclude_account_ids": exclude_account_ids or [],
             "current_account_id": current_account_id,
             "current_quota": current_quota or {},
+            "allow_invalidated_reauth": allow_invalidated_reauth,
         }
     ).encode("utf-8")
     request = urllib.request.Request(

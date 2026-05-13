@@ -38,13 +38,14 @@ export default async function handler(req, res) {
     five_h_remaining_percent: body?.current_quota?.five_h_remaining_percent,
     one_week_remaining_percent: body?.current_quota?.one_week_remaining_percent,
   };
+  const allowInvalidatedReauth = body?.allow_invalidated_reauth !== false;
 
   const invalidatedEntry = await getInvalidatedUploaderEntry({
     source,
     uploaderEmail: authContext.email,
   });
 
-  if (shouldReturnInvalidatedUploaderEntry(invalidatedEntry, currentAccountId)) {
+  if (shouldReturnInvalidatedUploaderEntry(invalidatedEntry, { allowInvalidatedReauth })) {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
       source,

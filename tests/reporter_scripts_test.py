@@ -928,7 +928,7 @@ Reading additional input from stdin...
                     "auth_json": json.dumps({"tokens": {"account_id": "best"}}),
                     "latest_report": {"remaining_5h": 88, "remaining_1week": 50},
                 },
-            }):
+            }) as fetch_best_auth:
                 with mock.patch.object(
                     quota_guard,
                     "auth_metadata",
@@ -951,6 +951,18 @@ Reading additional input from stdin...
             self.assertTrue(replacement["replaced"])
             self.assertEqual(replacement["to_account_id"], "best")
             self.assertEqual(json.loads(live_auth.read_text(encoding="utf-8"))["tokens"]["account_id"], "best")
+            fetch_best_auth.assert_called_once_with(
+                "https://quota-report-hub.vercel.app",
+                "qrp_token",
+                source="codex",
+                current_account_id="current",
+                current_quota={
+                    "five_h_remaining_percent": 12.0,
+                    "one_week_remaining_percent": 70.0,
+                },
+                exclude_account_ids=[],
+                allow_invalidated_reauth=False,
+            )
 
     def test_maybe_replace_codex_auth_skips_when_current_quota_is_healthy(self):
         config = {
