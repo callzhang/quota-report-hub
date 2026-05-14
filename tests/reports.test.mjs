@@ -454,8 +454,8 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   const entryItem = payload.items.find((item) => item.account_id === "acct-1");
   assert.equal(entryItem.email, "a@example.com");
   assert.equal(entryItem.uploader_email, "derek@stardust.ai");
-  assert.equal(entryItem.hostname, "quota-host");
-  assert.equal(entryItem.reporter_name, "quota-reporter@quota-host");
+  assert.equal(entryItem.hostname, "gpu4");
+  assert.equal(entryItem.reporter_name, "derek@gpu4");
   assert.equal(entryItem.report_origin, "client");
   assert.equal(entryItem.windows["5h"].remaining_percent, 80);
   assert.equal(entryItem.display_windows["5h"].remaining_percent, 80);
@@ -594,4 +594,7 @@ test("authPoolStatusPayload archives old invalidations even when latest probe is
   assert.equal(payload.items.length, 0);
   assert.equal(payload.archived_invalidated_items.length, 1);
   assert.equal(payload.archived_invalidated_items[0].account_id, "old-invalid-fresh-probe");
+  assert.equal(payload.archived_invalidated_items[0].uploader_email, "derek@stardust.ai");
+  assert.equal(payload.archived_invalidated_items[0].reporter_name, "derek@gpu4");
+  assert.equal(payload.archived_invalidated_items[0].hostname, "gpu4");
 });
