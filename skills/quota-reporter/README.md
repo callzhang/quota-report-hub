@@ -8,11 +8,13 @@ The skill installs a local 15-minute quota guard that:
 
 - tracks the current local Codex and Claude auth state
 - self-updates the installed skill from GitHub before each guard cycle
-- uploads only changed auth snapshots to the shared cloud auth pool
+- reuploads current auth snapshots to keep shared cloud auth pool entries present
 - checks whether the current local source is low on quota
 - can push stable local Codex and Claude quota snapshots to the hub when available
 - fetches and installs a strictly better auth from the same source when needed
 - shows a desktop notification after a successful local auth replacement so the user knows to quit the current Codex or Claude Code session and start a new one
+- shows a desktop notification when any auth uploaded by the current token user is hard-invalidated
+- keeps older uploaded auths in the cloud pool when the local machine switches to a different current auth
 - can trigger a remote cloud-worker probe on demand
 
 The guard is source-aware:
@@ -31,7 +33,7 @@ The guard is source-aware:
 - `scripts/quota_guard.py`
   - runs one full local guard cycle
   - checks GitHub `main` and updates the installed skill before probing
-  - uploads changed auths
+  - reuploads current auths
   - probes current local quota
   - fetches and installs a better auth if the current source is below threshold
 - `scripts/trigger_remote_probe.py`
@@ -64,7 +66,7 @@ Older report-oriented scripts remain under `archive/` only for reference.
 
 If the hub returns a newer personal token during upload, quota report, or fetch, the helper library writes it back into `~/.agents/auth/quota-reporter.json` automatically. A deleted legacy opaque `qrp_...` token still needs one fresh email-token setup because the hub cannot identify its owner from the token string alone.
 
-`fetch-best` may return `repair_auth` when one of the user's uploaded auths has been invalidated. That value is a repair target for re-login and refresh, not an automatic replacement candidate for the guard.
+`fetch-best` may return `repair_auth` when one of the user's uploaded auths has been invalidated. The guard installs that repair auth so the owner can re-login and refresh their own account instead of receiving someone else's shared replacement.
 
 Use `quota_guard.py --skip-self-update` only when debugging a local edit and you do not want the script to replace itself from GitHub first.
 

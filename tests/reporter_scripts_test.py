@@ -1122,6 +1122,83 @@ Reading additional input from stdin...
         self.assertEqual(replacement["to_account_id"], "junjie.zhou@stardust.ai")
         self.assertEqual(installed_account_id, "junjie.zhou@stardust.ai")
 
+    def test_uploaded_invalidated_auths_filters_by_current_viewer_uploads(self):
+        status_payload = {
+            "viewer_email": "derek@stardust.ai",
+            "items": [
+                {
+                    "source": "codex",
+                    "account_id": "pre-sales@stardust.ai",
+                    "email": "pre-sales@stardust.ai",
+                    "plan_name": "Team",
+                    "uploader_email": "derek@stardust.ai",
+                    "status": "error",
+                    "error": "auth invalidated (token_invalidated)",
+                },
+                {
+                    "source": "codex",
+                    "account_id": "someone@stardust.ai",
+                    "uploader_email": "someone@stardust.ai",
+                    "status": "error",
+                    "error": "auth invalidated (token_invalidated)",
+                },
+                {
+                    "source": "codex",
+                    "account_id": "healthy@stardust.ai",
+                    "uploader_email": "derek@stardust.ai",
+                    "status": "ok",
+                    "error": None,
+                },
+            ],
+            "archived_invalidated_items": [
+                {
+                    "source": "claude",
+                    "account_id": "claude-leizhang0121@gmail.com",
+                    "email": "leizhang0121@gmail.com",
+                    "plan_name": "Max",
+                    "uploader_email": "derek@stardust.ai",
+                    "status": "error",
+                    "error": "claude auth invalid (authentication_error)",
+                }
+            ],
+        }
+
+        rows = quota_guard.uploaded_invalidated_auths(status_payload)
+
+        self.assertEqual([row["account_id"] for row in rows], [
+            "pre-sales@stardust.ai",
+            "claude-leizhang0121@gmail.com",
+        ])
+
+    def test_notify_uploaded_invalidated_auths_shows_one_summary_notification(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        status_payload = {
+            "viewer_email": "derek@stardust.ai",
+            "items": [
+                {
+                    "source": "codex",
+                    "account_id": "pre-sales@stardust.ai",
+                    "email": "pre-sales@stardust.ai",
+                    "plan_name": "Team",
+                    "uploader_email": "derek@stardust.ai",
+                    "status": "error",
+                    "error": "auth invalidated (token_invalidated)",
+                }
+            ],
+        }
+
+        with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
+            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                result = quota_guard.notify_uploaded_invalidated_auths(config)
+
+        notify.assert_called_once()
+        self.assertTrue(result["shown"])
+        self.assertEqual(result["count"], 1)
+        self.assertIn("pre-sales@stardust.ai", result["message"])
+
     def test_maybe_replace_claude_auth_skips_custom_provider_settings(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
@@ -1220,13 +1297,15 @@ Reading additional input from stdin...
                         with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
                             with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value=codex_replacement):
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
-                                    with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                                        result = quota_guard.run_guard(args)
+                                    with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
+                                        with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                                            result = quota_guard.run_guard(args)
 
         notify.assert_called_once()
         self.assertTrue(result["notifications"]["codex"]["shown"])
         self.assertIn("Quit the current Codex session", result["notifications"]["codex"]["message"])
         self.assertEqual(result["notifications"]["claude"]["reason"], "not_replaced")
+        self.assertEqual(result["notifications"]["uploaded_invalidated_auths"]["reason"], "no_uploaded_invalidated_auths")
 
     def test_run_guard_can_disable_replacement_toasts(self):
         args = mock.Mock(
@@ -1500,7 +1579,7 @@ Reading additional input from stdin...
         self.assertEqual(result["known_auth"]["last_uploaded_account_id"], "a@example.com")
         self.assertEqual(result["known_auth"]["last_uploaded_auth_last_refresh"], "2026-04-19T22:00:00Z")
 
-    def test_sync_current_codex_auth_pool_deletes_previous_raw_account_id_after_email_key_migration(self):
+    def test_sync_current_codex_auth_pool_keeps_previous_uploaded_accounts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             auth_path = base / "auth.json"
@@ -1538,13 +1617,9 @@ Reading additional input from stdin...
                         known_auth_path=known_auth_path,
                     )
 
-        delete_auth_pool_entry.assert_called_once_with(
-            "https://quota-report-hub.vercel.app",
-            "qrp_token",
-            source="codex",
-            account_id="acct-1",
-        )
-        self.assertEqual(result["cleanup_result"], {"ok": True, "deleted": True})
+        delete_auth_pool_entry.assert_not_called()
+        self.assertTrue(result["uploaded"])
+        self.assertNotIn("cleanup_result", result)
 
     def test_sync_current_claude_auth_pool_skips_when_same_auth_is_still_current(self):
         with tempfile.TemporaryDirectory() as temp_dir:

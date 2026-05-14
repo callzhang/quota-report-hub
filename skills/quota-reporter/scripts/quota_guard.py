@@ -20,6 +20,7 @@ from quota_reporters import (
     auth_metadata,
     claude_auth_blob_metadata,
     detect_claude_custom_provider_env,
+    fetch_auth_pool_status,
     fetch_best_auth,
     load_config,
     post_auth_pool_quota,
@@ -148,6 +149,8 @@ def is_hard_invalidated(payload: dict) -> bool:
     return payload.get("status") == "error" and payload.get("error") in {
         "auth invalidated (token_invalidated)",
         "auth failed (401 unauthorized)",
+        "claude auth invalid (authentication_error)",
+        "claude auth email unavailable",
     }
 
 
@@ -269,6 +272,72 @@ def notify_replacement_success(source: str, replacement: dict) -> dict:
     message = replacement_toast_message(source, replacement)
     shown = show_desktop_notification("Quota Guard", message)
     return {"shown": shown, "message": message}
+
+
+def uploaded_invalidated_auths(status_payload: dict) -> list[dict]:
+    viewer_email = status_payload.get("viewer_email")
+    if not viewer_email:
+        return []
+
+    rows = list(status_payload.get("items") or []) + list(status_payload.get("archived_invalidated_items") or [])
+    selected = []
+    seen = set()
+    for row in rows:
+        if row.get("uploader_email") != viewer_email:
+            continue
+        if not is_hard_invalidated(row):
+            continue
+        key = (row.get("source"), row.get("account_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(row)
+    return selected
+
+
+def invalidated_auths_message(rows: list[dict]) -> str:
+    labels = []
+    for row in rows[:5]:
+        account = row.get("email") or row.get("account_id") or "unknown account"
+        plan = row.get("plan_name")
+        source = str(row.get("source") or "auth").upper()
+        label = f"{source} {account}"
+        if plan:
+            label = f"{label} ({plan})"
+        labels.append(label)
+    extra = len(rows) - len(labels)
+    suffix = f" and {extra} more" if extra > 0 else ""
+    return "Your uploaded auth is invalidated: " + "; ".join(labels) + suffix + ". Re-login these accounts and run quota_guard again."
+
+
+def notify_uploaded_invalidated_auths(config: dict) -> dict:
+    if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
+        return {"shown": False, "reason": "missing_auth_pool_config"}
+    try:
+        status_payload = fetch_auth_pool_status(config["auth_pool_url"], config["auth_pool_user_token"])
+    except Exception as error:
+        return {"shown": False, "reason": "status_fetch_failed", "error": str(error)}
+
+    rows = uploaded_invalidated_auths(status_payload)
+    if not rows:
+        return {"shown": False, "reason": "no_uploaded_invalidated_auths", "count": 0}
+    message = invalidated_auths_message(rows)
+    shown = show_desktop_notification("Quota Guard", message)
+    return {
+        "shown": shown,
+        "count": len(rows),
+        "accounts": [
+            {
+                "source": row.get("source"),
+                "account_id": row.get("account_id"),
+                "email": row.get("email"),
+                "plan_name": row.get("plan_name"),
+                "error": row.get("error"),
+            }
+            for row in rows
+        ],
+        "message": message,
+    }
 
 
 def maybe_replace_codex_auth(
@@ -572,6 +641,7 @@ def run_guard(args: argparse.Namespace) -> dict:
     if not getattr(args, "no_toast", False):
         notifications["codex"] = notify_replacement_success("codex", codex_replacement)
         notifications["claude"] = notify_replacement_success("claude", claude_replacement)
+        notifications["uploaded_invalidated_auths"] = notify_uploaded_invalidated_auths(config)
 
     return {
         "ok": True,

@@ -1146,15 +1146,6 @@ def sync_current_auth_pool_entry(
         source=source,
         auth_json_text=auth_json_text,
     )
-    previous_account_id = known.get("last_uploaded_account_id")
-    cleanup_result = None
-    if previous_account_id and previous_account_id != metadata["account_id"]:
-        cleanup_result = delete_auth_pool_entry(
-            auth_pool_url,
-            auth_pool_user_token,
-            source=source,
-            account_id=previous_account_id,
-        )
     state = write_known_auth_state(
         source=source,
         metadata=metadata,
@@ -1169,7 +1160,6 @@ def sync_current_auth_pool_entry(
         "uploaded": True,
         "reason": "quota_refreshed_with_same_auth" if already_uploaded else "uploaded_to_auth_pool",
         "entry": uploaded,
-        "cleanup_result": cleanup_result,
         "known_auth": state,
     }
 
@@ -1246,6 +1236,16 @@ def fetch_best_auth(
             "Authorization": f"Bearer {auth_pool_user_token}",
         },
         method="POST",
+    )
+    with urllib.request.urlopen(request) as response:
+        return read_auth_pool_response(response)
+
+
+def fetch_auth_pool_status(auth_pool_url: str, auth_pool_user_token: str) -> dict:
+    request = urllib.request.Request(
+        auth_pool_url.rstrip("/") + "/api/status",
+        headers={"Authorization": f"Bearer {auth_pool_user_token}"},
+        method="GET",
     )
     with urllib.request.urlopen(request) as response:
         return read_auth_pool_response(response)

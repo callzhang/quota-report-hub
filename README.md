@@ -73,11 +73,12 @@ The intended end-to-end flow inside Codex is:
    - checks GitHub for the latest `quota-reporter` skill code and updates the local installed skill when `main` has changed
    - reads current local auth state for each supported source
    - updates local `~/.agents/auth/known_auth.json`
-   - uploads current auth to the auth pool only when the current `source`, `account_id`, `auth_last_refresh`, and digest represent a new version
+   - reuploads the current auth to keep the cloud auth pool entry present even when the local digest has not changed
    - checks the current local Codex quota and Claude quota
    - reports stable local quota snapshots back to the hub when available; Codex client reports are accepted only when both windows are complete or the local auth is hard-invalidated
    - if a local source is below threshold, sends `source + current account + current quota` to `/api/auth/fetch-best`
    - installs a better auth only when the server returns one for that same source
+   - notifies the local user when any auth uploaded by that user is hard-invalidated, even if that auth is not the currently installed local auth
 
 Important runtime notes:
 
@@ -93,7 +94,8 @@ Important runtime notes:
   - the current local `5H remaining percent`
   - the current local `1week remaining percent`
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
-- local upload is skipped only when `known_auth.json` records the same uploaded `account_id`, the same uploaded `auth_last_refresh`, and the same uploaded digest
+- local upload is idempotent: even when `known_auth.json` records the same uploaded `account_id`, `auth_last_refresh`, and digest, the guard reuploads the current auth so a missing cloud entry can be restored automatically
+- uploading a new current auth does not delete older auths previously uploaded by the same user; the hub keeps monitoring all of them so invalidated-owner notifications still work
 - if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy
 - Codex auth-pool identity is normalized to the lowercased account email when the email is available, so Team users who share a provider-side account UUID do not overwrite each other in the pool
 - the guard only replaces local `~/.codex/auth.json` when the fetched auth is different from the currently installed auth
@@ -128,6 +130,7 @@ Auth pool support:
 - Every probe result is appended to `auth_pool_quota_events` before the latest row is updated or an unusable auth is removed, so invalidation windows and audit views can be reconstructed from Turso instead of GitHub Actions logs.
 - Codex auths are removed from the active pool after consecutive `auth failed (401 unauthorized)` worker probes, because repeated 401 means the saved token cannot be reused by the pool.
 - A Vercel cron endpoint checks the cloud probe results daily. If a cloud auth stays hard-invalidated for more than 24 hours, Vercel emails the uploader and asks them to log in again. It sends at most one reminder per account per 24 hours until the auth recovers.
+- The local guard also checks `/api/status` every run and shows a desktop notification for every hard-invalidated auth uploaded by the current token user, including auths that are not currently installed on this machine.
 - Claude quota is probed in the worker by launching Claude CLI headlessly, restoring the saved CLI state, and reading the statusline snapshot after a minimal real request.
 - Claude auth snapshots are uploaded to the cloud pool only when the local machine is using a direct Claude subscription. Machines that inject `ANTHROPIC_*` credentials through `~/.claude/settings.json` are skipped because their active provider is not the worker's official Claude login path.
 - The Claude worker uses a short statusline refresh interval during probing so the snapshot is emitted before the worker timeout expires.
@@ -230,7 +233,7 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 - for Codex, only complete windows or hard invalidations are sent, so local partial probes never overwrite good hub data
 - when a local source is low, sends `source + current account + current quota` to `/api/auth/fetch-best`
 - installs a replacement only when the server returns a strictly better auth for that same source
-- if the uploader has an invalidated auth, the server returns it separately as `repair_auth`; it is for re-login/refresh, not for automatic replacement
+- if the uploader has an invalidated auth, the server returns it as `repair_auth` without a shared replacement, and the local guard installs it so the owner can re-login/refresh their own auth
 - each `repair_auth` return is also written to the audit log as `repair_auth_returned` and appears in the Users & Audit page
 
 5. If needed, trigger one immediate cloud probe cycle and watch the GitHub worker:

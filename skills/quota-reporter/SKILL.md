@@ -11,12 +11,13 @@ This skill installs and runs the local quota guard for Codex and Claude.
 
 1. Tracks the current local auth state per source in `~/.agents/auth/known_auth.json`
 2. Self-updates the installed skill from GitHub before each guard cycle
-3. Uploads the current auth for each source to the shared encrypted auth pool only when the auth changed
+3. Reuploads the current auth for each source to keep the shared encrypted auth pool entry present even when the local digest has not changed
 4. Probes the current local Codex quota and the current local Claude quota to decide whether the current machine should rotate
 5. Publishes stable local quota snapshots back to the hub when available, with stricter completeness checks for Codex
 6. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
 7. Installs a reboot-safe scheduler that runs every 15 minutes
-8. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
+8. Notifies the local user when any auth uploaded by that same token user is hard-invalidated, even if that auth is not the currently installed local auth
+9. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
 
 ## Files
 
@@ -103,18 +104,20 @@ The guard then:
 
 - checks GitHub `main` for a newer `quota-reporter` skill and updates the installed skill unless `--skip-self-update` is passed
 - updates `~/.agents/auth/known_auth.json`
-- uploads the current auth to the auth pool only when needed
+- reuploads the current auth to the auth pool so a missing cloud entry can recover automatically
 - probes the current live Codex auth and Claude auth
 - may push stable local quota snapshots back to the hub when available
 - for Codex, only complete windows or hard invalidations are uploaded, so partial local probes do not overwrite good hub data
 - if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
-- if the server also returns `repair_auth`, that auth is for the uploader to re-login and refresh; the guard must not install it as a replacement
+- if the server returns `repair_auth`, the guard installs that auth instead of a shared replacement so the uploader can re-login and refresh their own invalidated auth
 - only replaces local source credentials when the fetched auth is different from what is already installed
 - shows a desktop notification after a successful local replacement so the user knows to quit the current Codex or Claude Code session and start a new one
+- shows a desktop notification when any auth uploaded by the current token user is hard-invalidated in the hub
 - does nothing when the cloud cannot provide a better auth than the current one
 - relies on the cloud auth pool to deduplicate repeated uploads for the same `account_id`, even when raw files differ
 - if the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload
+- does not delete older auths previously uploaded by the same token user when the local machine switches to a different current auth
 - for Codex, the cloud `account_id` is normalized to the lowercased email when available so Team users do not collide on a shared provider-side UUID
 
 Operational notes:
