@@ -780,6 +780,7 @@ Reading additional input from stdin...
     def test_source_needs_replacement_when_5h_is_low(self):
         codex_payload = {
             "source": "codex",
+            "status": "ok",
             "windows": {
                 "5h": {"remaining_percent": 12},
                 "1week": {"remaining_percent": 70},
@@ -791,6 +792,7 @@ Reading additional input from stdin...
     def test_source_needs_replacement_when_weekly_quota_is_below_threshold(self):
         codex_payload = {
             "source": "codex",
+            "status": "ok",
             "windows": {
                 "5h": {"remaining_percent": 80},
                 "1week": {"remaining_percent": 2},
@@ -802,10 +804,21 @@ Reading additional input from stdin...
     def test_source_does_not_need_replacement_when_quota_is_healthy(self):
         codex_payload = {
             "source": "codex",
+            "status": "ok",
             "windows": {
                 "5h": {"remaining_percent": 62},
                 "1week": {"remaining_percent": 5},
             },
+        }
+
+        self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+
+    def test_source_does_not_need_replacement_when_probe_failed(self):
+        codex_payload = {
+            "source": "codex",
+            "status": "error",
+            "error": "Error: No such file or directory (os error 2)",
+            "windows": {"5h": None, "1week": None},
         }
 
         self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
@@ -916,6 +929,7 @@ Reading additional input from stdin...
             }
             codex_payload = {
                 "account_id": "current",
+                "status": "ok",
                 "windows": {"5h": {"remaining_percent": 12}, "1week": {"remaining_percent": 70}},
             }
 
@@ -970,6 +984,7 @@ Reading additional input from stdin...
         }
         codex_payload = {
             "account_id": "current",
+            "status": "ok",
             "windows": {"5h": {"remaining_percent": 42}, "1week": {"remaining_percent": 70}},
         }
 
@@ -997,6 +1012,7 @@ Reading additional input from stdin...
             }
             codex_payload = {
                 "account_id": "current",
+                "status": "ok",
                 "windows": {"5h": {"remaining_percent": 10}, "1week": {"remaining_percent": 70}},
             }
 
@@ -1035,6 +1051,7 @@ Reading additional input from stdin...
         }
         codex_payload = {
             "account_id": "current",
+            "status": "ok",
             "windows": {"5h": {"remaining_percent": 10}, "1week": {"remaining_percent": 70}},
         }
 
@@ -1245,6 +1262,7 @@ Reading additional input from stdin...
         }
         codex_payload = {
             "account_id": "current",
+            "status": "ok",
             "windows": {"5h": {"remaining_percent": 42}, "1week": {"remaining_percent": 70}},
         }
 

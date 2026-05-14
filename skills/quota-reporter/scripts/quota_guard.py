@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -152,13 +153,15 @@ def is_hard_invalidated(payload: dict) -> bool:
 
 def source_needs_replacement(payload: dict, threshold_percent: float, weekly_threshold_percent: float) -> bool:
     if not payload:
-        return True
+        return False
     if is_hard_invalidated(payload):
         return True
+    if payload.get("status") != "ok":
+        return False
     five_hour_remaining = remaining_percent(payload, "5h")
     weekly_remaining = remaining_percent(payload, "1week")
     if five_hour_remaining < 0 or weekly_remaining < 0:
-        return True
+        return False
     return five_hour_remaining < threshold_percent or weekly_remaining < weekly_threshold_percent
 
 
@@ -549,6 +552,8 @@ def main() -> None:
         if args.skip_self_update
         else self_update_skill()
     )
+    if self_update.get("updated"):
+        os.chdir(Path.home())
     result = run_guard(args)
     result["self_update"] = self_update
     print(json.dumps(result, ensure_ascii=False, indent=2))
