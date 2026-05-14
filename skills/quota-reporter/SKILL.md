@@ -38,6 +38,28 @@ You need:
 
 That same personal token is also used to unlock the hosted dashboard.
 
+## Mandatory Agent Verification
+
+Whenever an agent installs this skill, repairs an existing installation, or discusses whether the local guard is working, it must verify the real local state before moving on.
+
+The agent must do both checks:
+
+1. Run one guard cycle actively.
+
+```bash
+python3 scripts/quota_guard.py --skip-self-update --no-toast
+```
+
+2. Check that the 15-minute scheduler is actually registered.
+
+Use the platform-specific check:
+
+- macOS: `launchctl print gui/$(id -u)/com.openai.quota-guard`
+- Linux: `crontab -l | grep quota-guard-managed`
+- Windows: `Get-ScheduledTask -TaskName com.openai.quota-guard`
+
+Do not claim installation is complete, do not tell the user the guard is running, and do not move to the next setup step until both checks pass. If either check fails, inspect `~/.agents/auth/quota-guard.log` and `~/.agents/auth/quota-guard.error.log`, fix the environment, and rerun the failed check.
+
 ## Standard flow
 
 ### Install the 15-minute guard
@@ -64,7 +86,7 @@ The installer:
 Agent responsibility:
 
 - Do not stop after copying the skill or writing config.
-- Run `install_quota_guard.py` for the user, complete token setup, and confirm the installer verification succeeded.
+- Run `install_quota_guard.py` for the user, complete token setup, then still perform the mandatory agent verification above.
 - If verification fails, inspect `~/.agents/auth/quota-guard.log` and `~/.agents/auth/quota-guard.error.log`, fix the local environment, and rerun the installer or `quota_guard.py` until one guard cycle succeeds.
 
 Token rules:
