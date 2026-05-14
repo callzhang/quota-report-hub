@@ -89,6 +89,15 @@ def load_launch_agent() -> None:
     subprocess.run(["launchctl", "kickstart", "-k", service], check=True)
 
 
+def verify_launch_agent_registered() -> dict:
+    uid = str(os.getuid())
+    service = f"gui/{uid}/{LABEL}"
+    result = subprocess.run(["launchctl", "print", service], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or f"launchd service {service} is not registered").strip())
+    return {"ok": True, "scheduler": "launchd", "label": LABEL}
+
+
 def cron_lines(python_path: str, worker_script: Path) -> list[str]:
     command = (
         f"{shlex.quote(python_path)} {shlex.quote(str(worker_script))} "
@@ -111,6 +120,16 @@ def install_linux_crontab(python_path: str, worker_script: Path) -> None:
     preserved_lines = [line for line in existing.stdout.splitlines() if CRON_MARKER not in line]
     cron_payload = "\n".join(preserved_lines + cron_lines(python_path, worker_script)).rstrip() + "\n"
     subprocess.run(["crontab", "-"], input=cron_payload, text=True, check=True)
+
+
+def verify_linux_crontab_registered() -> dict:
+    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "could not read crontab").strip())
+    managed_lines = [line for line in result.stdout.splitlines() if CRON_MARKER in line]
+    if len(managed_lines) < 2:
+        raise RuntimeError("quota guard crontab entries were not registered")
+    return {"ok": True, "scheduler": "cron", "entries": managed_lines}
 
 
 def ps_single_quote(value: str | Path) -> str:
@@ -201,6 +220,65 @@ def install_windows_task_scheduler(python_path: str, worker_script: Path) -> dic
     }
 
 
+def verify_windows_task_registered() -> dict:
+    powershell_path = (
+        shutil.which("powershell")
+        or shutil.which("powershell.exe")
+        or shutil.which("pwsh")
+        or shutil.which("pwsh.exe")
+    )
+    if powershell_path is None:
+        raise RuntimeError("PowerShell command not found; cannot verify Task Scheduler registration")
+    result = subprocess.run(
+        [
+            powershell_path,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            f"Get-ScheduledTask -TaskName {ps_single_quote(WINDOWS_TASK_NAME)} | Select-Object -ExpandProperty TaskName",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or WINDOWS_TASK_NAME not in result.stdout:
+        raise RuntimeError((result.stderr or result.stdout or f"Task {WINDOWS_TASK_NAME} is not registered").strip())
+    return {"ok": True, "scheduler": "task_scheduler", "task_name": WINDOWS_TASK_NAME}
+
+
+def run_install_verification(python_path: str, worker_script: Path, system: str) -> dict:
+    if system == "Darwin":
+        scheduler = verify_launch_agent_registered()
+    elif system == "Linux":
+        scheduler = verify_linux_crontab_registered()
+    elif system == "Windows":
+        scheduler = verify_windows_task_registered()
+    else:
+        raise RuntimeError(f"unsupported platform: {system}")
+
+    guard_result = subprocess.run(
+        [python_path, str(worker_script), "--skip-self-update", "--no-toast"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if guard_result.returncode != 0:
+        raise RuntimeError(
+            "quota_guard.py verification run failed. "
+            f"stdout={guard_result.stdout.strip()!r} stderr={guard_result.stderr.strip()!r}. "
+            f"See {LOG_PATH} and {ERROR_LOG_PATH} for scheduled-run logs."
+        )
+    return {
+        "scheduler": scheduler,
+        "guard_run": {
+            "ok": True,
+            "stdout": guard_result.stdout.strip()[-4000:],
+            "stderr": guard_result.stderr.strip()[-4000:],
+        },
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -231,6 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-token-request",
         action="store_true",
         help="Skip the email token issuance API call. Use this when the token was already requested and you only need to paste it.",
+    )
+    parser.add_argument(
+        "--skip-install-verification",
+        action="store_true",
+        help="Skip the post-install scheduler registration check and one manual quota_guard.py run. Use only for debugging installer changes.",
     )
     return parser
 
@@ -266,6 +349,11 @@ def main() -> None:
     if system == "Darwin":
         write_plist(args.python_path, worker_script)
         load_launch_agent()
+        verification = (
+            {"skipped": True}
+            if args.skip_install_verification
+            else run_install_verification(args.python_path, worker_script, system)
+        )
         print(
             json.dumps(
                 {
@@ -277,6 +365,7 @@ def main() -> None:
                     "claude_statusline_settings_path": str(CLAUDE_SETTINGS_PATH),
                     "claude_statusline": statusline,
                     "start_interval_seconds": RUN_INTERVAL_SECONDS,
+                    "verification": verification,
                 },
                 indent=2,
             )
@@ -285,6 +374,11 @@ def main() -> None:
 
     if system == "Linux":
         install_linux_crontab(args.python_path, worker_script)
+        verification = (
+            {"skipped": True}
+            if args.skip_install_verification
+            else run_install_verification(args.python_path, worker_script, system)
+        )
         print(
             json.dumps(
                 {
@@ -296,6 +390,7 @@ def main() -> None:
                     "claude_statusline_settings_path": str(CLAUDE_SETTINGS_PATH),
                     "claude_statusline": statusline,
                     "entries": cron_lines(args.python_path, worker_script),
+                    "verification": verification,
                 },
                 indent=2,
             )
@@ -304,6 +399,11 @@ def main() -> None:
 
     if system == "Windows":
         windows_result = install_windows_task_scheduler(args.python_path, worker_script)
+        verification = (
+            {"skipped": True}
+            if args.skip_install_verification
+            else run_install_verification(args.python_path, worker_script, system)
+        )
         print(
             json.dumps(
                 {
@@ -311,6 +411,7 @@ def main() -> None:
                     "auth_pool_user_email": email,
                     "claude_statusline_settings_path": str(CLAUDE_SETTINGS_PATH),
                     "claude_statusline": statusline,
+                    "verification": verification,
                 },
                 indent=2,
             )

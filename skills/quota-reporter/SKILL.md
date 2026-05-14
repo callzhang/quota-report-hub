@@ -58,6 +58,14 @@ The installer:
 - writes the local config file under `~/.agents/auth/quota-reporter.json`
 - installs the 15-minute scheduler
 - writes Claude Code `statusLine` settings to `~/.claude/settings.json`
+- verifies that the scheduler was registered
+- runs one immediate `quota_guard.py --skip-self-update --no-toast` cycle and fails the install if the guard cannot run
+
+Agent responsibility:
+
+- Do not stop after copying the skill or writing config.
+- Run `install_quota_guard.py` for the user, complete token setup, and confirm the installer verification succeeded.
+- If verification fails, inspect `~/.agents/auth/quota-guard.log` and `~/.agents/auth/quota-guard.error.log`, fix the local environment, and rerun the installer or `quota_guard.py` until one guard cycle succeeds.
 
 Token rules:
 
@@ -131,6 +139,6 @@ Operational notes:
 
 ## Output expectations
 
-- After installation, show the scheduler type, config path, and Claude statusline settings path.
+- After installation, show the scheduler type, config path, Claude statusline settings path, and verification result.
 - After a manual guard run, show the current Codex and Claude probe payloads plus whether a replacement happened for each source.
 - If token request, auth upload, or best-auth fetch fails, include the HTTP status and response body.

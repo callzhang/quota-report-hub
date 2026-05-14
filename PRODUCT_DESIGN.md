@@ -234,6 +234,10 @@ The intended Codex interaction is:
    - macOS uses `launchd`
    - Linux uses `crontab`
    - Windows uses Task Scheduler
+12. Codex verifies scheduler registration and runs one immediate guard cycle
+13. Codex only reports installation complete after the verification succeeds
+
+If verification fails, Codex must inspect `~/.agents/auth/quota-guard.log` and `~/.agents/auth/quota-guard.error.log`, fix the local scheduler, Python, PATH, hub-token, Codex, or Claude environment issue, and rerun the installer or guard. Copying the skill and writing config alone is not a completed installation.
 
 ### Local Config
 

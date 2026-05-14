@@ -1918,6 +1918,46 @@ Reading additional input from stdin...
         args = parser.parse_args([])
         self.assertEqual(args.auth_pool_url, "https://quota-report-hub.vercel.app/")
 
+    def test_install_quota_guard_parser_supports_skip_install_verification(self):
+        parser = install_quota_guard.build_parser()
+        args = parser.parse_args(["--skip-install-verification"])
+        self.assertTrue(args.skip_install_verification)
+
+    def test_verify_linux_crontab_requires_managed_entries(self):
+        with mock.patch.object(install_quota_guard.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
+            with self.assertRaises(RuntimeError):
+                install_quota_guard.verify_linux_crontab_registered()
+
+    def test_run_install_verification_checks_scheduler_and_guard(self):
+        worker_script = Path("/tmp/quota_guard.py")
+        scheduler_result = {"ok": True, "scheduler": "cron"}
+        guard_process = mock.Mock(returncode=0, stdout='{"ok": true}', stderr="")
+
+        with mock.patch.object(install_quota_guard, "verify_linux_crontab_registered", return_value=scheduler_result) as verify_scheduler:
+            with mock.patch.object(install_quota_guard.subprocess, "run", return_value=guard_process) as run:
+                result = install_quota_guard.run_install_verification("/usr/bin/python3", worker_script, "Linux")
+
+        verify_scheduler.assert_called_once()
+        run.assert_called_once_with(
+            ["/usr/bin/python3", str(worker_script), "--skip-self-update", "--no-toast"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result["scheduler"], scheduler_result)
+        self.assertTrue(result["guard_run"]["ok"])
+
+    def test_run_install_verification_fails_when_guard_fails(self):
+        worker_script = Path("/tmp/quota_guard.py")
+        guard_process = mock.Mock(returncode=1, stdout="out", stderr="err")
+
+        with mock.patch.object(install_quota_guard, "verify_linux_crontab_registered", return_value={"ok": True}):
+            with mock.patch.object(install_quota_guard.subprocess, "run", return_value=guard_process):
+                with self.assertRaises(RuntimeError) as raised:
+                    install_quota_guard.run_install_verification("/usr/bin/python3", worker_script, "Linux")
+
+        self.assertIn("verification run failed", str(raised.exception))
+
     @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
     def test_probe_claude_auth_blob_parses_statusline_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:

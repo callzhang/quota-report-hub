@@ -30,6 +30,8 @@ The guard is source-aware:
   - requests an emailed personal token
   - writes the scheduler
   - configures Claude statusline capture
+  - verifies scheduler registration
+  - runs one immediate guard cycle and fails if it cannot run
 - `scripts/quota_guard.py`
   - runs one full local guard cycle
   - checks GitHub `main` and updates the installed skill before probing
@@ -60,9 +62,12 @@ Older report-oriented scripts remain under `archive/` only for reference.
 
 1. Run `install_quota_guard.py`
 2. Paste the emailed personal token
-3. Let the scheduled guard run every 15 minutes
-4. Optionally run `quota_guard.py` manually after a login change
-5. Optionally run `trigger_remote_probe.py` to force one cloud probe cycle
+3. Confirm the installer prints a successful `verification` block
+4. Let the scheduled guard run every 15 minutes
+5. Optionally run `quota_guard.py` manually after a login change
+6. Optionally run `trigger_remote_probe.py` to force one cloud probe cycle
+
+Agents installing this skill for a teammate must finish the setup end-to-end. Do not stop after copying files or writing `~/.agents/auth/quota-reporter.json`; the install is not complete until scheduler registration is verified and one immediate guard cycle succeeds. If verification fails, inspect `~/.agents/auth/quota-guard.log` and `~/.agents/auth/quota-guard.error.log`, fix the environment, and rerun the installer or guard.
 
 If the hub returns a newer personal token during upload, quota report, or fetch, the helper library writes it back into `~/.agents/auth/quota-reporter.json` automatically. A deleted legacy opaque `qrp_...` token still needs one fresh email-token setup because the hub cannot identify its owner from the token string alone.
 

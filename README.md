@@ -69,6 +69,7 @@ The intended end-to-end flow inside Codex is:
    - `auth_pool_user_token`
    into `~/.agents/auth/quota-reporter.json`
 9. Codex installs the 15-minute scheduler.
+10. Codex verifies the scheduler registration and runs one immediate guard cycle. The install is not complete until this verification succeeds.
 10. Every 15 minutes the guard:
    - checks GitHub for the latest `quota-reporter` skill code and updates the local installed skill when `main` has changed
    - reads current local auth state for each supported source
@@ -147,6 +148,12 @@ The installer is reboot-safe and runs every 15 minutes:
 - Linux uses `crontab` with both `@reboot` and `*/15 * * * *` entries
 - Windows uses Task Scheduler with an `AtStartup` trigger plus a 15-minute repeating trigger
 
+The installer also performs a post-install verification by default:
+
+- confirms the scheduler is registered with `launchd`, `crontab`, or Task Scheduler
+- runs `quota_guard.py --skip-self-update --no-toast` once immediately
+- exits with an error if the guard cannot run, so the installing agent must inspect `~/.agents/auth/quota-guard.log` and `~/.agents/auth/quota-guard.error.log` and fix the local environment before considering setup complete
+
 ## Endpoints
 
 - `GET /api/status`
@@ -218,7 +225,13 @@ If you want to use a different hub URL, pass `--auth-pool-url`. The default is `
 
 2. The installer emails a personal token to `your.name@stardust.ai` and prompts you to paste it locally.
 
-3. Run one local check manually if you want to validate behavior immediately:
+3. The installer validates behavior immediately. It verifies scheduler registration and runs one guard cycle before it exits successfully.
+
+```bash
+python3 skills/quota-reporter/scripts/quota_guard.py
+```
+
+You can still run one local check manually after login changes:
 
 ```bash
 python3 skills/quota-reporter/scripts/quota_guard.py
