@@ -1262,49 +1262,7 @@ Reading additional input from stdin...
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "healthy")
 
-    def test_sync_current_codex_auth_pool_skips_when_digest_already_uploaded(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            base = Path(temp_dir)
-            auth_path = base / "auth.json"
-            known_auth_path = base / "known_auth.json"
-            auth_path.write_text(
-                json.dumps(
-                    {
-                        "last_refresh": "2026-04-19T21:00:00Z",
-                        "tokens": {
-                            "account_id": "acct-1",
-                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
-            digest = quota_guard.auth_metadata(auth_path)["digest"]
-            known_auth_path.write_text(
-                json.dumps(
-                    {"sources": {"codex": {
-                        "last_uploaded_account_id": "a@example.com",
-                        "last_uploaded_auth_last_refresh": "2026-04-19T21:00:00Z",
-                        "last_uploaded_digest": digest,
-                    }}}
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-
-            with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
-                result = quota_guard.sync_current_codex_auth_pool(
-                    "https://quota-report-hub.vercel.app",
-                    "qrp_token",
-                    auth_path=auth_path,
-                    known_auth_path=known_auth_path,
-                )
-
-        post_auth_pool_entry.assert_not_called()
-        self.assertFalse(result["uploaded"])
-        self.assertEqual(result["reason"], "already_uploaded")
-
-    def test_sync_current_codex_auth_pool_skips_when_same_auth_is_still_current(self):
+    def test_sync_current_codex_auth_pool_reuploads_when_digest_already_uploaded(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             auth_path = base / "auth.json"
@@ -1342,9 +1300,51 @@ Reading additional input from stdin...
                     known_auth_path=known_auth_path,
                 )
 
-        post_auth_pool_entry.assert_not_called()
-        self.assertFalse(result["uploaded"])
-        self.assertEqual(result["reason"], "already_uploaded")
+        post_auth_pool_entry.assert_called_once()
+        self.assertTrue(result["uploaded"])
+        self.assertEqual(result["reason"], "reuploaded_existing_auth")
+
+    def test_sync_current_codex_auth_pool_reuploads_when_same_auth_is_still_current(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-19T21:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            digest = quota_guard.auth_metadata(auth_path)["digest"]
+            known_auth_path.write_text(
+                json.dumps(
+                    {"sources": {"codex": {
+                        "last_uploaded_account_id": "a@example.com",
+                        "last_uploaded_auth_last_refresh": "2026-04-19T21:00:00Z",
+                        "last_uploaded_digest": digest,
+                    }}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": "a@example.com"}}) as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                )
+
+        post_auth_pool_entry.assert_called_once()
+        self.assertTrue(result["uploaded"])
+        self.assertEqual(result["reason"], "reuploaded_existing_auth")
 
     def test_sync_current_codex_auth_pool_skips_free_plan_uploads(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1549,9 +1549,9 @@ Reading additional input from stdin...
                         known_auth_path=known_auth_path,
                     )
 
-        post_auth_pool_entry.assert_not_called()
-        self.assertFalse(result["uploaded"])
-        self.assertEqual(result["reason"], "already_uploaded")
+        post_auth_pool_entry.assert_called_once()
+        self.assertTrue(result["uploaded"])
+        self.assertEqual(result["reason"], "reuploaded_existing_auth")
         self.assertNotIn("claude", result)
 
     def test_sync_current_claude_auth_pool_skips_free_plan_uploads(self):

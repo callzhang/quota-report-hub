@@ -1117,6 +1117,12 @@ def sync_current_auth_pool_entry(
     )
 
     if already_uploaded:
+        uploaded = post_auth_pool_entry(
+            auth_pool_url,
+            auth_pool_user_token,
+            source=source,
+            auth_json_text=auth_json_text,
+        )
         state = write_known_auth_state(
             source=source,
             metadata=metadata,
@@ -1128,8 +1134,9 @@ def sync_current_auth_pool_entry(
         )
         return {
             "ok": True,
-            "uploaded": False,
-            "reason": "already_uploaded",
+            "uploaded": True,
+            "reason": "reuploaded_existing_auth",
+            "entry": uploaded,
             "known_auth": state,
         }
 
