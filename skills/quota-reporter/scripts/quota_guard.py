@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import platform
@@ -206,16 +207,17 @@ def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict |
             return {"ok": True, "reported": False, "reason": "quota_unavailable"}
     elif not quota_payload_should_report(payload):
         return {"ok": True, "reported": False, "reason": "quota_unavailable"}
+    quota_payload = without_sensitive_refresh_capture(payload)
     result = post_auth_pool_quota(
         config["auth_pool_url"],
         config["auth_pool_user_token"],
         source=source,
-        quota_payload=payload,
+        quota_payload=quota_payload,
     )
     return {
         "ok": True,
         "reported": True,
-        "account_id": payload.get("account_id"),
+        "account_id": quota_payload.get("account_id"),
         "result": result,
     }
 
@@ -592,10 +594,62 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def without_sensitive_refresh_capture(payload: dict | None) -> dict | None:
+    if payload is None:
+        return None
+    sanitized = copy.deepcopy(payload)
+    refresh_capture = sanitized.get("refresh_capture")
+    if isinstance(refresh_capture, dict):
+        refresh_capture.pop("refreshed_auth_json", None)
+    return sanitized
+
+
+def persist_refreshed_codex_auth(codex_auth_path: Path, payload: dict | None) -> dict:
+    refresh_capture = (payload or {}).get("refresh_capture") or {}
+    delta = refresh_capture.get("delta") or {}
+    refreshed_metadata = refresh_capture.get("refreshed_metadata") or {}
+    refreshed_auth_json = refresh_capture.get("refreshed_auth_json")
+    if not (delta.get("refreshed") and refreshed_auth_json and refreshed_metadata):
+        return {"written": False, "reason": "not_refreshed"}
+
+    current_account_id = (payload or {}).get("account_id")
+    refreshed_account_id = refreshed_metadata.get("account_id")
+    if current_account_id != refreshed_account_id:
+        return {"written": False, "reason": "account_changed"}
+
+    codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(codex_auth_path.parent),
+        prefix=f".{codex_auth_path.name}.",
+        delete=False,
+    ) as temp_file:
+        temp_file.write(refreshed_auth_json)
+        temp_file.flush()
+        os.fsync(temp_file.fileno())
+        temp_path = Path(temp_file.name)
+    temp_path.chmod(0o600)
+    os.replace(temp_path, codex_auth_path)
+    codex_auth_path.chmod(0o600)
+
+    for key in ("provider_account_id", "email", "name", "plan_name", "auth_last_refresh", "auth_path"):
+        if key in refreshed_metadata:
+            payload[key] = refreshed_metadata[key]
+    payload["local_auth_refresh"] = {
+        "written": True,
+        "auth_last_refresh": refreshed_metadata.get("auth_last_refresh"),
+        "digest": refreshed_metadata.get("digest"),
+    }
+    return payload["local_auth_refresh"]
+
+
 def current_codex_payload(codex_auth_path: Path) -> dict | None:
     if not codex_auth_path.exists():
         return None
-    return probe_codex(codex_auth_path)
+    payload = probe_codex(codex_auth_path, capture_refreshed_auth=True)
+    persist_refreshed_codex_auth(codex_auth_path, payload)
+    return without_sensitive_refresh_capture(payload)
 
 
 def run_guard(args: argparse.Namespace) -> dict:

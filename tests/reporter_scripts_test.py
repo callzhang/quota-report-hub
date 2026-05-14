@@ -879,6 +879,34 @@ Reading additional input from stdin...
             quota_payload=payload,
         )
 
+    def test_report_current_quota_to_auth_pool_strips_refreshed_auth_secret(self):
+        payload = {
+            "source": "codex",
+            "status": "ok",
+            "account_id": "acct-1",
+            "windows": {
+                "5h": {"remaining_percent": 42, "reset_at": "2026-04-22T15:00:00Z"},
+                "1week": {"remaining_percent": 80, "reset_at": "2026-04-28T15:00:00Z"},
+            },
+            "refresh_capture": {
+                "delta": {"refreshed": True},
+                "refreshed_metadata": {"account_id": "acct-1"},
+                "refreshed_auth_json": "{\"secret\": true}",
+            },
+        }
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+
+        with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post_auth_pool_quota:
+            result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
+
+        self.assertTrue(result["reported"])
+        posted_payload = post_auth_pool_quota.call_args.kwargs["quota_payload"]
+        self.assertNotIn("refreshed_auth_json", posted_payload["refresh_capture"])
+        self.assertIn("refreshed_auth_json", payload["refresh_capture"])
+
     def test_report_current_quota_to_auth_pool_skips_incomplete_codex_windows(self):
         payload = {
             "source": "codex",
@@ -916,6 +944,60 @@ Reading additional input from stdin...
         self.assertFalse(result["reported"])
         self.assertEqual(result["reason"], "quota_unavailable")
         post_auth_pool_quota.assert_not_called()
+
+    def test_current_codex_payload_persists_same_account_refresh_and_strips_secret(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            old_auth = {
+                "last_refresh": "2026-04-22T00:00:00Z",
+                "tokens": {
+                    "account_id": "acct-1",
+                    "access_token": "access-1",
+                    "refresh_token": "refresh-1",
+                    "id_token": self._jwt({"email": "a@example.com"}),
+                },
+            }
+            refreshed_auth = {
+                "last_refresh": "2026-04-22T01:00:00Z",
+                "tokens": {
+                    "account_id": "acct-1",
+                    "access_token": "access-2",
+                    "refresh_token": "refresh-2",
+                    "id_token": self._jwt({"email": "a@example.com"}),
+                },
+            }
+            auth_path.write_text(json.dumps(old_auth), encoding="utf-8")
+            probe_payload = {
+                "source": "codex",
+                "status": "ok",
+                "account_id": "a@example.com",
+                "auth_last_refresh": "2026-04-22T00:00:00Z",
+                "windows": {
+                    "5h": {"remaining_percent": 42, "reset_at": "2026-04-22T15:00:00Z"},
+                    "1week": {"remaining_percent": 80, "reset_at": "2026-04-28T15:00:00Z"},
+                },
+                "refresh_capture": {
+                    "delta": {"refreshed": True},
+                    "refreshed_metadata": {
+                        "account_id": "a@example.com",
+                        "auth_last_refresh": "2026-04-22T01:00:00Z",
+                        "digest": "digest-2",
+                        "email": "a@example.com",
+                    },
+                    "refreshed_auth_json": json.dumps(refreshed_auth),
+                },
+            }
+
+            with mock.patch.object(quota_guard, "probe_codex", return_value=probe_payload) as probe_codex:
+                payload = quota_guard.current_codex_payload(auth_path)
+
+            probe_codex.assert_called_once_with(auth_path, capture_refreshed_auth=True)
+            stored_auth = json.loads(auth_path.read_text(encoding="utf-8"))
+            self.assertEqual(stored_auth["last_refresh"], "2026-04-22T01:00:00Z")
+            self.assertEqual(stored_auth["tokens"]["refresh_token"], "refresh-2")
+            self.assertEqual(payload["auth_last_refresh"], "2026-04-22T01:00:00Z")
+            self.assertEqual(payload["local_auth_refresh"]["written"], True)
+            self.assertNotIn("refreshed_auth_json", payload["refresh_capture"])
 
     def test_maybe_replace_codex_auth_replaces_low_quota_live_auth(self):
         with tempfile.TemporaryDirectory() as temp_dir:
