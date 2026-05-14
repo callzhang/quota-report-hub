@@ -1195,9 +1195,12 @@ Reading additional input from stdin...
                 result = quota_guard.notify_uploaded_invalidated_auths(config)
 
         notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[0], "额度守护")
         self.assertTrue(result["shown"])
         self.assertEqual(result["count"], 1)
         self.assertIn("pre-sales@stardust.ai", result["message"])
+        self.assertIn("你上传的 auth 已失效", result["message"])
+        self.assertIn("重新登录这些账号", result["message"])
 
     def test_maybe_replace_claude_auth_skips_custom_provider_settings(self):
         config = {
@@ -1302,8 +1305,9 @@ Reading additional input from stdin...
                                             result = quota_guard.run_guard(args)
 
         notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[0], "额度守护")
         self.assertTrue(result["notifications"]["codex"]["shown"])
-        self.assertIn("Quit the current Codex session", result["notifications"]["codex"]["message"])
+        self.assertIn("请退出当前 Codex 会话并重新打开", result["notifications"]["codex"]["message"])
         self.assertEqual(result["notifications"]["claude"]["reason"], "not_replaced")
         self.assertEqual(result["notifications"]["uploaded_invalidated_auths"]["reason"], "no_uploaded_invalidated_auths")
 

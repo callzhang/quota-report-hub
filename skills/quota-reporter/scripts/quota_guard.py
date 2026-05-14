@@ -221,11 +221,11 @@ def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict |
 
 
 def replacement_toast_message(source: str, replacement: dict) -> str:
-    display_name = replacement.get("to_email") or replacement.get("to_account_id") or "the new account"
+    display_name = replacement.get("to_email") or replacement.get("to_account_id") or "新账号"
     plan_name = replacement.get("to_plan_name")
     account_label = f"{display_name} ({plan_name})" if plan_name else str(display_name)
     app_name = "Codex" if source == "codex" else "Claude Code" if source == "claude" else source
-    return f"{app_name} account switched to {account_label}. Quit the current {app_name} session and start a new one to use it."
+    return f"{app_name} 已切换到 {account_label}。请退出当前 {app_name} 会话并重新打开，新会话才会使用这个账号。"
 
 
 def show_desktop_notification(title: str, message: str) -> bool:
@@ -270,7 +270,7 @@ def notify_replacement_success(source: str, replacement: dict) -> dict:
     if not replacement.get("replaced"):
         return {"shown": False, "reason": "not_replaced"}
     message = replacement_toast_message(source, replacement)
-    shown = show_desktop_notification("Quota Guard", message)
+    shown = show_desktop_notification("额度守护", message)
     return {"shown": shown, "message": message}
 
 
@@ -298,7 +298,7 @@ def uploaded_invalidated_auths(status_payload: dict) -> list[dict]:
 def invalidated_auths_message(rows: list[dict]) -> str:
     labels = []
     for row in rows[:5]:
-        account = row.get("email") or row.get("account_id") or "unknown account"
+        account = row.get("email") or row.get("account_id") or "未知账号"
         plan = row.get("plan_name")
         source = str(row.get("source") or "auth").upper()
         label = f"{source} {account}"
@@ -306,8 +306,8 @@ def invalidated_auths_message(rows: list[dict]) -> str:
             label = f"{label} ({plan})"
         labels.append(label)
     extra = len(rows) - len(labels)
-    suffix = f" and {extra} more" if extra > 0 else ""
-    return "Your uploaded auth is invalidated: " + "; ".join(labels) + suffix + ". Re-login these accounts and run quota_guard again."
+    suffix = f"，另有 {extra} 个账号" if extra > 0 else ""
+    return "你上传的 auth 已失效：" + "；".join(labels) + suffix + "。请重新登录这些账号，然后再运行一次 quota_guard.py。"
 
 
 def notify_uploaded_invalidated_auths(config: dict) -> dict:
@@ -322,7 +322,7 @@ def notify_uploaded_invalidated_auths(config: dict) -> dict:
     if not rows:
         return {"shown": False, "reason": "no_uploaded_invalidated_auths", "count": 0}
     message = invalidated_auths_message(rows)
-    shown = show_desktop_notification("Quota Guard", message)
+    shown = show_desktop_notification("额度守护", message)
     return {
         "shown": shown,
         "count": len(rows),
