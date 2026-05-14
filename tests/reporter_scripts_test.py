@@ -1068,6 +1068,60 @@ Reading additional input from stdin...
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "no_better_auth_available")
 
+    def test_maybe_replace_codex_auth_installs_repair_auth_before_shared_replacement(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            live_auth.write_text(json.dumps({"tokens": {"account_id": "other"}}), encoding="utf-8")
+            config = {
+                "auth_pool_url": "https://quota-report-hub.vercel.app",
+                "auth_pool_user_token": "qrp_token",
+            }
+            codex_payload = {
+                "account_id": "other",
+                "status": "ok",
+                "windows": {"5h": {"remaining_percent": 0}, "1week": {"remaining_percent": 0}},
+            }
+
+            with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                "ok": True,
+                "replacement": None,
+                "repair_auth": {
+                    "account_id": "junjie.zhou@stardust.ai",
+                    "digest": "digest-repair",
+                    "email": "junjie.zhou@stardust.ai",
+                    "plan_name": "Team",
+                    "auth_json": json.dumps({"tokens": {"account_id": "junjie.zhou@stardust.ai"}}),
+                    "latest_report": None,
+                },
+                "reason": "uploaded_auth_requires_reauth",
+            }):
+                with mock.patch.object(
+                    quota_guard,
+                    "auth_metadata",
+                    return_value={
+                        "digest": "digest-repair",
+                        "account_id": "junjie.zhou@stardust.ai",
+                        "auth_last_refresh": "2026-05-14T00:00:00Z",
+                    },
+                ):
+                    with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "digest-repair"}):
+                        replacement = quota_guard.maybe_replace_codex_auth(
+                            config,
+                            codex_payload,
+                            live_auth,
+                            known_auth_path,
+                            threshold_percent=20.0,
+                            weekly_threshold_percent=5.0,
+                        )
+            installed_account_id = json.loads(live_auth.read_text(encoding="utf-8"))["tokens"]["account_id"]
+
+        self.assertTrue(replacement["replaced"])
+        self.assertTrue(replacement["repair"])
+        self.assertEqual(replacement["to_account_id"], "junjie.zhou@stardust.ai")
+        self.assertEqual(installed_account_id, "junjie.zhou@stardust.ai")
+
     def test_maybe_replace_claude_auth_skips_custom_provider_settings(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",

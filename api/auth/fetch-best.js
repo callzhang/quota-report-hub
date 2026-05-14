@@ -8,7 +8,7 @@ import {
   recordAuthPoolFetch,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
-import { invalidatedEntryToRepairAuth } from "../../lib/fetch-best.js";
+import { invalidatedEntryToRepairAuth, repairAuthOnlyPayload } from "../../lib/fetch-best.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -53,6 +53,10 @@ export default async function handler(req, res) {
       currentAccountId,
       currentQuota,
     });
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(withTokenUpgrade(repairAuthOnlyPayload(repairAuth), authContext)));
+    return;
   }
 
   const uploaded = await hasUploadedAuth({ source, uploaderEmail: authContext.email });

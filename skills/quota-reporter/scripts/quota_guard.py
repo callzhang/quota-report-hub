@@ -296,6 +296,50 @@ def maybe_replace_codex_auth(
         exclude_account_ids=[],
     )
     replacement = result.get("replacement")
+    repair_auth = result.get("repair_auth")
+    if replacement is None and repair_auth is not None:
+        fetched_account_id = repair_auth.get("account_id")
+        current_digest = None
+        if codex_auth_path.exists():
+            try:
+                current_digest = auth_metadata(codex_auth_path).get("digest")
+            except Exception:
+                current_digest = None
+        if fetched_account_id == current_account_id and repair_auth.get("digest") == current_digest:
+            return {
+                "ok": True,
+                "replaced": False,
+                "reason": "repair_auth_already_installed",
+                "triggered_by": ["codex"],
+                "account_id": fetched_account_id,
+            }
+
+        codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
+        codex_auth_path.write_text(repair_auth["auth_json"], encoding="utf-8")
+        codex_auth_path.chmod(0o600)
+        metadata = auth_metadata(codex_auth_path)
+        known_auth = write_known_auth_state(
+            source="codex",
+            metadata=metadata,
+            known_auth_path=known_auth_path,
+            last_uploaded_digest=metadata["digest"],
+            last_uploaded_account_id=metadata["account_id"],
+            last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+            state_source="repair_auth_from_auth_pool",
+        )
+
+        return {
+            "ok": True,
+            "replaced": True,
+            "repair": True,
+            "triggered_by": ["codex"],
+            "from_account_id": current_account_id,
+            "to_account_id": fetched_account_id,
+            "to_email": repair_auth.get("email"),
+            "to_plan_name": repair_auth.get("plan_name"),
+            "latest_report": repair_auth.get("latest_report"),
+            "known_auth": known_auth,
+        }
     if replacement is None:
         return {
             "ok": True,
