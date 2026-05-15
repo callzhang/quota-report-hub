@@ -21,6 +21,7 @@ import install_quota_guard  # noqa: E402
 from quota_reporters import (
     build_claude_auth_blob,
     codex_auth_refresh_delta,
+    codex_usage_limit_exhausted,
     codex_usage_limit_reset_from_rate_limits,
     codex_usage_limit_reset_at,
     detect_claude_custom_provider_env,
@@ -370,6 +371,119 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
         self.assertEqual(report["usage_summary"]["next_retry_at"], report["windows"]["5h"]["reset_at"])
 
+    def test_probe_codex_maps_rate_limited_exhausted_window_to_zero_remaining_windows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "team"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr="Error: rate limited. Please try again later.",
+            )
+            with mock.patch("quota_reporters.subprocess.run", return_value=completed):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 272000},
+                            "rate_limits": {
+                                "plan_type": "team",
+                                "primary": {
+                                    "remaining_percent": 0,
+                                    "window_minutes": 300,
+                                    "resets_at": "2026-04-22T16:30:00Z",
+                                },
+                                "secondary": None,
+                                "credits": {"has_credits": False, "unlimited": False, "balance": None},
+                                "rate_limit_reached_type": "rate_limited",
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
+        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
+        self.assertEqual(report["usage_summary"]["rate_limit_reached_type"], "rate_limited")
+        self.assertEqual(report["usage_summary"]["next_retry_at"], "2026-04-22T16:30:00Z")
+
+    def test_probe_codex_does_not_map_transient_rate_limited_to_zero_remaining_windows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "team"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr="Error: rate limited. Please try again later.",
+            )
+            with mock.patch("quota_reporters.subprocess.run", return_value=completed):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 272000},
+                            "rate_limits": {
+                                "plan_type": "team",
+                                "primary": {
+                                    "remaining_percent": 23,
+                                    "window_minutes": 300,
+                                    "resets_at": "2026-04-22T16:30:00Z",
+                                },
+                                "secondary": None,
+                                "credits": {"has_credits": False, "unlimited": False, "balance": None},
+                                "rate_limit_reached_type": "rate_limited",
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(report["error"], "codex rate limited but quota exhaustion was not confirmed")
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertIsNone(report["windows"]["1week"])
+
     def test_probe_codex_maps_partial_missing_window_usage_limit_to_zero_remaining_windows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
@@ -506,6 +620,17 @@ class ReporterScriptsTest(unittest.TestCase):
 
         self.assertEqual(reset_at, "2026-04-22T16:30:00Z")
         self.assertEqual(reset_in_seconds, 5400)
+
+    def test_codex_usage_limit_exhausted_uses_structured_window_values(self):
+        self.assertTrue(codex_usage_limit_exhausted({"primary": {"remaining_percent": 0}}, "", ""))
+        self.assertTrue(codex_usage_limit_exhausted({"secondary": {"used_percent": 100}}, "", ""))
+        self.assertFalse(
+            codex_usage_limit_exhausted(
+                {"primary": {"remaining_percent": 23}, "rate_limit_reached_type": "rate_limited"},
+                "Error: rate limited. Please try again later.",
+                "",
+            )
+        )
 
     def test_parse_claude_auth_status_text_extracts_account_details(self):
         details = parse_claude_auth_status_text(

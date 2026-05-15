@@ -307,6 +307,40 @@ def codex_usage_limit_reached(rate_limits: dict | None, stderr: str, stdout: str
     return reached_type not in (None, "")
 
 
+def to_float(value) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number else None
+
+
+def codex_usage_limit_exhausted(rate_limits: dict | None, stderr: str, stdout: str) -> bool:
+    if not isinstance(rate_limits, dict):
+        return False
+
+    for window_key in ("primary", "secondary"):
+        window = rate_limits.get(window_key)
+        if not isinstance(window, dict):
+            continue
+        remaining_percent = to_float(window.get("remaining_percent"))
+        if remaining_percent is not None and remaining_percent <= 0:
+            return True
+        used_percent = to_float(window.get("used_percent"))
+        if used_percent is not None and used_percent >= 100:
+            return True
+
+    combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part).lower()
+    if "you've hit your usage limit" in combined:
+        return True
+    if "usage limit" in combined and "try again at " in combined:
+        return True
+
+    return False
+
+
 def codex_usage_limit_reset_at(stderr: str, stdout: str, now: datetime | None = None) -> tuple[str | None, int | None]:
     combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part)
     full_date_match = re.search(
@@ -489,9 +523,27 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
     secondary_window = rate_limits.get("secondary") if isinstance(rate_limits, dict) else None
     has_complete_windows = isinstance(primary_window, dict) and isinstance(secondary_window, dict)
     if rate_limits and not has_complete_windows and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
+        quota_exhausted = codex_usage_limit_exhausted(rate_limits, result.stderr, result.stdout)
         reset_at, reset_in_seconds = codex_usage_limit_reset_from_rate_limits(rate_limits, checked_at)
         if reset_at is None:
             reset_at, reset_in_seconds = codex_usage_limit_reset_at(result.stderr, result.stdout, now=checked_at)
+        if not quota_exhausted:
+            payload = {
+                **base,
+                "model_context_window": info.get("model_context_window") if isinstance(info, dict) else None,
+                "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
+                "status": "error",
+                "error": "codex rate limited but quota exhaustion was not confirmed",
+                "windows": empty_windows(),
+                "usage_summary": {
+                    "credits": rate_limits.get("credits"),
+                    "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
+                    "next_retry_at": reset_at,
+                },
+            }
+            if refresh_capture is not None:
+                payload["refresh_capture"] = refresh_capture
+            return payload
         if reset_at is None:
             payload = {
                 **base,
