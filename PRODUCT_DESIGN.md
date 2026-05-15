@@ -264,6 +264,7 @@ Additional source-specific rules:
 
 - Codex local quota probes can also update the hub, because the current local auth is often the most accurate signal for that exact account.
 - The server accepts Codex client quota only when both windows are complete or the local auth is hard-invalidated, so partial client probes cannot overwrite good hub data.
+- When Codex reaches a usage limit and one window is missing from the token event, the local guard first uses structured reset metadata to build a complete `0%` snapshot; this prevents the hub from keeping an older positive quota such as `23%`.
 - A newer worker soft failure does not replace an existing good client Codex quota snapshot.
 - Claude can still supplement the hub with stable local quota snapshots because some Claude environments cannot be replayed reliably by the worker.
 - Codex auth identity is normalized to the lowercased account email when one is available, instead of relying on the raw provider account UUID, because Team accounts can share provider-side identifiers across multiple humans.

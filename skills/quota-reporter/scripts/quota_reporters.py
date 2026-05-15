@@ -348,6 +348,66 @@ def codex_usage_limit_reset_at(stderr: str, stdout: str, now: datetime | None = 
     return reset_at, reset_in_seconds
 
 
+def parse_codex_reset_value(value, now: datetime) -> tuple[str | None, int | None]:
+    if value is None:
+        return None, None
+
+    parsed: datetime | None = None
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 10_000_000_000:
+            timestamp = timestamp / 1000
+        parsed = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    elif isinstance(value, str) and value.strip():
+        raw_value = value.strip()
+        try:
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        except ValueError:
+            return None, None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+    if parsed is None:
+        return None, None
+
+    reset_at = parsed.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    reset_in_seconds = max(int(parsed.timestamp() - now.timestamp()), 0)
+    return reset_at, reset_in_seconds
+
+
+def codex_usage_limit_reset_from_rate_limits(rate_limits: dict | None, now: datetime) -> tuple[str | None, int | None]:
+    if not isinstance(rate_limits, dict):
+        return None, None
+
+    for window_key in ("primary", "secondary"):
+        window = rate_limits.get(window_key)
+        if not isinstance(window, dict):
+            continue
+        reset_in_seconds = window.get("resets_in_seconds")
+        if reset_in_seconds is not None:
+            try:
+                seconds = max(int(float(reset_in_seconds)), 0)
+            except (TypeError, ValueError):
+                return None, None
+            reset_at = (
+                datetime.fromtimestamp(now.timestamp() + seconds, tz=timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+            return reset_at, seconds
+        reset_at, seconds = parse_codex_reset_value(window.get("resets_at"), now)
+        if reset_at is not None:
+            return reset_at, seconds
+
+    for field in ("next_retry_at", "retry_at", "reset_at"):
+        reset_at, seconds = parse_codex_reset_value(rate_limits.get(field), now)
+        if reset_at is not None:
+            return reset_at, seconds
+
+    return None, None
+
+
 def zero_remaining_window(window_minutes: int, reset_at: str | None = None, reset_in_seconds: int | None = None) -> dict:
     return {
         "used_percent": 100.0,
@@ -429,7 +489,9 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
     secondary_window = rate_limits.get("secondary") if isinstance(rate_limits, dict) else None
     has_complete_windows = isinstance(primary_window, dict) and isinstance(secondary_window, dict)
     if rate_limits and not has_complete_windows and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
-        reset_at, reset_in_seconds = codex_usage_limit_reset_at(result.stderr, result.stdout)
+        reset_at, reset_in_seconds = codex_usage_limit_reset_from_rate_limits(rate_limits, checked_at)
+        if reset_at is None:
+            reset_at, reset_in_seconds = codex_usage_limit_reset_at(result.stderr, result.stdout, now=checked_at)
         if reset_at is None:
             payload = {
                 **base,

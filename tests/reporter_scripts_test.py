@@ -21,6 +21,7 @@ import install_quota_guard  # noqa: E402
 from quota_reporters import (
     build_claude_auth_blob,
     codex_auth_refresh_delta,
+    codex_usage_limit_reset_from_rate_limits,
     codex_usage_limit_reset_at,
     detect_claude_custom_provider_env,
     discover_claude_executable,
@@ -311,6 +312,64 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(report["windows"]["1week"])
         self.assertIsNone(report["usage_summary"]["next_retry_at"])
 
+    def test_probe_codex_maps_structured_reset_to_zero_remaining_windows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "team"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr="ERROR: You've hit your usage limit.",
+            )
+            with mock.patch("quota_reporters.subprocess.run", return_value=completed):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 272000},
+                            "rate_limits": {
+                                "plan_type": "team",
+                                "primary": {
+                                    "used_percent": 100,
+                                    "window_minutes": 300,
+                                    "resets_in_seconds": 900,
+                                },
+                                "secondary": None,
+                                "credits": {"has_credits": False, "unlimited": False, "balance": None},
+                                "rate_limit_reached_type": "primary",
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
+        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
+        self.assertEqual(report["windows"]["5h"]["reset_in_seconds"], 900)
+        self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
+        self.assertEqual(report["usage_summary"]["next_retry_at"], report["windows"]["5h"]["reset_at"])
+
     def test_probe_codex_maps_partial_missing_window_usage_limit_to_zero_remaining_windows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
@@ -436,6 +495,17 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsInstance(reset_in_seconds, int)
         self.assertGreater(reset_in_seconds, 0)
         self.assertLessEqual(reset_in_seconds, 24 * 60 * 60)
+
+    def test_codex_usage_limit_reset_from_rate_limits_uses_top_level_next_retry_at(self):
+        now = datetime(2026, 4, 22, 15, 0, tzinfo=timezone.utc)
+
+        reset_at, reset_in_seconds = codex_usage_limit_reset_from_rate_limits(
+            {"next_retry_at": "2026-04-22T16:30:00Z"},
+            now,
+        )
+
+        self.assertEqual(reset_at, "2026-04-22T16:30:00Z")
+        self.assertEqual(reset_in_seconds, 5400)
 
     def test_parse_claude_auth_status_text_extracts_account_details(self):
         details = parse_claude_auth_status_text(

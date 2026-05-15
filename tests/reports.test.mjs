@@ -210,6 +210,42 @@ test("mergeLatestReport accepts newer non-null windows", () => {
   assert.equal(merged.windows["1week"].remaining_percent, 65);
 });
 
+test("mergeLatestReport accepts newer zero client quota over stale positive quota", () => {
+  const previous = sanitizeReport({
+    source: "codex",
+    hostname: "teammate-mac",
+    reporter_name: "teammate@teammate-mac",
+    reported_at: "2026-05-15T06:18:30Z",
+    report_origin: "client",
+    account_id: "pre-sales@stardust.ai",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 77, remaining_percent: 23, reset_at: "2026-05-15T10:44:12Z" },
+      "1week": { used_percent: 64, remaining_percent: 36, reset_at: "2026-05-20T02:46:31Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    hostname: "teammate-mac",
+    reporter_name: "teammate@teammate-mac",
+    reported_at: "2026-05-15T07:20:00Z",
+    report_origin: "client",
+    account_id: "pre-sales@stardust.ai",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 100, remaining_percent: 0, reset_at: "2026-05-15T10:44:12Z" },
+      "1week": { used_percent: 100, remaining_percent: 0, reset_at: "2026-05-20T02:46:31Z" },
+    },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.reported_at, "2026-05-15T07:20:00Z");
+  assert.equal(merged.windows_stale, false);
+  assert.equal(merged.windows["5h"].remaining_percent, 0);
+  assert.equal(merged.windows["1week"].remaining_percent, 0);
+});
+
 test("mergeLatestReport preserves old windows as stale on hard auth invalidation", () => {
   const previous = sanitizeReport({
     source: "codex",

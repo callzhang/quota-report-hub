@@ -244,6 +244,7 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 - probes local Codex and Claude quota
 - pushes stable local quota snapshots to the hub when available
 - for Codex, only complete windows or hard invalidations are sent, so local partial probes never overwrite good hub data
+- if Codex reports a usage-limit hit with one missing window, the guard derives a complete `0%` snapshot from structured reset metadata before posting to the hub
 - when a local source is low, sends `source + current account + current quota` to `/api/auth/fetch-best`
 - installs a replacement only when the server returns a strictly better auth for that same source
 - if the uploader has an invalidated auth, the server returns it as `repair_auth` without a shared replacement, and the local guard installs it so the owner can re-login/refresh their own auth
