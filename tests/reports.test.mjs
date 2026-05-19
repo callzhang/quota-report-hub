@@ -280,6 +280,44 @@ test("mergeLatestReport preserves old windows as stale on hard auth invalidation
   assert.equal(merged.status, "error");
 });
 
+test("mergeLatestReport ignores invalidation from older auth refresh than current healthy report", () => {
+  const previous = sanitizeReport({
+    source: "codex",
+    report_origin: "client",
+    hostname: "stardust-GPU4",
+    reporter_name: "derek@stardust-GPU4",
+    reported_at: "2026-05-19T20:45:00Z",
+    account_id: "derek@preseen.ai",
+    auth_last_refresh: "2026-05-19T20:40:00Z",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 10, remaining_percent: 90, reset_at: "2026-05-19T23:00:00Z" },
+      "1week": { used_percent: 20, remaining_percent: 80, reset_at: "2026-05-23T23:00:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    report_origin: "client",
+    hostname: "Dereks-MacBook-Air-13.local",
+    reporter_name: "derek@Dereks-MacBook-Air-13.local",
+    reported_at: "2026-05-19T20:49:00Z",
+    account_id: "derek@preseen.ai",
+    auth_last_refresh: "2026-05-19T08:23:42Z",
+    status: "error",
+    error: "auth invalidated (token_invalidated)",
+    windows: { "5h": null, "1week": null },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.hostname, "stardust-GPU4");
+  assert.equal(merged.reported_at, "2026-05-19T20:45:00Z");
+  assert.equal(merged.status, "ok");
+  assert.equal(merged.error, null);
+  assert.equal(merged.windows["5h"].remaining_percent, 90);
+  assert.equal(merged.windows["1week"].remaining_percent, 80);
+});
+
 test("mergeLatestReport keeps good client codex quota when a newer worker soft-fails", () => {
   const previous = sanitizeReport({
     source: "codex",
