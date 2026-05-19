@@ -5,6 +5,7 @@ import unittest
 import io
 import contextlib
 import importlib.util
+import urllib.error
 from datetime import datetime, timezone
 from base64 import urlsafe_b64encode
 from pathlib import Path
@@ -30,6 +31,7 @@ from quota_reporters import (
     parse_claude_rate_limit_headers,
     parse_claude_statusline_rate_limits,
     persist_auth_pool_token_upgrade,
+    post_auth_pool_entry,
     probe_codex,
     probe_claude,
     read_claude_keychain_credentials,
@@ -1101,6 +1103,50 @@ Reading additional input from stdin...
         posted_payload = post_auth_pool_quota.call_args.kwargs["quota_payload"]
         self.assertNotIn("refreshed_auth_json", posted_payload["refresh_capture"])
         self.assertIn("refreshed_auth_json", payload["refresh_capture"])
+
+    def test_post_auth_pool_entry_returns_structured_http_error(self):
+        error = urllib.error.HTTPError(
+            "https://quota-report-hub.vercel.app/api/auth/upload",
+            500,
+            "Internal Server Error",
+            {},
+            io.BytesIO(b'{"error":"insert failed"}'),
+        )
+
+        with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=error):
+            result = post_auth_pool_entry(
+                "https://quota-report-hub.vercel.app",
+                "token",
+                source="claude",
+                auth_json_text='{"schema":"claude_credentials_v1"}',
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status_code"], 500)
+        self.assertEqual(result["error"], "insert failed")
+
+    def test_report_current_quota_to_auth_pool_returns_error_when_post_fails(self):
+        payload = {
+            "source": "claude",
+            "status": "ok",
+            "account_id": "claude-a@example.com",
+            "windows": {"5h": {"remaining_percent": 42}, "1week": None},
+        }
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+
+        with mock.patch.object(
+            quota_guard,
+            "post_auth_pool_quota",
+            return_value={"ok": False, "status_code": 500, "error": "quota write failed"},
+        ):
+            result = quota_guard.report_current_quota_to_auth_pool(config, "claude", payload)
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["reported"])
+        self.assertEqual(result["reason"], "post_auth_pool_quota_failed")
 
     def test_report_current_quota_to_auth_pool_skips_incomplete_codex_windows(self):
         payload = {

@@ -214,6 +214,14 @@ def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict |
         source=source,
         quota_payload=quota_payload,
     )
+    if result.get("ok") is False:
+        return {
+            "ok": False,
+            "reported": False,
+            "reason": "post_auth_pool_quota_failed",
+            "account_id": quota_payload.get("account_id"),
+            "result": result,
+        }
     return {
         "ok": True,
         "reported": True,

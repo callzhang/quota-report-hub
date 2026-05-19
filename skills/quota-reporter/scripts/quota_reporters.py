@@ -1109,6 +1109,21 @@ def read_auth_pool_response(response) -> dict:
     return payload
 
 
+def read_auth_pool_http_error(error: urllib.error.HTTPError) -> dict:
+    body = error.read().decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(body) if body else {}
+    except json.JSONDecodeError:
+        payload = {"raw_body": body}
+    return {
+        "ok": False,
+        "status_code": error.code,
+        "reason": "http_error",
+        "error": payload.get("error") or payload.get("message") or error.reason,
+        "response": payload,
+    }
+
+
 def post_auth_pool_entry(
     auth_pool_url: str,
     auth_pool_user_token: str,
@@ -1133,8 +1148,11 @@ def post_auth_pool_entry(
         },
         method="POST",
     )
-    with urllib.request.urlopen(request) as response:
-        return read_auth_pool_response(response)
+    try:
+        with urllib.request.urlopen(request) as response:
+            return read_auth_pool_response(response)
+    except urllib.error.HTTPError as error:
+        return read_auth_pool_http_error(error)
 
 
 def post_auth_pool_quota(
@@ -1159,8 +1177,11 @@ def post_auth_pool_quota(
         },
         method="POST",
     )
-    with urllib.request.urlopen(request) as response:
-        return read_auth_pool_response(response)
+    try:
+        with urllib.request.urlopen(request) as response:
+            return read_auth_pool_response(response)
+    except urllib.error.HTTPError as error:
+        return read_auth_pool_http_error(error)
 
 
 def delete_auth_pool_entry(
@@ -1185,8 +1206,11 @@ def delete_auth_pool_entry(
         },
         method="POST",
     )
-    with urllib.request.urlopen(request) as response:
-        return read_auth_pool_response(response)
+    try:
+        with urllib.request.urlopen(request) as response:
+            return read_auth_pool_response(response)
+    except urllib.error.HTTPError as error:
+        return read_auth_pool_http_error(error)
 
 
 def sync_current_auth_pool_entry(
@@ -1206,6 +1230,13 @@ def sync_current_auth_pool_entry(
             source=source,
             account_id=metadata["account_id"],
         )
+        if deleted.get("ok") is False:
+            return {
+                "ok": False,
+                "uploaded": False,
+                "reason": "delete_auth_pool_entry_failed",
+                "delete_result": deleted,
+            }
         state = write_known_auth_state(
             source=source,
             metadata=metadata,
@@ -1237,6 +1268,13 @@ def sync_current_auth_pool_entry(
             source=source,
             auth_json_text=auth_json_text,
         )
+        if uploaded.get("ok") is False:
+            return {
+                "ok": False,
+                "uploaded": False,
+                "reason": "upload_auth_pool_entry_failed",
+                "entry": uploaded,
+            }
         state = write_known_auth_state(
             source=source,
             metadata=metadata,
@@ -1260,6 +1298,13 @@ def sync_current_auth_pool_entry(
         source=source,
         auth_json_text=auth_json_text,
     )
+    if uploaded.get("ok") is False:
+        return {
+            "ok": False,
+            "uploaded": False,
+            "reason": "upload_auth_pool_entry_failed",
+            "entry": uploaded,
+        }
     state = write_known_auth_state(
         source=source,
         metadata=metadata,
@@ -1351,8 +1396,11 @@ def fetch_best_auth(
         },
         method="POST",
     )
-    with urllib.request.urlopen(request) as response:
-        return read_auth_pool_response(response)
+    try:
+        with urllib.request.urlopen(request) as response:
+            return read_auth_pool_response(response)
+    except urllib.error.HTTPError as error:
+        return read_auth_pool_http_error(error)
 
 
 def fetch_auth_pool_status(auth_pool_url: str, auth_pool_user_token: str) -> dict:
