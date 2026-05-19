@@ -56,7 +56,7 @@ test("deriveAuthPoolEntry extracts claude auth metadata", () => {
       name: "Org A",
       plan_name: "Max",
       auth_last_refresh: "1776668828033",
-      credentials: { claudeAiOauth: { accessToken: "token" } },
+      credentials: { claudeAiOauth: { accessToken: "token", expiresAt: 1776668828033 } },
     }),
     { reporter_name: "derek@mbp", hostname: "mbp" }
   );
@@ -65,6 +65,26 @@ test("deriveAuthPoolEntry extracts claude auth metadata", () => {
   assert.equal(entry.account_id, "claude-a@example.com");
   assert.equal(entry.email, "a@example.com");
   assert.equal(entry.plan_name, "Max");
+  assert.equal(entry.auth_expires_at, "2026-04-20T07:07:08.033Z");
+});
+
+test("deriveAuthPoolEntry accepts claude ISO auth expiry", () => {
+  const entry = deriveAuthPoolEntry(
+    "claude",
+    JSON.stringify({
+      schema: "claude_credentials_v1",
+      account_id: "claude-a@example.com",
+      email: "a@example.com",
+      credentials: {
+        claudeAiOauth: {
+          accessToken: "token",
+          expiresAt: "2026-04-23T12:00:00Z",
+        },
+      },
+    })
+  );
+
+  assert.equal(entry.auth_expires_at, "2026-04-23T12:00:00.000Z");
 });
 
 test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best usable quota", () => {
