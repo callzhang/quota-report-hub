@@ -1391,7 +1391,7 @@ Reading additional input from stdin...
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "no_better_auth_available")
 
-    def test_maybe_replace_codex_auth_installs_repair_auth_before_shared_replacement(self):
+    def test_maybe_replace_codex_auth_ignores_repair_auth_for_different_account(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             live_auth = base / "auth.json"
@@ -1420,30 +1420,20 @@ Reading additional input from stdin...
                 },
                 "reason": "uploaded_auth_requires_reauth",
             }):
-                with mock.patch.object(
-                    quota_guard,
-                    "auth_metadata",
-                    return_value={
-                        "digest": "digest-repair",
-                        "account_id": "junjie.zhou@stardust.ai",
-                        "auth_last_refresh": "2026-05-14T00:00:00Z",
-                    },
-                ):
-                    with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "digest-repair"}):
-                        replacement = quota_guard.maybe_replace_codex_auth(
-                            config,
-                            codex_payload,
-                            live_auth,
-                            known_auth_path,
-                            threshold_percent=20.0,
-                            weekly_threshold_percent=5.0,
-                        )
+                replacement = quota_guard.maybe_replace_codex_auth(
+                    config,
+                    codex_payload,
+                    live_auth,
+                    known_auth_path,
+                    threshold_percent=20.0,
+                    weekly_threshold_percent=5.0,
+                )
             installed_account_id = json.loads(live_auth.read_text(encoding="utf-8"))["tokens"]["account_id"]
 
-        self.assertTrue(replacement["replaced"])
-        self.assertTrue(replacement["repair"])
-        self.assertEqual(replacement["to_account_id"], "junjie.zhou@stardust.ai")
-        self.assertEqual(installed_account_id, "junjie.zhou@stardust.ai")
+        self.assertFalse(replacement["replaced"])
+        self.assertEqual(replacement["reason"], "repair_auth_for_different_account")
+        self.assertEqual(replacement["repair_account_id"], "junjie.zhou@stardust.ai")
+        self.assertEqual(installed_account_id, "other")
 
     def test_uploaded_invalidated_auths_filters_by_current_viewer_uploads(self):
         status_payload = {

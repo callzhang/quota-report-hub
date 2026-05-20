@@ -378,6 +378,15 @@ def maybe_replace_codex_auth(
     repair_auth = result.get("repair_auth")
     if replacement is None and repair_auth is not None:
         fetched_account_id = repair_auth.get("account_id")
+        if fetched_account_id != current_account_id:
+            return {
+                "ok": True,
+                "replaced": False,
+                "reason": "repair_auth_for_different_account",
+                "triggered_by": ["codex"],
+                "current_account_id": current_account_id,
+                "repair_account_id": fetched_account_id,
+            }
         current_digest = None
         if codex_auth_path.exists():
             try:

@@ -42,6 +42,7 @@ export default async function handler(req, res) {
   const invalidatedEntry = await getInvalidatedUploaderEntry({
     source,
     uploaderEmail: authContext.email,
+    accountId: currentAccountId,
   });
   const repairAuth = invalidatedEntryToRepairAuth(invalidatedEntry);
   if (invalidatedEntry) {

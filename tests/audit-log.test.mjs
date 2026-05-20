@@ -5,6 +5,26 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClient } from "@libsql/client";
 
+function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", lastRefresh = "2026-05-06T00:00:00Z" }) {
+  const payload = Buffer.from(
+    JSON.stringify({
+      email,
+      name,
+      "https://api.openai.com/auth": {
+        chatgpt_plan_type: plan,
+      },
+    })
+  ).toString("base64url");
+
+  return JSON.stringify({
+    last_refresh: lastRefresh,
+    tokens: {
+      account_id: accountId,
+      id_token: `x.${payload}.y`,
+    },
+  });
+}
+
 async function loadDbWithTempStore() {
   const tempDir = mkdtempSync(join(tmpdir(), "qrh-audit-test-"));
   const dbPath = join(tempDir, "audit.db");
@@ -123,6 +143,58 @@ test("authPoolFetchLog can show raw repair auth events without requester dedupe"
     assert.ok(repair);
     assert.equal(repair.served_account_id, "invalid@example.com");
     assert.equal(repair.served_uploader_email, "derek@stardust.ai");
+  } finally {
+    cleanup();
+  }
+});
+
+test("getInvalidatedUploaderEntry only returns the current account repair auth", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({ accountId: "provider-1", email: "invalid-a@example.com" }),
+      uploader_email: "derek@stardust.ai",
+    });
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({ accountId: "provider-2", email: "invalid-b@example.com" }),
+      uploader_email: "derek@stardust.ai",
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "invalid-a@example.com",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T01:01:00Z",
+      account_id: "invalid-b@example.com",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+
+    const different = await mod.getInvalidatedUploaderEntry({
+      source: "codex",
+      uploaderEmail: "derek@stardust.ai",
+      accountId: "current@example.com",
+    });
+    const matching = await mod.getInvalidatedUploaderEntry({
+      source: "codex",
+      uploaderEmail: "derek@stardust.ai",
+      accountId: "invalid-b@example.com",
+    });
+
+    assert.equal(different, null);
+    assert.equal(matching.account_id, "invalid-b@example.com");
   } finally {
     cleanup();
   }
