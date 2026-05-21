@@ -15,9 +15,10 @@ This skill installs and runs the local quota guard for Codex and Claude.
 4. Probes the current local Codex quota and the current local Claude quota to decide whether the current machine should rotate
 5. Publishes stable local quota snapshots back to the hub when available, with stricter completeness checks for Codex
 6. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
-7. Installs a reboot-safe scheduler that runs every 15 minutes
-8. Notifies the local user when any auth uploaded by that same token user is hard-invalidated, even if that auth is not the currently installed local auth
-9. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
+7. Restarts the local Codex app-server after writing a new Codex `auth.json`, so new Codex sessions read the replaced account instead of a stale cached account
+8. Installs a reboot-safe scheduler that runs every 15 minutes
+9. Notifies the local user when any auth uploaded by that same token user is hard-invalidated, even if that auth is not the currently installed local auth
+10. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
 
 ## Files
 
@@ -142,6 +143,7 @@ The guard then:
 - only accepts a server response when it contains a strictly better replacement from that same source
 - if the server returns `repair_auth`, the guard installs that auth instead of a shared replacement so the uploader can re-login and refresh their own invalidated auth
 - only replaces local source credentials when the fetched auth is different from what is already installed
+- after Codex `auth.json` is replaced or refreshed, restarts the local Codex app-server; if the app-server is an unmanaged ephemeral process, the guard stops it so the next Codex launch starts a fresh one
 - shows a desktop notification after a successful local replacement so the user knows to quit the current Codex or Claude Code session and start a new one
 - shows a desktop notification when any auth uploaded by the current token user is hard-invalidated in the hub
 - does nothing when the cloud cannot provide a better auth than the current one
@@ -152,8 +154,8 @@ The guard then:
 
 Operational notes:
 
-- replacing `~/.codex/auth.json` does not hot-switch already running Codex sessions
-- the next new Codex session is the one that should pick up the new auth
+- replacing `~/.codex/auth.json` does not hot-switch already running Codex TUI sessions
+- the guard restarts or stops the local Codex app-server after a Codex auth write, but any already-open TUI still needs to be reopened to attach to the fresh backend
 - the local config file contains a personal token and should stay private
 - the cloud dashboard shows the latest effective quota for each auth entry
 - Codex rows may be refreshed by either the cloud worker or a stable local client report; a newer worker soft failure does not replace an existing good local Codex quota snapshot

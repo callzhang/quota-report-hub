@@ -8,9 +8,11 @@ import json
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import tarfile
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
@@ -282,6 +284,158 @@ def notify_replacement_success(source: str, replacement: dict) -> dict:
     message = replacement_toast_message(source, replacement)
     shown = show_desktop_notification("额度守护", message)
     return {"shown": shown, "message": message}
+
+
+def codex_binary_for_app_server_restart() -> str | None:
+    local_codex = Path.home() / ".local" / "bin" / "codex"
+    if local_codex.exists() and os.access(local_codex, os.X_OK):
+        return str(local_codex)
+    return shutil.which("codex")
+
+
+def unmanaged_codex_app_server_pids() -> list[int]:
+    if platform.system().lower() == "windows":
+        return []
+    result = subprocess.run(
+        ["ps", "-eo", "pid=,args="],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+
+    current_pid = os.getpid()
+    pids = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        pid_text, _, args = stripped.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        if pid == current_pid:
+            continue
+        if " be-child ssh " in args or "/bin/bash -c" in args or " grep " in f" {args} ":
+            continue
+        if "codex app-server --listen" not in args:
+            continue
+        pids.append(pid)
+    return pids
+
+
+def stop_unmanaged_codex_app_server() -> dict:
+    pids = unmanaged_codex_app_server_pids()
+    if not pids:
+        return {"ok": False, "stopped": False, "reason": "unmanaged_app_server_not_found"}
+
+    terminated = []
+    failed = []
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            terminated.append(pid)
+        except ProcessLookupError:
+            terminated.append(pid)
+        except Exception as error:
+            failed.append({"pid": pid, "error": str(error)})
+
+    time.sleep(0.5)
+    still_running = []
+    for pid in terminated:
+        try:
+            os.kill(pid, 0)
+            still_running.append(pid)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
+
+    killed = []
+    for pid in still_running:
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+        except ProcessLookupError:
+            pass
+        except Exception as error:
+            failed.append({"pid": pid, "error": str(error)})
+
+    return {
+        "ok": not failed,
+        "stopped": True,
+        "terminated_pids": terminated,
+        "killed_pids": killed,
+        "failed": failed,
+    }
+
+
+def restart_codex_app_server() -> dict:
+    codex_bin = codex_binary_for_app_server_restart()
+    if not codex_bin:
+        return {"ok": False, "restarted": False, "reason": "codex_binary_not_found"}
+
+    command = [codex_bin, "app-server", "daemon", "restart"]
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "restarted": False,
+            "reason": "restart_timeout",
+            "command": command,
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "restarted": False,
+            "reason": "restart_failed",
+            "error": str(error),
+            "command": command,
+        }
+
+    if result.returncode != 0:
+        combined_output = f"{result.stdout}\n{result.stderr}"
+        if "not managed by codex app-server daemon" in combined_output:
+            stopped = stop_unmanaged_codex_app_server()
+            return {
+                "ok": stopped.get("ok", False),
+                "restarted": bool(stopped.get("stopped")),
+                "reason": "unmanaged_app_server_stopped",
+                "daemon_restart": {
+                    "returncode": result.returncode,
+                    "stdout": result.stdout.strip()[-1000:],
+                    "stderr": result.stderr.strip()[-1000:],
+                },
+                "fallback": stopped,
+                "command": command,
+            }
+        return {
+            "ok": False,
+            "restarted": False,
+            "reason": "restart_command_failed",
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip()[-1000:],
+            "stderr": result.stderr.strip()[-1000:],
+            "command": command,
+        }
+    return {
+        "ok": True,
+        "restarted": True,
+        "command": command,
+        "stdout": result.stdout.strip()[-1000:],
+        "stderr": result.stderr.strip()[-1000:],
+    }
 
 
 def uploaded_invalidated_auths(status_payload: dict) -> list[dict]:
@@ -604,6 +758,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not show a desktop notification after a successful auth replacement.",
     )
     parser.add_argument(
+        "--no-restart-codex-app-server",
+        action="store_true",
+        help="Do not restart the local Codex app-server after quota guard writes a new Codex auth.json.",
+    )
+    parser.add_argument(
         "--skip-self-update",
         action="store_true",
         help="Skip the startup check that updates this installed skill from GitHub before running the guard.",
@@ -708,6 +867,17 @@ def run_guard(args: argparse.Namespace) -> dict:
         args.threshold_percent,
         args.weekly_threshold_percent,
     )
+    codex_auth_changed = bool(
+        (codex_payload or {}).get("local_auth_refresh", {}).get("written")
+        or codex_replacement.get("replaced")
+    )
+    codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged"}
+    if codex_auth_changed:
+        if getattr(args, "no_restart_codex_app_server", False):
+            codex_app_server = {"restarted": False, "reason": "disabled"}
+        else:
+            codex_app_server = restart_codex_app_server()
+
     notifications = {}
     if not getattr(args, "no_toast", False):
         notifications["codex"] = notify_replacement_success("codex", codex_replacement)
@@ -726,6 +896,7 @@ def run_guard(args: argparse.Namespace) -> dict:
             "codex": codex_replacement,
             "claude": claude_replacement,
         },
+        "codex_app_server": codex_app_server,
         "notifications": notifications,
     }
 

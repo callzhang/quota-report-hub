@@ -12,6 +12,7 @@ The skill installs a local 15-minute quota guard that:
 - checks whether the current local source is low on quota
 - can push stable local Codex and Claude quota snapshots to the hub when available
 - fetches and installs a strictly better auth from the same source when needed
+- restarts or stops the local Codex app-server after writing a new Codex `auth.json`, so new Codex sessions do not keep using the old cached account
 - shows a desktop notification after a successful local auth replacement so the user knows to quit the current Codex or Claude Code session and start a new one
 - shows a desktop notification when any auth uploaded by the current token user is hard-invalidated
 - keeps older uploaded auths in the cloud pool when the local machine switches to a different current auth
@@ -38,6 +39,7 @@ The guard is source-aware:
   - reuploads current auths
   - probes current local quota
   - fetches and installs a better auth if the current source is below threshold
+  - restarts managed Codex app-server after a Codex auth write, or stops unmanaged ephemeral app-server so the next Codex launch starts cleanly
 - `scripts/trigger_remote_probe.py`
   - triggers the GitHub Actions cloud probe worker
   - optionally watches the run

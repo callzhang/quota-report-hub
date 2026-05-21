@@ -1555,6 +1555,8 @@ Reading additional input from stdin...
             claude_bin=None,
             threshold_percent=20.0,
             weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
         )
 
         with mock.patch.object(quota_guard, "load_config", return_value={
@@ -1594,6 +1596,7 @@ Reading additional input from stdin...
             threshold_percent=20.0,
             weekly_threshold_percent=5.0,
             no_toast=False,
+            no_restart_codex_app_server=False,
         )
         codex_replacement = {
             "ok": True,
@@ -1614,15 +1617,53 @@ Reading additional input from stdin...
                             with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value=codex_replacement):
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
                                     with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
-                                        with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                                            result = quota_guard.run_guard(args)
+                                        with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
+                                            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                                                result = quota_guard.run_guard(args)
 
         notify.assert_called_once()
+        restart.assert_called_once()
         self.assertEqual(notify.call_args.args[0], "额度守护")
+        self.assertEqual(result["codex_app_server"], {"ok": True, "restarted": True})
         self.assertTrue(result["notifications"]["codex"]["shown"])
         self.assertIn("请退出当前 Codex 会话并重新打开", result["notifications"]["codex"]["message"])
         self.assertEqual(result["notifications"]["claude"]["reason"], "not_replaced")
         self.assertEqual(result["notifications"]["uploaded_invalidated_auths"]["reason"], "no_uploaded_invalidated_auths")
+
+    def test_run_guard_restarts_codex_app_server_after_local_auth_refresh(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
+        )
+        codex_payload = {
+            "account_id": "current",
+            "status": "ok",
+            "local_auth_refresh": {"written": True},
+        }
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value=codex_payload):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}):
+                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                    with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                        with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
+                                            result = quota_guard.run_guard(args)
+
+        restart.assert_called_once()
+        self.assertEqual(result["codex_app_server"], {"ok": True, "restarted": True})
 
     def test_run_guard_can_disable_replacement_toasts(self):
         args = mock.Mock(
@@ -1634,6 +1675,7 @@ Reading additional input from stdin...
             threshold_percent=20.0,
             weekly_threshold_percent=5.0,
             no_toast=True,
+            no_restart_codex_app_server=False,
         )
 
         with mock.patch.object(quota_guard, "load_config", return_value={
@@ -1646,11 +1688,58 @@ Reading additional input from stdin...
                         with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
                             with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": True}):
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False}):
-                                    with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
-                                        result = quota_guard.run_guard(args)
+                                    with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
+                                        with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
+                                            result = quota_guard.run_guard(args)
 
         notify.assert_not_called()
+        restart.assert_called_once()
+        self.assertEqual(result["codex_app_server"], {"ok": True, "restarted": True})
         self.assertEqual(result["notifications"], {})
+
+    def test_restart_codex_app_server_stops_unmanaged_ephemeral_server(self):
+        daemon_result = mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="Error: app server is running but is not managed by codex app-server daemon",
+        )
+
+        with mock.patch.object(quota_guard, "codex_binary_for_app_server_restart", return_value="/bin/codex"):
+            with mock.patch.object(quota_guard.subprocess, "run", return_value=daemon_result) as run:
+                with mock.patch.object(quota_guard, "stop_unmanaged_codex_app_server", return_value={
+                    "ok": True,
+                    "stopped": True,
+                    "terminated_pids": [123],
+                    "killed_pids": [],
+                    "failed": [],
+                }) as stop:
+                    result = quota_guard.restart_codex_app_server()
+
+        run.assert_called_once()
+        stop.assert_called_once()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["restarted"])
+        self.assertEqual(result["reason"], "unmanaged_app_server_stopped")
+        self.assertEqual(result["fallback"]["terminated_pids"], [123])
+
+    def test_unmanaged_codex_app_server_pids_only_matches_listener_processes(self):
+        ps_result = mock.Mock(
+            returncode=0,
+            stdout=(
+                "  101 node /home/derek/.local/bin/codex app-server --listen unix://\n"
+                "  102 /path/codex app-server proxy\n"
+                "  103 node /home/derek/.local/bin/codex exec prompt\n"
+                "  104 grep codex app-server --listen\n"
+                "  105 /bin/bash -c ps | grep codex app-server --listen\n"
+                "  106 /usr/sbin/tailscaled be-child ssh --cmd=codex app-server --listen\n"
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(quota_guard.platform, "system", return_value="Linux"):
+            with mock.patch.object(quota_guard.subprocess, "run", return_value=ps_result):
+                with mock.patch.object(quota_guard.os, "getpid", return_value=999):
+                    self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101])
 
     def test_quota_guard_parser_supports_skip_self_update(self):
         parser = quota_guard.build_parser()
