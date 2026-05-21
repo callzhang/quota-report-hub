@@ -22,6 +22,7 @@ import install_quota_guard  # noqa: E402
 from quota_reporters import (
     build_claude_auth_blob,
     codex_auth_refresh_delta,
+    codex_probe_env,
     codex_usage_limit_exhausted,
     codex_usage_limit_reset_from_rate_limits,
     codex_usage_limit_reset_at,
@@ -192,6 +193,77 @@ class ReporterScriptsTest(unittest.TestCase):
 
         self.assertNotIn("/tmp/", seen["code_home"])
         self.assertTrue(seen["workdir"].endswith("/workspace"))
+
+    def test_codex_probe_env_strips_provider_auth_overrides(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            codex_home = Path(temp_dir) / "codex-home"
+            with mock.patch.dict(
+                "os.environ",
+                {
+                    "PATH": "/usr/bin",
+                    "OPENAI_API_KEY": "sk-wrong",
+                    "OPENAI_BASE_URL": "https://wrong.example",
+                    "CODEX_ACCESS_TOKEN": "wrong-token",
+                    "ANTHROPIC_API_KEY": "anthropic-wrong",
+                },
+                clear=True,
+            ):
+                env = codex_probe_env(codex_home)
+
+        self.assertEqual(env["PATH"], "/usr/bin")
+        self.assertEqual(env["CODEX_HOME"], str(codex_home))
+        self.assertNotIn("OPENAI_API_KEY", env)
+        self.assertNotIn("OPENAI_BASE_URL", env)
+        self.assertNotIn("CODEX_ACCESS_TOKEN", env)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+
+    def test_probe_codex_ignores_user_config_and_rules(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "prolite"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            seen = {}
+
+            def fake_run(args, env=None, capture_output=None, text=None, check=None):
+                seen["args"] = args
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch("quota_reporters.subprocess.run", side_effect=fake_run):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 272000},
+                            "rate_limits": {
+                                "plan_type": "prolite",
+                                "primary": {"used_percent": 5, "window_minutes": 300},
+                                "secondary": {"used_percent": 10, "window_minutes": 10080},
+                            },
+                        }
+                    },
+                ):
+                    probe_codex(auth_path)
+
+        self.assertIn("--ignore-user-config", seen["args"])
+        self.assertIn("--ignore-rules", seen["args"])
 
     def test_probe_codex_maps_usage_limit_event_to_zero_remaining_windows(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -137,6 +137,7 @@ The guard then:
 - updates `~/.agents/auth/known_auth.json`
 - reuploads the current auth to the auth pool so a missing cloud entry can recover automatically
 - probes the current live Codex auth and Claude auth
+- Codex probes run in an isolated temporary `CODEX_HOME` and strip provider/auth override environment variables such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `CODEX_ACCESS_TOKEN`; otherwise a teammate's shell config can produce quota for a different provider while labeling it as the copied `auth.json` account
 - may push stable local quota snapshots back to the hub when available
 - for Codex, only complete windows or hard invalidations are uploaded, so partial local probes do not overwrite good hub data
 - if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`

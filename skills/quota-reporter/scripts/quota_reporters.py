@@ -270,6 +270,37 @@ def codex_probe_temp_root() -> Path:
     return root
 
 
+CODEX_PROBE_ENV_BLOCKLIST = {
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_ORGANIZATION",
+    "OPENAI_PROJECT",
+    "CODEX_ACCESS_TOKEN",
+    "CODEX_API_KEY",
+    "CODEX_AUTH_TOKEN",
+    "CODEX_BASE_URL",
+    "CODEX_PROVIDER",
+    "CODEX_MODEL_PROVIDER",
+    "CHATGPT_BASE_URL",
+    "CHATGPT_API_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+}
+
+
+def codex_probe_env(codex_home: Path) -> dict:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in CODEX_PROBE_ENV_BLOCKLIST
+    }
+    env["CODEX_HOME"] = str(codex_home)
+    return env
+
+
 def summarize_codex_exec_error(stdout: str, stderr: str) -> str:
     combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part).strip()
     lowered = combined.lower()
@@ -464,10 +495,18 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
         workspace.mkdir(parents=True, exist_ok=True)
         temp_auth_path = codex_home / "auth.json"
         shutil.copy2(auth_path, temp_auth_path)
-        env = dict(os.environ)
-        env["CODEX_HOME"] = str(codex_home)
+        env = codex_probe_env(codex_home)
         result = subprocess.run(
-            ["codex", "exec", "--skip-git-repo-check", "-C", str(workspace), CODEx_PROMPT],
+            [
+                "codex",
+                "exec",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--skip-git-repo-check",
+                "-C",
+                str(workspace),
+                CODEx_PROMPT,
+            ],
             env=env,
             capture_output=True,
             text=True,

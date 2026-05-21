@@ -37,7 +37,7 @@ The guard is source-aware:
   - runs one full local guard cycle
   - checks GitHub `main` and updates the installed skill before probing
   - reuploads current auths
-  - probes current local quota
+  - probes current local quota in an isolated temporary Codex home, with provider/auth override environment variables stripped so API-key or custom-provider shells cannot be mislabeled as the copied ChatGPT auth
   - fetches and installs a better auth if the current source is below threshold
   - restarts managed Codex app-server after a Codex auth write, or stops unmanaged ephemeral app-server so the next Codex launch starts cleanly
 - `scripts/trigger_remote_probe.py`
