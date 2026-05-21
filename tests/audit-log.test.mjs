@@ -86,6 +86,7 @@ test("authPoolFetchLog shows only the latest fetch per requester and source", as
       currentAccountId: "acct-2",
       currentQuota: { five_h_remaining_percent: 12, one_week_remaining_percent: 80 },
     });
+    await new Promise((resolve) => setTimeout(resolve, 5));
     await mod.recordAuthPoolFetch({
       requesterEmail: "alice@stardust.ai",
       source: "codex",
@@ -143,6 +144,65 @@ test("authPoolFetchLog can show raw repair auth events without requester dedupe"
     assert.ok(repair);
     assert.equal(repair.served_account_id, "invalid@example.com");
     assert.equal(repair.served_uploader_email, "derek@stardust.ai");
+  } finally {
+    cleanup();
+  }
+});
+
+test("authPoolRecentServedCounts counts only recent served replacements by source", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "alice@stardust.ai",
+      source: "codex",
+      servedEntry: {
+        account_id: "shared-a",
+        email: "shared-a@stardust.ai",
+        uploader_email: "owner@stardust.ai",
+        digest: "digest-a",
+      },
+      reason: "served",
+    });
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "bob@stardust.ai",
+      source: "codex",
+      servedEntry: {
+        account_id: "shared-a",
+        email: "shared-a@stardust.ai",
+        uploader_email: "owner@stardust.ai",
+        digest: "digest-a",
+      },
+      reason: "served",
+    });
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "carol@stardust.ai",
+      source: "claude",
+      servedEntry: {
+        account_id: "shared-a",
+        email: "shared-a@stardust.ai",
+        uploader_email: "owner@stardust.ai",
+        digest: "digest-a",
+      },
+      reason: "served",
+    });
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "derek@stardust.ai",
+      source: "codex",
+      servedEntry: {
+        account_id: "shared-b",
+        email: "shared-b@stardust.ai",
+        uploader_email: "owner@stardust.ai",
+        digest: "digest-b",
+      },
+      reason: "repair_auth_returned",
+    });
+
+    const counts = await mod.authPoolRecentServedCounts({
+      source: "codex",
+      since: "2000-01-01T00:00:00Z",
+    });
+
+    assert.deepEqual(counts, { "shared-a": 2 });
   } finally {
     cleanup();
   }

@@ -180,6 +180,7 @@ If a request presents an older hub-signed token, the server can verify the embed
   - excludes accounts with `5H <= 0` or `1week <= 0`
   - only considers candidates whose `5H` is strictly better than the current local `5H`
   - only considers candidates whose `1week` is still above `0`
+  - first limits selection to candidates within 20 percentage points of the best available `5H`, then prefers the account served fewer times in the last 5 hours
   - returns either:
     - a decrypted better auth plus latest effective quota metadata
     - or `replacement: null`
