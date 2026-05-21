@@ -193,21 +193,60 @@ test("mergeLatestReport accepts newer non-null windows", () => {
     source: "codex",
     hostname: "gpu4",
     reporter_name: "derek@gpu4",
-    reported_at: "2026-04-21T04:15:00Z",
+    reported_at: "2026-04-28T10:00:00Z",
     account_id: "acct-1",
     status: "ok",
     windows: {
-      "5h": { used_percent: 10, remaining_percent: 90, reset_at: "2026-04-21T10:00:00Z" },
+      "5h": { used_percent: 10, remaining_percent: 90, reset_at: "2026-04-28T15:00:00Z" },
       "1week": { used_percent: 35, remaining_percent: 65, reset_at: "2026-04-28T10:00:00Z" },
     },
   });
 
   const merged = mergeLatestReport(previous, incoming);
 
-  assert.equal(merged.reported_at, "2026-04-21T04:15:00Z");
+  assert.equal(merged.reported_at, "2026-04-28T10:00:00Z");
   assert.equal(merged.windows_stale, false);
   assert.equal(merged.windows["5h"].remaining_percent, 90);
   assert.equal(merged.windows["1week"].remaining_percent, 65);
+});
+
+test("mergeLatestReport preserves known quota when a client jumps reset before the current window resets", () => {
+  const previous = sanitizeReport({
+    source: "codex",
+    hostname: "gpu4",
+    reporter_name: "derek@gpu4",
+    reported_at: "2026-05-21T09:45:01Z",
+    report_origin: "client",
+    account_id: "leizhang0121@gmail.com",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 10, remaining_percent: 90, reset_at: "2026-05-21T13:37:02Z" },
+      "1week": { used_percent: 56, remaining_percent: 44, reset_at: "2026-05-26T21:23:39Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    hostname: "old-client",
+    reporter_name: "old@old-client",
+    reported_at: "2026-05-21T09:59:32Z",
+    report_origin: "client",
+    account_id: "leizhang0121@gmail.com",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 0, remaining_percent: 100, reset_at: "2026-05-21T15:01:26Z" },
+      "1week": { used_percent: 0, remaining_percent: 100, reset_at: "2026-05-28T10:01:26Z" },
+    },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.reported_at, "2026-05-21T09:59:32Z");
+  assert.equal(merged.hostname, "old-client");
+  assert.equal(merged.windows_stale, true);
+  assert.equal(merged.windows["5h"].remaining_percent, 90);
+  assert.equal(merged.windows["5h"].reset_at, "2026-05-21T13:37:02Z");
+  assert.equal(merged.windows["1week"].remaining_percent, 44);
+  assert.equal(merged.windows["1week"].reset_at, "2026-05-26T21:23:39Z");
 });
 
 test("mergeLatestReport accepts newer zero client quota over stale positive quota", () => {
