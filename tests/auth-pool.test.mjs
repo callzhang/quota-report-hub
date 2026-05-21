@@ -87,7 +87,7 @@ test("deriveAuthPoolEntry accepts claude ISO auth expiry", () => {
   assert.equal(entry.auth_expires_at, "2026-04-23T12:00:00.000Z");
 });
 
-test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best usable quota", () => {
+test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best weighted usable quota", () => {
   const reports = [
     {
       source: "codex",
@@ -139,8 +139,8 @@ test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best 
     now: "2026-04-22T08:30:00Z",
   });
 
-  assert.equal(candidate.entry.account_id, "best");
-  assert.equal(candidate.report.account_id, "best");
+  assert.equal(candidate.entry.account_id, "soft");
+  assert.equal(candidate.report.account_id, "soft");
 });
 
 test("pickBestAuthPoolCandidate spreads fetches across similarly strong accounts", () => {
@@ -186,7 +186,7 @@ test("pickBestAuthPoolCandidate spreads fetches across similarly strong accounts
   assert.equal(candidate.entry.account_id, "cool");
 });
 
-test("pickBestAuthPoolCandidate does not spread to a marginal account far below the best quota", () => {
+test("pickBestAuthPoolCandidate weights distribution by remaining quota", () => {
   const reports = [
     {
       source: "codex",
@@ -220,8 +220,51 @@ test("pickBestAuthPoolCandidate does not spread to a marginal account far below 
       one_week_remaining_percent: 10,
     },
     recent_served_counts: {
-      hot: 10,
+      hot: 2,
       marginal: 0,
+    },
+    now: "2026-04-22T08:30:00Z",
+  });
+
+  assert.equal(candidate.entry.account_id, "marginal");
+});
+
+test("pickBestAuthPoolCandidate lets high-quota accounts carry proportionally more fetches", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "hot",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 98 },
+        "1week": { remaining_percent: 90 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+    {
+      source: "codex",
+      account_id: "low",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 30 },
+        "1week": { remaining_percent: 30 },
+      },
+      reported_at: "2026-04-22T08:03:00Z",
+    },
+  ];
+  const pool = [{ account_id: "hot" }, { account_id: "low" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_quota: {
+      five_h_remaining_percent: 10,
+      one_week_remaining_percent: 10,
+    },
+    recent_served_counts: {
+      hot: 1,
+      low: 0,
     },
     now: "2026-04-22T08:30:00Z",
   });

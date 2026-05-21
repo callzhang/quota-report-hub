@@ -95,7 +95,7 @@ Important runtime notes:
   - the current local `5H remaining percent`
   - the current local `1week remaining percent`
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
-- among similarly strong replacement candidates, the server prefers accounts that were served fewer times in the current 5-hour window, so one high-quota account is not handed to every requester
+- replacement selection is weighted by remaining quota: the server compares recent 5-hour fetch count against `min(5H remaining, 1week remaining)`, so higher-quota accounts carry more requests while lower-quota accounts are still used proportionally
 - local upload is idempotent: even when `known_auth.json` records the same uploaded `account_id`, `auth_last_refresh`, and digest, the guard reuploads the current auth so a missing cloud entry can be restored automatically
 - uploading a new current auth does not delete older auths previously uploaded by the same user; the hub keeps monitoring all of them so invalidated-owner notifications still work
 - if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy
