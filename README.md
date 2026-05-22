@@ -94,8 +94,9 @@ Important runtime notes:
   - the current local `account_id`
   - the current local `5H remaining percent`
   - the current local `1week remaining percent`
+  - a local `requester_id` such as `user@hostname`, so machines sharing the same hub token are still spread across different replacement auths
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
-- replacement selection is weighted by remaining quota: the server compares recent 5-hour fetch count plus a requester-specific deterministic spread offset against `min(5H remaining, 1week remaining)`, so concurrent requests do not all pick the same account and higher-quota accounts still carry more load
+- replacement selection is weighted by remaining quota: the server uses requester-specific deterministic weighted sampling with weight `min(5H remaining, 1week remaining)`, plus a small recent-fetch penalty, so concurrent requests do not all pick the same account and higher-quota accounts still carry more load
 - local upload is idempotent: even when `known_auth.json` records the same uploaded `account_id`, `auth_last_refresh`, and digest, the guard reuploads the current auth so a missing cloud entry can be restored automatically
 - uploading a new current auth does not delete older auths previously uploaded by the same user; the hub keeps monitoring all of them so invalidated-owner notifications still work
 - if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy

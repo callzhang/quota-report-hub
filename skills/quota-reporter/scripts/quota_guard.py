@@ -527,6 +527,7 @@ def maybe_replace_codex_auth(
         current_account_id=current_account_id,
         current_quota=current_quota,
         exclude_account_ids=[],
+        requester_id=current_codex_payload.get("reporter_name") if current_codex_payload else None,
     )
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
@@ -668,6 +669,7 @@ def maybe_replace_claude_auth(
         current_account_id=current_account_id,
         current_quota=current_quota,
         exclude_account_ids=[],
+        requester_id=current_claude_payload.get("reporter_name") if current_claude_payload else None,
     )
     replacement = result.get("replacement")
     if replacement is None:

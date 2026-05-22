@@ -186,7 +186,7 @@ test("pickBestAuthPoolCandidate spreads fetches across similarly strong accounts
   assert.equal(candidate.entry.account_id, "cool");
 });
 
-test("pickBestAuthPoolCandidate weights distribution by remaining quota", () => {
+test("pickBestAuthPoolCandidate does not overcompensate a low-quota account with fewer recent fetches", () => {
   const reports = [
     {
       source: "codex",
@@ -226,7 +226,7 @@ test("pickBestAuthPoolCandidate weights distribution by remaining quota", () => 
     now: "2026-04-22T08:30:00Z",
   });
 
-  assert.equal(candidate.entry.account_id, "marginal");
+  assert.equal(candidate.entry.account_id, "hot");
 });
 
 test("pickBestAuthPoolCandidate lets high-quota accounts carry proportionally more fetches", () => {

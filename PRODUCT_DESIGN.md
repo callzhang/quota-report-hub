@@ -169,6 +169,7 @@ If a request presents an older hub-signed token, the server can verify the embed
   - `current_quota`
     - `five_h_remaining_percent`
     - `one_week_remaining_percent`
+  - `requester_id`, normally `user@hostname`, so shared access tokens do not collapse all machines into one requester identity
   behavior:
   - looks at stored auth pool entries plus their latest effective quota metadata
   - if the requester owns an invalidated auth, returns that auth as `repair_auth` so the owner can re-login and refresh it
@@ -180,7 +181,7 @@ If a request presents an older hub-signed token, the server can verify the embed
   - excludes accounts with `5H <= 0` or `1week <= 0`
   - only considers candidates whose `5H` is strictly better than the current local `5H`
   - only considers candidates whose `1week` is still above `0`
-  - weights selection by remaining quota using `(recent 5-hour served count + requester-specific spread offset) / min(5H remaining, 1week remaining)`, then returns the lowest projected load
+  - weights selection by remaining quota using requester-specific deterministic weighted sampling with weight `min(5H remaining, 1week remaining)`, plus a small recent-fetch penalty, then returns the lowest projected load
   - returns either:
     - a decrypted better auth plus latest effective quota metadata
     - or `replacement: null`

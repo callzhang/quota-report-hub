@@ -34,6 +34,7 @@ export default async function handler(req, res) {
   const body = await readJsonBody(req);
   const source = body?.source ? String(body.source) : "codex";
   const currentAccountId = body?.current_account_id ? String(body.current_account_id) : null;
+  const requesterId = body?.requester_id ? String(body.requester_id) : null;
   const currentQuota = {
     five_h_remaining_percent: body?.current_quota?.five_h_remaining_percent,
     one_week_remaining_percent: body?.current_quota?.one_week_remaining_percent,
@@ -89,6 +90,12 @@ export default async function handler(req, res) {
   const entry = await bestAuthPoolEntry({
     source,
     requester_email: authContext.email,
+    selection_key: [
+      authContext.email,
+      requesterId,
+      currentAccountId,
+      req.headers["x-vercel-ip-city"] || req.headers["x-forwarded-for"] || "",
+    ].filter(Boolean).join("|"),
     exclude_account_ids: Array.isArray(body?.exclude_account_ids) ? body.exclude_account_ids : [],
     current_account_id: currentAccountId,
     current_quota: currentQuota,

@@ -1417,6 +1417,7 @@ def fetch_best_auth(
     current_account_id: str | None = None,
     current_quota: dict | None = None,
     exclude_account_ids: list[str] | None = None,
+    requester_id: str | None = None,
 ) -> dict:
     body = json.dumps(
         {
@@ -1424,6 +1425,7 @@ def fetch_best_auth(
             "exclude_account_ids": exclude_account_ids or [],
             "current_account_id": current_account_id,
             "current_quota": current_quota or {},
+            "requester_id": requester_id or reporter_name(),
         }
     ).encode("utf-8")
     request = urllib.request.Request(
