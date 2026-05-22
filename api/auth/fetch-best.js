@@ -88,6 +88,7 @@ export default async function handler(req, res) {
 
   const entry = await bestAuthPoolEntry({
     source,
+    requester_email: authContext.email,
     exclude_account_ids: Array.isArray(body?.exclude_account_ids) ? body.exclude_account_ids : [],
     current_account_id: currentAccountId,
     current_quota: currentQuota,

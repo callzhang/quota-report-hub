@@ -272,6 +272,37 @@ test("pickBestAuthPoolCandidate lets high-quota accounts carry proportionally mo
   assert.equal(candidate.entry.account_id, "hot");
 });
 
+test("pickBestAuthPoolCandidate uses requester key to spread concurrent equal-load requests", () => {
+  const reports = ["a", "b", "c"].map((accountId) => ({
+    source: "codex",
+    account_id: accountId,
+    status: "ok",
+    error: null,
+    windows: {
+      "5h": { remaining_percent: 80 },
+      "1week": { remaining_percent: 80 },
+    },
+    reported_at: "2026-04-22T08:02:00Z",
+  }));
+  const pool = reports.map((report) => ({ account_id: report.account_id }));
+
+  const selected = new Set(
+    ["alice@stardust.ai", "carol@stardust.ai", "frank@stardust.ai"].map((selectionKey) =>
+      pickBestAuthPoolCandidate(reports, pool, {
+        source: "codex",
+        current_quota: {
+          five_h_remaining_percent: 10,
+          one_week_remaining_percent: 10,
+        },
+        selection_key: selectionKey,
+        now: "2026-04-22T08:30:00Z",
+      }).entry.account_id
+    )
+  );
+
+  assert.ok(selected.size > 1);
+});
+
 test("pickBestAuthPoolCandidate returns null when no candidate beats current quota", () => {
   const reports = [
     {

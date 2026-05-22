@@ -180,7 +180,7 @@ If a request presents an older hub-signed token, the server can verify the embed
   - excludes accounts with `5H <= 0` or `1week <= 0`
   - only considers candidates whose `5H` is strictly better than the current local `5H`
   - only considers candidates whose `1week` is still above `0`
-  - weights selection by remaining quota using `(recent 5-hour served count + 1) / min(5H remaining, 1week remaining)`, then returns the lowest projected load
+  - weights selection by remaining quota using `(recent 5-hour served count + requester-specific spread offset) / min(5H remaining, 1week remaining)`, then returns the lowest projected load
   - returns either:
     - a decrypted better auth plus latest effective quota metadata
     - or `replacement: null`
