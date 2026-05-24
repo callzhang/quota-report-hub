@@ -96,7 +96,9 @@ Important runtime notes:
   - the current local `1week remaining percent`
   - a local `requester_id` such as `user@hostname`, so machines sharing the same hub token are still spread across different replacement auths
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
-- replacement selection is weighted by remaining quota: the server uses requester-specific deterministic weighted sampling with weight `min(5H remaining, 1week remaining)`, plus a small recent-fetch penalty, so concurrent requests do not all pick the same account and higher-quota accounts still carry more load
+- replacement selection is weighted by remaining quota: the server uses requester-specific deterministic weighted sampling with a softened quota weight, plus a small active-assignment penalty, so high-quota accounts carry more load without taking nearly every request
+- the server also tracks active assignments by each machine's latest fetch event; an auth already installed on many machines is treated as loaded even if those machines have not fetched again within the last 5 hours
+- local quota reports are also used as active-assignment evidence: each reporter's latest Codex account contributes to that auth's load, which catches machines that keep using an auth without calling `fetch-best`
 - local upload is idempotent: even when `known_auth.json` records the same uploaded `account_id`, `auth_last_refresh`, and digest, the guard reuploads the current auth so a missing cloud entry can be restored automatically
 - uploading a new current auth does not delete older auths previously uploaded by the same user; the hub keeps monitoring all of them so invalidated-owner notifications still work
 - if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy

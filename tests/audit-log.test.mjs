@@ -208,6 +208,98 @@ test("authPoolRecentServedCounts counts only recent served replacements by sourc
   }
 });
 
+test("authPoolActiveAssignmentCounts counts each machine's latest installed auth", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "shared-token@stardust.ai",
+      requesterId: "derek@gpu4",
+      source: "codex",
+      servedEntry: {
+        account_id: "shared-a",
+        email: "shared-a@stardust.ai",
+        uploader_email: "owner@stardust.ai",
+        digest: "digest-a",
+      },
+      reason: "served",
+      currentAccountId: "old-a",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "shared-token@stardust.ai",
+      requesterId: "derek@gpu4",
+      source: "codex",
+      servedEntry: null,
+      reason: "no_better_auth_available",
+      currentAccountId: "shared-a",
+      currentQuota: { five_h_remaining_percent: 80, one_week_remaining_percent: 80 },
+    });
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "shared-token@stardust.ai",
+      requesterId: "derek@mac",
+      source: "codex",
+      servedEntry: {
+        account_id: "shared-b",
+        email: "shared-b@stardust.ai",
+        uploader_email: "owner@stardust.ai",
+        digest: "digest-b",
+      },
+      reason: "served",
+    });
+
+    const counts = await mod.authPoolActiveAssignmentCounts({
+      source: "codex",
+      since: "2000-01-01T00:00:00Z",
+    });
+
+    assert.deepEqual(counts, { "shared-a": 1, "shared-b": 1 });
+  } finally {
+    cleanup();
+  }
+});
+
+test("authPoolActiveReporterCounts counts each reporter's latest quota account", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "derek@gpu4",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "old@example.com",
+      status: "ok",
+      windows: { "5h": { remaining_percent: 80 }, "1week": { remaining_percent: 80 } },
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "derek@gpu4",
+      reported_at: "2026-05-06T01:05:00Z",
+      account_id: "current@example.com",
+      status: "ok",
+      windows: { "5h": { remaining_percent: 70 }, "1week": { remaining_percent: 70 } },
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "mac",
+      reporter_name: "derek@mac",
+      reported_at: "2026-05-06T01:06:00Z",
+      account_id: "current@example.com",
+      status: "ok",
+      windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } },
+    });
+
+    const counts = await mod.authPoolActiveReporterCounts({
+      source: "codex",
+      since: "2000-01-01T00:00:00Z",
+    });
+
+    assert.deepEqual(counts, { "current@example.com": 2 });
+  } finally {
+    cleanup();
+  }
+});
+
 test("getInvalidatedUploaderEntry only returns the current account repair auth", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {

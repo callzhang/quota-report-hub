@@ -49,6 +49,7 @@ export default async function handler(req, res) {
   if (invalidatedEntry) {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
+      requesterId,
       source,
       servedEntry: invalidatedEntry,
       reason: "repair_auth_returned",
@@ -65,6 +66,7 @@ export default async function handler(req, res) {
   if (!uploaded) {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
+      requesterId,
       source,
       servedEntry: null,
       reason: "no_uploaded_auth",
@@ -104,6 +106,7 @@ export default async function handler(req, res) {
   if (!entry) {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
+      requesterId,
       source,
       servedEntry: null,
       reason: "no_better_auth_available",
@@ -126,6 +129,7 @@ export default async function handler(req, res) {
 
   await recordAuthPoolFetch({
     requesterEmail: authContext.email,
+    requesterId,
     source,
     servedEntry: entry,
     reason: "served",

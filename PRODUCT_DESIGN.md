@@ -181,7 +181,9 @@ If a request presents an older hub-signed token, the server can verify the embed
   - excludes accounts with `5H <= 0` or `1week <= 0`
   - only considers candidates whose `5H` is strictly better than the current local `5H`
   - only considers candidates whose `1week` is still above `0`
-  - weights selection by remaining quota using requester-specific deterministic weighted sampling with weight `min(5H remaining, 1week remaining)`, plus a small recent-fetch penalty, then returns the lowest projected load
+  - weights selection by remaining quota using requester-specific deterministic weighted sampling with a softened quota weight, plus a small active-assignment penalty, then returns the lowest projected load
+  - treats each machine's latest fetch result as an active assignment, so a shared auth remains load-bearing until that machine fetches a different auth
+  - also treats each machine's latest quota report as active-assignment evidence, so machines that keep using an auth without fetching again still count against that auth's load
   - returns either:
     - a decrypted better auth plus latest effective quota metadata
     - or `replacement: null`
