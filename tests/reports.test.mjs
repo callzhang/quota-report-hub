@@ -573,15 +573,9 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   assert.equal(entryItem.windows["5h"].remaining_percent, 80);
   assert.equal(entryItem.display_windows["5h"].remaining_percent, 80);
   assert.equal(entryItem.digest, "digest-1");
-  // Orphaned Claude report moves to archived
-  assert.equal(payload.archived_invalidated_count, 1);
-  const archivedItem = payload.archived_invalidated_items.find((item) => item.account_id === "claude-x");
-  assert.ok(archivedItem);
-  assert.equal(archivedItem.source, "claude");
-  assert.equal(archivedItem.status, "ok");
-  assert.equal(archivedItem.digest, null);
-  assert.equal(archivedItem.uploaded_at, null);
-  assert.equal(archivedItem.uploader_email, null);
+  // Orphaned reports do not represent stored auth entries and stay out of both active and archived tables.
+  assert.equal(payload.archived_invalidated_count, 0);
+  assert.equal(payload.archived_invalidated_items.length, 0);
 });
 
 test("authPoolStatusPayload archives hard-invalidated auths older than 48 hours by first invalidation time", () => {
