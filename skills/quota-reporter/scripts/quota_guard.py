@@ -294,6 +294,10 @@ def codex_binary_for_app_server_restart() -> str | None:
 
 
 def unmanaged_codex_app_server_pids() -> list[int]:
+    processes = unmanaged_codex_app_server_processes()
+    if processes:
+        return [process["pid"] for process in processes]
+
     if platform.system().lower() == "windows":
         return []
     result = subprocess.run(
@@ -325,6 +329,81 @@ def unmanaged_codex_app_server_pids() -> list[int]:
             continue
         pids.append(pid)
     return pids
+
+
+def unmanaged_codex_app_server_processes() -> list[dict]:
+    if platform.system().lower() == "windows":
+        return []
+
+    result = subprocess.run(
+        ["ps", "-eo", "pid=,etimes=,args="],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+
+    current_pid = os.getpid()
+    now = time.time()
+    processes = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(None, 2)
+        if len(parts) != 3:
+            continue
+        pid_text, etimes_text, args = parts
+        try:
+            pid = int(pid_text)
+            etimes = int(etimes_text)
+        except ValueError:
+            continue
+        if pid == current_pid:
+            continue
+        if " be-child ssh " in args or "/bin/bash -c" in args or " grep " in f" {args} ":
+            continue
+        if "codex app-server --listen" not in args:
+            continue
+        processes.append(
+            {
+                "pid": pid,
+                "started_at_epoch": now - etimes,
+                "etimes_seconds": etimes,
+                "args": args,
+            }
+        )
+    return processes
+
+
+def stale_codex_app_server_for_auth(codex_auth_path: Path) -> dict:
+    if not codex_auth_path.exists():
+        return {"stale": False, "reason": "auth_missing"}
+
+    try:
+        auth_mtime = codex_auth_path.stat().st_mtime
+    except OSError as error:
+        return {"stale": False, "reason": "auth_stat_failed", "error": str(error)}
+
+    stale_processes = []
+    for process in unmanaged_codex_app_server_processes():
+        started_at = process.get("started_at_epoch")
+        if started_at is None:
+            continue
+        if float(started_at) + 1.0 < auth_mtime:
+            stale_processes.append(process)
+
+    if not stale_processes:
+        return {"stale": False, "reason": "no_stale_app_server", "auth_mtime_epoch": auth_mtime}
+
+    return {
+        "stale": True,
+        "reason": "app_server_started_before_auth",
+        "auth_mtime_epoch": auth_mtime,
+        "processes": stale_processes,
+    }
 
 
 def stop_unmanaged_codex_app_server() -> dict:
@@ -873,12 +952,20 @@ def run_guard(args: argparse.Namespace) -> dict:
         (codex_payload or {}).get("local_auth_refresh", {}).get("written")
         or codex_replacement.get("replaced")
     )
-    codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged"}
-    if codex_auth_changed:
+    stale_app_server = stale_codex_app_server_for_auth(args.codex_auth_path)
+    codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged", "stale_check": stale_app_server}
+    if codex_auth_changed or stale_app_server.get("stale"):
         if getattr(args, "no_restart_codex_app_server", False):
-            codex_app_server = {"restarted": False, "reason": "disabled"}
+            codex_app_server = {
+                "restarted": False,
+                "reason": "disabled",
+                "trigger": "codex_auth_changed" if codex_auth_changed else stale_app_server.get("reason"),
+                "stale_check": stale_app_server,
+            }
         else:
             codex_app_server = restart_codex_app_server()
+            codex_app_server["trigger"] = "codex_auth_changed" if codex_auth_changed else stale_app_server.get("reason")
+            codex_app_server["stale_check"] = stale_app_server
 
     notifications = {}
     if not getattr(args, "no_toast", False):

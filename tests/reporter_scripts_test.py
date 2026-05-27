@@ -1697,7 +1697,8 @@ Reading additional input from stdin...
         notify.assert_called_once()
         restart.assert_called_once()
         self.assertEqual(notify.call_args.args[0], "额度守护")
-        self.assertEqual(result["codex_app_server"], {"ok": True, "restarted": True})
+        self.assertTrue(result["codex_app_server"]["restarted"])
+        self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
         self.assertTrue(result["notifications"]["codex"]["shown"])
         self.assertIn("请退出当前 Codex 会话并重新打开", result["notifications"]["codex"]["message"])
         self.assertEqual(result["notifications"]["claude"]["reason"], "not_replaced")
@@ -1736,7 +1737,47 @@ Reading additional input from stdin...
                                             result = quota_guard.run_guard(args)
 
         restart.assert_called_once()
-        self.assertEqual(result["codex_app_server"], {"ok": True, "restarted": True})
+        self.assertTrue(result["codex_app_server"]["restarted"])
+        self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
+
+    def test_run_guard_restarts_stale_codex_app_server_after_manual_login(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
+        )
+        stale_check = {
+            "stale": True,
+            "reason": "app_server_started_before_auth",
+            "auth_mtime_epoch": 1779865804.0,
+            "processes": [{"pid": 123, "started_at_epoch": 1779600000.0}],
+        }
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current", "status": "ok"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}):
+                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                    with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                        with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value=stale_check):
+                                            with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
+                                                result = quota_guard.run_guard(args)
+
+        restart.assert_called_once()
+        self.assertTrue(result["codex_app_server"]["restarted"])
+        self.assertEqual(result["codex_app_server"]["trigger"], "app_server_started_before_auth")
+        self.assertEqual(result["codex_app_server"]["stale_check"], stale_check)
 
     def test_run_guard_can_disable_replacement_toasts(self):
         args = mock.Mock(
@@ -1767,7 +1808,8 @@ Reading additional input from stdin...
 
         notify.assert_not_called()
         restart.assert_called_once()
-        self.assertEqual(result["codex_app_server"], {"ok": True, "restarted": True})
+        self.assertTrue(result["codex_app_server"]["restarted"])
+        self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
         self.assertEqual(result["notifications"], {})
 
     def test_restart_codex_app_server_stops_unmanaged_ephemeral_server(self):
