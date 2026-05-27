@@ -4,7 +4,7 @@ import {
   bestAuthPoolEntry,
   dbConfigured,
   getInvalidatedUploaderEntry,
-  hasUploadedAuth,
+  hasUploadedAnyHealthyAuth,
   recordAuthPoolFetch,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
@@ -62,7 +62,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const uploaded = await hasUploadedAuth({ source, uploaderEmail: authContext.email });
+  const uploaded = await hasUploadedAnyHealthyAuth({ uploaderEmail: authContext.email });
   if (!uploaded) {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
@@ -83,7 +83,7 @@ export default async function handler(req, res) {
         replacement: null,
         repair_auth: repairAuth,
         reason: "must_upload_auth_to_pool",
-        message: "You must upload at least one healthy auth to the pool before you can fetch. Bring your own auth to exchange.",
+        message: "You must upload at least one healthy Codex or Claude auth to the pool before you can fetch shared auth.",
       }, authContext))
     );
     return;

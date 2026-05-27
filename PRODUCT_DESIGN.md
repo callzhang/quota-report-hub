@@ -172,6 +172,7 @@ If a request presents an older hub-signed token, the server can verify the embed
   - `requester_id`, normally `user@hostname`, so shared access tokens do not collapse all machines into one requester identity
   behavior:
   - looks at stored auth pool entries plus their latest effective quota metadata
+  - allows fetching when the requester has uploaded at least one healthy auth in any supported source
   - if the requester owns an invalidated auth, returns that auth as `repair_auth` so the owner can re-login and refresh it
   - records every returned `repair_auth` as `repair_auth_returned` in `auth_pool_fetch_log`
   - does not treat `repair_auth` as a usable replacement candidate

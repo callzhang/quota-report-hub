@@ -352,6 +352,35 @@ test("getInvalidatedUploaderEntry only returns the current account repair auth",
   }
 });
 
+test("hasUploadedAnyHealthyAuth accepts a healthy upload from any source", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({ accountId: "provider-1", email: "codex-only@example.com" }),
+      uploader_email: "alice@stardust.ai",
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "alice@gpu4",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "codex-only@example.com",
+      status: "ok",
+      plan_name: "Team",
+      windows: {
+        "5h": { remaining_percent: 80, reset_at: "2026-05-06T06:00:00Z" },
+        "1week": { remaining_percent: 80, reset_at: "2026-05-13T01:00:00Z" },
+      },
+    });
+
+    assert.equal(await mod.hasUploadedAnyHealthyAuth({ uploaderEmail: "alice@stardust.ai" }), true);
+    assert.equal(await mod.hasUploadedAnyHealthyAuth({ uploaderEmail: "bob@stardust.ai" }), false);
+  } finally {
+    cleanup();
+  }
+});
+
 test("authUsersList joins active tokens and fetch counts per user", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
