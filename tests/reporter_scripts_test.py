@@ -6,7 +6,7 @@ import io
 import contextlib
 import importlib.util
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from base64 import urlsafe_b64encode
 from pathlib import Path
 from unittest import mock
@@ -732,15 +732,16 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(windows["1week"]["remaining_percent"], 83.0)
 
     def test_parse_claude_statusline_rate_limits_returns_windows(self):
+        now = datetime.now(timezone.utc)
         snapshot = {
             "rate_limits": {
                 "five_hour": {
                     "used_percentage": 10,
-                    "resets_at": 1776649200,
+                    "resets_at": int((now + timedelta(hours=3)).timestamp()),
                 },
                 "seven_day": {
                     "used_percentage": 100,
-                    "resets_at": 1777167600,
+                    "resets_at": int((now + timedelta(days=3)).timestamp()),
                 },
             }
         }
@@ -749,6 +750,26 @@ class ReporterScriptsTest(unittest.TestCase):
 
         self.assertEqual(windows["5h"]["used_percent"], 10.0)
         self.assertEqual(windows["1week"]["used_percent"], 100.0)
+
+    def test_parse_claude_statusline_rate_limits_ignores_expired_windows(self):
+        now = datetime.now(timezone.utc)
+        snapshot = {
+            "rate_limits": {
+                "five_hour": {
+                    "used_percentage": 10,
+                    "resets_at": int((now - timedelta(hours=1)).timestamp()),
+                },
+                "seven_day": {
+                    "used_percentage": 100,
+                    "resets_at": int((now - timedelta(days=1)).timestamp()),
+                },
+            }
+        }
+
+        windows = parse_claude_statusline_rate_limits(snapshot)
+
+        self.assertIsNone(windows["5h"])
+        self.assertIsNone(windows["1week"])
 
     def test_summarize_codex_exec_error_compacts_invalidated_auth_noise(self):
         stderr = """
@@ -857,13 +878,14 @@ Reading additional input from stdin...
                         }
                     },
                 ):
+                    now = datetime.now(timezone.utc)
                     with mock.patch(
                         "quota_reporters.read_claude_statusline_snapshot",
                         return_value={
-                            "captured_at": "2026-04-20T04:00:00Z",
+                            "captured_at": now.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
                             "rate_limits": {
-                                "five_hour": {"used_percentage": 10, "resets_at": 1776649200},
-                                "seven_day": {"used_percentage": 100, "resets_at": 1777167600},
+                                "five_hour": {"used_percentage": 10, "resets_at": int((now + timedelta(hours=3)).timestamp())},
+                                "seven_day": {"used_percentage": 100, "resets_at": int((now + timedelta(days=3)).timestamp())},
                             },
                         },
                     ):
@@ -878,7 +900,7 @@ Reading additional input from stdin...
         self.assertEqual(payload["usage_summary"]["login_method"], "Claude Max account")
         self.assertEqual(payload["windows"]["5h"]["used_percent"], 10.0)
         self.assertEqual(payload["usage_summary"]["quota_source"], "statusline_snapshot")
-        self.assertEqual(payload["usage_summary"]["snapshot_reported_at"], "2026-04-20T04:00:00Z")
+        self.assertEqual(payload["usage_summary"]["snapshot_reported_at"], now.replace(microsecond=0).isoformat().replace("+00:00", "Z"))
         self.assertNotIn("quota_status", payload["usage_summary"])
         self.assertNotIn("rate_limit_probe", payload["usage_summary"])
         self.assertNotIn("statusline_snapshot", payload["usage_summary"])
@@ -2487,12 +2509,13 @@ Reading additional input from stdin...
     def test_probe_claude_auth_blob_parses_statusline_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             snapshot_path = Path(temp_dir) / "statusline-rate-limits.json"
+            now = datetime.now(timezone.utc)
             snapshot_path.write_text(
                 json.dumps(
                     {
                         "rate_limits": {
-                            "five_hour": {"used_percentage": 9, "resets_at": 1776657600},
-                            "seven_day": {"used_percentage": 100, "resets_at": 1776970800},
+                            "five_hour": {"used_percentage": 9, "resets_at": int((now + timedelta(hours=3)).timestamp())},
+                            "seven_day": {"used_percentage": 100, "resets_at": int((now + timedelta(days=3)).timestamp())},
                         }
                     }
                 )
@@ -2503,6 +2526,28 @@ Reading additional input from stdin...
 
         self.assertEqual(windows["5h"]["remaining_percent"], 91.0)
         self.assertEqual(windows["1week"]["remaining_percent"], 0.0)
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
+    def test_probe_claude_auth_blob_ignores_expired_statusline_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_path = Path(temp_dir) / "statusline-rate-limits.json"
+            now = datetime.now(timezone.utc)
+            snapshot_path.write_text(
+                json.dumps(
+                    {
+                        "rate_limits": {
+                            "five_hour": {"used_percentage": 9, "resets_at": int((now - timedelta(hours=1)).timestamp())},
+                            "seven_day": {"used_percentage": 32, "resets_at": int((now - timedelta(days=1)).timestamp())},
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            windows = probe_claude_auth_blob.parse_statusline_snapshot(snapshot_path)
+
+        self.assertIsNone(windows["5h"])
+        self.assertIsNone(windows["1week"])
 
     @unittest.skipIf(probe_claude_auth_blob is None, "pexpect not installed")
     def test_probe_claude_auth_blob_ignores_partial_statusline_snapshot(self):

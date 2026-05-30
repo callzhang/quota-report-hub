@@ -875,6 +875,7 @@ def parse_claude_rate_limit_headers(headers) -> dict:
 def parse_claude_statusline_rate_limits(snapshot: dict | None) -> dict:
     windows = empty_windows()
     rate_limits = (snapshot or {}).get("rate_limits") or {}
+    now_ts = datetime.now(timezone.utc).timestamp()
 
     def parse_window(window_key: str, window_minutes: int) -> dict | None:
         raw = rate_limits.get(window_key)
@@ -886,6 +887,8 @@ def parse_claude_statusline_rate_limits(snapshot: dict | None) -> dict:
             used_percentage = float(used_percentage)
             resets_at = int(float(resets_at))
         except (TypeError, ValueError):
+            return None
+        if resets_at <= now_ts:
             return None
         return build_claude_window(used_percentage / 100.0, resets_at, window_minutes)
 

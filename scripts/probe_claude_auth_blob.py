@@ -76,10 +76,15 @@ def parse_statusline_snapshot(snapshot_path: Path) -> dict:
     windows = empty_windows()
     five_hour = rate_limits.get("five_hour")
     seven_day = rate_limits.get("seven_day")
+    now_ts = datetime.now(timezone.utc).timestamp()
     if isinstance(five_hour, dict) and five_hour.get("used_percentage") is not None and five_hour.get("resets_at") is not None:
-        windows["5h"] = build_window(float(five_hour["used_percentage"]), int(float(five_hour["resets_at"])), 300)
+        resets_at = int(float(five_hour["resets_at"]))
+        if resets_at > now_ts:
+            windows["5h"] = build_window(float(five_hour["used_percentage"]), resets_at, 300)
     if isinstance(seven_day, dict) and seven_day.get("used_percentage") is not None and seven_day.get("resets_at") is not None:
-        windows["1week"] = build_window(float(seven_day["used_percentage"]), int(float(seven_day["resets_at"])), 10080)
+        resets_at = int(float(seven_day["resets_at"]))
+        if resets_at > now_ts:
+            windows["1week"] = build_window(float(seven_day["used_percentage"]), resets_at, 10080)
     return windows
 
 

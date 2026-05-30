@@ -61,6 +61,29 @@ test("sanitizeReport preserves claude usage summary payloads", () => {
   assert.equal(sanitized.usage_summary.stats.total_sessions, 31);
 });
 
+test("sanitizeReport drops expired claude client statusline windows", () => {
+  const sanitized = sanitizeReport({
+    source: "claude",
+    hostname: "mbp",
+    reporter_name: "derek@mbp",
+    reported_at: "2026-05-30T09:32:47Z",
+    account_id: "claude-leizhang0121@gmail.com",
+    status: "ok",
+    usage_summary: {
+      quota_source: "statusline_snapshot",
+      snapshot_reported_at: "2026-05-20T01:08:29Z",
+    },
+    report_origin: "client",
+    windows: {
+      "5h": { used_percent: 9, remaining_percent: 91, reset_at: "2026-05-18T11:40:00Z" },
+      "1week": { used_percent: 32, remaining_percent: 68, reset_at: "2026-05-19T12:00:00Z" },
+    },
+  });
+
+  assert.equal(sanitized.windows["5h"], null);
+  assert.equal(sanitized.windows["1week"], null);
+});
+
 test("sanitizeReport normalizes explicit report origin", () => {
   const sanitized = sanitizeReport({
     source: "codex",
@@ -208,6 +231,46 @@ test("mergeLatestReport accepts newer non-null windows", () => {
   assert.equal(merged.windows_stale, false);
   assert.equal(merged.windows["5h"].remaining_percent, 90);
   assert.equal(merged.windows["1week"].remaining_percent, 65);
+});
+
+test("mergeLatestReport keeps worker claude windows when a newer client statusline is expired", () => {
+  const previous = sanitizeReport({
+    source: "claude",
+    hostname: "github-actions",
+    reporter_name: "actions@runner",
+    reported_at: "2026-05-30T09:19:11Z",
+    account_id: "claude-leizhang0121@gmail.com",
+    status: "ok",
+    report_origin: "worker",
+    windows: {
+      "5h": { used_percent: 1, remaining_percent: 99, reset_at: "2026-05-30T11:10:00Z" },
+      "1week": { used_percent: 7, remaining_percent: 93, reset_at: "2026-06-04T03:00:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "claude",
+    hostname: "mbp",
+    reporter_name: "derek@mbp",
+    reported_at: "2026-05-30T09:32:47Z",
+    account_id: "claude-leizhang0121@gmail.com",
+    status: "ok",
+    report_origin: "client",
+    usage_summary: {
+      quota_source: "statusline_snapshot",
+      snapshot_reported_at: "2026-05-20T01:08:29Z",
+    },
+    windows: {
+      "5h": { used_percent: 9, remaining_percent: 91, reset_at: "2026-05-18T11:40:00Z" },
+      "1week": { used_percent: 32, remaining_percent: 68, reset_at: "2026-05-19T12:00:00Z" },
+    },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.reported_at, "2026-05-30T09:32:47Z");
+  assert.equal(merged.windows_stale, true);
+  assert.equal(merged.windows["5h"].remaining_percent, 99);
+  assert.equal(merged.windows["1week"].remaining_percent, 93);
 });
 
 test("mergeLatestReport preserves known quota when a client jumps reset before the current window resets", () => {
