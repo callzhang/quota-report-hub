@@ -1659,6 +1659,96 @@ Reading additional input from stdin...
         self.assertEqual(result["replacement"]["claude"]["reason"], "healthy")
         self.assertIn("claude", result)
 
+    def test_run_guard_keeps_codex_path_when_claude_probe_crashes(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            claude_bin=None,
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
+        )
+        codex_payload = {
+            "source": "codex",
+            "account_id": "codex-a",
+            "status": "ok",
+            "windows": {
+                "5h": {"remaining_percent": 80, "reset_at": "2026-05-30T12:00:00Z"},
+                "1week": {"remaining_percent": 70, "reset_at": "2026-06-01T12:00:00Z"},
+            },
+        }
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value=codex_payload):
+                with mock.patch.object(quota_guard, "probe_claude", side_effect=RuntimeError("claude exploded")):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": True}) as sync_codex:
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": False, "reason": "skipped in test"}) as sync_claude:
+                            with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": True}) as report_quota:
+                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_codex:
+                                    with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "missing_stable_claude_auth"}) as replace_claude:
+                                        result = quota_guard.run_guard(args)
+
+        sync_codex.assert_called_once()
+        sync_claude.assert_called_once()
+        replace_codex.assert_called_once()
+        replace_claude.assert_called_once()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["codex"], codex_payload)
+        self.assertEqual(result["claude"]["status"], "error")
+        self.assertIn("claude probe failed", result["claude"]["error"])
+        self.assertEqual(result["errors"]["claude_probe"]["reason"], "claude_probe_failed")
+        self.assertEqual(report_quota.call_count, 2)
+
+    def test_run_guard_keeps_claude_path_when_codex_sync_crashes(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            claude_bin=None,
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
+        )
+        claude_payload = {
+            "source": "claude",
+            "account_id": "claude-a",
+            "status": "ok",
+            "windows": {
+                "5h": {"remaining_percent": 80},
+                "1week": {"remaining_percent": 70},
+            },
+        }
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "codex-a", "status": "ok"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value=claude_payload):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", side_effect=RuntimeError("codex sync exploded")):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": True}) as sync_claude:
+                            with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}):
+                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                    with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_claude:
+                                        result = quota_guard.run_guard(args)
+
+        sync_claude.assert_called_once()
+        replace_claude.assert_called_once()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["claude"], claude_payload)
+        self.assertFalse(result["auth_pool_sync"]["codex"]["ok"])
+        self.assertEqual(result["auth_pool_sync"]["codex"]["reason"], "codex_auth_pool_sync_failed")
+
     def test_run_guard_notifies_after_successful_replacement(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",

@@ -232,6 +232,42 @@ def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict |
     }
 
 
+def guard_exception_result(reason: str, error: Exception) -> dict:
+    return {
+        "ok": False,
+        "reason": reason,
+        "error_type": type(error).__name__,
+        "error": str(error),
+    }
+
+
+def source_probe_error_payload(source: str, error: Exception, auth_path: Path | None = None) -> dict:
+    return {
+        "source": source,
+        "hostname": None,
+        "reporter_name": None,
+        "reported_at": None,
+        "account_id": f"{source}-probe-failed",
+        "email": None,
+        "name": None,
+        "plan_name": None,
+        "auth_path": str(auth_path) if auth_path is not None else None,
+        "auth_last_refresh": None,
+        "windows": {"5h": None, "1week": None},
+        "model_context_window": None,
+        "status": "error",
+        "error": f"{source} probe failed: {type(error).__name__}: {error}",
+        "usage_summary": None,
+    }
+
+
+def run_guard_step(reason: str, callback) -> dict:
+    try:
+        return callback()
+    except Exception as error:
+        return guard_exception_result(reason, error)
+
+
 def replacement_toast_message(source: str, replacement: dict) -> str:
     display_name = replacement.get("to_email") or replacement.get("to_account_id") or "新账号"
     plan_name = replacement.get("to_plan_name")
@@ -910,43 +946,76 @@ def current_codex_payload(codex_auth_path: Path) -> dict | None:
 
 
 def run_guard(args: argparse.Namespace) -> dict:
-    config = load_config(args)
-    codex_payload = current_codex_payload(args.codex_auth_path)
-    claude_payload = probe_claude(args.claude_home)
+    guard_errors = {}
+    try:
+        config = load_config(args)
+    except Exception as error:
+        config = {}
+        guard_errors["config"] = guard_exception_result("load_config_failed", error)
+
+    try:
+        codex_payload = current_codex_payload(args.codex_auth_path)
+    except Exception as error:
+        codex_payload = source_probe_error_payload("codex", error, args.codex_auth_path)
+        guard_errors["codex_probe"] = guard_exception_result("codex_probe_failed", error)
+
+    try:
+        claude_payload = probe_claude(args.claude_home)
+    except Exception as error:
+        claude_payload = source_probe_error_payload("claude", error, args.claude_home)
+        guard_errors["claude_probe"] = guard_exception_result("claude_probe_failed", error)
 
     sync_result = {}
     quota_report_result = {}
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
-        sync_result["codex"] = sync_current_codex_auth_pool(
-            config["auth_pool_url"],
-            config["auth_pool_user_token"],
-            auth_path=args.codex_auth_path,
-            known_auth_path=args.known_auth_path,
+        sync_result["codex"] = run_guard_step(
+            "codex_auth_pool_sync_failed",
+            lambda: sync_current_codex_auth_pool(
+                config["auth_pool_url"],
+                config["auth_pool_user_token"],
+                auth_path=args.codex_auth_path,
+                known_auth_path=args.known_auth_path,
+            ),
         )
-        quota_report_result["codex"] = report_current_quota_to_auth_pool(config, "codex", codex_payload)
-        quota_report_result["claude"] = report_current_quota_to_auth_pool(config, "claude", claude_payload)
-        sync_result["claude"] = sync_current_claude_auth_pool(
-            config["auth_pool_url"],
-            config["auth_pool_user_token"],
-            claude_home=args.claude_home,
-            known_auth_path=args.known_auth_path,
+        quota_report_result["codex"] = run_guard_step(
+            "codex_quota_report_failed",
+            lambda: report_current_quota_to_auth_pool(config, "codex", codex_payload),
+        )
+        quota_report_result["claude"] = run_guard_step(
+            "claude_quota_report_failed",
+            lambda: report_current_quota_to_auth_pool(config, "claude", claude_payload),
+        )
+        sync_result["claude"] = run_guard_step(
+            "claude_auth_pool_sync_failed",
+            lambda: sync_current_claude_auth_pool(
+                config["auth_pool_url"],
+                config["auth_pool_user_token"],
+                claude_home=args.claude_home,
+                known_auth_path=args.known_auth_path,
+            ),
         )
 
-    codex_replacement = maybe_replace_codex_auth(
-        config,
-        codex_payload,
-        args.codex_auth_path,
-        args.known_auth_path,
-        args.threshold_percent,
-        args.weekly_threshold_percent,
+    codex_replacement = run_guard_step(
+        "codex_replacement_failed",
+        lambda: maybe_replace_codex_auth(
+            config,
+            codex_payload,
+            args.codex_auth_path,
+            args.known_auth_path,
+            args.threshold_percent,
+            args.weekly_threshold_percent,
+        ),
     )
-    claude_replacement = maybe_replace_claude_auth(
-        config,
-        claude_payload,
-        args.claude_home,
-        args.known_auth_path,
-        args.threshold_percent,
-        args.weekly_threshold_percent,
+    claude_replacement = run_guard_step(
+        "claude_replacement_failed",
+        lambda: maybe_replace_claude_auth(
+            config,
+            claude_payload,
+            args.claude_home,
+            args.known_auth_path,
+            args.threshold_percent,
+            args.weekly_threshold_percent,
+        ),
     )
     codex_auth_changed = bool(
         (codex_payload or {}).get("local_auth_refresh", {}).get("written")
@@ -987,6 +1056,7 @@ def run_guard(args: argparse.Namespace) -> dict:
         },
         "codex_app_server": codex_app_server,
         "notifications": notifications,
+        "errors": guard_errors,
     }
 
 
