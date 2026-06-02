@@ -768,3 +768,54 @@ test("authPoolStatusPayload archives old invalidations even when latest probe is
   assert.equal(payload.archived_invalidated_items[0].reporter_name, "derek@gpu4");
   assert.equal(payload.archived_invalidated_items[0].hostname, "gpu4");
 });
+
+test("authPoolStatusPayload archives old invalidated state even when latest report is still ok", () => {
+  const payload = authPoolStatusPayload(
+    [
+      {
+        source: "claude",
+        account_id: "claude-old-invalid",
+        email: "old@example.com",
+        plan_name: "Max",
+        digest: "digest-1",
+        auth_last_refresh: "1779967209619",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "derek@gpu4",
+        hostname: "gpu4",
+        uploaded_at: "2026-04-20T10:00:00Z",
+      },
+    ],
+    [
+      sanitizeReport({
+        source: "claude",
+        hostname: "derek@gpu4",
+        reporter_name: "derek@gpu4",
+        reported_at: "2026-04-20T11:00:00Z",
+        account_id: "claude-old-invalid",
+        email: "old@example.com",
+        plan_name: "Max",
+        status: "ok",
+        windows: {
+          "5h": { remaining_percent: 90, reset_at: "2026-04-20T16:00:00Z" },
+          "1week": { remaining_percent: 80, reset_at: "2026-04-27T11:00:00Z" },
+        },
+      }),
+    ],
+    "2026-04-24T12:00:01Z",
+    [
+      {
+        source: "claude",
+        account_id: "claude-old-invalid",
+        first_invalidated_at: "2026-04-20T12:00:00Z",
+        last_notified_at: null,
+        last_error: "claude auth invalid (authentication_error)",
+      },
+    ]
+  );
+
+  assert.equal(payload.items.length, 0);
+  assert.equal(payload.archived_invalidated_items.length, 1);
+  assert.equal(payload.archived_invalidated_items[0].source, "claude");
+  assert.equal(payload.archived_invalidated_items[0].account_id, "claude-old-invalid");
+  assert.equal(payload.archived_invalidated_items[0].first_invalidated_at, "2026-04-20T12:00:00Z");
+});

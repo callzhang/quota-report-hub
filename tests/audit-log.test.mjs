@@ -615,6 +615,41 @@ test("upsertAuthPoolQuota records every probe event and derives continuous inval
   }
 });
 
+test("upsertAuthPoolQuota treats claude authentication errors as invalidated auth", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolQuota({
+      source: "claude",
+      hostname: "github-actions",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T00:00:00Z",
+      account_id: "claude-user@example.com",
+      status: "error",
+      error: "claude auth invalid (authentication_error)",
+      windows: { "5h": null, "1week": null },
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "claude",
+      hostname: "github-actions",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "claude-user@example.com",
+      status: "error",
+      error: "claude auth invalid (authentication_error)",
+      windows: { "5h": null, "1week": null },
+    });
+
+    const states = await mod.authPoolInvalidatedNotifications();
+    assert.equal(states.length, 1);
+    assert.equal(states[0].source, "claude");
+    assert.equal(states[0].account_id, "claude-user@example.com");
+    assert.equal(states[0].first_invalidated_at, "2026-05-06T00:00:00Z");
+    assert.equal(states[0].last_error, "claude auth invalid (authentication_error)");
+  } finally {
+    cleanup();
+  }
+});
+
 test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
