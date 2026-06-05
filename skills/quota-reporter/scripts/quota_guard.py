@@ -991,6 +991,13 @@ def run_guard(args: argparse.Namespace) -> dict:
     except Exception as error:
         config = {}
         guard_errors["config"] = guard_exception_result("load_config_failed", error)
+    try:
+        threshold_percent = float(config.get("threshold_percent", args.threshold_percent))
+        weekly_threshold_percent = float(config.get("weekly_threshold_percent", args.weekly_threshold_percent))
+    except Exception as error:
+        threshold_percent = args.threshold_percent
+        weekly_threshold_percent = args.weekly_threshold_percent
+        guard_errors["config_thresholds"] = guard_exception_result("load_config_thresholds_failed", error)
 
     try:
         codex_payload = timed_guard_step(timings, "codex_probe", lambda: current_codex_payload(args.codex_auth_path))
@@ -1065,8 +1072,8 @@ def run_guard(args: argparse.Namespace) -> dict:
                 codex_payload,
                 args.codex_auth_path,
                 args.known_auth_path,
-                args.threshold_percent,
-                args.weekly_threshold_percent,
+                threshold_percent,
+                weekly_threshold_percent,
             ),
         ),
     )
@@ -1080,8 +1087,8 @@ def run_guard(args: argparse.Namespace) -> dict:
                 claude_payload,
                 args.claude_home,
                 args.known_auth_path,
-                args.threshold_percent,
-                args.weekly_threshold_percent,
+                threshold_percent,
+                weekly_threshold_percent,
             ),
         ),
     )
@@ -1120,8 +1127,8 @@ def run_guard(args: argparse.Namespace) -> dict:
 
     return {
         "ok": True,
-        "threshold_percent": args.threshold_percent,
-        "weekly_threshold_percent": args.weekly_threshold_percent,
+        "threshold_percent": threshold_percent,
+        "weekly_threshold_percent": weekly_threshold_percent,
         "codex": codex_payload,
         "claude": claude_payload,
         "auth_pool_sync": sync_result,
@@ -1141,9 +1148,13 @@ def main() -> None:
     args = build_parser().parse_args()
     process_started = time.perf_counter()
     self_update_started = time.perf_counter()
+    try:
+        startup_config = load_config(args)
+    except Exception:
+        startup_config = {}
     self_update = (
         {"ok": True, "updated": False, "reason": "skipped"}
-        if args.skip_self_update
+        if args.skip_self_update or startup_config.get("disable_self_update") is True
         else self_update_skill()
     )
     self_update_elapsed = round(time.perf_counter() - self_update_started, 3)

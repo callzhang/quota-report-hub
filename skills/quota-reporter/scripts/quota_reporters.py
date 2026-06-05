@@ -8,6 +8,7 @@ import getpass
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -39,6 +40,70 @@ CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
 }
+
+
+def _scutil_proxy_settings() -> dict:
+    try:
+        result = subprocess.run(
+            ["scutil", "--proxy"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except Exception:
+        return {}
+    settings = {}
+    for line in (result.stdout or "").splitlines():
+        match = re.match(r"\s*([A-Za-z0-9_]+)\s*:\s*(.*?)\s*$", line)
+        if match:
+            settings[match.group(1)] = match.group(2)
+    return settings
+
+
+def _proxy_enabled(settings: dict, prefix: str) -> bool:
+    return str(settings.get(f"{prefix}Enable", "0")).strip() == "1"
+
+
+def _proxy_url(settings: dict, prefix: str, scheme: str) -> str | None:
+    if not _proxy_enabled(settings, prefix):
+        return None
+    host = (settings.get(f"{prefix}Proxy") or "").strip()
+    port = (settings.get(f"{prefix}Port") or "").strip()
+    if not host:
+        return None
+    if port:
+        return f"{scheme}://{host}:{port}"
+    return f"{scheme}://{host}"
+
+
+def ensure_runtime_network_defaults() -> None:
+    """Mirror macOS proxy/CA defaults for launchd-started non-interactive runs."""
+    if platform.system() != "Darwin":
+        return
+
+    if not os.environ.get("SSL_CERT_FILE"):
+        homebrew_cert = Path("/opt/homebrew/etc/openssl@3/cert.pem")
+        system_cert = Path("/etc/ssl/cert.pem")
+        if not homebrew_cert.exists() and system_cert.exists():
+            os.environ["SSL_CERT_FILE"] = str(system_cert)
+
+    if any(os.environ.get(key) for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")):
+        return
+
+    settings = _scutil_proxy_settings()
+    http_proxy = _proxy_url(settings, "HTTP", "http")
+    https_proxy = _proxy_url(settings, "HTTPS", "http")
+    socks_proxy = _proxy_url(settings, "SOCKS", "socks5")
+    if http_proxy:
+        os.environ["HTTP_PROXY"] = http_proxy
+    if https_proxy:
+        os.environ["HTTPS_PROXY"] = https_proxy
+    if socks_proxy:
+        os.environ["ALL_PROXY"] = socks_proxy
+
+
+ensure_runtime_network_defaults()
 
 
 def read_json(path: Path) -> dict:
