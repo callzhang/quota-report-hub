@@ -8,7 +8,7 @@ import {
   recordAuthPoolFetch,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
-import { invalidatedEntryToRepairAuth, repairAuthOnlyPayload } from "../../lib/fetch-best.js";
+import { invalidatedEntryToRepairAuth } from "../../lib/fetch-best.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -46,21 +46,6 @@ export default async function handler(req, res) {
     accountId: currentAccountId,
   });
   const repairAuth = invalidatedEntryToRepairAuth(invalidatedEntry);
-  if (invalidatedEntry) {
-    await recordAuthPoolFetch({
-      requesterEmail: authContext.email,
-      requesterId,
-      source,
-      servedEntry: invalidatedEntry,
-      reason: "repair_auth_returned",
-      currentAccountId,
-      currentQuota,
-    });
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(withTokenUpgrade(repairAuthOnlyPayload(repairAuth), authContext)));
-    return;
-  }
 
   const uploaded = await hasUploadedAnyHealthyAuth({ uploaderEmail: authContext.email });
   if (!uploaded) {
@@ -108,8 +93,8 @@ export default async function handler(req, res) {
       requesterEmail: authContext.email,
       requesterId,
       source,
-      servedEntry: null,
-      reason: "no_better_auth_available",
+      servedEntry: invalidatedEntry,
+      reason: repairAuth ? "repair_auth_returned" : "no_better_auth_available",
       currentAccountId,
       currentQuota,
     });

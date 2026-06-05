@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClient } from "@libsql/client";
 
-function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", lastRefresh = "2026-05-06T00:00:00Z" }) {
+function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", lastRefresh = "2026-05-06T00:00:00Z", sid = null }) {
   const payload = Buffer.from(
     JSON.stringify({
       email,
       name,
+      ...(sid ? { sid } : {}),
       "https://api.openai.com/auth": {
         chatgpt_plan_type: plan,
       },
@@ -105,6 +106,111 @@ test("authPoolFetchLog shows only the latest fetch per requester and source", as
     assert.equal(latest.current_five_h_remaining, null);
   } finally {
     cleanup();
+  }
+});
+
+test("ensureSchema migrates auth_pool_entries primary key to preserve multiple sessions per account", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "qrh-old-pk-test-"));
+  const dbPath = join(tempDir, "old-pk.db");
+  const previousUrl = process.env.TURSO_DATABASE_URL;
+  const previousToken = process.env.TURSO_AUTH_TOKEN;
+  const previousEncryptionKey = process.env.AUTH_POOL_ENCRYPTION_KEY;
+  const previousTokenIssueKey = process.env.TOKEN_ISSUE_KEY;
+  process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
+  process.env.TURSO_AUTH_TOKEN = "test-token";
+  process.env.AUTH_POOL_ENCRYPTION_KEY = "0".repeat(64);
+  process.env.TOKEN_ISSUE_KEY = "test-token-issue-key-32-bytes!!!";
+  const client = createClient({ url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN });
+  try {
+    await client.execute(`
+      CREATE TABLE auth_pool_entries (
+        source TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        email TEXT,
+        name TEXT,
+        plan_name TEXT,
+        auth_last_refresh TEXT,
+        digest TEXT NOT NULL,
+        uploader_email TEXT,
+        reporter_name TEXT,
+        hostname TEXT,
+        uploaded_at TEXT NOT NULL,
+        encrypted_auth_json TEXT NOT NULL,
+        iv TEXT NOT NULL,
+        auth_tag TEXT NOT NULL,
+        PRIMARY KEY (source, account_id)
+      )
+    `);
+    await client.execute({
+      sql: `
+        INSERT INTO auth_pool_entries (
+          source, account_id, email, name, plan_name, auth_last_refresh, digest,
+          uploader_email, reporter_name, hostname, uploaded_at, encrypted_auth_json, iv, auth_tag
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: [
+        "codex",
+        "same@stardust.ai",
+        "same@stardust.ai",
+        "Same",
+        "Team",
+        "2026-05-06T00:00:00Z",
+        "old-digest",
+        "alice@stardust.ai",
+        "alice@gpu4",
+        "gpu4",
+        "2026-05-06T00:00:00Z",
+        Buffer.from("{}").toString("base64"),
+        Buffer.from("iv").toString("base64"),
+        Buffer.from("tag").toString("base64"),
+      ],
+    });
+
+    const mod = await import(`../lib/db.js?ts=${Date.now()}`);
+    await mod.ensureSchema();
+    const pk = (await client.execute(`PRAGMA table_info(auth_pool_entries)`)).rows
+      .filter((row) => row.pk > 0)
+      .sort((left, right) => Number(left.pk) - Number(right.pk))
+      .map((row) => row.name);
+    assert.deepEqual(pk, ["source", "account_id", "session_id"]);
+
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "same-provider-id",
+        email: "same@stardust.ai",
+        lastRefresh: "2026-05-06T01:00:00Z",
+        sid: "session-b",
+      }),
+      uploader_email: "bob@stardust.ai",
+      reporter_name: "bob@mac",
+      hostname: "mac",
+    });
+    const entries = (await mod.authPoolEntries()).filter((entry) => entry.account_id === "same@stardust.ai");
+    assert.equal(entries.length, 2);
+    assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["alice@stardust.ai", "bob@stardust.ai"]));
+  } finally {
+    if (previousUrl === undefined) {
+      delete process.env.TURSO_DATABASE_URL;
+    } else {
+      process.env.TURSO_DATABASE_URL = previousUrl;
+    }
+    if (previousToken === undefined) {
+      delete process.env.TURSO_AUTH_TOKEN;
+    } else {
+      process.env.TURSO_AUTH_TOKEN = previousToken;
+    }
+    if (previousEncryptionKey === undefined) {
+      delete process.env.AUTH_POOL_ENCRYPTION_KEY;
+    } else {
+      process.env.AUTH_POOL_ENCRYPTION_KEY = previousEncryptionKey;
+    }
+    if (previousTokenIssueKey === undefined) {
+      delete process.env.TOKEN_ISSUE_KEY;
+    } else {
+      process.env.TOKEN_ISSUE_KEY = previousTokenIssueKey;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
   }
 });
 

@@ -1540,6 +1540,19 @@ Reading additional input from stdin...
                     "email": "pre-sales@stardust.ai",
                     "plan_name": "Team",
                     "uploader_email": "derek@stardust.ai",
+                    "reporter_name": "derek@gpu4",
+                    "hostname": "gpu4",
+                    "status": "error",
+                    "error": "auth invalidated (token_invalidated)",
+                },
+                {
+                    "source": "codex",
+                    "account_id": "sirui.chen@stardust.ai",
+                    "email": "sirui.chen@stardust.ai",
+                    "plan_name": "Team",
+                    "uploader_email": "derek@stardust.ai",
+                    "reporter_name": "sirui@macbook",
+                    "hostname": "macbook",
                     "status": "error",
                     "error": "auth invalidated (token_invalidated)",
                 },
@@ -1565,13 +1578,17 @@ Reading additional input from stdin...
                     "email": "leizhang0121@gmail.com",
                     "plan_name": "Max",
                     "uploader_email": "derek@stardust.ai",
+                    "reporter_name": "derek@gpu4",
+                    "hostname": "gpu4",
                     "status": "error",
                     "error": "claude auth invalid (authentication_error)",
                 }
             ],
         }
 
-        rows = quota_guard.uploaded_invalidated_auths(status_payload)
+        with mock.patch.object(quota_guard, "reporter_name", return_value="derek@gpu4"):
+            with mock.patch.object(quota_guard.socket, "gethostname", return_value="gpu4"):
+                rows = quota_guard.uploaded_invalidated_auths(status_payload)
 
         self.assertEqual([row["account_id"] for row in rows], [
             "pre-sales@stardust.ai",
@@ -1592,6 +1609,8 @@ Reading additional input from stdin...
                     "email": "pre-sales@stardust.ai",
                     "plan_name": "Team",
                     "uploader_email": "derek@stardust.ai",
+                    "reporter_name": "derek@gpu4",
+                    "hostname": "gpu4",
                     "status": "error",
                     "error": "auth invalidated (token_invalidated)",
                 }
@@ -1599,8 +1618,10 @@ Reading additional input from stdin...
         }
 
         with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
-            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                result = quota_guard.notify_uploaded_invalidated_auths(config)
+            with mock.patch.object(quota_guard, "reporter_name", return_value="derek@gpu4"):
+                with mock.patch.object(quota_guard.socket, "gethostname", return_value="gpu4"):
+                    with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                        result = quota_guard.notify_uploaded_invalidated_auths(config)
 
         notify.assert_called_once()
         self.assertEqual(notify.call_args.args[0], "额度守护")
