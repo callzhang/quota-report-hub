@@ -1690,6 +1690,7 @@ Reading additional input from stdin...
             known_auth_path=args.known_auth_path,
         )
         sync_claude_auth_pool.assert_called_once()
+        self.assertIs(sync_claude_auth_pool.call_args.kwargs["probed_payload"], probe_claude_mock.return_value)
         replace_codex_auth.assert_called_once()
         replace_claude_auth.assert_called_once()
         probe_claude_mock.assert_called_once_with(args.claude_home)
@@ -1698,6 +1699,48 @@ Reading additional input from stdin...
         self.assertEqual(result["replacement"]["codex"]["reason"], "healthy")
         self.assertEqual(result["replacement"]["claude"]["reason"], "healthy")
         self.assertIn("claude", result)
+        self.assertIn("timings", result)
+        self.assertIn("claude_probe", result["timings"])
+
+    def test_run_guard_skips_claude_cli_and_upload_for_custom_provider(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            claude_bin=None,
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
+        )
+        custom_provider = {
+            "settings_key": "env",
+            "env": {
+                "ANTHROPIC_AUTH_TOKEN": "token",
+                "ANTHROPIC_BASE_URL": "https://api.example.com",
+            },
+        }
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "codex-a", "status": "ok"}):
+                with mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=custom_provider):
+                    with mock.patch.object(quota_guard, "probe_claude") as probe_claude_mock:
+                        with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": True}):
+                            with mock.patch.object(quota_guard, "sync_current_claude_auth_pool") as sync_claude:
+                                with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}):
+                                    with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                        result = quota_guard.run_guard(args)
+
+        probe_claude_mock.assert_not_called()
+        sync_claude.assert_not_called()
+        self.assertEqual(result["claude"]["account_id"], "claude-custom-provider")
+        self.assertEqual(result["auth_pool_sync"]["claude"]["uploaded"], False)
+        self.assertEqual(result["timings"]["claude_auth_pool_sync"], 0.0)
 
     def test_run_guard_keeps_codex_path_when_claude_probe_crashes(self):
         args = mock.Mock(
@@ -2171,6 +2214,49 @@ Reading additional input from stdin...
         post_auth_pool_entry.assert_called_once()
         self.assertTrue(result["uploaded"])
         self.assertEqual(result["reason"], "reuploaded_existing_auth")
+
+    def test_sync_current_codex_auth_pool_skips_recent_unchanged_reupload(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-19T21:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            digest = quota_guard.auth_metadata(auth_path)["digest"]
+            known_auth_path.write_text(
+                json.dumps(
+                    {"sources": {"codex": {
+                        "last_uploaded_account_id": "a@example.com",
+                        "last_uploaded_auth_last_refresh": "2026-04-19T21:00:00Z",
+                        "last_uploaded_digest": digest,
+                        "last_reuploaded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                    }}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                )
+
+        post_auth_pool_entry.assert_not_called()
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "unchanged_auth_recently_reuploaded")
 
     def test_sync_current_codex_auth_pool_skips_free_plan_uploads(self):
         with tempfile.TemporaryDirectory() as temp_dir:

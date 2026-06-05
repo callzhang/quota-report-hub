@@ -268,6 +268,40 @@ def run_guard_step(reason: str, callback) -> dict:
         return guard_exception_result(reason, error)
 
 
+def timed_guard_step(timings: dict, name: str, callback):
+    started = time.perf_counter()
+    try:
+        return callback()
+    finally:
+        timings[name] = round(time.perf_counter() - started, 3)
+
+
+def custom_provider_claude_payload(claude_home: Path, custom_provider: dict) -> dict:
+    return {
+        "source": "claude",
+        "hostname": None,
+        "reporter_name": None,
+        "reported_at": None,
+        "email": None,
+        "name": None,
+        "auth_path": str(claude_home),
+        "auth_last_refresh": None,
+        "windows": {"5h": None, "1week": None},
+        "model_context_window": None,
+        "account_id": "claude-custom-provider",
+        "plan_name": None,
+        "status": "error",
+        "error": "claude active provider uses custom ANTHROPIC_* settings; cloud auth pool only supports direct Claude subscriptions",
+        "usage_summary": {
+            "custom_provider_env": {
+                "settings_key": custom_provider["settings_key"],
+                "keys": sorted(custom_provider["env"].keys()),
+                "base_url": custom_provider["env"].get("ANTHROPIC_BASE_URL"),
+            },
+        },
+    }
+
+
 def replacement_toast_message(source: str, replacement: dict) -> str:
     display_name = replacement.get("to_email") or replacement.get("to_account_id") or "新账号"
     plan_name = replacement.get("to_plan_name")
@@ -949,21 +983,31 @@ def current_codex_payload(codex_auth_path: Path) -> dict | None:
 
 
 def run_guard(args: argparse.Namespace) -> dict:
+    timings = {}
+    total_started = time.perf_counter()
     guard_errors = {}
     try:
-        config = load_config(args)
+        config = timed_guard_step(timings, "load_config", lambda: load_config(args))
     except Exception as error:
         config = {}
         guard_errors["config"] = guard_exception_result("load_config_failed", error)
 
     try:
-        codex_payload = current_codex_payload(args.codex_auth_path)
+        codex_payload = timed_guard_step(timings, "codex_probe", lambda: current_codex_payload(args.codex_auth_path))
     except Exception as error:
         codex_payload = source_probe_error_payload("codex", error, args.codex_auth_path)
         guard_errors["codex_probe"] = guard_exception_result("codex_probe_failed", error)
 
+    claude_custom_provider = detect_claude_custom_provider_env(args.claude_home)
     try:
-        claude_payload = probe_claude(args.claude_home)
+        if claude_custom_provider is not None:
+            claude_payload = timed_guard_step(
+                timings,
+                "claude_probe",
+                lambda: custom_provider_claude_payload(args.claude_home, claude_custom_provider),
+            )
+        else:
+            claude_payload = timed_guard_step(timings, "claude_probe", lambda: probe_claude(args.claude_home))
     except Exception as error:
         claude_payload = source_probe_error_payload("claude", error, args.claude_home)
         guard_errors["claude_probe"] = guard_exception_result("claude_probe_failed", error)
@@ -973,51 +1017,72 @@ def run_guard(args: argparse.Namespace) -> dict:
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
         sync_result["codex"] = run_guard_step(
             "codex_auth_pool_sync_failed",
-            lambda: sync_current_codex_auth_pool(
-                config["auth_pool_url"],
-                config["auth_pool_user_token"],
-                auth_path=args.codex_auth_path,
-                known_auth_path=args.known_auth_path,
+            lambda: timed_guard_step(
+                timings,
+                "codex_auth_pool_sync",
+                lambda: sync_current_codex_auth_pool(
+                    config["auth_pool_url"],
+                    config["auth_pool_user_token"],
+                    auth_path=args.codex_auth_path,
+                    known_auth_path=args.known_auth_path,
+                ),
             ),
         )
         quota_report_result["codex"] = run_guard_step(
             "codex_quota_report_failed",
-            lambda: report_current_quota_to_auth_pool(config, "codex", codex_payload),
+            lambda: timed_guard_step(timings, "codex_quota_report", lambda: report_current_quota_to_auth_pool(config, "codex", codex_payload)),
         )
         quota_report_result["claude"] = run_guard_step(
             "claude_quota_report_failed",
-            lambda: report_current_quota_to_auth_pool(config, "claude", claude_payload),
+            lambda: timed_guard_step(timings, "claude_quota_report", lambda: report_current_quota_to_auth_pool(config, "claude", claude_payload)),
         )
-        sync_result["claude"] = run_guard_step(
-            "claude_auth_pool_sync_failed",
-            lambda: sync_current_claude_auth_pool(
-                config["auth_pool_url"],
-                config["auth_pool_user_token"],
-                claude_home=args.claude_home,
-                known_auth_path=args.known_auth_path,
-            ),
-        )
+        if claude_custom_provider is not None:
+            sync_result["claude"] = {"ok": True, "uploaded": False, "reason": claude_payload.get("error")}
+            timings["claude_auth_pool_sync"] = 0.0
+        else:
+            sync_result["claude"] = run_guard_step(
+                "claude_auth_pool_sync_failed",
+                lambda: timed_guard_step(
+                    timings,
+                    "claude_auth_pool_sync",
+                    lambda: sync_current_claude_auth_pool(
+                        config["auth_pool_url"],
+                        config["auth_pool_user_token"],
+                        claude_home=args.claude_home,
+                        known_auth_path=args.known_auth_path,
+                        probed_payload=claude_payload,
+                    ),
+                ),
+            )
 
     codex_replacement = run_guard_step(
         "codex_replacement_failed",
-        lambda: maybe_replace_codex_auth(
-            config,
-            codex_payload,
-            args.codex_auth_path,
-            args.known_auth_path,
-            args.threshold_percent,
-            args.weekly_threshold_percent,
+        lambda: timed_guard_step(
+            timings,
+            "codex_replacement",
+            lambda: maybe_replace_codex_auth(
+                config,
+                codex_payload,
+                args.codex_auth_path,
+                args.known_auth_path,
+                args.threshold_percent,
+                args.weekly_threshold_percent,
+            ),
         ),
     )
     claude_replacement = run_guard_step(
         "claude_replacement_failed",
-        lambda: maybe_replace_claude_auth(
-            config,
-            claude_payload,
-            args.claude_home,
-            args.known_auth_path,
-            args.threshold_percent,
-            args.weekly_threshold_percent,
+        lambda: timed_guard_step(
+            timings,
+            "claude_replacement",
+            lambda: maybe_replace_claude_auth(
+                config,
+                claude_payload,
+                args.claude_home,
+                args.known_auth_path,
+                args.threshold_percent,
+                args.weekly_threshold_percent,
+            ),
         ),
     )
     codex_auth_changed = bool(
@@ -1035,15 +1100,23 @@ def run_guard(args: argparse.Namespace) -> dict:
                 "stale_check": stale_app_server,
             }
         else:
-            codex_app_server = restart_codex_app_server()
+            codex_app_server = timed_guard_step(timings, "codex_app_server", restart_codex_app_server)
             codex_app_server["trigger"] = "codex_auth_changed" if codex_auth_changed else stale_app_server.get("reason")
             codex_app_server["stale_check"] = stale_app_server
+    else:
+        timings["codex_app_server"] = 0.0
 
     notifications = {}
     if not getattr(args, "no_toast", False):
-        notifications["codex"] = notify_replacement_success("codex", codex_replacement)
-        notifications["claude"] = notify_replacement_success("claude", claude_replacement)
-        notifications["uploaded_invalidated_auths"] = notify_uploaded_invalidated_auths(config)
+        def notify_all():
+            notifications["codex"] = notify_replacement_success("codex", codex_replacement)
+            notifications["claude"] = notify_replacement_success("claude", claude_replacement)
+            notifications["uploaded_invalidated_auths"] = notify_uploaded_invalidated_auths(config)
+        timed_guard_step(timings, "notifications", notify_all)
+    else:
+        timings["notifications"] = 0.0
+
+    timings["total"] = round(time.perf_counter() - total_started, 3)
 
     return {
         "ok": True,
@@ -1060,20 +1133,26 @@ def run_guard(args: argparse.Namespace) -> dict:
         "codex_app_server": codex_app_server,
         "notifications": notifications,
         "errors": guard_errors,
+        "timings": timings,
     }
 
 
 def main() -> None:
     args = build_parser().parse_args()
+    process_started = time.perf_counter()
+    self_update_started = time.perf_counter()
     self_update = (
         {"ok": True, "updated": False, "reason": "skipped"}
         if args.skip_self_update
         else self_update_skill()
     )
+    self_update_elapsed = round(time.perf_counter() - self_update_started, 3)
     if self_update.get("updated"):
         os.chdir(Path.home())
     result = run_guard(args)
     result["self_update"] = self_update
+    result.setdefault("timings", {})["self_update"] = self_update_elapsed
+    result["timings"]["process_total"] = round(time.perf_counter() - process_started, 3)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

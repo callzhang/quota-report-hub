@@ -26,6 +26,7 @@ ARCHIVE_DIR = AUTH_STATE_DIR
 KNOWN_AUTH_PATH = AUTH_STATE_DIR / "known_auth.json"
 SOURCE_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 CLAUDE_HOME = Path.home() / ".claude"
+UNCHANGED_AUTH_REUPLOAD_INTERVAL_SECONDS = 3600
 CLAUDE_STATUSLINE_SNAPSHOT_PATH = "statusline-rate-limits.json"
 CODEx_PROMPT = "reply with ok"
 CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
@@ -135,6 +136,23 @@ def read_known_auth_state(path: Path = KNOWN_AUTH_PATH) -> dict:
     return payload
 
 
+def parse_iso_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def should_reupload_unchanged_auth(known: dict, now: datetime | None = None) -> bool:
+    last_reuploaded_at = parse_iso_timestamp(known.get("last_reuploaded_at"))
+    if last_reuploaded_at is None:
+        return True
+    now = now or datetime.now(timezone.utc)
+    return (now - last_reuploaded_at).total_seconds() >= UNCHANGED_AUTH_REUPLOAD_INTERVAL_SECONDS
+
+
 def claude_auth_blob_metadata(blob_text: str) -> dict:
     payload = json.loads(blob_text)
     if payload.get("schema") != "claude_credentials_v1":
@@ -197,6 +215,7 @@ def write_known_auth_state(
     last_uploaded_digest: str | None,
     last_uploaded_account_id: str | None = None,
     last_uploaded_auth_last_refresh: str | None = None,
+    last_reuploaded_at: str | None = None,
     state_source: str,
 ) -> dict | None:
     payload = read_known_auth_state(known_auth_path)
@@ -212,6 +231,7 @@ def write_known_auth_state(
         "last_uploaded_digest": last_uploaded_digest,
         "last_uploaded_account_id": last_uploaded_account_id,
         "last_uploaded_auth_last_refresh": last_uploaded_auth_last_refresh,
+        "last_reuploaded_at": last_reuploaded_at,
         "state_source": state_source,
     }
     payload["sources"][source] = source_payload
@@ -1059,8 +1079,12 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
     }
 
 
-def build_claude_auth_blob(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None) -> tuple[str | None, dict | None]:
-    payload = probe_claude(claude_home, claude_bin)
+def build_claude_auth_blob(
+    claude_home: Path = CLAUDE_HOME,
+    claude_bin: str | None = None,
+    probed_payload: dict | None = None,
+) -> tuple[str | None, dict | None]:
+    payload = probed_payload if probed_payload is not None else probe_claude(claude_home, claude_bin)
     if payload.get("status") != "ok" or not payload.get("email"):
         return None, payload
 
@@ -1304,6 +1328,24 @@ def sync_current_auth_pool_entry(
     )
 
     if already_uploaded:
+        if not should_reupload_unchanged_auth(known):
+            state = write_known_auth_state(
+                source=source,
+                metadata=metadata,
+                known_auth_path=known_auth_path,
+                last_uploaded_digest=metadata["digest"],
+                last_uploaded_account_id=metadata["account_id"],
+                last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+                last_reuploaded_at=known.get("last_reuploaded_at"),
+                state_source="unchanged_local_auth",
+            )
+            return {
+                "ok": True,
+                "uploaded": False,
+                "reason": "unchanged_auth_recently_reuploaded",
+                "known_auth": state,
+            }
+
         uploaded = post_auth_pool_entry(
             auth_pool_url,
             auth_pool_user_token,
@@ -1324,6 +1366,7 @@ def sync_current_auth_pool_entry(
             last_uploaded_digest=metadata["digest"],
             last_uploaded_account_id=metadata["account_id"],
             last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+            last_reuploaded_at=iso_now(),
             state_source="unchanged_local_auth",
         )
         return {
@@ -1354,6 +1397,7 @@ def sync_current_auth_pool_entry(
         last_uploaded_digest=metadata["digest"],
         last_uploaded_account_id=metadata["account_id"],
         last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+        last_reuploaded_at=iso_now(),
         state_source="uploaded_to_auth_pool",
     )
     return {
@@ -1391,8 +1435,9 @@ def sync_current_claude_auth_pool(
     claude_home: Path = CLAUDE_HOME,
     known_auth_path: Path = KNOWN_AUTH_PATH,
     claude_bin: str | None = None,
+    probed_payload: dict | None = None,
 ) -> dict:
-    blob_text, payload = build_claude_auth_blob(claude_home, claude_bin)
+    blob_text, payload = build_claude_auth_blob(claude_home, claude_bin, probed_payload=probed_payload)
     if blob_text is None:
         return {
             "ok": True,
