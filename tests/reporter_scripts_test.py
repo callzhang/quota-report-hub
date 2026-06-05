@@ -1586,12 +1586,11 @@ Reading additional input from stdin...
             ],
         }
 
-        with mock.patch.object(quota_guard, "reporter_name", return_value="derek@gpu4"):
-            with mock.patch.object(quota_guard.socket, "gethostname", return_value="gpu4"):
-                rows = quota_guard.uploaded_invalidated_auths(status_payload)
+        rows = quota_guard.uploaded_invalidated_auths(status_payload)
 
         self.assertEqual([row["account_id"] for row in rows], [
             "pre-sales@stardust.ai",
+            "sirui.chen@stardust.ai",
             "claude-leizhang0121@gmail.com",
         ])
 
@@ -1618,10 +1617,8 @@ Reading additional input from stdin...
         }
 
         with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
-            with mock.patch.object(quota_guard, "reporter_name", return_value="derek@gpu4"):
-                with mock.patch.object(quota_guard.socket, "gethostname", return_value="gpu4"):
-                    with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                        result = quota_guard.notify_uploaded_invalidated_auths(config)
+            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                result = quota_guard.notify_uploaded_invalidated_auths(config)
 
         notify.assert_called_once()
         self.assertEqual(notify.call_args.args[0], "额度守护")

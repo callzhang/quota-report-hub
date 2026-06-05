@@ -9,7 +9,6 @@ import os
 import platform
 import shutil
 import signal
-import socket
 import subprocess
 import tarfile
 import tempfile
@@ -30,7 +29,6 @@ from quota_reporters import (
     post_auth_pool_quota,
     probe_claude,
     probe_codex,
-    reporter_name,
     sync_current_claude_auth_pool,
     sync_current_codex_auth_pool,
     write_known_auth_state,
@@ -563,15 +561,11 @@ def uploaded_invalidated_auths(status_payload: dict) -> list[dict]:
     if not viewer_email:
         return []
 
-    current_reporter = reporter_name()
-    current_host = socket.gethostname()
     rows = list(status_payload.get("items") or []) + list(status_payload.get("archived_invalidated_items") or [])
     selected = []
     seen = set()
     for row in rows:
         if row.get("uploader_email") != viewer_email:
-            continue
-        if row.get("reporter_name") != current_reporter and row.get("hostname") != current_host:
             continue
         if not is_hard_invalidated(row):
             continue
