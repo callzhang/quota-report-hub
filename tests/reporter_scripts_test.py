@@ -5,6 +5,7 @@ import unittest
 import io
 import contextlib
 import importlib.util
+import os
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from base64 import urlsafe_b64encode
@@ -18,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import quota_guard  # noqa: E402
+import quota_reporters  # noqa: E402
 import install_quota_guard  # noqa: E402
 from quota_reporters import (
     build_claude_auth_blob,
@@ -1702,6 +1704,43 @@ Reading additional input from stdin...
         self.assertIn("timings", result)
         self.assertIn("claude_probe", result["timings"])
 
+    def test_run_guard_uses_configured_replacement_thresholds(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            claude_bin=None,
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=True,
+        )
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+            "threshold_percent": 33,
+            "weekly_threshold_percent": 7,
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current", "status": "ok"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}):
+                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_codex:
+                                    with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_claude:
+                                        with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                            result = quota_guard.run_guard(args)
+
+        self.assertEqual(replace_codex.call_args.args[4], 33.0)
+        self.assertEqual(replace_codex.call_args.args[5], 7.0)
+        self.assertEqual(replace_claude.call_args.args[4], 33.0)
+        self.assertEqual(replace_claude.call_args.args[5], 7.0)
+        self.assertEqual(result["threshold_percent"], 33.0)
+        self.assertEqual(result["weekly_threshold_percent"], 7.0)
+
     def test_run_guard_skips_claude_cli_and_upload_for_custom_provider(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
@@ -2058,6 +2097,52 @@ Reading additional input from stdin...
         args = parser.parse_args(["--skip-self-update"])
 
         self.assertTrue(args.skip_self_update)
+
+    def test_quota_guard_main_skips_self_update_when_config_disables_it(self):
+        args = quota_guard.build_parser().parse_args([])
+
+        with mock.patch.object(sys, "argv", ["quota_guard.py"]):
+            with mock.patch.object(quota_guard, "load_config", return_value={"disable_self_update": True}):
+                with mock.patch.object(
+                    quota_guard,
+                    "self_update_skill",
+                    return_value={"ok": True, "updated": False, "reason": "called"},
+                ) as self_update_skill:
+                    with mock.patch.object(quota_guard, "run_guard", return_value={"ok": True, "timings": {}}) as run_guard:
+                        with io.StringIO() as output:
+                            with contextlib.redirect_stdout(output):
+                                quota_guard.main()
+                            result = json.loads(output.getvalue())
+
+        self_update_skill.assert_not_called()
+        run_guard.assert_called_once()
+        self.assertEqual(run_guard.call_args.args[0].codex_auth_path, args.codex_auth_path)
+        self.assertEqual(result["self_update"]["reason"], "skipped")
+
+    def test_quota_reporters_adds_macos_proxy_and_cert_defaults(self):
+        proxy_output = (
+            "<dictionary> {\n"
+            "  HTTPEnable : 1\n"
+            "  HTTPProxy : 127.0.0.1\n"
+            "  HTTPPort : 7890\n"
+            "  HTTPSEnable : 1\n"
+            "  HTTPSProxy : 127.0.0.1\n"
+            "  HTTPSPort : 7891\n"
+            "}\n"
+        )
+
+        def fake_exists(path):
+            return str(path) == "/etc/ssl/cert.pem"
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(quota_reporters.platform, "system", return_value="Darwin"):
+                with mock.patch.object(quota_reporters.Path, "exists", fake_exists):
+                    with mock.patch.object(quota_reporters.subprocess, "run", return_value=mock.Mock(stdout=proxy_output, returncode=0)):
+                        quota_reporters.ensure_runtime_network_defaults()
+
+            self.assertEqual(os.environ["SSL_CERT_FILE"], "/etc/ssl/cert.pem")
+            self.assertEqual(os.environ["HTTP_PROXY"], "http://127.0.0.1:7890")
+            self.assertEqual(os.environ["HTTPS_PROXY"], "http://127.0.0.1:7891")
 
     def test_self_update_skill_skips_when_already_current(self):
         with tempfile.TemporaryDirectory() as temp_dir:
