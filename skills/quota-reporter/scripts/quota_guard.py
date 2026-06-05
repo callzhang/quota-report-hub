@@ -148,6 +148,55 @@ def remaining_percent(payload: dict, window_key: str) -> float:
     return float(value) if value is not None else -1.0
 
 
+def plan_rank(plan_name: str | None) -> int:
+    normalized = str(plan_name or "").strip().lower().replace("_", " ")
+    if normalized == "max":
+        return 50
+    if normalized == "team":
+        return 40
+    if normalized == "pro":
+        return 30
+    if normalized in {"pro lite", "prolite"}:
+        return 20
+    if normalized == "plus":
+        return 10
+    return 0
+
+
+def quota_score(payload: dict | None) -> tuple[float, float, float]:
+    payload = payload or {}
+    five_hour = remaining_percent(payload, "5h")
+    weekly = remaining_percent(payload, "1week")
+    five_hour = five_hour if five_hour >= 0 else -1.0
+    weekly = weekly if weekly >= 0 else -1.0
+    return (min(five_hour, weekly), five_hour, weekly)
+
+
+def candidate_score(candidate: dict | None) -> tuple[int, float, float, float]:
+    candidate = candidate or {}
+    latest_report = candidate.get("latest_report") if isinstance(candidate.get("latest_report"), dict) else candidate
+    min_quota, five_hour, weekly = quota_score(latest_report)
+    return (plan_rank(candidate.get("plan_name")), min_quota, five_hour, weekly)
+
+
+def is_preferred_codex_plan(plan_name: str | None) -> bool:
+    return plan_rank(plan_name) >= plan_rank("Pro Lite")
+
+
+def is_fast_consumption_codex_plan(plan_name: str | None) -> bool:
+    normalized = str(plan_name or "").strip().lower().replace("_", " ")
+    return normalized in {"plus", "pro lite", "prolite"}
+
+
+def is_emergency_replacement(payload: dict | None) -> bool:
+    payload = payload or {}
+    if is_hard_invalidated(payload) or is_quota_probe_unstable(payload):
+        return True
+    five_hour_remaining = remaining_percent(payload, "5h")
+    weekly_remaining = remaining_percent(payload, "1week")
+    return (0 <= five_hour_remaining <= 5.0) or (0 <= weekly_remaining <= 2.0)
+
+
 def is_hard_invalidated(payload: dict) -> bool:
     return payload.get("status") == "error" and payload.get("error") in {
         "auth invalidated (token_invalidated)",
@@ -157,10 +206,23 @@ def is_hard_invalidated(payload: dict) -> bool:
     }
 
 
+def is_quota_probe_unstable(payload: dict) -> bool:
+    if payload.get("status") != "error":
+        return False
+    error = str(payload.get("error") or "").lower()
+    return any(
+        marker in error
+        for marker in (
+            "token_count event was present but missing quota details",
+            "missing quota details",
+        )
+    )
+
+
 def source_needs_replacement(payload: dict, threshold_percent: float, weekly_threshold_percent: float) -> bool:
     if not payload:
         return False
-    if is_hard_invalidated(payload):
+    if is_hard_invalidated(payload) or is_quota_probe_unstable(payload):
         return True
     if payload.get("status") != "ok":
         return False
@@ -168,6 +230,9 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
     weekly_remaining = remaining_percent(payload, "1week")
     if five_hour_remaining < 0 or weekly_remaining < 0:
         return False
+    if is_fast_consumption_codex_plan(payload.get("plan_name")):
+        if five_hour_remaining < 80.0 or weekly_remaining < 50.0:
+            return True
     return five_hour_remaining < threshold_percent or weekly_remaining < weekly_threshold_percent
 
 
@@ -656,6 +721,136 @@ def notify_uploaded_invalidated_auths(config: dict) -> dict:
     }
 
 
+def fetch_plan_aware_codex_replacement(
+    config: dict,
+    *,
+    current_account_id: str | None,
+    current_quota: dict,
+    requester_id: str | None,
+    current_payload: dict | None,
+    max_attempts: int = 10,
+) -> dict:
+    excluded: list[str] = []
+    candidates: list[dict] = []
+    raw_results: list[dict] = []
+
+    for _ in range(max_attempts):
+        result = fetch_best_auth(
+            config["auth_pool_url"],
+            config["auth_pool_user_token"],
+            source="codex",
+            current_account_id=current_account_id,
+            current_quota=current_quota,
+            exclude_account_ids=list(excluded),
+            requester_id=requester_id,
+        )
+        raw_results.append(
+            {
+                key: value
+                for key, value in result.items()
+                if key not in {"replacement", "repair_auth", "auth_json"}
+            }
+        )
+
+        repair_auth = result.get("repair_auth")
+        if repair_auth is not None:
+            result["selection_policy"] = {
+                "strategy": "repair_auth_passthrough",
+                "excluded_account_ids": excluded,
+                "candidates_seen": [
+                    {
+                        "account_id": candidate.get("account_id"),
+                        "email": candidate.get("email"),
+                        "plan_name": candidate.get("plan_name"),
+                        "score": list(candidate_score(candidate)),
+                    }
+                    for candidate in candidates
+                ],
+            }
+            return result
+
+        replacement = result.get("replacement")
+        if replacement is None:
+            break
+
+        account_id = replacement.get("account_id")
+        if not account_id or account_id in excluded:
+            break
+        if account_id == current_account_id:
+            result["selection_policy"] = {
+                "strategy": "plan_aware_current_account_passthrough",
+                "excluded_account_ids": excluded,
+                "candidates_seen": [
+                    {
+                        "account_id": candidate.get("account_id"),
+                        "email": candidate.get("email"),
+                        "plan_name": candidate.get("plan_name"),
+                        "score": list(candidate_score(candidate)),
+                    }
+                    for candidate in candidates
+                ],
+            }
+            return result
+        candidates.append(replacement)
+        excluded.append(account_id)
+
+    preferred = [candidate for candidate in candidates if is_preferred_codex_plan(candidate.get("plan_name"))]
+    selected = max(preferred, key=candidate_score) if preferred else None
+    fallback = max(candidates, key=candidate_score) if candidates else None
+    emergency = is_emergency_replacement(current_payload)
+
+    if selected is None and fallback is not None and emergency:
+        selected = fallback
+
+    if selected is None:
+        return {
+            "ok": True,
+            "replacement": None,
+            "repair_auth": None,
+            "reason": (raw_results[-1].get("reason") if raw_results else None) or "no_preferred_codex_replacement_available",
+            "selection_policy": {
+                "strategy": "plan_aware",
+                "emergency": emergency,
+                "plus_or_low_tier_fallback_skipped": bool(fallback),
+                "excluded_account_ids": excluded,
+                "raw_results": raw_results,
+                "candidates_seen": [
+                    {
+                        "account_id": candidate.get("account_id"),
+                        "email": candidate.get("email"),
+                        "plan_name": candidate.get("plan_name"),
+                        "score": list(candidate_score(candidate)),
+                    }
+                    for candidate in candidates
+                ],
+            },
+        }
+
+    return {
+        "ok": True,
+        "replacement": selected,
+        "repair_auth": None,
+        "selection_policy": {
+            "strategy": "plan_aware",
+            "emergency": emergency,
+            "selected_account_id": selected.get("account_id"),
+            "selected_plan_name": selected.get("plan_name"),
+            "selected_score": list(candidate_score(selected)),
+            "excluded_account_ids": excluded,
+            "preferred_candidates": len(preferred),
+            "candidates_seen": [
+                {
+                    "account_id": candidate.get("account_id"),
+                    "email": candidate.get("email"),
+                    "plan_name": candidate.get("plan_name"),
+                    "score": list(candidate_score(candidate)),
+                }
+                for candidate in candidates
+            ],
+        },
+    }
+
+
 def maybe_replace_codex_auth(
     config: dict,
     current_codex_payload: dict | None,
@@ -665,21 +860,20 @@ def maybe_replace_codex_auth(
     weekly_threshold_percent: float,
 ) -> dict:
     current_account_id = current_codex_payload.get("account_id") if current_codex_payload else None
+    unstable_quota_probe = is_quota_probe_unstable(current_codex_payload or {})
     current_quota = {
-        "five_h_remaining_percent": remaining_percent(current_codex_payload or {}, "5h"),
-        "one_week_remaining_percent": remaining_percent(current_codex_payload or {}, "1week"),
+        "five_h_remaining_percent": 0.0 if unstable_quota_probe else remaining_percent(current_codex_payload or {}, "5h"),
+        "one_week_remaining_percent": 0.0 if unstable_quota_probe else remaining_percent(current_codex_payload or {}, "1week"),
     }
     if not source_needs_replacement(current_codex_payload, threshold_percent, weekly_threshold_percent):
         return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
 
-    result = fetch_best_auth(
-        config["auth_pool_url"],
-        config["auth_pool_user_token"],
-        source="codex",
+    result = fetch_plan_aware_codex_replacement(
+        config,
         current_account_id=current_account_id,
         current_quota=current_quota,
-        exclude_account_ids=[],
         requester_id=current_codex_payload.get("reporter_name") if current_codex_payload else None,
+        current_payload=current_codex_payload,
     )
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
@@ -741,6 +935,7 @@ def maybe_replace_codex_auth(
             "replaced": False,
             "reason": result.get("reason") or "no_better_auth_available",
             "triggered_by": ["codex"],
+            "selection_policy": result.get("selection_policy"),
         }
 
     fetched_account_id = replacement.get("account_id")
@@ -783,6 +978,7 @@ def maybe_replace_codex_auth(
         "to_email": replacement.get("email"),
         "to_plan_name": replacement.get("plan_name"),
         "latest_report": replacement.get("latest_report"),
+        "selection_policy": result.get("selection_policy"),
         "known_auth": known_auth,
     }
 
@@ -991,6 +1187,8 @@ def run_guard(args: argparse.Namespace) -> dict:
     except Exception as error:
         config = {}
         guard_errors["config"] = guard_exception_result("load_config_failed", error)
+    threshold_percent = float(config.get("threshold_percent", args.threshold_percent))
+    weekly_threshold_percent = float(config.get("weekly_threshold_percent", args.weekly_threshold_percent))
 
     try:
         codex_payload = timed_guard_step(timings, "codex_probe", lambda: current_codex_payload(args.codex_auth_path))
@@ -1065,8 +1263,8 @@ def run_guard(args: argparse.Namespace) -> dict:
                 codex_payload,
                 args.codex_auth_path,
                 args.known_auth_path,
-                args.threshold_percent,
-                args.weekly_threshold_percent,
+                threshold_percent,
+                weekly_threshold_percent,
             ),
         ),
     )
@@ -1080,8 +1278,8 @@ def run_guard(args: argparse.Namespace) -> dict:
                 claude_payload,
                 args.claude_home,
                 args.known_auth_path,
-                args.threshold_percent,
-                args.weekly_threshold_percent,
+                threshold_percent,
+                weekly_threshold_percent,
             ),
         ),
     )
@@ -1120,8 +1318,8 @@ def run_guard(args: argparse.Namespace) -> dict:
 
     return {
         "ok": True,
-        "threshold_percent": args.threshold_percent,
-        "weekly_threshold_percent": args.weekly_threshold_percent,
+        "threshold_percent": threshold_percent,
+        "weekly_threshold_percent": weekly_threshold_percent,
         "codex": codex_payload,
         "claude": claude_payload,
         "auth_pool_sync": sync_result,
@@ -1140,10 +1338,14 @@ def run_guard(args: argparse.Namespace) -> dict:
 def main() -> None:
     args = build_parser().parse_args()
     process_started = time.perf_counter()
+    try:
+        startup_config = load_config(args)
+    except Exception:
+        startup_config = {}
     self_update_started = time.perf_counter()
     self_update = (
         {"ok": True, "updated": False, "reason": "skipped"}
-        if args.skip_self_update
+        if args.skip_self_update or startup_config.get("disable_self_update") is True
         else self_update_skill()
     )
     self_update_elapsed = round(time.perf_counter() - self_update_started, 3)

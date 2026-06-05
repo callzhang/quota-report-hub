@@ -19,7 +19,7 @@ from quota_reporters import request_auth_pool_token
 
 
 LABEL = "com.openai.quota-guard"
-RUN_INTERVAL_SECONDS = 900
+RUN_INTERVAL_SECONDS = 300
 DEFAULT_AUTH_POOL_URL = "https://quota-report-hub.vercel.app/"
 CONFIG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.json"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"

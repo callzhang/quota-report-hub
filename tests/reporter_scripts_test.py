@@ -1114,6 +1114,29 @@ Reading additional input from stdin...
 
         self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
 
+    def test_source_needs_replacement_when_quota_probe_missing_details(self):
+        codex_payload = {
+            "source": "codex",
+            "status": "error",
+            "error": "token_count event was present but missing quota details",
+            "windows": {"5h": None, "1week": None},
+        }
+
+        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+
+    def test_source_needs_replacement_early_for_fast_consumption_plus_plan(self):
+        codex_payload = {
+            "source": "codex",
+            "status": "ok",
+            "plan_name": "Plus",
+            "windows": {
+                "5h": {"remaining_percent": 79},
+                "1week": {"remaining_percent": 90},
+            },
+        }
+
+        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 50.0, 15.0))
+
     def test_quota_payload_should_report_valid_windows_and_hard_invalidations_only(self):
         self.assertTrue(
             quota_guard.quota_payload_should_report(
@@ -1382,7 +1405,10 @@ Reading additional input from stdin...
             self.assertTrue(replacement["replaced"])
             self.assertEqual(replacement["to_account_id"], "best")
             self.assertEqual(json.loads(live_auth.read_text(encoding="utf-8"))["tokens"]["account_id"], "best")
-            fetch_best_auth.assert_called_once_with(
+            self.assertGreaterEqual(fetch_best_auth.call_count, 1)
+            self.assertEqual(
+                fetch_best_auth.call_args_list[0],
+                mock.call(
                 "https://quota-report-hub.vercel.app",
                 "qrp_token",
                 source="codex",
@@ -1393,6 +1419,7 @@ Reading additional input from stdin...
                 },
                 exclude_account_ids=[],
                 requester_id=None,
+                ),
             )
 
     def test_maybe_replace_codex_auth_skips_when_current_quota_is_healthy(self):
@@ -1485,6 +1512,64 @@ Reading additional input from stdin...
 
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "no_better_auth_available")
+
+    def test_fetch_plan_aware_codex_replacement_prefers_higher_plan_over_plus_quota(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        candidates = [
+            {
+                "account_id": "plus-high",
+                "email": "plus@example.com",
+                "plan_name": "Plus",
+                "auth_json": "{}",
+                "latest_report": {
+                    "windows": {
+                        "5h": {"remaining_percent": 99},
+                        "1week": {"remaining_percent": 99},
+                    }
+                },
+            },
+            {
+                "account_id": "team-lower",
+                "email": "team@example.com",
+                "plan_name": "Team",
+                "auth_json": "{}",
+                "latest_report": {
+                    "windows": {
+                        "5h": {"remaining_percent": 60},
+                        "1week": {"remaining_percent": 60},
+                    }
+                },
+            },
+        ]
+
+        def fake_fetch_best_auth(*args, **kwargs):
+            excluded = set(kwargs.get("exclude_account_ids") or [])
+            for candidate in candidates:
+                if candidate["account_id"] not in excluded:
+                    return {"ok": True, "replacement": candidate}
+            return {"ok": True, "replacement": None, "reason": "empty"}
+
+        with mock.patch.object(quota_guard, "fetch_best_auth", side_effect=fake_fetch_best_auth):
+            result = quota_guard.fetch_plan_aware_codex_replacement(
+                config,
+                current_account_id="current",
+                current_quota={
+                    "five_h_remaining_percent": 10,
+                    "one_week_remaining_percent": 70,
+                },
+                requester_id="test",
+                current_payload={
+                    "status": "ok",
+                    "plan_name": "Pro",
+                    "windows": {"5h": {"remaining_percent": 10}, "1week": {"remaining_percent": 70}},
+                },
+            )
+
+        self.assertEqual(result["replacement"]["account_id"], "team-lower")
+        self.assertEqual(result["selection_policy"]["strategy"], "plan_aware")
 
     def test_maybe_replace_codex_auth_ignores_repair_auth_for_different_account(self):
         with tempfile.TemporaryDirectory() as temp_dir:

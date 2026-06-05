@@ -8,6 +8,7 @@ import getpass
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import socket
@@ -39,6 +40,59 @@ CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
 }
+
+
+def ensure_runtime_network_defaults() -> None:
+    if platform.system() != "Darwin":
+        return
+
+    ssl_cert_file = os.environ.get("SSL_CERT_FILE")
+    brew_default_cafile = Path("/opt/homebrew/etc/openssl@3/cert.pem")
+    system_cafile = Path("/etc/ssl/cert.pem")
+    if not ssl_cert_file and not brew_default_cafile.exists() and system_cafile.exists():
+        os.environ["SSL_CERT_FILE"] = str(system_cafile)
+
+    if os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("ALL_PROXY"):
+        return
+
+    try:
+        proxy_info = subprocess.run(
+            ["scutil", "--proxy"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3,
+        )
+    except Exception:
+        return
+    if proxy_info.returncode != 0:
+        return
+
+    pairs = {}
+    for line in proxy_info.stdout.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        pairs[key.strip()] = value.strip()
+
+    def enabled(prefix: str) -> bool:
+        return pairs.get(f"{prefix}Enable") == "1"
+
+    def set_proxy(env_name: str, host_key: str, port_key: str, scheme: str = "http") -> None:
+        host = pairs.get(host_key)
+        port = pairs.get(port_key)
+        if host and port:
+            os.environ[env_name] = f"{scheme}://{host}:{port}"
+
+    if enabled("HTTPS"):
+        set_proxy("HTTPS_PROXY", "HTTPSProxy", "HTTPSPort")
+    if enabled("HTTP"):
+        set_proxy("HTTP_PROXY", "HTTPProxy", "HTTPPort")
+    if enabled("SOCKS") and not os.environ.get("ALL_PROXY"):
+        set_proxy("ALL_PROXY", "SOCKSProxy", "SOCKSPort", scheme="socks5")
+
+
+ensure_runtime_network_defaults()
 
 
 def read_json(path: Path) -> dict:
