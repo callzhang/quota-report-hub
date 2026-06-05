@@ -523,7 +523,10 @@ def restart_codex_app_server() -> dict:
 
     if result.returncode != 0:
         combined_output = f"{result.stdout}\n{result.stderr}"
-        if "not managed by codex app-server daemon" in combined_output:
+        if (
+            "not managed by codex app-server daemon" in combined_output
+            or "managed standalone Codex install not found" in combined_output
+        ):
             stopped = stop_unmanaged_codex_app_server()
             return {
                 "ok": stopped.get("ok", False),

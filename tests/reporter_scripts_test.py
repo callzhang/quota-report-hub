@@ -1970,6 +1970,30 @@ Reading additional input from stdin...
         self.assertEqual(result["reason"], "unmanaged_app_server_stopped")
         self.assertEqual(result["fallback"]["terminated_pids"], [123])
 
+    def test_restart_codex_app_server_stops_unmanaged_server_when_standalone_install_missing(self):
+        daemon_result = mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="Error: managed standalone Codex install not found at /home/derek/.codex/packages/standalone/current/codex",
+        )
+
+        with mock.patch.object(quota_guard, "codex_binary_for_app_server_restart", return_value="/bin/codex"):
+            with mock.patch.object(quota_guard.subprocess, "run", return_value=daemon_result):
+                with mock.patch.object(quota_guard, "stop_unmanaged_codex_app_server", return_value={
+                    "ok": True,
+                    "stopped": True,
+                    "terminated_pids": [456],
+                    "killed_pids": [],
+                    "failed": [],
+                }) as stop:
+                    result = quota_guard.restart_codex_app_server()
+
+        stop.assert_called_once()
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["restarted"])
+        self.assertEqual(result["reason"], "unmanaged_app_server_stopped")
+        self.assertEqual(result["fallback"]["terminated_pids"], [456])
+
     def test_unmanaged_codex_app_server_pids_only_matches_listener_processes(self):
         ps_result = mock.Mock(
             returncode=0,
