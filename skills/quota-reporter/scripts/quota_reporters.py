@@ -218,12 +218,18 @@ def should_reupload_unchanged_auth(known: dict, now: datetime | None = None) -> 
     return (now - last_reuploaded_at).total_seconds() >= UNCHANGED_AUTH_REUPLOAD_INTERVAL_SECONDS
 
 
+def uploaded_entry_metadata(uploaded: dict) -> dict:
+    entry = uploaded.get("entry") if isinstance(uploaded, dict) else None
+    return entry if isinstance(entry, dict) else {}
+
+
 def claude_auth_blob_metadata(blob_text: str) -> dict:
     payload = json.loads(blob_text)
     if payload.get("schema") != "claude_credentials_v1":
         raise ValueError("unsupported claude auth blob schema")
     return {
         "account_id": payload["account_id"],
+        "session_id": payload.get("session_id"),
         "email": payload.get("email"),
         "name": payload.get("name"),
         "plan_name": payload.get("plan_name"),
@@ -855,6 +861,12 @@ def compact_claude_usage_summary(
     return summary
 
 
+def claude_session_id(credentials: dict, account_id: str) -> str:
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    session_material = oauth.get("refreshToken") or oauth.get("accessToken") or account_id
+    return hashlib.sha256(str(session_material).encode("utf-8")).hexdigest()[:24]
+
+
 def run_claude_status(claude_executable: str) -> dict:
     try:
         result = subprocess.run(
@@ -1186,6 +1198,7 @@ def build_claude_auth_blob(
         {
             "schema": "claude_credentials_v1",
             "account_id": payload["account_id"],
+            "session_id": claude_session_id(credentials, payload["account_id"]),
             "email": payload["email"],
             "name": payload.get("name"),
             "plan_name": payload.get("plan_name"),
@@ -1424,20 +1437,26 @@ def sync_current_auth_pool_entry(
                 "reason": "upload_auth_pool_entry_failed",
                 "entry": uploaded,
             }
+        uploaded_metadata = uploaded_entry_metadata(uploaded)
+        server_kept_different_auth = bool(
+            uploaded.get("entry", {}).get("deduplicated")
+            and uploaded_metadata.get("digest")
+            and uploaded_metadata.get("digest") != metadata["digest"]
+        )
         state = write_known_auth_state(
             source=source,
             metadata=metadata,
             known_auth_path=known_auth_path,
-            last_uploaded_digest=metadata["digest"],
-            last_uploaded_account_id=metadata["account_id"],
-            last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+            last_uploaded_digest=uploaded_metadata.get("digest") or metadata["digest"],
+            last_uploaded_account_id=uploaded_metadata.get("account_id") or metadata["account_id"],
+            last_uploaded_auth_last_refresh=uploaded_metadata.get("auth_last_refresh") or metadata["auth_last_refresh"],
             last_reuploaded_at=iso_now(),
-            state_source="unchanged_local_auth",
+            state_source="server_kept_newer_auth" if server_kept_different_auth else "unchanged_local_auth",
         )
         return {
             "ok": True,
-            "uploaded": True,
-            "reason": "reuploaded_existing_auth",
+            "uploaded": not server_kept_different_auth,
+            "reason": "server_kept_newer_auth" if server_kept_different_auth else "reuploaded_existing_auth",
             "entry": uploaded,
             "known_auth": state,
         }
@@ -1455,20 +1474,26 @@ def sync_current_auth_pool_entry(
             "reason": "upload_auth_pool_entry_failed",
             "entry": uploaded,
         }
+    uploaded_metadata = uploaded_entry_metadata(uploaded)
+    server_kept_different_auth = bool(
+        uploaded.get("entry", {}).get("deduplicated")
+        and uploaded_metadata.get("digest")
+        and uploaded_metadata.get("digest") != metadata["digest"]
+    )
     state = write_known_auth_state(
         source=source,
         metadata=metadata,
         known_auth_path=known_auth_path,
-        last_uploaded_digest=metadata["digest"],
-        last_uploaded_account_id=metadata["account_id"],
-        last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+        last_uploaded_digest=uploaded_metadata.get("digest") or metadata["digest"],
+        last_uploaded_account_id=uploaded_metadata.get("account_id") or metadata["account_id"],
+        last_uploaded_auth_last_refresh=uploaded_metadata.get("auth_last_refresh") or metadata["auth_last_refresh"],
         last_reuploaded_at=iso_now(),
-        state_source="uploaded_to_auth_pool",
+        state_source="server_kept_newer_auth" if server_kept_different_auth else "uploaded_to_auth_pool",
     )
     return {
         "ok": True,
-        "uploaded": True,
-        "reason": "quota_refreshed_with_same_auth" if already_uploaded else "uploaded_to_auth_pool",
+        "uploaded": not server_kept_different_auth,
+        "reason": "server_kept_newer_auth" if server_kept_different_auth else "uploaded_to_auth_pool",
         "entry": uploaded,
         "known_auth": state,
     }

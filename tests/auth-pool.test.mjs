@@ -52,6 +52,7 @@ test("deriveAuthPoolEntry extracts claude auth metadata", () => {
     JSON.stringify({
       schema: "claude_credentials_v1",
       account_id: "claude-a@example.com",
+      session_id: "claude-session-a",
       email: "a@example.com",
       name: "Org A",
       plan_name: "Max",
@@ -63,6 +64,7 @@ test("deriveAuthPoolEntry extracts claude auth metadata", () => {
 
   assert.equal(entry.source, "claude");
   assert.equal(entry.account_id, "claude-a@example.com");
+  assert.equal(entry.session_id, "claude-session-a");
   assert.equal(entry.email, "a@example.com");
   assert.equal(entry.plan_name, "Max");
   assert.equal(entry.auth_expires_at, "2026-04-20T07:07:08.033Z");

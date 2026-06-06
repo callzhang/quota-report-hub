@@ -943,6 +943,7 @@ Reading additional input from stdin...
         blob = json.loads(blob_text)
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(blob["claude_cli_state"]["theme"], "auto")
+        self.assertEqual(blob["session_id"], "3c469e9d6c5875d37a43f353")
 
     def test_detect_claude_custom_provider_env_reads_settings(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2546,6 +2547,55 @@ Reading additional input from stdin...
         self.assertTrue(result["uploaded"])
         self.assertEqual(result["reason"], "reuploaded_existing_auth")
         self.assertNotIn("claude", result)
+
+    def test_sync_current_claude_auth_pool_marks_server_kept_newer_auth(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            claude_home = base / ".claude"
+            known_auth_path = base / "known_auth.json"
+            claude_home.mkdir(parents=True, exist_ok=True)
+            blob_text = json.dumps(
+                {
+                    "schema": "claude_credentials_v1",
+                    "account_id": "claude-derek@stardust.ai",
+                    "session_id": "local-session",
+                    "email": "derek@stardust.ai",
+                    "name": "Derek Zen",
+                    "plan_name": "Max",
+                    "auth_last_refresh": "1776668828033",
+                    "credentials": {"claudeAiOauth": {"accessToken": "token", "refreshToken": "refresh"}},
+                },
+                ensure_ascii=False,
+            )
+            payload = {
+                "source": "claude",
+                "account_id": "claude-derek@stardust.ai",
+                "email": "derek@stardust.ai",
+                "name": "Derek Zen",
+                "plan_name": "Max",
+                "windows": {"5h": {"remaining_percent": 80}, "1week": {"remaining_percent": 60}},
+            }
+            server_entry = {
+                "deduplicated": True,
+                "account_id": "claude-derek@stardust.ai",
+                "auth_last_refresh": "1811579760686",
+                "digest": "server-newer-digest",
+            }
+
+            with mock.patch("quota_reporters.build_claude_auth_blob", return_value=(blob_text, payload)):
+                with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": server_entry}):
+                    result = quota_guard.sync_current_claude_auth_pool(
+                        "https://quota-report-hub.vercel.app",
+                        "qrp_token",
+                        claude_home=claude_home,
+                        known_auth_path=known_auth_path,
+                    )
+
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "server_kept_newer_auth")
+        self.assertEqual(result["known_auth"]["last_uploaded_digest"], "server-newer-digest")
+        self.assertEqual(result["known_auth"]["last_uploaded_auth_last_refresh"], "1811579760686")
+        self.assertEqual(result["known_auth"]["state_source"], "server_kept_newer_auth")
 
     def test_sync_current_claude_auth_pool_skips_free_plan_uploads(self):
         with tempfile.TemporaryDirectory() as temp_dir:

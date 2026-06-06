@@ -641,6 +641,57 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   assert.equal(payload.archived_invalidated_items.length, 0);
 });
 
+test("authPoolStatusPayload hides legacy empty session when account has session entries", () => {
+  const payload = authPoolStatusPayload(
+    [
+      {
+        source: "claude",
+        account_id: "claude-a@example.com",
+        session_id: "session-a",
+        email: "a@example.com",
+        plan_name: "Max",
+        digest: "digest-session",
+        auth_last_refresh: "2026-06-01T10:00:00Z",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "derek@mac",
+        hostname: "mac",
+        uploaded_at: "2026-06-01T10:00:00Z",
+      },
+      {
+        source: "claude",
+        account_id: "claude-a@example.com",
+        session_id: "",
+        email: "a@example.com",
+        plan_name: "Max",
+        digest: "digest-legacy",
+        auth_last_refresh: "2026-06-01T09:00:00Z",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "legacy@mac",
+        hostname: "legacy",
+        uploaded_at: "2026-06-01T09:00:00Z",
+      },
+    ],
+    [
+      {
+        source: "claude",
+        account_id: "claude-a@example.com",
+        status: "ok",
+        reported_at: "2026-06-01T10:05:00Z",
+        windows: {
+          "5h": { remaining_percent: 90, reset_at: "2026-06-01T15:00:00Z" },
+          "1week": { remaining_percent: 80, reset_at: "2026-06-08T10:00:00Z" },
+        },
+      },
+    ],
+    "2026-06-01T10:10:00Z"
+  );
+
+  assert.equal(payload.auth_pool_count, 1);
+  assert.equal(payload.items.length, 1);
+  assert.equal(payload.items[0].session_id, "session-a");
+  assert.equal(payload.items[0].digest, "digest-session");
+});
+
 test("authPoolStatusPayload archives hard-invalidated auths older than 48 hours by first invalidation time", () => {
   const payload = authPoolStatusPayload(
     [
