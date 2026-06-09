@@ -146,7 +146,7 @@ The guard then:
 - only replaces local source credentials when the fetched auth is different from what is already installed
 - after Codex `auth.json` is replaced or refreshed, restarts the local Codex app-server; if the app-server is an unmanaged ephemeral process, the guard stops it so the next Codex launch starts a fresh one
 - shows a desktop notification after a successful local replacement so the user knows to quit the current Codex or Claude Code session and start a new one
-- shows a desktop notification when any auth uploaded by the current token user is hard-invalidated in the hub
+- opens one persistent system dialog when any auth uploaded by the current token user is hard-invalidated in the hub; each guard run checks for an existing login-required dialog before opening another one
 - does nothing when the cloud cannot provide a better auth than the current one
 - relies on the cloud auth pool to deduplicate repeated uploads for the same `account_id`, even when raw files differ
 - if the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload

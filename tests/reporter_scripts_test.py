@@ -1597,7 +1597,14 @@ Reading additional input from stdin...
             "claude-leizhang0121@gmail.com",
         ])
 
-    def test_notify_uploaded_invalidated_auths_shows_one_summary_notification(self):
+    def test_persistent_login_required_window_detects_existing_marker(self):
+        with mock.patch.object(quota_guard, "running_process_args", return_value=[
+            {"pid": os.getpid(), "args": "python quota_guard.py"},
+            {"pid": 12345, "args": "osascript quota-report-hub-login-required"},
+        ]):
+            self.assertTrue(quota_guard.persistent_login_required_window_visible())
+
+    def test_notify_uploaded_invalidated_auths_shows_one_persistent_login_window(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
             "auth_pool_user_token": "qrp_token",
@@ -1620,16 +1627,55 @@ Reading additional input from stdin...
         }
 
         with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
-            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                result = quota_guard.notify_uploaded_invalidated_auths(config)
+            with mock.patch.object(
+                quota_guard,
+                "show_persistent_login_required_window",
+                return_value={"shown": True, "reason": "shown"},
+            ) as persistent_window:
+                with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
+                    result = quota_guard.notify_uploaded_invalidated_auths(config)
 
-        notify.assert_called_once()
-        self.assertEqual(notify.call_args.args[0], "额度守护")
+        persistent_window.assert_called_once()
+        self.assertEqual(persistent_window.call_args.args[0], "额度守护：需要重新登录")
+        notify.assert_not_called()
         self.assertTrue(result["shown"])
+        self.assertEqual(result["reason"], "shown")
         self.assertEqual(result["count"], 1)
         self.assertIn("pre-sales@stardust.ai", result["message"])
         self.assertIn("你上传的 auth 已失效", result["message"])
         self.assertIn("重新登录这些账号", result["message"])
+
+    def test_notify_uploaded_invalidated_auths_does_not_duplicate_existing_window(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        status_payload = {
+            "viewer_email": "derek@stardust.ai",
+            "items": [
+                {
+                    "source": "codex",
+                    "account_id": "pre-sales@stardust.ai",
+                    "email": "pre-sales@stardust.ai",
+                    "plan_name": "Team",
+                    "uploader_email": "derek@stardust.ai",
+                    "status": "error",
+                    "error": "auth invalidated (token_invalidated)",
+                }
+            ],
+        }
+
+        with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
+            with mock.patch.object(
+                quota_guard,
+                "show_persistent_login_required_window",
+                return_value={"shown": False, "reason": "already_visible"},
+            ):
+                result = quota_guard.notify_uploaded_invalidated_auths(config)
+
+        self.assertFalse(result["shown"])
+        self.assertEqual(result["reason"], "already_visible")
+        self.assertEqual(result["count"], 1)
 
     def test_maybe_replace_claude_auth_skips_custom_provider_settings(self):
         config = {

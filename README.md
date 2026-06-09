@@ -95,7 +95,7 @@ The intended end-to-end flow inside Codex is:
    - reports stable local quota snapshots back to the hub when available; Codex client reports are accepted only when both windows are complete or the local auth is hard-invalidated
    - if a local source is below threshold, sends `source + current account + current quota` to `/api/auth/fetch-best`
    - installs a better auth only when the server returns one for that same source
-   - notifies the local user when any auth uploaded by that user is hard-invalidated, even if that auth is not the currently installed local auth
+   - opens a persistent system dialog when any auth uploaded by that user is hard-invalidated, even if that auth is not the currently installed local auth
 
 Important runtime notes:
 
@@ -151,7 +151,7 @@ Auth pool support:
 - Every probe result is appended to `auth_pool_quota_events` before the latest row is updated or an unusable auth is removed, so invalidation windows and audit views can be reconstructed from Turso instead of GitHub Actions logs.
 - Codex auths are removed from the active pool after consecutive `auth failed (401 unauthorized)` worker probes, because repeated 401 means the saved token cannot be reused by the pool.
 - A Vercel cron endpoint checks the cloud probe results daily. If a cloud auth stays hard-invalidated for more than 24 hours, Vercel emails the uploader and asks them to log in again. It sends at most one reminder per account per 24 hours until the auth recovers.
-- The local guard also checks `/api/status` every run and shows a desktop notification for every hard-invalidated auth uploaded by the current token user, including auths that are not currently installed on this machine.
+- The local guard also checks `/api/status` every run and opens one persistent system dialog for hard-invalidated auths uploaded by the current token user, including auths that are not currently installed on this machine. Before opening it, the guard checks whether the same login-required dialog is already visible so the 15-minute scheduler does not create duplicates.
 - Claude quota is probed in the worker by launching Claude CLI headlessly, restoring the saved CLI state, and reading the statusline snapshot after a minimal real request.
 - Claude auth snapshots are uploaded to the cloud pool only when the local machine is using a direct Claude subscription. Machines that inject `ANTHROPIC_*` credentials through `~/.claude/settings.json` are skipped because their active provider is not the worker's official Claude login path.
 - The Claude worker uses a short statusline refresh interval during probing so the snapshot is emitted before the worker timeout expires.

@@ -7,6 +7,7 @@ import copy
 import json
 import os
 import platform
+import shlex
 import shutil
 import signal
 import subprocess
@@ -348,6 +349,133 @@ def show_desktop_notification(title: str, message: str) -> bool:
     return False
 
 
+LOGIN_REQUIRED_ALERT_MARKER = "quota-report-hub-login-required"
+
+
+def running_process_args() -> list[dict]:
+    system = platform.system().lower()
+    if system == "windows":
+        powershell = shutil.which("powershell") or shutil.which("powershell.exe") or shutil.which("pwsh")
+        if not powershell:
+            return []
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        try:
+            payload = json.loads(result.stdout)
+        except Exception:
+            return []
+        rows = payload if isinstance(payload, list) else [payload]
+        return [
+            {"pid": int(row.get("ProcessId") or 0), "args": str(row.get("CommandLine") or "")}
+            for row in rows
+        ]
+
+    result = subprocess.run(
+        ["ps", "-eo", "pid=,args="],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    rows = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        pid_text, _, args = stripped.partition(" ")
+        try:
+            pid = int(pid_text)
+        except ValueError:
+            continue
+        rows.append({"pid": pid, "args": args})
+    return rows
+
+
+def persistent_login_required_window_visible(marker: str = LOGIN_REQUIRED_ALERT_MARKER) -> bool:
+    current_pid = os.getpid()
+    for process in running_process_args():
+        if process.get("pid") == current_pid:
+            continue
+        if marker in process.get("args", ""):
+            return True
+    return False
+
+
+def spawn_detached(command: list[str]) -> None:
+    kwargs = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if platform.system().lower() == "windows":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+        if creationflags:
+            kwargs["creationflags"] = creationflags
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen(command, **kwargs)
+
+
+def show_persistent_login_required_window(title: str, message: str) -> dict:
+    if persistent_login_required_window_visible():
+        return {"shown": False, "reason": "already_visible"}
+
+    system = platform.system().lower()
+    try:
+        if system == "darwin":
+            script = (
+                f'set quotaReportHubAlertMarker to {json.dumps(LOGIN_REQUIRED_ALERT_MARKER)}\n'
+                f'display dialog {json.dumps(message)} with title {json.dumps(title)} '
+                'buttons {"我知道了"} default button "我知道了" with icon caution'
+            )
+            spawn_detached(["osascript", "-e", script])
+            return {"shown": True, "reason": "shown"}
+
+        if system == "linux":
+            zenity = shutil.which("zenity")
+            if not zenity:
+                return {"shown": False, "reason": "zenity_not_found"}
+            shell_command = (
+                f"{shlex.quote(zenity)} --warning --width=560 "
+                f"--title={shlex.quote(title)} --text={shlex.quote(message)}"
+            )
+            spawn_detached(["sh", "-c", shell_command, LOGIN_REQUIRED_ALERT_MARKER])
+            return {"shown": True, "reason": "shown"}
+
+        if system == "windows":
+            powershell = shutil.which("powershell") or shutil.which("powershell.exe") or shutil.which("pwsh")
+            if not powershell:
+                return {"shown": False, "reason": "powershell_not_found"}
+            script = (
+                f"$quotaReportHubAlertMarker = {json.dumps(LOGIN_REQUIRED_ALERT_MARKER)}; "
+                "$wshell = New-Object -ComObject WScript.Shell; "
+                f"$wshell.Popup({json.dumps(message)}, 0, {json.dumps(title)}, 48) | Out-Null"
+            )
+            spawn_detached([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+            return {"shown": True, "reason": "shown"}
+    except Exception as error:
+        return {"shown": False, "reason": "spawn_failed", "error": str(error)}
+
+    return {"shown": False, "reason": "unsupported_platform"}
+
+
 def notify_replacement_success(source: str, replacement: dict) -> dict:
     if not replacement.get("replaced"):
         return {"shown": False, "reason": "not_replaced"}
@@ -638,9 +766,10 @@ def notify_uploaded_invalidated_auths(config: dict) -> dict:
     if not rows:
         return {"shown": False, "reason": "no_uploaded_invalidated_auths", "count": 0}
     message = invalidated_auths_message(rows)
-    shown = show_desktop_notification("额度守护", message)
+    window_result = show_persistent_login_required_window("额度守护：需要重新登录", message)
     return {
-        "shown": shown,
+        "shown": window_result.get("shown", False),
+        "reason": window_result.get("reason"),
         "count": len(rows),
         "accounts": [
             {
