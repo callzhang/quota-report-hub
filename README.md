@@ -117,6 +117,7 @@ Important runtime notes:
 - local quota reports are also used as active-assignment evidence: each reporter's latest Codex account contributes to that auth's load, which catches machines that keep using an auth without calling `fetch-best`
 - local upload is idempotent: even when `known_auth.json` records the same uploaded `account_id`, `auth_last_refresh`, and digest, the guard reuploads the current auth so a missing cloud entry can be restored automatically
 - uploading a new current auth does not delete older auths previously uploaded by the same user; the hub keeps monitoring all of them so invalidated-owner notifications still work
+- if a fetched shared auth is later reuploaded by another machine, the hub preserves the first uploader for that `source + account_id`; using someone else's shared auth does not make that user responsible for re-login notifications
 - if the same account is refreshed locally, the new `auth_last_refresh` will force a new upload and overwrite the old cloud copy
 - Codex auth-pool identity is normalized to the lowercased account email when the email is available, so Team users who share a provider-side account UUID do not overwrite each other in the pool
 - the guard only replaces local `~/.codex/auth.json` when the fetched auth is different from the currently installed auth
@@ -161,7 +162,7 @@ Auth pool support:
 - The selection logic only compares candidates within the same source, prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
 - Soft probe failures such as missing quota details can still contribute stale-but-last-known-good windows; hard token invalidations clear the old windows.
 - The auth pool requires server-side encryption plus Mailgun delivery for issuing personal user tokens.
-- The auth pool deduplicates by stable `source + account_id`, and only replaces an existing entry when the incoming `auth_last_refresh` is newer. If two machines upload different files for the same account without a newer refresh time, the cloud keeps the existing entry.
+- The auth pool deduplicates by stable `source + account_id`, preserves the first uploader as the account owner, and only replaces an existing entry when the incoming `auth_last_refresh` is newer. If two machines upload different files for the same account without a newer refresh time, the cloud keeps the existing entry.
 
 The installer is reboot-safe and runs every 15 minutes:
 
@@ -261,7 +262,7 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 4. The guard automatically:
 
 - updates local `known_auth.json`
-- uploads the current local auth for each source to the cloud auth pool only when the auth changed
+- reuploads the current local auth for each source to the cloud auth pool so a missing entry can recover automatically
 - probes local Codex and Claude quota
 - pushes stable local quota snapshots to the hub when available
 - for Codex, only complete windows or hard invalidations are sent, so local partial probes never overwrite good hub data

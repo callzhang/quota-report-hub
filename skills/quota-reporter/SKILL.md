@@ -149,6 +149,7 @@ The guard then:
 - opens one persistent system dialog when any auth uploaded by the current token user is hard-invalidated in the hub; each guard run checks for an existing login-required dialog before opening another one
 - does nothing when the cloud cannot provide a better auth than the current one
 - relies on the cloud auth pool to deduplicate repeated uploads for the same `account_id`, even when raw files differ
+- preserves the first uploader as the owner for each `source + account_id`, so a fetched shared auth does not become owned by the machine that happened to reupload it
 - if the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload
 - does not delete older auths previously uploaded by the same token user when the local machine switches to a different current auth
 - for Codex, the cloud `account_id` is normalized to the lowercased email when available so Team users do not collide on a shared provider-side UUID

@@ -188,7 +188,7 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
     });
     const entries = (await mod.authPoolEntries()).filter((entry) => entry.account_id === "same@stardust.ai");
     assert.equal(entries.length, 2);
-    assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["alice@stardust.ai", "bob@stardust.ai"]));
+    assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["alice@stardust.ai"]));
   } finally {
     if (previousUrl === undefined) {
       delete process.env.TURSO_DATABASE_URL;
@@ -211,6 +211,46 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
       process.env.TOKEN_ISSUE_KEY = previousTokenIssueKey;
     }
     rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("upsertAuthPoolEntry preserves the first uploader for later same-account uploads", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "provider-a",
+        email: "shared@stardust.ai",
+        lastRefresh: "2026-06-08T03:09:11Z",
+        sid: "session-a",
+      }),
+      uploader_email: "owner@stardust.ai",
+      reporter_name: "owner@mac",
+      hostname: "owner-mac",
+    });
+
+    const update = await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "provider-a",
+        email: "shared@stardust.ai",
+        lastRefresh: "2026-06-09T01:03:13Z",
+        sid: "session-b",
+      }),
+      uploader_email: "borrower@stardust.ai",
+      reporter_name: "borrower@mac",
+      hostname: "borrower-mac",
+    });
+
+    assert.equal(update.uploader_email, "owner@stardust.ai");
+    assert.equal(update.reporter_name, "borrower@mac");
+
+    const entries = (await mod.authPoolEntries()).filter((entry) => entry.account_id === "shared@stardust.ai");
+    assert.equal(entries.length, 2);
+    assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["owner@stardust.ai"]));
+  } finally {
+    cleanup();
   }
 });
 
