@@ -716,7 +716,7 @@ test("authUsersList collapses duplicate token rows for the same email", async ()
   }
 });
 
-test("authenticateOrUpgradeApiToken reissues signed stale tokens", async () => {
+test("authenticateOrUpgradeApiToken rejects signed stale tokens", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
     const first = await mod.issueApiToken("alice@stardust.ai");
@@ -725,15 +725,49 @@ test("authenticateOrUpgradeApiToken reissues signed stale tokens", async () => {
     assert.equal(await mod.authenticateApiToken(first.token), null);
     assert.equal((await mod.authenticateApiToken(second.token)).email, "alice@stardust.ai");
 
-    const upgraded = await mod.authenticateOrUpgradeApiToken(first.token);
-    assert.equal(upgraded.email, "alice@stardust.ai");
-    assert.equal(upgraded.token_upgrade.reason, "signed_token_reissued");
-    assert.match(upgraded.token_upgrade.auth_pool_user_token, /^qrp\./);
-    assert.notEqual(upgraded.token_upgrade.auth_pool_user_token, first.token);
-    assert.notEqual(upgraded.token_upgrade.auth_pool_user_token, second.token);
+    assert.equal(await mod.authenticateOrUpgradeApiToken(first.token), null);
   } finally {
     cleanup();
   }
+});
+
+test("sendUnauthorized returns token invalidated payload", async () => {
+  const previousUrl = process.env.TURSO_DATABASE_URL;
+  const previousToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "file:quota-report-hub-test.db";
+  process.env.TURSO_AUTH_TOKEN = "test-token";
+  const { sendUnauthorized } = await import(`../lib/api-auth.js?ts=${Date.now()}`);
+  if (previousUrl === undefined) {
+    delete process.env.TURSO_DATABASE_URL;
+  } else {
+    process.env.TURSO_DATABASE_URL = previousUrl;
+  }
+  if (previousToken === undefined) {
+    delete process.env.TURSO_AUTH_TOKEN;
+  } else {
+    process.env.TURSO_AUTH_TOKEN = previousToken;
+  }
+  const headers = {};
+  let body = "";
+  const res = {
+    setHeader(name, value) {
+      headers[name] = value;
+    },
+    end(value) {
+      body = value;
+    },
+  };
+
+  sendUnauthorized(res);
+
+  assert.equal(res.statusCode, 401);
+  assert.equal(headers["Content-Type"], "application/json; charset=utf-8");
+  assert.deepEqual(JSON.parse(body), {
+    ok: false,
+    error: "token_invalidated",
+    reason: "token_invalidated",
+    message: "Token invalid or expired. Request a new token by email and paste the latest one here.",
+  });
 });
 
 test("invalidated auth notification state preserves first invalidated time and clears on recovery", async () => {

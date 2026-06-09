@@ -126,7 +126,7 @@ Important runtime notes:
 - `~/.agents/auth/quota-reporter.json` should stay private because it contains the user's personal auth-pool token.
 - the hub dashboard also uses the same personal token. Without a valid token, `/api/status` returns `401` and the page stays locked.
 - every time a user requests a new token by email, the old token is revoked. Only the latest token for that email remains valid, even if that latest token is then reused across multiple machines.
-- when a request uses an older hub-signed token, the hub returns a fresh latest token in the response and the local guard/dashboard updates stored token state automatically.
+- when a request uses an invalid or expired hub-signed token, the hub returns `401` with `token_invalidated`. The local guard requests a new token email once for that invalid local token, then waits for the user to paste the latest token.
 - deleted legacy opaque `qrp_...` tokens cannot be upgraded in-band because they do not carry a verifiable email; request a fresh token by email once on that machine.
 - old local reporter scripts now live under `skills/quota-reporter/archive/`
 
@@ -136,7 +136,7 @@ The dashboard now reflects the cloud auth pool, not arbitrary client report rows
 - quota metadata is shown as the latest effective quota associated with that cloud auth entry
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
-- Codex rows can be refreshed by either the cloud worker or a stable local client report; a newer worker soft failure does not overwrite an existing good local Codex quota snapshot
+- Codex rows can be refreshed by either the cloud worker or a stable local client report; after a stable local client report is accepted, the cloud worker skips probing that same auth for 1 hour when the report matches the auth refresh time. A newer worker soft failure does not overwrite an existing good local Codex quota snapshot
 - Claude rows can be refreshed by the cloud worker for direct Claude subscriptions, or by stable local client reports when Claude is running in an environment that the worker cannot replay reliably
 
 Auth pool support:
@@ -148,6 +148,7 @@ Auth pool support:
 - Codex uploads are keyed by normalized email when available, not by the raw provider account UUID, so different Team users do not collide in the pool.
 - GitHub Actions refreshes the cloud auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
 - Local machines may also post stable quota snapshots to `/api/auth/quota`. For Codex, the server accepts only complete windows or hard invalidations so partial client probes cannot poison the hub.
+- A fresh accepted client quota report backs off the GitHub Actions cloud probe for that same auth for 1 hour, as long as the report's `auth_last_refresh` still matches the auth pool entry.
 - Turso stores auth-pool metadata, quota snapshots, and audit events. `/api/status` and `/api/auth/fetch-best` candidate selection read metadata only; they do not read encrypted auth JSON for every account.
 - In production, configure Tigris object storage so encrypted auth JSON is written to object storage and Turso keeps only `auth_blob_key`. Existing inline Turso rows remain readable and are moved to object storage when that auth is refreshed and uploaded again.
 - During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.

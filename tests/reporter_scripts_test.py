@@ -147,6 +147,96 @@ class ReporterScriptsTest(unittest.TestCase):
             self.assertEqual(saved["auth_pool_user_token"], "new-token")
             self.assertEqual(saved["auth_pool_user_email"], "derek@stardust.ai")
 
+    def test_read_auth_pool_response_redacts_token_after_persisting_upgrade(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "quota-reporter.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "auth_pool_url": "https://quota-report-hub.vercel.app",
+                        "auth_pool_user_email": "old@stardust.ai",
+                        "auth_pool_user_token": "old-token",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            response = io.BytesIO(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "auth_pool_user_token": "new-token",
+                        "token_upgrade": {
+                            "email": "derek@stardust.ai",
+                            "reason": "signed_token_reissued",
+                        },
+                    }
+                ).encode("utf-8")
+            )
+
+            with mock.patch("quota_reporters.CONFIG_PATH", config_path):
+                payload = quota_reporters.read_auth_pool_response(response)
+
+            saved = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["auth_pool_user_token"], "new-token")
+            self.assertNotIn("auth_pool_user_token", payload)
+            self.assertEqual(payload["local_token_upgrade"]["reason"], "signed_token_reissued")
+
+    def test_auth_pool_token_invalidated_requests_email_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "quota-reporter.json"
+            state_path = Path(temp_dir) / "token-invalidated-email.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "auth_pool_url": "https://quota-report-hub.vercel.app",
+                        "auth_pool_user_email": "derek@stardust.ai",
+                        "auth_pool_user_token": "expired-token",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            error = urllib.error.HTTPError(
+                "https://quota-report-hub.vercel.app/api/status",
+                401,
+                "Unauthorized",
+                {},
+                io.BytesIO(
+                    b'{"ok":false,"error":"token_invalidated","reason":"token_invalidated","message":"Token invalid or expired"}'
+                ),
+            )
+
+            with mock.patch("quota_reporters.CONFIG_PATH", config_path):
+                with mock.patch("quota_reporters.TOKEN_INVALIDATED_EMAIL_STATE_PATH", state_path):
+                    with mock.patch.object(
+                        quota_reporters,
+                        "request_auth_pool_token",
+                        return_value={"ok": True, "email": "derek@stardust.ai"},
+                    ) as request_token:
+                        first = quota_reporters.read_auth_pool_http_error(
+                            error,
+                            auth_pool_url="https://quota-report-hub.vercel.app",
+                            auth_pool_user_token="expired-token",
+                        )
+                        second_error = urllib.error.HTTPError(
+                            "https://quota-report-hub.vercel.app/api/status",
+                            401,
+                            "Unauthorized",
+                            {},
+                            io.BytesIO(
+                                b'{"ok":false,"error":"token_invalidated","reason":"token_invalidated","message":"Token invalid or expired"}'
+                            ),
+                        )
+                        second = quota_reporters.read_auth_pool_http_error(
+                            second_error,
+                            auth_pool_url="https://quota-report-hub.vercel.app",
+                            auth_pool_user_token="expired-token",
+                        )
+
+            request_token.assert_called_once_with("https://quota-report-hub.vercel.app", "derek@stardust.ai")
+            self.assertTrue(first["token_reissue_email"]["requested"])
+            self.assertFalse(second["token_reissue_email"]["requested"])
+            self.assertEqual(second["token_reissue_email"]["reason"], "already_requested")
+
     def test_probe_codex_uses_stable_cache_root_instead_of_tmp(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"

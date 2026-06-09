@@ -80,9 +80,8 @@ function mockResponse() {
 test("fetch-best returns a replacement even when repair auth is also present", async () => {
   await withTempEnv(async () => {
     const db = await import(`../lib/db.js?ts=${Date.now()}`);
-    const { signTokenPayload } = await import(`../lib/company-auth.js?ts=${Date.now()}`);
     const { default: handler } = await import(`../api/auth/fetch-best.js?ts=${Date.now()}`);
-    const token = signTokenPayload("derek@stardust.ai").token;
+    const token = (await db.issueApiToken("derek@stardust.ai")).token;
 
     await db.upsertAuthPoolEntry({
       source: "codex",

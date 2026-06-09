@@ -111,6 +111,84 @@ test("processAuthPoolEntry does not write back when codex probe did not refresh 
   assert.equal(result.refreshed_auth_written, false);
 });
 
+test("processAuthPoolEntry skips cloud probe after fresh client quota report for same auth", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  let decryptCalled = false;
+  let quotaWritten = false;
+
+  const result = await processAuthPoolEntry(
+    {
+      source: "codex",
+      account_id: "acct-client-fresh",
+      auth_last_refresh: "2026-06-09T10:32:06Z",
+    },
+    {
+      decryptAuthJsonImpl: () => {
+        decryptCalled = true;
+        return '{"tokens":{"account_id":"acct-client-fresh"}}';
+      },
+      upsertAuthPoolQuotaImpl: async () => {
+        quotaWritten = true;
+      },
+      authPoolQuotaLatestForEntryImpl: async () => ({
+        source: "codex",
+        account_id: "acct-client-fresh",
+        auth_last_refresh: "2026-06-09T10:32:06Z",
+        reported_at: "2026-06-09T23:30:00Z",
+        report_origin: "client",
+        status: "ok",
+        windows: { "5h": { remaining_percent: 80 }, "1week": { remaining_percent: 70 } },
+      }),
+      nowImpl: () => new Date("2026-06-09T23:45:00Z"),
+    }
+  );
+
+  assert.equal(decryptCalled, false);
+  assert.equal(quotaWritten, false);
+  assert.equal(result.skipped_cloud_probe, true);
+  assert.equal(result.skip_reason, "fresh_client_quota_report");
+});
+
+test("processAuthPoolEntry probes when fresh client quota belongs to older auth refresh", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  let decryptCalled = false;
+
+  const result = await processAuthPoolEntry(
+    {
+      source: "codex",
+      account_id: "acct-client-stale-auth",
+      auth_last_refresh: "2026-06-09T11:32:06Z",
+    },
+    {
+      decryptAuthJsonImpl: () => {
+        decryptCalled = true;
+        return '{"tokens":{"account_id":"acct-client-stale-auth"}}';
+      },
+      probeCodexAuthJsonImpl: () => ({
+        source: "codex",
+        account_id: "acct-client-stale-auth",
+        status: "ok",
+        windows: { "5h": { remaining_percent: 80 }, "1week": { remaining_percent: 70 } },
+      }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      authPoolQuotaLatestForEntryImpl: async () => ({
+        source: "codex",
+        account_id: "acct-client-stale-auth",
+        auth_last_refresh: "2026-06-09T10:32:06Z",
+        reported_at: "2026-06-09T23:30:00Z",
+        report_origin: "client",
+        status: "ok",
+        windows: { "5h": { remaining_percent: 80 }, "1week": { remaining_percent: 70 } },
+      }),
+      nowImpl: () => new Date("2026-06-09T23:45:00Z"),
+    }
+  );
+
+  assert.equal(decryptCalled, true);
+  assert.equal(result.skipped_cloud_probe, undefined);
+  assert.equal(result.status, "ok");
+});
+
 test("processAuthPoolEntry deletes unusable codex auths with missing quota details", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const quotaReports = [];

@@ -25,6 +25,7 @@ CONFIG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.json"
 AUTH_STATE_DIR = Path.home() / ".agents" / "auth"
 ARCHIVE_DIR = AUTH_STATE_DIR
 KNOWN_AUTH_PATH = AUTH_STATE_DIR / "known_auth.json"
+TOKEN_INVALIDATED_EMAIL_STATE_PATH = AUTH_STATE_DIR / "token-invalidated-email.json"
 SOURCE_AUTH_PATH = Path.home() / ".codex" / "auth.json"
 CLAUDE_HOME = Path.home() / ".claude"
 UNCHANGED_AUTH_REUPLOAD_INTERVAL_SECONDS = 3600
@@ -1276,27 +1277,115 @@ def persist_auth_pool_token_upgrade(payload: dict) -> dict:
     }
 
 
+def redact_auth_pool_token(payload: dict) -> dict:
+    if "auth_pool_user_token" not in payload:
+        return payload
+    redacted = dict(payload)
+    redacted.pop("auth_pool_user_token", None)
+    return redacted
+
+
 def read_auth_pool_response(response) -> dict:
     payload = json.loads(response.read().decode("utf-8"))
     upgrade = persist_auth_pool_token_upgrade(payload)
+    payload = redact_auth_pool_token(payload)
     if upgrade.get("updated"):
         payload["local_token_upgrade"] = upgrade
     return payload
 
 
-def read_auth_pool_http_error(error: urllib.error.HTTPError) -> dict:
+def auth_pool_error_is_token_invalidated(payload: dict) -> bool:
+    return payload.get("error") == "token_invalidated" or payload.get("reason") == "token_invalidated"
+
+
+def auth_pool_email_for_token(auth_pool_user_token: str) -> str | None:
+    config = read_json(CONFIG_PATH) if CONFIG_PATH.exists() else {}
+    configured_email = config.get("auth_pool_user_email")
+    if configured_email:
+        return str(configured_email)
+    if str(auth_pool_user_token or "").startswith("qrp."):
+        try:
+            return decode_jwt_payload(auth_pool_user_token).get("e")
+        except Exception:
+            return None
+    return None
+
+
+def request_auth_pool_token_email_once(
+    auth_pool_url: str,
+    auth_pool_user_token: str,
+    state_path: Path | None = None,
+) -> dict:
+    state_path = state_path or TOKEN_INVALIDATED_EMAIL_STATE_PATH
+    email = auth_pool_email_for_token(auth_pool_user_token)
+    if not email:
+        return {"requested": False, "reason": "email_unavailable"}
+    token_digest = hashlib.sha256(str(auth_pool_user_token).encode("utf-8")).hexdigest()
+    state = read_json(state_path) if state_path.exists() else {}
+    if state.get("email") == email and state.get("token_digest") == token_digest:
+        return {
+            "requested": False,
+            "reason": "already_requested",
+            "email": email,
+            "requested_at": state.get("requested_at"),
+        }
+    try:
+        request_auth_pool_token(auth_pool_url, email)
+    except Exception as error:
+        return {
+            "requested": False,
+            "reason": "request_failed",
+            "email": email,
+            "error": str(error),
+        }
+    requested_at = iso_now()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "email": email,
+                "token_digest": token_digest,
+                "requested_at": requested_at,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    state_path.chmod(0o600)
+    return {
+        "requested": True,
+        "reason": "requested",
+        "email": email,
+        "requested_at": requested_at,
+    }
+
+
+def read_auth_pool_http_error(
+    error: urllib.error.HTTPError,
+    *,
+    auth_pool_url: str | None = None,
+    auth_pool_user_token: str | None = None,
+) -> dict:
     body = error.read().decode("utf-8", errors="replace")
     try:
         payload = json.loads(body) if body else {}
     except json.JSONDecodeError:
         payload = {"raw_body": body}
-    return {
+    result = {
         "ok": False,
         "status_code": error.code,
         "reason": "http_error",
         "error": payload.get("error") or payload.get("message") or error.reason,
         "response": payload,
     }
+    if auth_pool_url and auth_pool_user_token and auth_pool_error_is_token_invalidated(payload):
+        result["token_reissue_email"] = request_auth_pool_token_email_once(
+            auth_pool_url,
+            auth_pool_user_token,
+        )
+    return result
 
 
 def post_auth_pool_entry(
@@ -1327,7 +1416,7 @@ def post_auth_pool_entry(
         with urllib.request.urlopen(request) as response:
             return read_auth_pool_response(response)
     except urllib.error.HTTPError as error:
-        return read_auth_pool_http_error(error)
+        return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
 
 
 def post_auth_pool_quota(
@@ -1356,7 +1445,7 @@ def post_auth_pool_quota(
         with urllib.request.urlopen(request) as response:
             return read_auth_pool_response(response)
     except urllib.error.HTTPError as error:
-        return read_auth_pool_http_error(error)
+        return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
 
 
 def delete_auth_pool_entry(
@@ -1385,7 +1474,7 @@ def delete_auth_pool_entry(
         with urllib.request.urlopen(request) as response:
             return read_auth_pool_response(response)
     except urllib.error.HTTPError as error:
-        return read_auth_pool_http_error(error)
+        return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
 
 
 def sync_current_auth_pool_entry(
@@ -1610,7 +1699,7 @@ def fetch_best_auth(
         with urllib.request.urlopen(request) as response:
             return read_auth_pool_response(response)
     except urllib.error.HTTPError as error:
-        return read_auth_pool_http_error(error)
+        return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
 
 
 def fetch_auth_pool_status(auth_pool_url: str, auth_pool_user_token: str) -> dict:
@@ -1619,8 +1708,11 @@ def fetch_auth_pool_status(auth_pool_url: str, auth_pool_user_token: str) -> dic
         headers={"Authorization": f"Bearer {auth_pool_user_token}"},
         method="GET",
     )
-    with urllib.request.urlopen(request) as response:
-        return read_auth_pool_response(response)
+    try:
+        with urllib.request.urlopen(request) as response:
+            return read_auth_pool_response(response)
+    except urllib.error.HTTPError as error:
+        return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
 
 
 def request_auth_pool_token(auth_pool_url: str, email: str) -> dict:

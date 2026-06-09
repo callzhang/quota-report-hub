@@ -148,6 +148,29 @@ function deleteReason(entry, report, previousReport = null) {
   return "unknown";
 }
 
+function parseDateMillis(value) {
+  const millis = Date.parse(String(value || ""));
+  return Number.isFinite(millis) ? millis : null;
+}
+
+function shouldSkipFreshClientQuotaReport(entry, previousReport, now = new Date()) {
+  if (previousReport?.report_origin !== "client") {
+    return false;
+  }
+  const reportedAt = parseDateMillis(previousReport.reported_at);
+  if (reportedAt === null) {
+    return false;
+  }
+  const ageMillis = now.getTime() - reportedAt;
+  if (ageMillis < 0 || ageMillis >= 60 * 60 * 1000) {
+    return false;
+  }
+  if (entry.auth_last_refresh && previousReport.auth_last_refresh !== entry.auth_last_refresh) {
+    return false;
+  }
+  return true;
+}
+
 export async function processAuthPoolEntry(
   entry,
   {
@@ -159,8 +182,24 @@ export async function processAuthPoolEntry(
     upsertAuthPoolEntryImpl = upsertAuthPoolEntry,
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
     authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
+    nowImpl = () => new Date(),
   } = {}
 ) {
+  const previousReport = await authPoolQuotaLatestForEntryImpl({ source: entry.source, accountId: entry.account_id });
+  if (shouldSkipFreshClientQuotaReport(entry, previousReport, nowImpl())) {
+    return {
+      source: entry.source,
+      account_id: entry.account_id,
+      status: previousReport.status,
+      error: previousReport.error,
+      skipped_cloud_probe: true,
+      skip_reason: "fresh_client_quota_report",
+      latest_reported_at: previousReport.reported_at,
+      refreshed_auth_written: false,
+      refreshed_auth_result: null,
+    };
+  }
+
   let report;
   try {
     const authJsonText = await decryptAuthJsonImpl(entry);
@@ -177,7 +216,6 @@ export async function processAuthPoolEntry(
   } catch (error) {
     report = failureReport(entry, error);
   }
-  const previousReport = await authPoolQuotaLatestForEntryImpl({ source: entry.source, accountId: entry.account_id });
   if (shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport)) {
     await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
     const deleteResult = await deleteAuthPoolEntryImpl({ source: entry.source, accountId: entry.account_id });
