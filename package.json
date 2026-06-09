@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "node scripts/start_frontend.mjs",
+    "frontend": "node scripts/start_frontend.mjs",
     "test": "node --test"
   },
   "dependencies": {

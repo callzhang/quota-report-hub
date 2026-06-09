@@ -46,6 +46,22 @@ After install, teammates can either:
 - run one local guard check with `quota_guard.py`
 - install scheduled checking with `install_quota_guard.py`
 
+## Local Frontend
+
+Run the static dashboard frontend on the fixed local port:
+
+```bash
+npm run dev
+```
+
+The startup script listens on `127.0.0.1:6088` by default. If port `6088` is already occupied, startup fails with an error instead of switching to another port. Set `FRONTEND_PORT` only when you intentionally want a different fixed port:
+
+```bash
+FRONTEND_PORT=7000 npm run dev
+```
+
+This script serves the static dashboard files only. Use the deployed hub or `vercel dev` when you need local API routes.
+
 ## Recommended User Flow
 
 The intended end-to-end flow inside Codex is:

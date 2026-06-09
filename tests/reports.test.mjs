@@ -692,6 +692,58 @@ test("authPoolStatusPayload hides legacy empty session when account has session 
   assert.equal(payload.items[0].digest, "digest-session");
 });
 
+test("authPoolStatusPayload shows the latest auth once when one account has multiple sessions", () => {
+  const payload = authPoolStatusPayload(
+    [
+      {
+        source: "codex",
+        account_id: "derek@preseen.ai",
+        session_id: "older-session",
+        email: "derek@preseen.ai",
+        plan_name: "Pro",
+        digest: "older-digest",
+        auth_last_refresh: "2026-06-03T22:34:17Z",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "stardust@gpu4",
+        hostname: "gpu4",
+        uploaded_at: "2026-06-05T04:15:19Z",
+      },
+      {
+        source: "codex",
+        account_id: "derek@preseen.ai",
+        session_id: "latest-session",
+        email: "derek@preseen.ai",
+        plan_name: "Pro",
+        digest: "latest-digest",
+        auth_last_refresh: "2026-06-07T19:25:12Z",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "derek@mac",
+        hostname: "mac",
+        uploaded_at: "2026-06-07T19:28:40Z",
+      },
+    ],
+    [
+      {
+        source: "codex",
+        account_id: "derek@preseen.ai",
+        status: "ok",
+        reported_at: "2026-06-09T00:17:51Z",
+        windows: {
+          "5h": { remaining_percent: 80, reset_at: "2026-06-09T05:00:00Z" },
+          "1week": { remaining_percent: 60, reset_at: "2026-06-15T05:00:00Z" },
+        },
+      },
+    ],
+    "2026-06-09T00:30:00Z"
+  );
+
+  assert.equal(payload.auth_pool_count, 1);
+  assert.equal(payload.items.length, 1);
+  assert.equal(payload.items[0].session_id, "latest-session");
+  assert.equal(payload.items[0].digest, "latest-digest");
+  assert.equal(payload.items[0].reporter_name, "derek@mac");
+});
+
 test("authPoolStatusPayload archives hard-invalidated auths older than 48 hours by first invalidation time", () => {
   const payload = authPoolStatusPayload(
     [
