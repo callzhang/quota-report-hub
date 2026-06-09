@@ -33,14 +33,17 @@ async function loadDbWithTempStore() {
   const previousToken = process.env.TURSO_AUTH_TOKEN;
   const previousEncryptionKey = process.env.AUTH_POOL_ENCRYPTION_KEY;
   const previousTokenIssueKey = process.env.TOKEN_ISSUE_KEY;
+  const previousAuthBlobStorageDir = process.env.AUTH_BLOB_STORAGE_DIR;
   process.env.TURSO_DATABASE_URL = `file:${dbPath}`;
   process.env.TURSO_AUTH_TOKEN = "test-token";
   process.env.AUTH_POOL_ENCRYPTION_KEY = "0".repeat(64);
   process.env.TOKEN_ISSUE_KEY = "test-token-issue-key-32-bytes!!!";
   try {
     const mod = await import(`../lib/db.js?ts=${Date.now()}`);
+    const client = createClient({ url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN });
     return {
       mod,
+      client,
       cleanup() {
         if (previousUrl === undefined) {
           delete process.env.TURSO_DATABASE_URL;
@@ -62,6 +65,11 @@ async function loadDbWithTempStore() {
         } else {
           process.env.TOKEN_ISSUE_KEY = previousTokenIssueKey;
         }
+        if (previousAuthBlobStorageDir === undefined) {
+          delete process.env.AUTH_BLOB_STORAGE_DIR;
+        } else {
+          process.env.AUTH_BLOB_STORAGE_DIR = previousAuthBlobStorageDir;
+        }
         rmSync(tempDir, { recursive: true, force: true });
       },
     };
@@ -70,6 +78,74 @@ async function loadDbWithTempStore() {
     throw error;
   }
 }
+
+test("authPoolEntrySummaries excludes encrypted auth material for status reads", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "summary-provider",
+        email: "summary@stardust.ai",
+      }),
+      uploader_email: "owner@stardust.ai",
+      reporter_name: "owner@mac",
+      hostname: "mac",
+    });
+
+    const summaries = await mod.authPoolEntrySummaries();
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0].account_id, "summary@stardust.ai");
+    assert.equal(Object.hasOwn(summaries[0], "encrypted_auth_json"), false);
+    assert.equal(Object.hasOwn(summaries[0], "iv"), false);
+    assert.equal(Object.hasOwn(summaries[0], "auth_tag"), false);
+    assert.equal(Object.hasOwn(summaries[0], "auth_blob_key"), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("upsertAuthPoolEntry stores encrypted auth payload in object storage when configured", async () => {
+  const storageDir = mkdtempSync(join(tmpdir(), "qrh-auth-blob-store-"));
+  const previousAuthBlobStorageDir = process.env.AUTH_BLOB_STORAGE_DIR;
+  process.env.AUTH_BLOB_STORAGE_DIR = storageDir;
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const authJson = fakeAuthJson({
+      accountId: "stored-provider",
+      email: "stored@stardust.ai",
+    });
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: authJson,
+      uploader_email: "owner@stardust.ai",
+      reporter_name: "owner@mac",
+      hostname: "mac",
+    });
+
+    const rows = (await client.execute(`
+      SELECT encrypted_auth_json, iv, auth_tag, auth_blob_key
+      FROM auth_pool_entries
+    `)).rows;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].encrypted_auth_json, null);
+    assert.equal(rows[0].iv, null);
+    assert.equal(rows[0].auth_tag, null);
+    assert.match(rows[0].auth_blob_key, /^auth-pool\/codex\/stored%40stardust\.ai\//);
+
+    const { decryptAuthJson } = await import(`../lib/auth-pool.js?ts=${Date.now()}`);
+    const entry = await mod.authPoolEntry("codex", "stored@stardust.ai");
+    assert.equal(await decryptAuthJson(entry), authJson);
+  } finally {
+    cleanup();
+    if (previousAuthBlobStorageDir === undefined) {
+      delete process.env.AUTH_BLOB_STORAGE_DIR;
+    } else {
+      process.env.AUTH_BLOB_STORAGE_DIR = previousAuthBlobStorageDir;
+    }
+    rmSync(storageDir, { recursive: true, force: true });
+  }
+});
 
 test("authPoolFetchLog shows only the latest fetch per requester and source", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();

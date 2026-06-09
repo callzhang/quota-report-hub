@@ -148,6 +148,8 @@ Auth pool support:
 - Codex uploads are keyed by normalized email when available, not by the raw provider account UUID, so different Team users do not collide in the pool.
 - GitHub Actions refreshes the cloud auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
 - Local machines may also post stable quota snapshots to `/api/auth/quota`. For Codex, the server accepts only complete windows or hard invalidations so partial client probes cannot poison the hub.
+- Turso stores auth-pool metadata, quota snapshots, and audit events. `/api/status` and `/api/auth/fetch-best` candidate selection read metadata only; they do not read encrypted auth JSON for every account.
+- In production, configure Tigris object storage so encrypted auth JSON is written to object storage and Turso keeps only `auth_blob_key`. Existing inline Turso rows remain readable and are moved to object storage when that auth is refreshed and uploaded again.
 - During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.
 - Every probe result is appended to `auth_pool_quota_events` before the latest row is updated or an unusable auth is removed, so invalidation windows and audit views can be reconstructed from Turso instead of GitHub Actions logs.
 - Codex auths are removed from the active pool after consecutive `auth failed (401 unauthorized)` worker probes, because repeated 401 means the saved token cannot be reused by the pool.
@@ -191,11 +193,16 @@ The installer also performs a post-install verification by default:
 - `CRON_SECRET`
 - `TURSO_DATABASE_URL`
 - `TURSO_AUTH_TOKEN`
+- `TIGRIS_STORAGE_ACCESS_KEY_ID`
+- `TIGRIS_STORAGE_SECRET_ACCESS_KEY`
+- `TIGRIS_STORAGE_BUCKET`
 
 `AUTH_POOL_ENCRYPTION_KEY` must be either:
 
 - 64 hex characters
 - or base64 for exactly 32 raw bytes
+
+The Tigris variables are read automatically by `@tigrisdata/storage`. They are required for production auth-pool uploads if auth JSON should stay out of Turso read paths.
 
 ## Vercel deploy script
 

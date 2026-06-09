@@ -163,7 +163,7 @@ export async function processAuthPoolEntry(
 ) {
   let report;
   try {
-    const authJsonText = decryptAuthJsonImpl(entry);
+    const authJsonText = await decryptAuthJsonImpl(entry);
     report =
       entry.source === "codex"
         ? probeCodexAuthJsonImpl(authJsonText)

@@ -1,6 +1,6 @@
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../lib/api-auth.js";
 import {
-  authPoolEntries,
+  authPoolEntrySummaries,
   authPoolFetchLog,
   authPoolInvalidatedNotifications,
   authPoolQuotaLatest,
@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     return;
   }
   const [entries, reports, invalidatedStates, fetchLog] = await Promise.all([
-    authPoolEntries(),
+    authPoolEntrySummaries(),
     authPoolQuotaLatest(),
     authPoolInvalidatedNotifications(),
     authPoolFetchLog({ limit: 50 }),

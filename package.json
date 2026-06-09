@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "node scripts/start_frontend.mjs",
     "frontend": "node scripts/start_frontend.mjs",
     "test": "node --test"
   },
   "dependencies": {
-    "@libsql/client": "^0.15.10"
+    "@libsql/client": "^0.15.10",
+    "@tigrisdata/storage": "^3.12.0"
   }
 }
