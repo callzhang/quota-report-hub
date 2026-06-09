@@ -674,6 +674,71 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(report["windows"]["5h"])
         self.assertIsNone(report["windows"]["1week"])
 
+    def test_probe_codex_maps_workspace_out_of_credits_to_zero_remaining_windows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "team@example.com",
+                                    "name": "Team User",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "team"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = mock.Mock(
+                returncode=1,
+                stdout="",
+                stderr=(
+                    "ERROR: Your workspace is out of credits. "
+                    "Ask your workspace owner to refill in order to continue."
+                ),
+            )
+            with mock.patch("quota_reporters.subprocess.run", return_value=completed):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": None,
+                            "rate_limits": {
+                                "limit_id": "premium",
+                                "limit_name": None,
+                                "primary": None,
+                                "secondary": None,
+                                "credits": {
+                                    "has_credits": False,
+                                    "unlimited": False,
+                                    "balance": None,
+                                },
+                                "individual_limit": None,
+                                "plan_type": None,
+                                "rate_limit_reached_type": None,
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["error"], "codex workspace out of credits")
+        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
+        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
+        self.assertIsNone(report["windows"]["5h"]["reset_at"])
+        self.assertIsNone(report["windows"]["1week"]["reset_at"])
+        self.assertFalse(report["usage_summary"]["credits"]["has_credits"])
+
     def test_codex_usage_limit_reset_at_parses_time_only_cli_message(self):
         reset_at, reset_in_seconds = codex_usage_limit_reset_at(
             "ERROR: You've hit your usage limit, or try again at 4:26 PM.",
@@ -1117,6 +1182,17 @@ Reading additional input from stdin...
 
         self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
 
+    def test_source_needs_replacement_when_known_account_quota_is_unavailable(self):
+        codex_payload = {
+            "source": "codex",
+            "account_id": "sirui.chen@stardust.ai",
+            "status": "error",
+            "error": "token_count event was present but missing quota details",
+            "windows": {"5h": None, "1week": None},
+        }
+
+        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+
     def test_quota_payload_should_report_valid_windows_and_hard_invalidations_only(self):
         self.assertTrue(
             quota_guard.quota_payload_should_report(
@@ -1264,6 +1340,40 @@ Reading additional input from stdin...
         self.assertEqual(result["reason"], "quota_unavailable")
         post_auth_pool_quota.assert_not_called()
 
+    def test_report_current_quota_to_auth_pool_posts_confirmed_codex_out_of_credits(self):
+        payload = {
+            "source": "codex",
+            "status": "ok",
+            "error": "codex workspace out of credits",
+            "account_id": "acct-1",
+            "usage_summary": {
+                "credits": {
+                    "has_credits": False,
+                    "unlimited": False,
+                    "balance": None,
+                }
+            },
+            "windows": {
+                "5h": {"remaining_percent": 0.0, "reset_at": None},
+                "1week": {"remaining_percent": 0.0, "reset_at": None},
+            },
+        }
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+
+        with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post_auth_pool_quota:
+            result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
+
+        self.assertTrue(result["reported"])
+        post_auth_pool_quota.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            source="codex",
+            quota_payload=payload,
+        )
+
     def test_report_current_quota_to_auth_pool_skips_unavailable_quota(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
@@ -1397,6 +1507,47 @@ Reading additional input from stdin...
                 exclude_account_ids=[],
                 requester_id=None,
             )
+
+    def test_maybe_replace_codex_auth_fetches_when_known_account_quota_is_unavailable(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        codex_payload = {
+            "account_id": "sirui.chen@stardust.ai",
+            "reporter_name": "derek@mac",
+            "status": "error",
+            "error": "token_count event was present but missing quota details",
+            "windows": {"5h": None, "1week": None},
+        }
+
+        with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+            "replacement": None,
+            "repair_auth": None,
+        }) as fetch_best_auth:
+            replacement = quota_guard.maybe_replace_codex_auth(
+                config,
+                codex_payload,
+                Path("/tmp/auth.json"),
+                Path("/tmp/known_auth.json"),
+                threshold_percent=20.0,
+                weekly_threshold_percent=5.0,
+            )
+
+        fetch_best_auth.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            source="codex",
+            current_account_id="sirui.chen@stardust.ai",
+            current_quota={
+                "five_h_remaining_percent": -1.0,
+                "one_week_remaining_percent": -1.0,
+            },
+            exclude_account_ids=[],
+            requester_id="derek@mac",
+        )
+        self.assertFalse(replacement["replaced"])
+        self.assertEqual(replacement["reason"], "no_better_auth_available")
 
     def test_maybe_replace_codex_auth_skips_when_current_quota_is_healthy(self):
         config = {

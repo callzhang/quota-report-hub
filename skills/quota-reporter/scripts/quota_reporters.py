@@ -429,6 +429,16 @@ def codex_usage_limit_reached(rate_limits: dict | None, stderr: str, stdout: str
     return reached_type not in (None, "")
 
 
+def codex_workspace_credits_exhausted(rate_limits: dict | None, stderr: str, stdout: str) -> bool:
+    if not isinstance(rate_limits, dict):
+        return False
+    credits = rate_limits.get("credits")
+    if not isinstance(credits, dict) or credits.get("has_credits") is not False:
+        return False
+    combined = "\n".join(part for part in [stderr.strip(), stdout.strip()] if part).lower()
+    return "workspace is out of credits" in combined
+
+
 def to_float(value) -> float | None:
     if value is None or value == "":
         return None
@@ -652,6 +662,27 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
     primary_window = rate_limits.get("primary") if isinstance(rate_limits, dict) else None
     secondary_window = rate_limits.get("secondary") if isinstance(rate_limits, dict) else None
     has_complete_windows = isinstance(primary_window, dict) and isinstance(secondary_window, dict)
+    if rate_limits and not has_complete_windows and codex_workspace_credits_exhausted(rate_limits, result.stderr, result.stdout):
+        payload = {
+            **base,
+            "model_context_window": info.get("model_context_window") if isinstance(info, dict) else None,
+            "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
+            "status": "ok",
+            "error": "codex workspace out of credits",
+            "windows": {
+                "5h": zero_remaining_window(300),
+                "1week": zero_remaining_window(10080),
+            },
+            "usage_summary": {
+                "credits": rate_limits.get("credits"),
+                "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
+                "next_retry_at": None,
+            },
+        }
+        if refresh_capture is not None:
+            payload["refresh_capture"] = refresh_capture
+        return payload
+
     if rate_limits and not has_complete_windows and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
         quota_exhausted = codex_usage_limit_exhausted(rate_limits, result.stderr, result.stdout)
         reset_at, reset_in_seconds = codex_usage_limit_reset_from_rate_limits(rate_limits, checked_at)

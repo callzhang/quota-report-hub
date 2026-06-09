@@ -164,7 +164,7 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
     if is_hard_invalidated(payload):
         return True
     if payload.get("status") != "ok":
-        return False
+        return bool(payload.get("account_id"))
     five_hour_remaining = remaining_percent(payload, "5h")
     weekly_remaining = remaining_percent(payload, "1week")
     if five_hour_remaining < 0 or weekly_remaining < 0:
@@ -192,6 +192,17 @@ def quota_payload_has_complete_windows(payload: dict) -> bool:
     return True
 
 
+def quota_payload_is_confirmed_out_of_credits(payload: dict) -> bool:
+    if not payload or payload.get("error") != "codex workspace out of credits":
+        return False
+    for window_key in ("5h", "1week"):
+        window = (payload.get("windows") or {}).get(window_key) or {}
+        if window.get("remaining_percent") != 0.0:
+            return False
+    credits = (payload.get("usage_summary") or {}).get("credits") or {}
+    return credits.get("has_credits") is False
+
+
 def quota_payload_should_report(payload: dict | None) -> bool:
     if not payload or not payload.get("account_id"):
         return False
@@ -206,7 +217,11 @@ def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict |
     if source == "codex":
         if not payload or not payload.get("account_id"):
             return {"ok": True, "reported": False, "reason": "quota_unavailable"}
-        if not (is_hard_invalidated(payload) or (payload.get("status") == "ok" and quota_payload_has_complete_windows(payload))):
+        if not (
+            is_hard_invalidated(payload)
+            or (payload.get("status") == "ok" and quota_payload_has_complete_windows(payload))
+            or (payload.get("status") == "ok" and quota_payload_is_confirmed_out_of_credits(payload))
+        ):
             return {"ok": True, "reported": False, "reason": "quota_unavailable"}
     elif not quota_payload_should_report(payload):
         return {"ok": True, "reported": False, "reason": "quota_unavailable"}
