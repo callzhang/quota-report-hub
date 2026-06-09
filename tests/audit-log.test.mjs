@@ -254,6 +254,52 @@ test("upsertAuthPoolEntry preserves the first uploader for later same-account up
   }
 });
 
+test("upsertAuthPoolEntry assigns company account ownership to the account user", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.issueApiToken("shared@stardust.ai");
+    const entry = await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "provider-a",
+        email: "shared@stardust.ai",
+        lastRefresh: "2026-06-09T01:03:13Z",
+        sid: "session-a",
+      }),
+      uploader_email: "borrower@stardust.ai",
+      reporter_name: "borrower@mac",
+      hostname: "borrower-mac",
+    });
+
+    assert.equal(entry.uploader_email, "shared@stardust.ai");
+  } finally {
+    cleanup();
+  }
+});
+
+test("upsertAuthPoolEntry maps non-company account aliases to company users", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.issueApiToken("shawn.hou@stardust.ai");
+    const entry = await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "provider-a",
+        email: "shawn.hou@preseen.ai",
+        lastRefresh: "2026-06-09T01:03:13Z",
+        sid: "session-a",
+      }),
+      uploader_email: "borrower@stardust.ai",
+      reporter_name: "borrower@mac",
+      hostname: "borrower-mac",
+    });
+
+    assert.equal(entry.uploader_email, "shawn.hou@stardust.ai");
+  } finally {
+    cleanup();
+  }
+});
+
 test("authPoolFetchLog can show raw repair auth events without requester dedupe", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
