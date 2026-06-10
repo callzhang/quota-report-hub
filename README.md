@@ -316,6 +316,12 @@ If you want to use a different hub URL, pass `--auth-pool-url`. The default is `
 python3 skills/quota-reporter/scripts/quota_guard.py
 ```
 
+By default this prints a compact human-readable summary. Use `--json` only when you need the full probe, sync, replacement, notification, and timing payload:
+
+```bash
+python3 skills/quota-reporter/scripts/quota_guard.py --json
+```
+
 You can still run one local check manually after login changes:
 
 ```bash

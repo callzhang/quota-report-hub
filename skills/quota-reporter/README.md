@@ -36,6 +36,7 @@ The guard is source-aware:
   - runs one immediate guard cycle and fails if it cannot run
 - `scripts/quota_guard.py`
   - runs one full local guard cycle
+  - prints a compact human-readable summary by default; use `--json` for the full probe, sync, replacement, notification, and timing payload
   - checks GitHub `main` and updates the installed skill before probing
   - reuploads current auths
   - probes current local quota in an isolated temporary Codex home, with provider/auth override environment variables stripped so API-key or custom-provider shells cannot be mislabeled as the copied ChatGPT auth
@@ -77,6 +78,8 @@ If the hub returns a newer personal token during upload, quota report, or fetch,
 `fetch-best` may return `repair_auth` when one of the user's uploaded auths has been invalidated. The guard installs that repair auth so the owner can re-login and refresh their own account instead of receiving someone else's shared replacement.
 
 Use `quota_guard.py --skip-self-update` only when debugging a local edit and you do not want the script to replace itself from GitHub first.
+
+Use `quota_guard.py --json` when you need the full structured result for debugging or automation. Manual runs should normally use the default summary output.
 
 ## Help Output
 

@@ -111,6 +111,12 @@ If the user is not already using a compatible hub, the correct order is:
 python3 scripts/quota_guard.py
 ```
 
+The default output is a short human-readable summary. Use `--json` when you need the full probe, sync, replacement, notification, and timing payload for debugging:
+
+```bash
+python3 scripts/quota_guard.py --json
+```
+
 ### Trigger one remote cloud probe
 
 ```bash
@@ -168,5 +174,5 @@ Operational notes:
 ## Output expectations
 
 - After installation, show the scheduler type, config path, Claude statusline settings path, and verification result.
-- After a manual guard run, show the current Codex and Claude probe payloads plus whether a replacement happened for each source.
+- After a manual guard run, show the compact summary by default. If deeper debugging is needed, rerun with `--json` and include the relevant Codex, Claude, quota report, and replacement sections.
 - If token request, auth upload, or best-auth fetch fails, include the HTTP status and response body.

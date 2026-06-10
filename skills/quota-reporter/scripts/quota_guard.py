@@ -999,6 +999,117 @@ def maybe_replace_claude_auth(
     }
 
 
+def format_percent(value) -> str:
+    if value is None:
+        return "n/a"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    if number.is_integer():
+        return f"{int(number)}%"
+    return f"{number:.1f}%"
+
+
+def format_quota_window(payload: dict | None, window_key: str) -> str:
+    window = ((payload or {}).get("windows") or {}).get(window_key)
+    if not window:
+        return "n/a"
+    remaining = window.get("remaining_percent")
+    if remaining is None:
+        return "n/a"
+    text = format_percent(remaining)
+    reset_at = window.get("reset_at")
+    try:
+        is_zero = float(remaining) <= 0.0
+    except (TypeError, ValueError):
+        is_zero = False
+    return f"{text} -> {reset_at}" if is_zero and reset_at else text
+
+
+def format_quota_report(result: dict | None) -> str:
+    if not result:
+        return "quota not configured"
+    if result.get("reported"):
+        return "quota reported"
+    reason = result.get("reason")
+    if result.get("ok") is False:
+        return f"quota report failed ({reason or 'error'})"
+    return f"quota not reported ({reason})" if reason else "quota not reported"
+
+
+def format_replacement(result: dict | None) -> str:
+    if not result:
+        return "replacement skipped"
+    if result.get("replaced"):
+        target = result.get("to_email") or result.get("to_account_id") or "new auth"
+        return f"replaced -> {target}"
+    reason = result.get("reason")
+    if result.get("ok") is False:
+        return f"replacement failed ({reason or 'error'})"
+    return f"replacement {reason}" if reason else "replacement skipped"
+
+
+def format_source_summary(source_label: str, payload: dict | None, quota_report: dict | None, replacement: dict | None) -> str:
+    status = (payload or {}).get("status") or "unknown"
+    account = (payload or {}).get("account_id") or (payload or {}).get("email") or "unknown"
+    parts = [
+        f"{source_label}: {status} {account}",
+        f"5H {format_quota_window(payload, '5h')}",
+        f"1week {format_quota_window(payload, '1week')}",
+        format_quota_report(quota_report),
+        format_replacement(replacement),
+    ]
+    error = (payload or {}).get("error")
+    if error:
+        parts.append(f"error {error}")
+    return " | ".join(parts)
+
+
+def format_auth_pool_sync(sync_result: dict | None) -> str:
+    sync_result = sync_result or {}
+    parts = []
+    for source in ("codex", "claude"):
+        result = sync_result.get(source)
+        if not result:
+            parts.append(f"{source} not configured")
+            continue
+        if result.get("uploaded"):
+            parts.append(f"{source} uploaded")
+        elif result.get("ok") is False:
+            parts.append(f"{source} failed")
+        else:
+            parts.append(f"{source} {result.get('reason') or 'ok'}")
+    return "; ".join(parts)
+
+
+def format_guard_summary(result: dict) -> str:
+    status = "OK" if result.get("ok") else "ERROR"
+    timings = result.get("timings") or {}
+    total_seconds = timings.get("process_total") or timings.get("total")
+    header = f"Quota guard: {status}"
+    if total_seconds is not None:
+        header += f" ({total_seconds}s)"
+
+    app_server = result.get("codex_app_server") or {}
+    app_server_status = "restarted" if app_server.get("restarted") else "not restarted"
+    app_server_reason = app_server.get("reason")
+    self_update = result.get("self_update") or {}
+    self_update_text = "updated" if self_update.get("updated") else self_update.get("reason") or "ok"
+    errors = result.get("errors") or {}
+
+    lines = [
+        header,
+        format_source_summary("Codex", result.get("codex"), (result.get("quota_report") or {}).get("codex"), (result.get("replacement") or {}).get("codex")),
+        format_source_summary("Claude", result.get("claude"), (result.get("quota_report") or {}).get("claude"), (result.get("replacement") or {}).get("claude")),
+        f"Auth pool: {format_auth_pool_sync(result.get('auth_pool_sync'))}",
+        f"Codex app-server: {app_server_status}" + (f" ({app_server_reason})" if app_server_reason else ""),
+        f"Self update: {self_update_text}",
+        "Errors: " + (", ".join(sorted(errors.keys())) if errors else "none"),
+    ]
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -1046,9 +1157,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rotate to a better same-source auth when the current 1week remaining quota is below this percentage.",
     )
     parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print the full guard result JSON. This is not a dry-run; uploads and replacements still occur.",
+    )
+    parser.add_argument(
         "--print-only",
         action="store_true",
-        help="Print the full guard result JSON for this run. This is not a dry-run; uploads and replacements still occur.",
+        dest="json_output",
+        help="Deprecated alias for --json.",
     )
     parser.add_argument(
         "--no-toast",
@@ -1308,7 +1426,10 @@ def main() -> None:
     result["self_update"] = self_update
     result.setdefault("timings", {})["self_update"] = self_update_elapsed
     result["timings"]["process_total"] = round(time.perf_counter() - process_started, 3)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.json_output:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(format_guard_summary(result))
 
 
 if __name__ == "__main__":

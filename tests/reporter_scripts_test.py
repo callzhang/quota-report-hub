@@ -2465,10 +2465,23 @@ Reading additional input from stdin...
 
         self.assertTrue(args.skip_self_update)
 
+    def test_format_guard_summary_is_compact_and_human_readable(self):
+        result = self._sample_guard_result()
+
+        summary = quota_guard.format_guard_summary(result)
+
+        self.assertIn("Quota guard: OK", summary)
+        self.assertIn("Codex: ok derek@preseen.ai | 5H 86% | 1week 6% | quota reported | replacement healthy", summary)
+        self.assertIn("Claude: ok claude-leizhang0121@gmail.com | 5H 0% -> 2026-06-10T02:38:36Z | 1week n/a | quota reported | replacement healthy", summary)
+        self.assertIn("Auth pool: codex unchanged_auth_recently_reuploaded; claude server_kept_newer_auth", summary)
+        self.assertIn("Codex app-server: not restarted (codex_auth_unchanged)", summary)
+        self.assertLessEqual(len(summary.splitlines()), 10)
+        self.assertNotIn('"refresh_capture"', summary)
+
     def test_quota_guard_main_skips_self_update_when_config_disables_it(self):
         args = quota_guard.build_parser().parse_args([])
 
-        with mock.patch.object(sys, "argv", ["quota_guard.py"]):
+        with mock.patch.object(sys, "argv", ["quota_guard.py", "--json"]):
             with mock.patch.object(quota_guard, "load_config", return_value={"disable_self_update": True}):
                 with mock.patch.object(
                     quota_guard,
@@ -2485,6 +2498,76 @@ Reading additional input from stdin...
         run_guard.assert_called_once()
         self.assertEqual(run_guard.call_args.args[0].codex_auth_path, args.codex_auth_path)
         self.assertEqual(result["self_update"]["reason"], "skipped")
+
+    def test_quota_guard_main_prints_summary_by_default_and_json_when_requested(self):
+        guard_result = self._sample_guard_result()
+
+        with mock.patch.object(sys, "argv", ["quota_guard.py", "--skip-self-update"]):
+            with mock.patch.object(quota_guard, "load_config", return_value={}):
+                with mock.patch.object(quota_guard, "run_guard", return_value=json.loads(json.dumps(guard_result))):
+                    with io.StringIO() as output:
+                        with contextlib.redirect_stdout(output):
+                            quota_guard.main()
+                        summary_output = output.getvalue()
+
+        self.assertTrue(summary_output.startswith("Quota guard: OK"))
+        self.assertIn("Codex: ok derek@preseen.ai", summary_output)
+        self.assertNotIn('"codex"', summary_output)
+
+        with mock.patch.object(sys, "argv", ["quota_guard.py", "--skip-self-update", "--json"]):
+            with mock.patch.object(quota_guard, "load_config", return_value={}):
+                with mock.patch.object(quota_guard, "run_guard", return_value=json.loads(json.dumps(guard_result))):
+                    with io.StringIO() as output:
+                        with contextlib.redirect_stdout(output):
+                            quota_guard.main()
+                        json_output = output.getvalue()
+
+        parsed = json.loads(json_output)
+        self.assertEqual(parsed["codex"]["account_id"], "derek@preseen.ai")
+        self.assertEqual(parsed["self_update"]["reason"], "skipped")
+
+    def _sample_guard_result(self):
+        return {
+            "ok": True,
+            "threshold_percent": 20.0,
+            "weekly_threshold_percent": 5.0,
+            "codex": {
+                "source": "codex",
+                "status": "ok",
+                "account_id": "derek@preseen.ai",
+                "windows": {
+                    "5h": {"remaining_percent": 86, "reset_at": "2026-06-10T04:33:37Z"},
+                    "1week": {"remaining_percent": 6, "reset_at": "2026-06-11T00:30:03Z"},
+                },
+                "refresh_capture": {"refreshed_auth_json": "secret"},
+            },
+            "claude": {
+                "source": "claude",
+                "status": "ok",
+                "account_id": "claude-leizhang0121@gmail.com",
+                "windows": {
+                    "5h": {"remaining_percent": 0, "reset_at": "2026-06-10T02:38:36Z"},
+                    "1week": None,
+                },
+            },
+            "auth_pool_sync": {
+                "codex": {"ok": True, "uploaded": False, "reason": "unchanged_auth_recently_reuploaded"},
+                "claude": {"ok": True, "uploaded": False, "reason": "server_kept_newer_auth"},
+            },
+            "quota_report": {
+                "codex": {"ok": True, "reported": True},
+                "claude": {"ok": True, "reported": True},
+            },
+            "replacement": {
+                "codex": {"ok": True, "replaced": False, "reason": "healthy"},
+                "claude": {"ok": True, "replaced": False, "reason": "healthy"},
+            },
+            "codex_app_server": {"restarted": False, "reason": "codex_auth_unchanged"},
+            "notifications": {},
+            "errors": {},
+            "timings": {"total": 8.734, "process_total": 8.734, "self_update": 0.0},
+            "self_update": {"ok": True, "updated": False, "reason": "skipped"},
+        }
 
     def test_quota_reporters_adds_macos_proxy_and_cert_defaults(self):
         proxy_output = (
