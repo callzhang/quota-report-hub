@@ -2,6 +2,10 @@
 
 Minimal Vercel app that stores encrypted Codex and Claude auth snapshots, issues per-user access tokens by company email, and serves a dashboard plus source-aware auth-pool APIs for local quota guards.
 
+![Quota Report Hub dashboard](docs/hub-dashboard.png)
+
+*The dashboard: every cloud auth entry with its latest 5H / 1week quota, who fetched it, and the cloud probe status — plus archived auths that have stayed invalidated. (Accounts shown are anonymized demo data.)*
+
 ## Use Case
 
 This project is built for people who regularly switch between multiple coding agents and multiple accounts, and need a shared place to see remaining quota without manually checking each machine.
