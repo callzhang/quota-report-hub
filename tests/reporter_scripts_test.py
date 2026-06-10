@@ -3640,6 +3640,25 @@ Reading additional input from stdin...
         self.assertEqual(outcome["status"], "transient_error")
         persist.assert_not_called()
 
+    def test_parse_claude_oauth_usage_body_reads_percent_and_iso(self):
+        payload = {
+            "five_hour": {"utilization": 2.0, "resets_at": "2026-06-11T03:39:59.941224+00:00"},
+            "seven_day": {"utilization": 7.0, "resets_at": "2026-06-16T11:59:59+00:00"},
+        }
+        windows = quota_reporters.parse_claude_oauth_usage_body(payload)
+        self.assertEqual(windows["5h"]["used_percent"], 2.0)
+        self.assertEqual(windows["5h"]["remaining_percent"], 98.0)
+        self.assertEqual(windows["5h"]["reset_at"], "2026-06-11T03:39:59Z")
+        self.assertEqual(windows["1week"]["used_percent"], 7.0)
+        self.assertEqual(windows["1week"]["remaining_percent"], 93.0)
+
+    def test_parse_claude_oauth_usage_body_handles_missing(self):
+        self.assertEqual(quota_reporters.parse_claude_oauth_usage_body({}), {"5h": None, "1week": None})
+        self.assertEqual(
+            quota_reporters.parse_claude_oauth_usage_body({"five_hour": None, "seven_day": "x"}),
+            {"5h": None, "1week": None},
+        )
+
     def test_applescript_string_keeps_unicode_literal(self):
         # The dialog/notification regression: json.dumps emitted \uXXXX which
         # AppleScript rejects. applescript_string must keep non-ASCII literal.

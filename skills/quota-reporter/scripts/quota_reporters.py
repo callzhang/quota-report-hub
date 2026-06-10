@@ -1193,6 +1193,51 @@ def parse_claude_statusline_rate_limits(snapshot: dict | None) -> dict:
     return windows
 
 
+def parse_claude_oauth_usage_body(payload: dict) -> dict:
+    """Parse the /api/oauth/usage 200 JSON body — the real source Claude Code reads.
+
+    Shape: {"five_hour": {"utilization": <0-100>, "resets_at": <ISO8601>}, "seven_day":
+    {...}, ...}. Note `utilization` is already a PERCENTAGE (2.0 == 2%), and resets_at is
+    an ISO timestamp string — both different from the statusline/header formats.
+    """
+    windows = empty_windows()
+    if not isinstance(payload, dict):
+        return windows
+    now = datetime.now(timezone.utc)
+
+    def parse_window(key: str, window_minutes: int) -> dict | None:
+        raw = payload.get(key)
+        if not isinstance(raw, dict):
+            return None
+        try:
+            used_percent = round(float(raw.get("utilization")), 1)
+        except (TypeError, ValueError):
+            return None
+        reset_at = None
+        reset_in_seconds = None
+        raw_reset = raw.get("resets_at")
+        if isinstance(raw_reset, str) and raw_reset:
+            try:
+                reset_dt = datetime.fromisoformat(raw_reset.replace("Z", "+00:00"))
+                if reset_dt.tzinfo is None:
+                    reset_dt = reset_dt.replace(tzinfo=timezone.utc)
+                reset_in_seconds = max(int((reset_dt - now).total_seconds()), 0)
+                reset_at = reset_dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            except (TypeError, ValueError):
+                pass
+        return {
+            "used_percent": used_percent,
+            "remaining_percent": round(max(0.0, 100.0 - used_percent), 1),
+            "window_minutes": window_minutes,
+            "reset_in_seconds": reset_in_seconds,
+            "reset_at": reset_at,
+        }
+
+    windows["5h"] = parse_window("five_hour", 300)
+    windows["1week"] = parse_window("seven_day", 10080)
+    return windows
+
+
 def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
     credentials, source, token_refresh = ensure_fresh_claude_access_token(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
@@ -1238,18 +1283,29 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
         payload = json.loads(response_body) if response_body else {}
     except json.JSONDecodeError:
         payload = {}
-    windows = parse_claude_rate_limit_headers(headers)
+    # Primary: the JSON body (five_hour/seven_day) — that is what /api/oauth/usage
+    # returns on 200 and what Claude Code itself reads. The unified rate-limit headers
+    # are NOT present on these responses, so header parsing alone always came up empty.
+    windows = parse_claude_oauth_usage_body(payload)
     has_unified_headers = any(
         str(name).lower().startswith("anthropic-ratelimit-unified-")
         for name in (headers.keys() if headers else [])
     )
+    if windows["5h"] is None and windows["1week"] is None:
+        # Fallback for responses that carry unified rate-limit headers instead of a body.
+        windows = parse_claude_rate_limit_headers(headers)
     # A 429 from /api/oauth/usage that carries no unified rate-limit headers (just a
     # generic rate_limit_error + Retry-After) is the usage-info endpoint throttling our
     # polling, NOT model-usage exhaustion. Only synthesize an exhausted 5h window when
     # the 429 actually describes a model-usage rejection via unified headers; otherwise
     # report quota as unavailable so the caller falls back to the statusline snapshot
     # instead of misreporting "5h 100% used".
-    usage_endpoint_throttled = status_code == 429 and not has_unified_headers
+    usage_endpoint_throttled = (
+        status_code == 429
+        and not has_unified_headers
+        and windows["5h"] is None
+        and windows["1week"] is None
+    )
     if (
         status_code == 429
         and has_unified_headers
