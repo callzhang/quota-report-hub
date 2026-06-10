@@ -48,6 +48,7 @@ The guard is source-aware:
   - returns compact per-auth results from the hub
 - `scripts/claude_statusline_probe.py`
   - captures Claude statusline JSON into a local snapshot file
+  - preserves previous unexpired `5H` and `7d` rate-limit windows when Claude Code sends a startup or failed-response statusline payload without `rate_limits`
 - `scripts/quota_reporters.py`
   - shared helper library used by the scripts above
   - not intended as the main user entrypoint

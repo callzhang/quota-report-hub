@@ -21,6 +21,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 import quota_guard  # noqa: E402
 import quota_reporters  # noqa: E402
 import install_quota_guard  # noqa: E402
+import claude_statusline_probe  # noqa: E402
 from quota_reporters import (
     build_claude_auth_blob,
     codex_auth_refresh_delta,
@@ -3109,6 +3110,61 @@ Reading additional input from stdin...
     def test_install_supports_claude_statusline_settings(self):
         self.assertTrue(hasattr(install_quota_guard, "configure_claude_statusline"))
         self.assertTrue(hasattr(install_quota_guard, "CLAUDE_SETTINGS_PATH"))
+
+    def test_claude_statusline_snapshot_preserves_previous_rate_limits_when_input_has_none(self):
+        now = datetime(2026, 6, 10, 1, 0, tzinfo=timezone.utc)
+        previous = {
+            "captured_at": "2026-06-10T00:59:00Z",
+            "rate_limits": {
+                "five_hour": {"used_percentage": 25, "resets_at": int((now + timedelta(hours=2)).timestamp())},
+                "seven_day": {"used_percentage": 40, "resets_at": int((now + timedelta(days=2)).timestamp())},
+            },
+        }
+        payload = {
+            "model": {"display_name": "Opus"},
+            "rate_limits": None,
+            "context_window": {"current_usage": None},
+        }
+
+        snapshot = claude_statusline_probe.build_snapshot(payload, previous_snapshot=previous, now=now)
+
+        self.assertEqual(snapshot["rate_limits"], previous["rate_limits"])
+        self.assertEqual(snapshot["rate_limits_source"], "previous_snapshot")
+        self.assertEqual(snapshot["rate_limits_missing_reason"], "absent_before_first_api_response")
+
+    def test_claude_statusline_snapshot_merges_partial_rate_limits_per_window(self):
+        now = datetime(2026, 6, 10, 1, 0, tzinfo=timezone.utc)
+        previous = {
+            "rate_limits": {
+                "five_hour": {"used_percentage": 70, "resets_at": int((now + timedelta(hours=1)).timestamp())},
+                "seven_day": {"used_percentage": 45, "resets_at": int((now + timedelta(days=3)).timestamp())},
+            },
+        }
+        payload = {
+            "rate_limits": {
+                "five_hour": {"used_percentage": 20, "resets_at": int((now + timedelta(hours=4)).timestamp())},
+            },
+        }
+
+        snapshot = claude_statusline_probe.build_snapshot(payload, previous_snapshot=previous, now=now)
+
+        self.assertEqual(snapshot["rate_limits"]["five_hour"], payload["rate_limits"]["five_hour"])
+        self.assertEqual(snapshot["rate_limits"]["seven_day"], previous["rate_limits"]["seven_day"])
+        self.assertEqual(snapshot["rate_limits_source"], "merged_current_and_previous")
+
+    def test_claude_statusline_snapshot_does_not_preserve_expired_rate_limits(self):
+        now = datetime(2026, 6, 10, 1, 0, tzinfo=timezone.utc)
+        previous = {
+            "rate_limits": {
+                "five_hour": {"used_percentage": 70, "resets_at": int((now - timedelta(minutes=1)).timestamp())},
+                "seven_day": {"used_percentage": 45, "resets_at": int((now - timedelta(minutes=1)).timestamp())},
+            },
+        }
+
+        snapshot = claude_statusline_probe.build_snapshot({"rate_limits": None}, previous_snapshot=previous, now=now)
+
+        self.assertIsNone(snapshot["rate_limits"])
+        self.assertEqual(snapshot["rate_limits_source"], "unavailable")
 
     def test_install_linux_cron_uses_fifteen_minute_interval(self):
         lines = install_quota_guard.cron_lines("/usr/bin/python3", Path("/tmp/quota_guard.py"))

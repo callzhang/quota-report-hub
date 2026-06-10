@@ -147,6 +147,7 @@ The guard then:
 - may push stable local quota snapshots back to the hub when available
 - for Codex, only complete windows or hard invalidations are uploaded, so partial local probes do not overwrite good hub data
 - for Claude, the local probe reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time
+- Claude Code only sends statusline `rate_limits` after the first successful API response in a session. The statusline capture preserves previous unexpired `5H` or `7d` windows when a startup or failed-response statusline payload has no quota fields.
 - if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
 - the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
