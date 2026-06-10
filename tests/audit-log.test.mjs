@@ -734,40 +734,51 @@ test("authenticateOrUpgradeApiToken rejects signed stale tokens", async () => {
 test("sendUnauthorized returns token invalidated payload", async () => {
   const previousUrl = process.env.TURSO_DATABASE_URL;
   const previousToken = process.env.TURSO_AUTH_TOKEN;
+  const previousAllowedDomain = process.env.AUTH_ALLOWED_EMAIL_DOMAIN;
   process.env.TURSO_DATABASE_URL = "file:quota-report-hub-test.db";
   process.env.TURSO_AUTH_TOKEN = "test-token";
-  const { sendUnauthorized } = await import(`../lib/api-auth.js?ts=${Date.now()}`);
-  if (previousUrl === undefined) {
-    delete process.env.TURSO_DATABASE_URL;
-  } else {
-    process.env.TURSO_DATABASE_URL = previousUrl;
-  }
-  if (previousToken === undefined) {
-    delete process.env.TURSO_AUTH_TOKEN;
-  } else {
-    process.env.TURSO_AUTH_TOKEN = previousToken;
-  }
-  const headers = {};
-  let body = "";
-  const res = {
-    setHeader(name, value) {
-      headers[name] = value;
-    },
-    end(value) {
-      body = value;
-    },
-  };
+  process.env.AUTH_ALLOWED_EMAIL_DOMAIN = "preseen.ai";
+  try {
+    const { sendUnauthorized } = await import(`../lib/api-auth.js?ts=${Date.now()}`);
+    const headers = {};
+    let body = "";
+    const res = {
+      setHeader(name, value) {
+        headers[name] = value;
+      },
+      end(value) {
+        body = value;
+      },
+    };
 
-  sendUnauthorized(res);
+    sendUnauthorized(res);
 
-  assert.equal(res.statusCode, 401);
-  assert.equal(headers["Content-Type"], "application/json; charset=utf-8");
-  assert.deepEqual(JSON.parse(body), {
-    ok: false,
-    error: "token_invalidated",
-    reason: "token_invalidated",
-    message: "Token invalid or expired. Request a new token by email and paste the latest one here.",
-  });
+    assert.equal(res.statusCode, 401);
+    assert.equal(headers["Content-Type"], "application/json; charset=utf-8");
+    assert.deepEqual(JSON.parse(body), {
+      ok: false,
+      error: "token_invalidated",
+      reason: "token_invalidated",
+      allowed_domain: "preseen.ai",
+      message: "Token invalid or expired. Request a new token by email and paste the latest one here.",
+    });
+  } finally {
+    if (previousUrl === undefined) {
+      delete process.env.TURSO_DATABASE_URL;
+    } else {
+      process.env.TURSO_DATABASE_URL = previousUrl;
+    }
+    if (previousToken === undefined) {
+      delete process.env.TURSO_AUTH_TOKEN;
+    } else {
+      process.env.TURSO_AUTH_TOKEN = previousToken;
+    }
+    if (previousAllowedDomain === undefined) {
+      delete process.env.AUTH_ALLOWED_EMAIL_DOMAIN;
+    } else {
+      process.env.AUTH_ALLOWED_EMAIL_DOMAIN = previousAllowedDomain;
+    }
+  }
 });
 
 test("invalidated auth notification state preserves first invalidated time and clears on recovery", async () => {

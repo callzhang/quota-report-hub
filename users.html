@@ -130,6 +130,18 @@
         background: rgba(255, 255, 255, 0.82);
       }
 
+      .token-command {
+        width: min(820px, 100%);
+        margin: 0;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.72);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
       .button {
         appearance: none;
         border: 1px solid var(--line);
@@ -262,6 +274,7 @@
           <button id="clear-token" class="button">Clear Token</button>
         </div>
         <div class="meta wrap" id="auth-message"></div>
+        <pre id="token-command" class="token-command mono" hidden></pre>
       </section>
 
       <section class="panel section">
@@ -319,6 +332,7 @@
       const saveTokenButton = document.getElementById("save-token");
       const clearTokenButton = document.getElementById("clear-token");
       const authMessage = document.getElementById("auth-message");
+      const tokenCommand = document.getElementById("token-command");
 
       const COOKIE_NAME = "quota_report_hub_token";
       let currentToken = "";
@@ -404,7 +418,16 @@
         return parts.length ? parts.join(" · ") : "—";
       }
 
-      function setLockedView(message) {
+      function tokenRequestCommand(allowedDomain) {
+        const emailPlaceholder = allowedDomain ? `your.name@${allowedDomain}` : "your.company.email";
+        return [
+          "python3 /Users/derek/.agents/skills/quota-reporter/scripts/install_quota_guard.py \\",
+          `  --auth-pool-url ${location.origin}/ \\`,
+          `  --email ${emailPlaceholder}`,
+        ].join("\n");
+      }
+
+      function setLockedView(message, options = {}) {
         cards.innerHTML = "";
         usersRows.innerHTML = "";
         logRows.innerHTML = "";
@@ -414,6 +437,13 @@
         authPanel.hidden = false;
         viewerChip.hidden = true;
         if (message) authMessage.textContent = message;
+        if (options.showTokenCommand) {
+          tokenCommand.hidden = false;
+          tokenCommand.textContent = tokenRequestCommand(options.allowedDomain);
+        } else {
+          tokenCommand.hidden = true;
+          tokenCommand.textContent = "";
+        }
       }
 
       function setAuthenticatedView(email) {
@@ -422,6 +452,8 @@
         viewerChip.hidden = false;
         viewerChip.textContent = `Signed in as ${viewerEmail}`;
         authMessage.textContent = "";
+        tokenCommand.hidden = true;
+        tokenCommand.textContent = "";
       }
 
       async function load() {
@@ -437,10 +469,14 @@
         });
 
         if (response.status === 401) {
+          const errorPayload = await response.json().catch(() => ({}));
           currentToken = "";
           clearTokenCookie();
           tokenInput.value = "";
-          setLockedView("Token invalid or expired. Request a new token by email and paste the latest one here.");
+          setLockedView("Token invalid or expired. Run this command to request a new token by email, then paste the latest token here.", {
+            showTokenCommand: true,
+            allowedDomain: errorPayload.allowed_domain,
+          });
           return;
         }
 
