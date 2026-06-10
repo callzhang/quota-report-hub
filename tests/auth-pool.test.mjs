@@ -363,7 +363,9 @@ test("pickBestAuthPoolCandidate rejects near-exhausted candidates even when curr
   assert.equal(candidate, null);
 });
 
-test("pickBestAuthPoolCandidate allows lower weekly quota as long as 5H is better and week remains usable", () => {
+test("pickBestAuthPoolCandidate compares the 5H x 1week product, not 5H alone", () => {
+  // better-5h has more 5H headroom (42 > 20) but a worse product
+  // (42*15=630 < 20*50=1000), so it must NOT beat current.
   const reports = [
     {
       source: "codex",
@@ -389,7 +391,38 @@ test("pickBestAuthPoolCandidate allows lower weekly quota as long as 5H is bette
     now: "2026-04-22T08:30:00Z",
   });
 
-  assert.equal(candidate.entry.account_id, "better-5h");
+  assert.equal(candidate, null);
+});
+
+test("pickBestAuthPoolCandidate swaps in a lower-5H candidate when its product is higher", () => {
+  // bigger-product has less 5H headroom (24 < 30) but a higher product
+  // (24*90=2160 > 30*50=1500), so it should beat current.
+  const reports = [
+    {
+      source: "codex",
+      account_id: "bigger-product",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 24 },
+        "1week": { remaining_percent: 90 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+  ];
+  const pool = [{ account_id: "bigger-product" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 30,
+      one_week_remaining_percent: 50,
+    },
+    now: "2026-04-22T08:30:00Z",
+  });
+
+  assert.equal(candidate.entry.account_id, "bigger-product");
 });
 
 test("pickBestAuthPoolCandidate does not mix codex and claude sources", () => {
