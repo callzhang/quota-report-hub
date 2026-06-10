@@ -6,6 +6,26 @@ import { authBlobKey, writeAuthBlob, readAuthBlob } from "../lib/auth-blob-stora
 
 const VALID_MODES = new Set(["scan", "write-only", "apply"]);
 const INLINE_COLUMNS = ["encrypted_auth_json", "iv", "auth_tag"];
+const KNOWN_COLUMN_DEFINITIONS = new Map([
+  ["source", "TEXT NOT NULL"],
+  ["account_id", "TEXT NOT NULL"],
+  ["session_id", "TEXT NOT NULL DEFAULT ''"],
+  ["email", "TEXT"],
+  ["name", "TEXT"],
+  ["plan_name", "TEXT"],
+  ["auth_last_refresh", "TEXT"],
+  ["auth_expires_at", "TEXT"],
+  ["digest", "TEXT NOT NULL"],
+  ["uploader_email", "TEXT"],
+  ["reporter_name", "TEXT"],
+  ["hostname", "TEXT"],
+  ["checked_out_by", "TEXT"],
+  ["uploaded_at", "TEXT NOT NULL"],
+  ["encrypted_auth_json", "TEXT"],
+  ["iv", "TEXT"],
+  ["auth_tag", "TEXT"],
+  ["auth_blob_key", "TEXT"],
+]);
 
 function normalizeLimit(value) {
   const limit = Number(value ?? 50);
@@ -80,6 +100,39 @@ async function authPoolColumns(client) {
   return new Map(result.rows.map((row) => [row.name, row]));
 }
 
+function quoteIdentifier(name) {
+  return `"${String(name).replaceAll('"', '""')}"`;
+}
+
+function extraColumnDefinition(column) {
+  const parts = [quoteIdentifier(column.name)];
+  if (column.type) {
+    parts.push(String(column.type));
+  }
+  if (Number(column.notnull || 0) === 1) {
+    parts.push("NOT NULL");
+  }
+  if (column.dflt_value !== null && column.dflt_value !== undefined) {
+    parts.push(`DEFAULT ${column.dflt_value}`);
+  }
+  return parts.join(" ");
+}
+
+function replacementColumnDefinition(column) {
+  const knownDefinition = KNOWN_COLUMN_DEFINITIONS.get(column.name);
+  if (knownDefinition) {
+    return `${quoteIdentifier(column.name)} ${knownDefinition}`;
+  }
+  return extraColumnDefinition(column);
+}
+
+function replacementSelectExpression(column) {
+  if (column.name === "session_id") {
+    return `COALESCE(${quoteIdentifier(column.name)}, '')`;
+  }
+  return quoteIdentifier(column.name);
+}
+
 async function ensureMigrationSchema(client) {
   let columns = await authPoolColumns(client);
   if (!columns.has("auth_blob_key")) {
@@ -92,41 +145,22 @@ async function ensureMigrationSchema(client) {
   );
 
   if (!inlineColumnsAreNullable) {
+    const replacementColumns = [...columns.values()];
+    const columnNames = replacementColumns.map((column) => quoteIdentifier(column.name)).join(", ");
+    const columnDefinitions = replacementColumns.map(replacementColumnDefinition).join(",\n          ");
+    const selectExpressions = replacementColumns.map(replacementSelectExpression).join(", ");
+
     await client.batch([
       "ALTER TABLE auth_pool_entries RENAME TO auth_pool_entries_before_blob_migration",
       `
         CREATE TABLE auth_pool_entries (
-          source TEXT NOT NULL,
-          account_id TEXT NOT NULL,
-          session_id TEXT NOT NULL DEFAULT '',
-          email TEXT,
-          name TEXT,
-          plan_name TEXT,
-          auth_last_refresh TEXT,
-          auth_expires_at TEXT,
-          digest TEXT NOT NULL,
-          uploader_email TEXT,
-          reporter_name TEXT,
-          hostname TEXT,
-          checked_out_by TEXT,
-          uploaded_at TEXT NOT NULL,
-          encrypted_auth_json TEXT,
-          iv TEXT,
-          auth_tag TEXT,
-          auth_blob_key TEXT,
+          ${columnDefinitions},
           PRIMARY KEY (source, account_id, session_id)
         )
       `,
       `
-        INSERT INTO auth_pool_entries (
-          source, account_id, session_id, email, name, plan_name, auth_last_refresh,
-          auth_expires_at, digest, uploader_email, reporter_name, hostname,
-          checked_out_by, uploaded_at, encrypted_auth_json, iv, auth_tag, auth_blob_key
-        )
-        SELECT
-          source, account_id, COALESCE(session_id, ''), email, name, plan_name, auth_last_refresh,
-          auth_expires_at, digest, uploader_email, reporter_name, hostname,
-          checked_out_by, uploaded_at, encrypted_auth_json, iv, auth_tag, auth_blob_key
+        INSERT INTO auth_pool_entries (${columnNames})
+        SELECT ${selectExpressions}
         FROM auth_pool_entries_before_blob_migration
       `,
       "DROP TABLE auth_pool_entries_before_blob_migration",

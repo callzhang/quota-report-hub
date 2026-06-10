@@ -150,3 +150,39 @@ test("migrateAuthBlobs write-only mode verifies objects without mutating rows", 
     rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("migrateAuthBlobs scan preserves extra auth pool columns during schema rebuild", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "qrh-auth-blob-scan-extra-column-"));
+  try {
+    const dbPath = join(tempDir, "old-extra.db");
+    const client = await createOldAuthPoolDb(dbPath);
+    await client.execute("ALTER TABLE auth_pool_entries ADD COLUMN reviewer_extra TEXT DEFAULT 'unset'");
+    await client.execute("UPDATE auth_pool_entries SET reviewer_extra = 'keep-me'");
+    const { migrateAuthBlobs } = await import(`../scripts/migrate_auth_blobs_to_object_storage.mjs?ts=${Date.now()}`);
+
+    const result = await migrateAuthBlobs({
+      databaseUrl: `file:${dbPath}`,
+      authToken: "test-token",
+      mode: "scan",
+      limit: 10,
+    });
+
+    assert.equal(result.mode, "scan");
+    assert.equal(result.candidates, 1);
+    assert.equal(result.written, 0);
+    assert.equal(result.updated, 0);
+    assert.equal(result.failures.length, 0);
+
+    const columns = (await client.execute("PRAGMA table_info(auth_pool_entries)")).rows;
+    assert.equal(columns.some((column) => column.name === "reviewer_extra"), true);
+    const inlineColumns = new Map(columns.map((column) => [column.name, column]));
+    assert.equal(Number(inlineColumns.get("encrypted_auth_json").notnull || 0), 0);
+    assert.equal(Number(inlineColumns.get("iv").notnull || 0), 0);
+    assert.equal(Number(inlineColumns.get("auth_tag").notnull || 0), 0);
+
+    const row = (await client.execute("SELECT reviewer_extra FROM auth_pool_entries")).rows[0];
+    assert.equal(row.reviewer_extra, "keep-me");
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
