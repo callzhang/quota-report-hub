@@ -690,8 +690,6 @@ def notify_uploaded_invalidated_auths(
 
     rows = uploaded_invalidated_auths(status_payload)
     if not rows:
-        # Nothing invalidated: clear state so a later re-invalidation notifies promptly.
-        write_invalidated_notify_state({}, state_path)
         return {"shown": False, "reason": "no_uploaded_invalidated_auths", "count": 0}
 
     accounts = [
@@ -705,17 +703,14 @@ def notify_uploaded_invalidated_auths(
         for row in rows
     ]
     message = invalidated_auths_message(rows)
-    signature = ";".join(sorted(f"{row.get('source')}:{row.get('account_id')}" for row in rows))
     now_ts = time.time() if now is None else now
 
-    # Non-intrusive system notification (not a modal dialog). Re-notify only when the
-    # set of invalidated auths changes, or once the repeat window elapses, so a still-
-    # broken auth does not post a banner on every 15-minute guard run.
+    # Non-intrusive system notification (not a modal dialog), at most once per 24h
+    # REGARDLESS of which auths are invalidated. The cloud-side invalidated set can
+    # flap between probes, so keying the cooldown on the set (not just time) would
+    # post a banner far more than once a day. Pure time window = one reminder/day.
     state = read_invalidated_notify_state(state_path)
-    if (
-        state.get("signature") == signature
-        and (now_ts - float(state.get("notified_at") or 0)) < INVALIDATED_NOTIFY_REPEAT_SECONDS
-    ):
+    if (now_ts - float(state.get("notified_at") or 0)) < INVALIDATED_NOTIFY_REPEAT_SECONDS:
         return {
             "shown": False,
             "reason": "recently_notified",
@@ -726,7 +721,7 @@ def notify_uploaded_invalidated_auths(
 
     shown = show_desktop_notification("额度守护：需要重新登录", message)
     if shown:
-        write_invalidated_notify_state({"signature": signature, "notified_at": now_ts}, state_path)
+        write_invalidated_notify_state({"notified_at": now_ts}, state_path)
     return {
         "shown": shown,
         "reason": "shown" if shown else "notify_failed",

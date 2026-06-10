@@ -1972,7 +1972,7 @@ Reading additional input from stdin...
             state = Path(tmp) / "state.json"
             with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
                 with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                    result = quota_guard.notify_uploaded_invalidated_auths(config, now=1000.0, state_path=state)
+                    result = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0, state_path=state)
 
         notify.assert_called_once()
         self.assertEqual(notify.call_args.args[0], "额度守护：需要重新登录")
@@ -2005,17 +2005,57 @@ Reading additional input from stdin...
             state = Path(tmp) / "state.json"
             with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
                 with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                    first = quota_guard.notify_uploaded_invalidated_auths(config, now=1000.0, state_path=state)
+                    first = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0, state_path=state)
                     # same invalidated set an hour later -> suppressed (no banner spam every 15 min)
-                    second = quota_guard.notify_uploaded_invalidated_auths(config, now=1000.0 + 3600, state_path=state)
+                    second = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0 + 3600, state_path=state)
                     # past the 24h repeat window -> remind again
-                    third = quota_guard.notify_uploaded_invalidated_auths(config, now=1000.0 + 25 * 3600, state_path=state)
+                    third = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0 + 25 * 3600, state_path=state)
 
         self.assertTrue(first["shown"])
         self.assertFalse(second["shown"])
         self.assertEqual(second["reason"], "recently_notified")
         self.assertTrue(third["shown"])
         self.assertEqual(notify.call_count, 2)
+
+    def test_notify_uploaded_invalidated_auths_caps_once_per_day_even_when_set_changes(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+
+        def payload(account_ids):
+            return {
+                "viewer_email": "derek@stardust.ai",
+                "items": [
+                    {
+                        "source": "codex",
+                        "account_id": account_id,
+                        "email": account_id,
+                        "plan_name": "Team",
+                        "uploader_email": "derek@stardust.ai",
+                        "status": "error",
+                        "error": "auth invalidated (token_invalidated)",
+                    }
+                    for account_id in account_ids
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            with mock.patch.object(
+                quota_guard,
+                "fetch_auth_pool_status",
+                side_effect=[payload(["a@stardust.ai", "b@stardust.ai"]), payload(["a@stardust.ai"])],
+            ):
+                with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                    first = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0, state_path=state)
+                    # 1h later the invalidated set shrank (flap), but it's still within 24h
+                    second = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0 + 3600, state_path=state)
+
+        self.assertTrue(first["shown"])
+        self.assertFalse(second["shown"])
+        self.assertEqual(second["reason"], "recently_notified")
+        self.assertEqual(notify.call_count, 1)
 
     def test_maybe_replace_claude_auth_skips_custom_provider_settings(self):
         config = {
