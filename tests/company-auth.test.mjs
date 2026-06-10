@@ -4,6 +4,7 @@ import {
   bearerTokenFromHeaders,
   companyEmailAllowed,
   normalizeEmail,
+  sendAccessTokenEmail,
   sendAuthInvalidatedEmail,
 } from "../lib/company-auth.js";
 
@@ -84,6 +85,54 @@ test("sendAuthInvalidatedEmail sends a compact HTML card through Mailgun", async
     assert.match(fields.html, /shared&lt;acct&gt;@stardust\.ai/);
     assert.match(fields.html, /This reminder is sent at most once per 24 hours/);
     assert.match(fields.text, /Please log in again/);
+  } finally {
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+    globalThis.fetch = previousFetch;
+  }
+});
+
+test("sendAccessTokenEmail uses the shared HTML card template", async () => {
+  const previousEnv = {
+    MAILGUN_API_KEY: process.env.MAILGUN_API_KEY,
+    MAILGUN_DOMAIN: process.env.MAILGUN_DOMAIN,
+    MAILGUN_FROM: process.env.MAILGUN_FROM,
+  };
+  const previousFetch = globalThis.fetch;
+  let capturedRequest = null;
+  process.env.MAILGUN_API_KEY = "test-key";
+  process.env.MAILGUN_DOMAIN = "mg.example.com";
+  process.env.MAILGUN_FROM = "hello@example.com";
+  globalThis.fetch = async (url, options) => {
+    capturedRequest = { url, options };
+    return Response.json({ ok: true });
+  };
+
+  try {
+    await sendAccessTokenEmail({
+      email: "owner@stardust.ai",
+      token: "qrp.payload.signature",
+    });
+
+    const fields = Object.fromEntries(capturedRequest.options.body.entries());
+    assert.equal(fields.to, "owner@stardust.ai");
+    assert.equal(fields.subject, "Quota Report Hub access token");
+    // Same shell as the reminder email
+    assert.match(fields.html, /^<!doctype html>/);
+    assert.match(fields.html, /max-width:560px/);
+    assert.match(fields.html, /Your access token/);
+    // Token is rendered in the highlighted code block, and kept secret
+    assert.match(fields.html, /Personal access token/);
+    assert.match(fields.html, /qrp\.payload\.signature/);
+    assert.match(fields.html, /Keep it secret/);
+    assert.match(fields.text, /qrp\.payload\.signature/);
+    // Old bare markup is gone
+    assert.doesNotMatch(fields.html, /<pre>/);
   } finally {
     for (const [name, value] of Object.entries(previousEnv)) {
       if (value === undefined) {
