@@ -99,6 +99,13 @@
         word-break: break-word;
       }
 
+      .card strong.text {
+        font-size: 16px;
+        font-weight: 650;
+        line-height: 1.35;
+        margin-top: 10px;
+      }
+
       .section {
         margin-top: 18px;
         padding: 20px;
@@ -658,7 +665,7 @@
           `<article class="card"><div class="meta">Cloud auth entries</div><strong>${payload.auth_pool_count || 0}</strong><div class="meta">Encrypted auths in pool</div></article>`,
           `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Cloud auth pool sources</div></article>`,
           `<article class="card"><div class="meta">Archived invalidated</div><strong>${payload.archived_invalidated_count || 0}</strong><div class="meta">Hidden from active rotation</div></article>`,
-          `<article class="card"><div class="meta">Latest upload</div><strong>${items[0]?.email || items[0]?.uploader_email || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.uploaded_at)}</div></article>`
+          `<article class="card"><div class="meta">Latest upload</div><strong class="text">${items[0]?.email || items[0]?.uploader_email || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.uploaded_at)}</div></article>`
         ].join("");
 
         rows.innerHTML = items.map((item) => `
