@@ -334,6 +334,35 @@ test("pickBestAuthPoolCandidate returns null when no candidate beats current quo
   assert.equal(candidate, null);
 });
 
+test("pickBestAuthPoolCandidate rejects near-exhausted candidates even when current quota is zero", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "near-empty",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 7 },
+        "1week": { remaining_percent: 38 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+  ];
+  const pool = [{ account_id: "near-empty" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 0,
+      one_week_remaining_percent: 0,
+    },
+    now: "2026-04-22T08:30:00Z",
+  });
+
+  assert.equal(candidate, null);
+});
+
 test("pickBestAuthPoolCandidate allows lower weekly quota as long as 5H is better and week remains usable", () => {
   const reports = [
     {

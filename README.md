@@ -112,6 +112,7 @@ Important runtime notes:
   - the current local `1week remaining percent`
   - a local `requester_id` such as `user@hostname`, so machines sharing the same hub token are still spread across different replacement auths
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
+- the server only shares candidate auths that still have at least `20%` remaining in the `5H` window and at least `5%` remaining in the `1week` window
 - replacement selection is weighted by remaining quota: the server uses requester-specific deterministic weighted sampling with a softened quota weight, plus a small active-assignment penalty, so high-quota accounts carry more load without taking nearly every request
 - the server also tracks active assignments by each machine's latest fetch event; an auth already installed on many machines is treated as loaded even if those machines have not fetched again within the last 5 hours
 - local quota reports are also used as active-assignment evidence: each reporter's latest Codex account contributes to that auth's load, which catches machines that keep using an auth without calling `fetch-best`
