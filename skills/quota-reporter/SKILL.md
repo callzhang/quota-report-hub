@@ -75,9 +75,9 @@ python3 scripts/install_quota_guard.py \
 
 The installer:
 
-- asks for a company email if one was not provided
-- requests an emailed personal token from `/api/auth/issue-token`
-- asks the user to paste the token back into the terminal
+- logs the user in through the browser by default: it starts a one-shot `127.0.0.1` callback server, opens `<hub>/login.html`, and waits. On the page the user enters their company email, receives a one-time token by email, pastes it in, and the browser hands the token back to the localhost callback (guarded by a `state` nonce; the page only ever redirects to a loopback address).
+- falls back automatically to the email + terminal-paste flow when no browser is available (headless/SSH/CI), or when `--no-browser` is passed: it requests an emailed token from `/api/auth/issue-token` and asks the user to paste it into the terminal
+- accepts an existing token directly via `--auth-pool-user-token` (email is decoded from the token when not given)
 - writes the local config file under `~/.agents/auth/quota-reporter.json`
 - installs the 15-minute scheduler
 - writes Claude Code `statusLine` settings to `~/.claude/settings.json`
@@ -102,7 +102,7 @@ If the user is not already using a compatible hub, the correct order is:
 
 1. either deploy a new hub with `scripts/deploy_vercel.py` or confirm an existing hub already supports the auth-pool APIs
 2. then run `install_quota_guard.py`
-3. then paste the emailed token
+3. then complete the browser login (or paste the emailed token in the terminal fallback)
 4. then let the scheduled guard handle the rest
 
 ### Run one manual guard cycle

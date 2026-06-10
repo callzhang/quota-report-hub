@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import http.server
 import json
 import os
 import plistlib
 import platform
+import secrets
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import urllib.parse
+import webbrowser
 from textwrap import dedent
 from pathlib import Path
 
@@ -311,6 +317,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the email token issuance API call. Use this when the token was already requested and you only need to paste it.",
     )
     parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Skip the browser-based loopback login and use the email + terminal paste flow (for headless/remote installs).",
+    )
+    parser.add_argument(
         "--skip-install-verification",
         action="store_true",
         help="Skip the post-install scheduler registration check and one manual quota_guard.py run. Use only for debugging installer changes.",
@@ -318,11 +329,134 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def ensure_user_token(auth_pool_url: str, email: str | None, auth_pool_user_token: str | None, skip_token_request: bool) -> tuple[str, str]:
+def email_from_token(token: str | None) -> str | None:
+    """Decode the email out of a hub-signed `qrp.<payload>.<hmac>` token (no verification)."""
+    if not token or not token.startswith("qrp."):
+        return None
+    parts = token.split(".")
+    if len(parts) != 3 or not parts[1]:
+        return None
+    try:
+        padded = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return None
+    email = payload.get("e")
+    return str(email).strip().lower() if email else None
+
+
+def parse_login_callback(path: str, expected_state: str) -> dict:
+    """Validate the browser's loopback redirect to /callback?token=&state=&email=."""
+    parsed = urllib.parse.urlparse(path)
+    if parsed.path != "/callback":
+        return {"ok": False, "status": 404, "error": "not_found"}
+    query = urllib.parse.parse_qs(parsed.query)
+    token = (query.get("token") or [""])[0].strip()
+    state = (query.get("state") or [""])[0]
+    email = (query.get("email") or [""])[0].strip().lower()
+    if not token:
+        return {"ok": False, "status": 400, "error": "missing_token"}
+    if expected_state and state != expected_state:
+        return {"ok": False, "status": 400, "error": "state_mismatch"}
+    return {"ok": True, "status": 200, "token": token, "email": email}
+
+
+def browser_available(no_browser: bool) -> bool:
+    if no_browser:
+        return False
+    if platform.system().lower() == "linux" and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return False
+    try:
+        webbrowser.get()
+        return True
+    except Exception:
+        return False
+
+
+def run_browser_login(auth_pool_url: str, timeout: float = 300.0) -> dict | None:
+    """Open the hub login page and capture the token via a one-shot localhost callback."""
+    state = secrets.token_urlsafe(24)
+    captured: dict = {}
+    done = threading.Event()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):  # keep the installer output clean
+            return
+
+        def do_GET(self):
+            outcome = parse_login_callback(self.path, state)
+            self.send_response(outcome["status"])
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            if outcome["ok"]:
+                captured["token"] = outcome["token"]
+                captured["email"] = outcome.get("email") or ""
+                self.wfile.write(
+                    "<h2>Quota Report Hub</h2><p>登录成功，可以关闭此标签页，回到终端。</p>".encode("utf-8")
+                )
+                done.set()
+            else:
+                self.wfile.write(
+                    f"<h2>Login failed</h2><p>{outcome['error']}. You can close this tab.</p>".encode("utf-8")
+                )
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        callback = f"http://127.0.0.1:{port}/callback"
+        login_url = (
+            f"{auth_pool_url.rstrip('/')}/login.html"
+            f"?callback={urllib.parse.quote(callback, safe='')}"
+            f"&state={urllib.parse.quote(state, safe='')}"
+        )
+        try:
+            opened = webbrowser.open(login_url)
+        except Exception:
+            opened = False
+        print(
+            "A browser window should have opened to finish login."
+            if opened
+            else "Open this URL in your browser to finish login:"
+        )
+        print(f"  {login_url}")
+        if not done.wait(timeout):
+            return None
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    token = captured.get("token")
+    if not token:
+        return None
+    return {"token": token, "email": captured.get("email") or email_from_token(token)}
+
+
+def ensure_user_token(
+    auth_pool_url: str,
+    email: str | None,
+    auth_pool_user_token: str | None,
+    skip_token_request: bool,
+    no_browser: bool = False,
+) -> tuple[str, str]:
+    if auth_pool_user_token:
+        resolved_email = email or email_from_token(auth_pool_user_token) or input("Company email: ").strip()
+        return resolved_email, auth_pool_user_token
+
+    if browser_available(no_browser):
+        print("Opening browser login… (close the tab when it says you can)")
+        login = run_browser_login(auth_pool_url)
+        if login and login.get("token"):
+            resolved_email = (
+                email or login.get("email") or email_from_token(login["token"]) or input("Company email: ").strip()
+            )
+            return resolved_email, login["token"]
+        print("Browser login did not complete; falling back to email + terminal paste.")
+
     resolved_email = email or input("Company email: ").strip()
-    token = auth_pool_user_token
-    if token:
-        return resolved_email, token
     if not skip_token_request:
         request_auth_pool_token(auth_pool_url, resolved_email)
         print(f"Access token requested for {resolved_email}. Check your inbox, then paste the token below.")
@@ -341,6 +475,7 @@ def main() -> None:
         args.email,
         args.auth_pool_user_token,
         args.skip_token_request,
+        args.no_browser,
     )
     write_config(args.auth_pool_url, email, token)
     statusline = configure_claude_statusline(args.python_path, skill_scripts_dir)

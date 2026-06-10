@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quota Report Hub — Log in</title>
+    <style>
+      :root { color-scheme: light; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 32px 16px;
+        background: #f3f4f6;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #111827;
+      }
+      .card {
+        width: 100%;
+        max-width: 460px;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        border-radius: 20px;
+        overflow: hidden;
+        box-shadow: 0 18px 50px rgba(15, 23, 42, 0.08);
+      }
+      .header {
+        padding: 26px 28px 22px;
+        background: linear-gradient(135deg, #111827 0%, #334155 100%);
+      }
+      .eyebrow {
+        color: #cbd5e1;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .header h1 { margin: 10px 0 0; color: #fff; font-size: 23px; font-weight: 750; }
+      .body { padding: 26px 28px 30px; }
+      .intro { margin: 0 0 20px; color: #374151; font-size: 15px; line-height: 23px; }
+      .label { display: block; margin: 0 0 7px; color: #6b7280; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+      .input {
+        width: 100%;
+        padding: 12px 14px;
+        border: 1px solid #d1d5db;
+        border-radius: 12px;
+        font-size: 15px;
+        font-family: inherit;
+        color: #111827;
+        outline: none;
+      }
+      .input:focus { border-color: #111827; box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.08); }
+      .row { display: flex; gap: 10px; margin-bottom: 18px; }
+      .row .input { flex: 1; }
+      .btn {
+        padding: 12px 16px;
+        border: 1px solid #111827;
+        border-radius: 12px;
+        background: #fff;
+        color: #111827;
+        font-size: 14px;
+        font-weight: 650;
+        font-family: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .btn:hover { background: #f9fafb; }
+      .btn:disabled { opacity: 0.5; cursor: default; }
+      .btn.primary { background: #111827; color: #fff; }
+      .btn.primary:hover { background: #1f2937; }
+      .btn.full { width: 100%; margin-top: 14px; }
+      #step2 { margin-top: 6px; }
+      .code {
+        margin: 8px 0 6px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: #0f172a;
+        color: #e2e8f0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+        line-height: 20px;
+        word-break: break-all;
+        white-space: pre-wrap;
+      }
+      .hint { margin: 6px 0 0; color: #9ca3af; font-size: 12px; }
+      .msg { margin: 16px 0 0; font-size: 14px; line-height: 20px; min-height: 20px; }
+      .msg.ok { color: #047857; }
+      .msg.warn { color: #b45309; }
+      .msg.error { color: #b91c1c; }
+      .footer { margin: 22px 0 0; color: #9ca3af; font-size: 12px; line-height: 18px; }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <div class="header">
+        <div class="eyebrow">Quota Report Hub</div>
+        <h1>Log in</h1>
+      </div>
+      <div class="body">
+        <p class="intro">
+          Enter your company email to receive a one-time access token, then paste it
+          here to finish connecting this machine to the shared auth pool.
+        </p>
+
+        <label class="label" for="email">Company email</label>
+        <div class="row">
+          <input id="email" class="input" type="email" placeholder="your.name@stardust.ai" autocomplete="email" />
+          <button id="send" class="btn">Send code</button>
+        </div>
+
+        <div id="step2" hidden>
+          <label class="label" for="token">Access token (from email)</label>
+          <input id="token" class="input" type="password" placeholder="qrp.…" autocomplete="off" />
+          <button id="login" class="btn primary full">Log in</button>
+        </div>
+
+        <div id="manual" hidden>
+          <div class="label">Your access token</div>
+          <pre id="tokenOut" class="code"></pre>
+          <p class="hint">Copy this token back into the installer prompt in your terminal.</p>
+        </div>
+
+        <p id="msg" class="msg"></p>
+        <p class="footer">
+          Keep your token secret — anyone with it can upload and fetch auth pool entries as you.
+          Only the most recent token per email stays valid.
+        </p>
+      </div>
+    </main>
+
+    <script>
+      const params = new URLSearchParams(location.search);
+      const callback = params.get("callback") || "";
+      const state = params.get("state") || "";
+
+      const emailInput = document.getElementById("email");
+      const sendButton = document.getElementById("send");
+      const step2 = document.getElementById("step2");
+      const tokenInput = document.getElementById("token");
+      const loginButton = document.getElementById("login");
+      const manual = document.getElementById("manual");
+      const tokenOut = document.getElementById("tokenOut");
+      const msg = document.getElementById("msg");
+
+      function show(text, kind) {
+        msg.textContent = text;
+        msg.className = "msg" + (kind ? " " + kind : "");
+      }
+
+      // Only ever hand the token back to a loopback address — never an arbitrary host.
+      function isLoopbackCallback(url) {
+        try {
+          const u = new URL(url);
+          return (
+            u.protocol === "http:" &&
+            (u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "[::1]")
+          );
+        } catch {
+          return false;
+        }
+      }
+
+      const hasValidCallback = Boolean(callback) && isLoopbackCallback(callback);
+      if (callback && !hasValidCallback) {
+        show("Invalid callback target — only localhost is allowed. Your token will be shown for manual copy instead.", "warn");
+      }
+
+      sendButton.addEventListener("click", async () => {
+        const email = emailInput.value.trim();
+        if (!email) {
+          show("Enter your company email first.", "warn");
+          return;
+        }
+        sendButton.disabled = true;
+        show("Sending…");
+        try {
+          const response = await fetch("/api/auth/issue-token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            show(payload.error || "Could not send a token to that email.", "error");
+            sendButton.disabled = false;
+            return;
+          }
+          step2.hidden = false;
+          tokenInput.focus();
+          show("Token sent to " + email + ". Check your inbox, then paste it below.", "ok");
+        } catch (error) {
+          show("Network error: " + error.message, "error");
+        }
+        sendButton.disabled = false;
+      });
+
+      loginButton.addEventListener("click", async () => {
+        const token = tokenInput.value.trim();
+        if (!token) {
+          show("Paste the token from your email first.", "warn");
+          return;
+        }
+        loginButton.disabled = true;
+        show("Verifying…");
+        try {
+          const response = await fetch("/api/status", { headers: { Authorization: "Bearer " + token } });
+          if (!response.ok) {
+            show("Token invalid or expired. Request a new one and try again.", "error");
+            loginButton.disabled = false;
+            return;
+          }
+          const payload = await response.json().catch(() => ({}));
+          const viewer = payload.viewer_email || emailInput.value.trim();
+          if (hasValidCallback) {
+            show("Success — returning to the installer. You can close this tab.", "ok");
+            const target = new URL(callback);
+            target.searchParams.set("token", token);
+            if (state) target.searchParams.set("state", state);
+            if (viewer) target.searchParams.set("email", viewer);
+            location.href = target.toString();
+          } else {
+            manual.hidden = false;
+            tokenOut.textContent = token;
+            show("Logged in. Copy your token below into the installer.", "ok");
+          }
+        } catch (error) {
+          show("Network error: " + error.message, "error");
+          loginButton.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

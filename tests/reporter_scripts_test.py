@@ -6,7 +6,9 @@ import io
 import contextlib
 import importlib.util
 import os
+import base64
 import urllib.error
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from base64 import urlsafe_b64encode
 from pathlib import Path
@@ -3538,6 +3540,59 @@ Reading additional input from stdin...
             prepared = probe_claude_auth_blob.prepare_claude_binary(home, str(binary))
 
         self.assertEqual(Path(prepared), home / ".local" / "bin" / "claude")
+
+    def test_email_from_token_decodes_hub_signed_payload(self):
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"e": "Derek@Stardust.ai", "n": "nonce", "t": "iat"}).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+        token = f"qrp.{payload}.signature"
+        self.assertEqual(install_quota_guard.email_from_token(token), "derek@stardust.ai")
+        self.assertIsNone(install_quota_guard.email_from_token("qrp_legacy_opaque"))
+        self.assertIsNone(install_quota_guard.email_from_token(None))
+
+    def test_parse_login_callback_validates_state_and_token(self):
+        ok = install_quota_guard.parse_login_callback(
+            "/callback?token=qrp.a.b&state=s1&email=Derek%40stardust.ai", "s1"
+        )
+        self.assertTrue(ok["ok"])
+        self.assertEqual(ok["token"], "qrp.a.b")
+        self.assertEqual(ok["email"], "derek@stardust.ai")
+
+        self.assertEqual(
+            install_quota_guard.parse_login_callback("/callback?token=qrp.a.b&state=wrong", "s1")["error"],
+            "state_mismatch",
+        )
+        self.assertEqual(
+            install_quota_guard.parse_login_callback("/callback?state=s1", "s1")["error"],
+            "missing_token",
+        )
+        self.assertEqual(
+            install_quota_guard.parse_login_callback("/other?token=x&state=s1", "s1")["error"],
+            "not_found",
+        )
+
+    def test_browser_available_false_when_disabled(self):
+        self.assertFalse(install_quota_guard.browser_available(no_browser=True))
+
+    def test_run_browser_login_completes_via_loopback_callback(self):
+        import urllib.request
+
+        def fake_open(url):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            callback = query["callback"][0]
+            state = query["state"][0]
+            redirect = callback + "?" + urllib.parse.urlencode(
+                {"token": "qrp.payload.sig", "state": state, "email": "derek@stardust.ai"}
+            )
+            urllib.request.urlopen(redirect, timeout=5).read()
+            return True
+
+        with mock.patch.object(install_quota_guard.webbrowser, "open", side_effect=fake_open):
+            result = install_quota_guard.run_browser_login("https://hub.example.com/", timeout=5)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["token"], "qrp.payload.sig")
+        self.assertEqual(result["email"], "derek@stardust.ai")
 
 
 if __name__ == "__main__":
