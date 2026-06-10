@@ -205,6 +205,60 @@ The installer also performs a post-install verification by default:
 
 The Tigris variables are read automatically by `@tigrisdata/storage`. They are required for production auth-pool uploads if auth JSON should stay out of Turso read paths.
 
+## Auth blob migration
+
+Use `scripts/migrate_auth_blobs_to_object_storage.mjs` to move existing inline encrypted auth payloads out of Turso rows and into object storage.
+
+Modes:
+
+- `scan`: prepares schema and counts rows that still have inline encrypted auth payloads. It does not write objects or update rows.
+- `write-only`: writes each encrypted payload envelope to object storage and reads it back for verification. It does not update rows.
+- `apply`: writes and verifies each object, writes a JSONL backup of the encrypted envelopes, then clears the inline columns and stores `auth_blob_key`.
+
+Local rehearsal:
+
+```bash
+cp database-beige-bell.db /tmp/database-beige-bell-auth-blob-migration.db
+
+AUTH_BLOB_STORAGE_DIR=/tmp/quota-auth-blob-local-test \
+node scripts/migrate_auth_blobs_to_object_storage.mjs \
+  --db /tmp/database-beige-bell-auth-blob-migration.db \
+  --mode scan \
+  --limit 100
+
+AUTH_BLOB_STORAGE_DIR=/tmp/quota-auth-blob-local-test \
+node scripts/migrate_auth_blobs_to_object_storage.mjs \
+  --db /tmp/database-beige-bell-auth-blob-migration.db \
+  --mode write-only \
+  --limit 100
+
+AUTH_BLOB_STORAGE_DIR=/tmp/quota-auth-blob-local-test \
+node scripts/migrate_auth_blobs_to_object_storage.mjs \
+  --db /tmp/database-beige-bell-auth-blob-migration.db \
+  --mode apply \
+  --limit 100 \
+  --backup-path /tmp/quota-auth-blob-local-backup.jsonl
+```
+
+Remote execution:
+
+```bash
+node scripts/migrate_auth_blobs_to_object_storage.mjs --remote --mode scan --limit 10
+node scripts/migrate_auth_blobs_to_object_storage.mjs --remote --mode write-only --limit 10
+node scripts/migrate_auth_blobs_to_object_storage.mjs --remote --mode apply --limit 10 --backup-path /tmp/quota-auth-blob-remote-backup.jsonl
+node scripts/migrate_auth_blobs_to_object_storage.mjs --remote --mode apply --limit 1000 --backup-path /tmp/quota-auth-blob-remote-backup.jsonl
+```
+
+Before remote `apply`, confirm these variables are available to the process:
+
+- `TURSO_DATABASE_URL`
+- `TURSO_AUTH_TOKEN`
+- `TIGRIS_STORAGE_ACCESS_KEY_ID`
+- `TIGRIS_STORAGE_SECRET_ACCESS_KEY`
+- `TIGRIS_STORAGE_BUCKET`
+
+Before remote rows are migrated, also configure the same three Tigris values as GitHub Actions secrets, because the scheduled probe worker reads object-backed auth rows.
+
 ## Vercel deploy script
 
 Use the included deploy script to configure the auth-pool email settings on Vercel and trigger a production deploy:
