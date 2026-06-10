@@ -455,8 +455,13 @@ def show_persistent_login_required_window(title: str, message: str) -> dict:
     system = platform.system().lower()
     try:
         if system == "darwin":
+            # `activate` brings osascript's own dialog to the front. It targets the
+            # current (osascript) process, so it needs no Automation permission, unlike
+            # `tell application "System Events"`. Without it the dialog can open behind
+            # other windows from a launchd background run and never be noticed.
             script = (
                 f'set quotaReportHubAlertMarker to {json.dumps(LOGIN_REQUIRED_ALERT_MARKER)}\n'
+                'activate\n'
                 f'display dialog {json.dumps(message)} with title {json.dumps(title)} '
                 'buttons {"我知道了"} default button "我知道了" with icon caution'
             )
@@ -1105,8 +1110,22 @@ def format_guard_summary(result: dict) -> str:
         f"Auth pool: {format_auth_pool_sync(result.get('auth_pool_sync'))}",
         f"Codex app-server: {app_server_status}" + (f" ({app_server_reason})" if app_server_reason else ""),
         f"Self update: {self_update_text}",
-        "Errors: " + (", ".join(sorted(errors.keys())) if errors else "none"),
     ]
+
+    invalidated = (result.get("notifications") or {}).get("uploaded_invalidated_auths") or {}
+    if invalidated.get("count"):
+        labels = []
+        for account in (invalidated.get("accounts") or [])[:5]:
+            name = account.get("email") or account.get("account_id") or "unknown account"
+            source_label = str(account.get("source") or "auth").upper()
+            plan = account.get("plan_name")
+            labels.append(f"{source_label} {name}" + (f" ({plan})" if plan else ""))
+        extra = invalidated["count"] - len(labels)
+        suffix = f", +{extra} more" if extra > 0 else ""
+        popup_note = "" if invalidated.get("shown") else f" [popup not shown: {invalidated.get('reason')}]"
+        lines.append("Login required (re-login then rerun): " + "; ".join(labels) + suffix + popup_note)
+
+    lines.append("Errors: " + (", ".join(sorted(errors.keys())) if errors else "none"))
     return "\n".join(lines)
 
 
