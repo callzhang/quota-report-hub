@@ -326,12 +326,27 @@ def replacement_toast_message(source: str, replacement: dict) -> str:
     return f"{app_name} 已切换到 {account_label}。请退出当前 {app_name} 会话并重新打开，新会话才会使用这个账号。"
 
 
+def applescript_string(value: str) -> str:
+    """Build an AppleScript string literal.
+
+    osascript reads -e arguments as UTF-8, and AppleScript string literals accept
+    literal non-ASCII characters but NOT JSON-style \\uXXXX escapes. Using json.dumps
+    here silently produces invalid AppleScript for any non-ASCII text (e.g. Chinese),
+    so the dialog/notification fails to parse and never appears.
+    """
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if "\n" in text:
+        return " & return & ".join('"' + part + '"' for part in text.split("\n"))
+    return '"' + text + '"'
+
+
 def show_desktop_notification(title: str, message: str) -> bool:
     system = platform.system().lower()
     try:
         if system == "darwin":
             subprocess.run(
-                ["osascript", "-e", f'display notification {json.dumps(message)} with title {json.dumps(title)}'],
+                ["osascript", "-e", f'display notification {applescript_string(message)} with title {applescript_string(title)}'],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False,
@@ -459,13 +474,27 @@ def show_persistent_login_required_window(title: str, message: str) -> dict:
             # current (osascript) process, so it needs no Automation permission, unlike
             # `tell application "System Events"`. Without it the dialog can open behind
             # other windows from a launchd background run and never be noticed.
+            # Use applescript_string (not json.dumps) so non-ASCII text stays literal —
+            # json.dumps emits \uXXXX, which AppleScript rejects with a syntax error.
             script = (
-                f'set quotaReportHubAlertMarker to {json.dumps(LOGIN_REQUIRED_ALERT_MARKER)}\n'
+                f'set quotaReportHubAlertMarker to {applescript_string(LOGIN_REQUIRED_ALERT_MARKER)}\n'
                 'activate\n'
-                f'display dialog {json.dumps(message)} with title {json.dumps(title)} '
+                f'display dialog {applescript_string(message)} with title {applescript_string(title)} '
                 'buttons {"我知道了"} default button "我知道了" with icon caution'
             )
-            spawn_detached(["osascript", "-e", script])
+            proc = subprocess.Popen(
+                ["osascript", "-e", script],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+            )
+            # A valid dialog keeps osascript alive until dismissed; an invalid script
+            # exits non-zero within milliseconds. Briefly check so we report honestly.
+            time.sleep(0.4)
+            if proc.poll() is not None and proc.returncode != 0:
+                error = (proc.stderr.read().decode("utf-8", "replace").strip() if proc.stderr else "")
+                return {"shown": False, "reason": "osascript_failed", "error": error[:300]}
             return {"shown": True, "reason": "shown"}
 
         if system == "linux":

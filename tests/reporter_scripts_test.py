@@ -3541,6 +3541,14 @@ Reading additional input from stdin...
 
         self.assertEqual(Path(prepared), home / ".local" / "bin" / "claude")
 
+    def test_applescript_string_keeps_unicode_literal(self):
+        # The dialog/notification regression: json.dumps emitted \uXXXX which
+        # AppleScript rejects. applescript_string must keep non-ASCII literal.
+        self.assertEqual(quota_guard.applescript_string("我知道了"), '"我知道了"')
+        self.assertNotIn("\\u", quota_guard.applescript_string("额度守护：需要重新登录"))
+        self.assertEqual(quota_guard.applescript_string('a"b\\c'), '"a\\"b\\\\c"')
+        self.assertEqual(quota_guard.applescript_string("l1\nl2"), '"l1" & return & "l2"')
+
     def test_email_from_token_decodes_hub_signed_payload(self):
         payload = base64.urlsafe_b64encode(
             json.dumps({"e": "Derek@Stardust.ai", "n": "nonce", "t": "iat"}).encode("utf-8")
