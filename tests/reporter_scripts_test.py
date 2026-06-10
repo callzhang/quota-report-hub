@@ -3569,6 +3569,77 @@ Reading additional input from stdin...
 
         self.assertEqual(Path(prepared), home / ".local" / "bin" / "claude")
 
+    def test_claude_oauth_token_expired(self):
+        self.assertTrue(quota_reporters.claude_oauth_token_expired({"expiresAt": 1000}, now_ms=1_000_000))
+        self.assertFalse(quota_reporters.claude_oauth_token_expired({"expiresAt": 10_000_000}, now_ms=1_000_000))
+        self.assertFalse(quota_reporters.claude_oauth_token_expired({}, now_ms=1_000_000))
+
+    def test_refresh_claude_oauth_token_success(self):
+        resp = mock.MagicMock()
+        resp.read.return_value = b'{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}'
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        with mock.patch("quota_reporters.urllib.request.urlopen", return_value=resp):
+            out = quota_reporters.refresh_claude_oauth_token("old-refresh")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["access_token"], "new-access")
+        self.assertEqual(out["refresh_token"], "new-refresh")
+        self.assertEqual(out["expires_in"], 3600)
+
+    def test_refresh_claude_oauth_token_rejected_is_auth_rejected(self):
+        err = urllib.error.HTTPError(
+            quota_reporters.CLAUDE_OAUTH_TOKEN_URL, 400, "Bad Request", {},
+            io.BytesIO(b'{"error":"invalid_grant"}'),
+        )
+        with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=err):
+            out = quota_reporters.refresh_claude_oauth_token("old-refresh")
+        self.assertFalse(out["ok"])
+        self.assertTrue(out["auth_rejected"])
+        self.assertEqual(out["status"], 400)
+
+    def test_refresh_claude_oauth_token_network_is_transient(self):
+        with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=OSError("network down")):
+            out = quota_reporters.refresh_claude_oauth_token("old-refresh")
+        self.assertFalse(out["ok"])
+        self.assertFalse(out["auth_rejected"])
+
+    def test_ensure_fresh_claude_access_token_refreshes_and_persists(self):
+        creds = {"claudeAiOauth": {"accessToken": "old", "refreshToken": "r", "expiresAt": 1000}}
+        with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "keychain")):
+            with mock.patch.object(
+                quota_reporters,
+                "refresh_claude_oauth_token",
+                return_value={"ok": True, "access_token": "fresh", "refresh_token": "r2", "expires_in": 3600},
+            ):
+                with mock.patch.object(
+                    quota_reporters, "persist_claude_credentials", return_value={"keychain": True, "file": False}
+                ) as persist:
+                    creds_out, source, refresh = quota_reporters.ensure_fresh_claude_access_token(Path("/tmp/claude-home"))
+        self.assertEqual(refresh["status"], "refreshed")
+        self.assertEqual(creds_out["claudeAiOauth"]["accessToken"], "fresh")
+        self.assertEqual(creds_out["claudeAiOauth"]["refreshToken"], "r2")
+        persist.assert_called_once()
+
+    def test_ensure_fresh_claude_access_token_skips_valid_token(self):
+        creds = {"claudeAiOauth": {"accessToken": "ok", "refreshToken": "r", "expiresAt": 9_999_999_999_000}}
+        with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "keychain")):
+            with mock.patch.object(quota_reporters, "refresh_claude_oauth_token") as refresh:
+                _, _, outcome = quota_reporters.ensure_fresh_claude_access_token(Path("/tmp/claude-home"))
+        self.assertEqual(outcome["status"], "not_needed")
+        refresh.assert_not_called()
+
+    def test_ensure_fresh_claude_access_token_transient_refresh_does_not_persist(self):
+        creds = {"claudeAiOauth": {"accessToken": "old", "refreshToken": "r", "expiresAt": 1000}}
+        with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "keychain")):
+            with mock.patch.object(
+                quota_reporters, "refresh_claude_oauth_token",
+                return_value={"ok": False, "auth_rejected": False, "error": "net"},
+            ):
+                with mock.patch.object(quota_reporters, "persist_claude_credentials") as persist:
+                    _, _, outcome = quota_reporters.ensure_fresh_claude_access_token(Path("/tmp/claude-home"))
+        self.assertEqual(outcome["status"], "transient_error")
+        persist.assert_not_called()
+
     def test_applescript_string_keeps_unicode_literal(self):
         # The dialog/notification regression: json.dumps emitted \uXXXX which
         # AppleScript rejects. applescript_string must keep non-ASCII literal.

@@ -33,6 +33,13 @@ CLAUDE_STATUSLINE_SNAPSHOT_PATH = "statusline-rate-limits.json"
 CODEx_PROMPT = "reply with ok"
 CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 CLAUDE_DEFAULT_BASE_URL = "https://api.anthropic.com"
+# Claude Code first-party OAuth (extracted from the claude CLI: TOKEN_URL + the
+# client_id next to its oauth/code/callback). Used to refresh an expired access
+# token from the stored refresh token so the probe sees real quota, not a 401.
+CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CLAUDE_OAUTH_USER_AGENT = "claude-cli (quota-reporter)"
+CLAUDE_TOKEN_REFRESH_SKEW_MS = 120_000
 CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS = 10
 CLAUDE_STATUS_TIMEOUT_SECONDS = 10
 CLAUDE_ENV_DROP_KEYS = {
@@ -806,6 +813,131 @@ def read_claude_oauth_credentials(claude_home: Path = CLAUDE_HOME) -> tuple[dict
     return None, "unavailable"
 
 
+def claude_oauth_token_expired(oauth: dict, now_ms: float | None = None) -> bool:
+    expires_at = oauth.get("expiresAt")
+    if not isinstance(expires_at, (int, float)):
+        return False
+    if now_ms is None:
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000
+    return expires_at <= now_ms + CLAUDE_TOKEN_REFRESH_SKEW_MS
+
+
+def refresh_claude_oauth_token(refresh_token: str, scopes: list | None = None) -> dict:
+    """Exchange a Claude refresh token for a fresh access token.
+
+    Mirrors the claude CLI request: POST JSON {grant_type, refresh_token, client_id,
+    scope} to TOKEN_URL. The `scope` field is required (omitting it returns 403).
+    Returns {"ok": True, "access_token", "refresh_token", "expires_in"} on success, or
+    {"ok": False, "auth_rejected": bool, "status": int|None, "error": str}. A failed
+    refresh does not rotate the token, so it is safe to retry next run.
+    """
+    if not refresh_token:
+        return {"ok": False, "auth_rejected": True, "status": None, "error": "no refresh token"}
+    scope_value = " ".join(scopes) if scopes else "user:inference"
+    body = json.dumps({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLAUDE_OAUTH_CLIENT_ID,
+        "scope": scope_value,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        CLAUDE_OAUTH_TOKEN_URL,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # platform.claude.com sits behind Cloudflare, which 403s the default
+            # Python-urllib User-Agent (Error 1010). A CLI-style UA gets through.
+            "User-Agent": CLAUDE_OAUTH_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        # 400/401 = the refresh token itself is dead -> genuine, needs re-login.
+        # 403 and other codes are ambiguous (WAF/infra), so treat them as transient.
+        return {"ok": False, "auth_rejected": exc.code in (400, 401), "status": exc.code,
+                "error": f"refresh http {exc.code}"}
+    except Exception as exc:
+        return {"ok": False, "auth_rejected": False, "status": None, "error": str(exc)[:200]}
+    access = payload.get("access_token")
+    if not access:
+        return {"ok": False, "auth_rejected": False, "status": 200, "error": "no access_token in refresh response"}
+    return {
+        "ok": True,
+        "access_token": access,
+        "refresh_token": payload.get("refresh_token") or refresh_token,
+        "expires_in": payload.get("expires_in"),
+    }
+
+
+def write_claude_keychain_credentials(credentials: dict) -> bool:
+    if sys.platform != "darwin":
+        return False
+    user = os.environ.get("USER") or getpass.getuser() or ""
+    if not user:
+        return False
+    result = subprocess.run(
+        ["security", "add-generic-password", "-U", "-s", CLAUDE_KEYCHAIN_SERVICE,
+         "-a", user, "-w", json.dumps(credentials)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def persist_claude_credentials(credentials: dict, claude_home: Path, source: str) -> dict:
+    """Persist refreshed credentials back to their source (keychain on macOS, or the
+    credentials file). Refresh rotates the refresh token, so a successful refresh MUST
+    be persisted or the stored auth is left pointing at a dead token."""
+    written = {"keychain": False, "file": False}
+    if source == "keychain" or (source != "credentials_file" and sys.platform == "darwin"):
+        written["keychain"] = write_claude_keychain_credentials(credentials)
+    if source == "credentials_file" or not written["keychain"]:
+        try:
+            path = claude_home / ".credentials.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(credentials, indent=2) + "\n", encoding="utf-8")
+            path.chmod(0o600)
+            written["file"] = True
+        except Exception:
+            pass
+    return written
+
+
+def ensure_fresh_claude_access_token(claude_home: Path = CLAUDE_HOME) -> tuple[dict | None, str, dict]:
+    """Read Claude credentials; if the access token is expired, refresh it from the
+    stored refresh token and persist the rotated credentials. Returns
+    (credentials, source, token_refresh) where token_refresh.status is one of
+    no_credentials | not_needed | refreshed | no_refresh_token | auth_rejected | transient_error."""
+    credentials, source = read_claude_oauth_credentials(claude_home)
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    if not oauth.get("accessToken"):
+        return credentials, source, {"status": "no_credentials"}
+    if not claude_oauth_token_expired(oauth):
+        return credentials, source, {"status": "not_needed"}
+    refresh_token = oauth.get("refreshToken")
+    if not refresh_token:
+        return credentials, source, {"status": "no_refresh_token"}
+    outcome = refresh_claude_oauth_token(refresh_token, scopes=oauth.get("scopes"))
+    if not outcome.get("ok"):
+        return credentials, source, {
+            "status": "auth_rejected" if outcome.get("auth_rejected") else "transient_error",
+            "error": outcome.get("error"),
+        }
+    oauth["accessToken"] = outcome["access_token"]
+    oauth["refreshToken"] = outcome["refresh_token"]
+    if outcome.get("expires_in"):
+        now_ms = datetime.now(timezone.utc).timestamp() * 1000
+        oauth["expiresAt"] = int(now_ms + float(outcome["expires_in"]) * 1000)
+    credentials["claudeAiOauth"] = oauth
+    persisted = persist_claude_credentials(credentials, claude_home, source)
+    return credentials, source, {"status": "refreshed", "persisted": persisted}
+
+
 def read_claude_stats(claude_home: Path) -> dict | None:
     path = claude_home / "stats-cache.json"
     if not path.exists():
@@ -1062,7 +1194,7 @@ def parse_claude_statusline_rate_limits(snapshot: dict | None) -> dict:
 
 
 def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
-    credentials, source = read_claude_oauth_credentials(claude_home)
+    credentials, source, token_refresh = ensure_fresh_claude_access_token(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     token = oauth.get("accessToken")
     if token is None:
@@ -1072,6 +1204,7 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
             "reason": "missing Claude OAuth access token",
             "base_url": CLAUDE_DEFAULT_BASE_URL,
             "windows": empty_windows(),
+            "token_refresh": token_refresh,
         }
     request = urllib.request.Request(
         CLAUDE_DEFAULT_BASE_URL + "/api/oauth/usage",
@@ -1098,6 +1231,7 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
             "reason": str(exc)[:400],
             "base_url": CLAUDE_DEFAULT_BASE_URL,
             "windows": empty_windows(),
+            "token_refresh": token_refresh,
         }
 
     try:
@@ -1128,6 +1262,7 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
         "source": source,
         "status_code": status_code,
         "usage_endpoint_throttled": usage_endpoint_throttled,
+        "token_refresh": token_refresh,
         "base_url": CLAUDE_DEFAULT_BASE_URL,
         "windows": windows,
         "status": headers.get("anthropic-ratelimit-unified-status"),
@@ -1223,11 +1358,15 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
         if oauth_usage_probe.get("available"):
             windows = oauth_usage_probe.get("windows") or empty_windows()
             quota_source = "oauth_usage_api"
-    auth_error = (
-        "claude auth invalid (authentication_error)"
-        if oauth_usage_probe and oauth_usage_probe.get("status_code") == 401
-        else None
-    )
+    auth_error = None
+    if oauth_usage_probe and oauth_usage_probe.get("status_code") == 401:
+        # A 401 is a real auth failure only when the token couldn't be refreshed back
+        # to a working one — i.e. the refresh token is gone/rejected, or a non-expired
+        # token was rejected outright. A transient refresh failure (network/5xx) is not
+        # proof the account died, so don't hard-invalidate it then.
+        refresh_status = (oauth_usage_probe.get("token_refresh") or {}).get("status")
+        if refresh_status != "transient_error":
+            auth_error = "claude auth invalid (authentication_error)"
     summary = summarize_claude_stats(stats)
     return {
         **base,
