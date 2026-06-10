@@ -889,13 +889,42 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(windows["1week"]["used_percent"], 17.0)
         self.assertEqual(windows["1week"]["remaining_percent"], 83.0)
 
-    def test_probe_claude_rate_limits_maps_429_retry_after_to_zero_5h_window(self):
+    def test_probe_claude_rate_limits_treats_bare_429_as_endpoint_throttle_not_exhaustion(self):
+        # 429 from the usage-info endpoint with only Retry-After and no unified
+        # rate-limit headers is the endpoint throttling our polling, not model-usage
+        # exhaustion. It must NOT be reported as a 5h-exhausted window.
         error = urllib.error.HTTPError(
             "https://api.anthropic.com/api/oauth/usage",
             429,
             "Too Many Requests",
             {"Retry-After": "3600"},
-            io.BytesIO(b'{"error":{"message":"Rate limited. Please try again later."}}'),
+            io.BytesIO(b'{"error":{"type":"rate_limit_error","message":"Rate limited. Please try again later."}}'),
+        )
+        with mock.patch(
+            "quota_reporters.read_claude_oauth_credentials",
+            return_value=({"claudeAiOauth": {"accessToken": "token"}}, "credentials_file"),
+        ):
+            with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=error):
+                payload = quota_reporters.probe_claude_rate_limits(Path("/tmp/claude-home"))
+
+        self.assertFalse(payload["available"])
+        self.assertEqual(payload["status_code"], 429)
+        self.assertTrue(payload["usage_endpoint_throttled"])
+        self.assertIsNone(payload["windows"]["5h"])
+        self.assertIsNone(payload["windows"]["1week"])
+
+    def test_probe_claude_rate_limits_maps_429_with_unified_headers_to_windows(self):
+        # A genuine model-usage 429 carries unified rate-limit headers; trust them.
+        error = urllib.error.HTTPError(
+            "https://api.anthropic.com/api/oauth/usage",
+            429,
+            "Too Many Requests",
+            {
+                "Retry-After": "3600",
+                "anthropic-ratelimit-unified-5h-utilization": "1.0",
+                "anthropic-ratelimit-unified-5h-reset": "1776649200",
+            },
+            io.BytesIO(b'{"error":{"message":"Usage limit reached."}}'),
         )
         with mock.patch(
             "quota_reporters.read_claude_oauth_credentials",
@@ -906,9 +935,9 @@ class ReporterScriptsTest(unittest.TestCase):
 
         self.assertTrue(payload["available"])
         self.assertEqual(payload["status_code"], 429)
+        self.assertFalse(payload["usage_endpoint_throttled"])
+        self.assertEqual(payload["windows"]["5h"]["used_percent"], 100.0)
         self.assertEqual(payload["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertIsNotNone(payload["windows"]["5h"]["reset_at"])
-        self.assertIsNone(payload["windows"]["1week"])
 
     def test_parse_claude_statusline_rate_limits_returns_windows(self):
         now = datetime.now(timezone.utc)

@@ -1105,12 +1105,29 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
     except json.JSONDecodeError:
         payload = {}
     windows = parse_claude_rate_limit_headers(headers)
-    if status_code == 429 and windows["5h"] is None and windows["1week"] is None:
+    has_unified_headers = any(
+        str(name).lower().startswith("anthropic-ratelimit-unified-")
+        for name in (headers.keys() if headers else [])
+    )
+    # A 429 from /api/oauth/usage that carries no unified rate-limit headers (just a
+    # generic rate_limit_error + Retry-After) is the usage-info endpoint throttling our
+    # polling, NOT model-usage exhaustion. Only synthesize an exhausted 5h window when
+    # the 429 actually describes a model-usage rejection via unified headers; otherwise
+    # report quota as unavailable so the caller falls back to the statusline snapshot
+    # instead of misreporting "5h 100% used".
+    usage_endpoint_throttled = status_code == 429 and not has_unified_headers
+    if (
+        status_code == 429
+        and has_unified_headers
+        and windows["5h"] is None
+        and windows["1week"] is None
+    ):
         windows["5h"] = claude_retry_after_window(headers)
     return {
         "available": windows["5h"] is not None or windows["1week"] is not None,
         "source": source,
         "status_code": status_code,
+        "usage_endpoint_throttled": usage_endpoint_throttled,
         "base_url": CLAUDE_DEFAULT_BASE_URL,
         "windows": windows,
         "status": headers.get("anthropic-ratelimit-unified-status"),
