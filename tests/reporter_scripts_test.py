@@ -1949,14 +1949,7 @@ Reading additional input from stdin...
             "claude-leizhang0121@gmail.com",
         ])
 
-    def test_persistent_login_required_window_detects_existing_marker(self):
-        with mock.patch.object(quota_guard, "running_process_args", return_value=[
-            {"pid": os.getpid(), "args": "python quota_guard.py"},
-            {"pid": 12345, "args": "osascript quota-report-hub-login-required"},
-        ]):
-            self.assertTrue(quota_guard.persistent_login_required_window_visible())
-
-    def test_notify_uploaded_invalidated_auths_shows_one_persistent_login_window(self):
+    def test_notify_uploaded_invalidated_auths_posts_system_notification(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
             "auth_pool_user_token": "qrp_token",
@@ -1970,34 +1963,26 @@ Reading additional input from stdin...
                     "email": "pre-sales@stardust.ai",
                     "plan_name": "Team",
                     "uploader_email": "derek@stardust.ai",
-                    "reporter_name": "derek@gpu4",
-                    "hostname": "gpu4",
                     "status": "error",
                     "error": "auth invalidated (token_invalidated)",
                 }
             ],
         }
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
+                with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                    result = quota_guard.notify_uploaded_invalidated_auths(config, now=1000.0, state_path=state)
 
-        with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
-            with mock.patch.object(
-                quota_guard,
-                "show_persistent_login_required_window",
-                return_value={"shown": True, "reason": "shown"},
-            ) as persistent_window:
-                with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
-                    result = quota_guard.notify_uploaded_invalidated_auths(config)
-
-        persistent_window.assert_called_once()
-        self.assertEqual(persistent_window.call_args.args[0], "额度守护：需要重新登录")
-        notify.assert_not_called()
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[0], "额度守护：需要重新登录")
         self.assertTrue(result["shown"])
         self.assertEqual(result["reason"], "shown")
         self.assertEqual(result["count"], 1)
         self.assertIn("pre-sales@stardust.ai", result["message"])
         self.assertIn("你上传的 auth 已失效", result["message"])
-        self.assertIn("重新登录这些账号", result["message"])
 
-    def test_notify_uploaded_invalidated_auths_does_not_duplicate_existing_window(self):
+    def test_notify_uploaded_invalidated_auths_rate_limits_then_renotifies(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
             "auth_pool_user_token": "qrp_token",
@@ -2016,18 +2001,21 @@ Reading additional input from stdin...
                 }
             ],
         }
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
+                with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                    first = quota_guard.notify_uploaded_invalidated_auths(config, now=1000.0, state_path=state)
+                    # same invalidated set an hour later -> suppressed (no banner spam every 15 min)
+                    second = quota_guard.notify_uploaded_invalidated_auths(config, now=1000.0 + 3600, state_path=state)
+                    # past the 24h repeat window -> remind again
+                    third = quota_guard.notify_uploaded_invalidated_auths(config, now=1000.0 + 25 * 3600, state_path=state)
 
-        with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
-            with mock.patch.object(
-                quota_guard,
-                "show_persistent_login_required_window",
-                return_value={"shown": False, "reason": "already_visible"},
-            ):
-                result = quota_guard.notify_uploaded_invalidated_auths(config)
-
-        self.assertFalse(result["shown"])
-        self.assertEqual(result["reason"], "already_visible")
-        self.assertEqual(result["count"], 1)
+        self.assertTrue(first["shown"])
+        self.assertFalse(second["shown"])
+        self.assertEqual(second["reason"], "recently_notified")
+        self.assertTrue(third["shown"])
+        self.assertEqual(notify.call_count, 2)
 
     def test_maybe_replace_claude_auth_skips_custom_provider_settings(self):
         config = {

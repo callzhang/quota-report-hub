@@ -379,9 +379,6 @@ def show_desktop_notification(title: str, message: str) -> bool:
     return False
 
 
-LOGIN_REQUIRED_ALERT_MARKER = "quota-report-hub-login-required"
-
-
 def running_process_args() -> list[dict]:
     system = platform.system().lower()
     if system == "windows":
@@ -437,16 +434,6 @@ def running_process_args() -> list[dict]:
     return rows
 
 
-def persistent_login_required_window_visible(marker: str = LOGIN_REQUIRED_ALERT_MARKER) -> bool:
-    current_pid = os.getpid()
-    for process in running_process_args():
-        if process.get("pid") == current_pid:
-            continue
-        if marker in process.get("args", ""):
-            return True
-    return False
-
-
 def spawn_detached(command: list[str]) -> None:
     kwargs = {
         "stdout": subprocess.DEVNULL,
@@ -461,68 +448,6 @@ def spawn_detached(command: list[str]) -> None:
     else:
         kwargs["start_new_session"] = True
     subprocess.Popen(command, **kwargs)
-
-
-def show_persistent_login_required_window(title: str, message: str) -> dict:
-    if persistent_login_required_window_visible():
-        return {"shown": False, "reason": "already_visible"}
-
-    system = platform.system().lower()
-    try:
-        if system == "darwin":
-            # `activate` brings osascript's own dialog to the front. It targets the
-            # current (osascript) process, so it needs no Automation permission, unlike
-            # `tell application "System Events"`. Without it the dialog can open behind
-            # other windows from a launchd background run and never be noticed.
-            # Use applescript_string (not json.dumps) so non-ASCII text stays literal —
-            # json.dumps emits \uXXXX, which AppleScript rejects with a syntax error.
-            script = (
-                f'set quotaReportHubAlertMarker to {applescript_string(LOGIN_REQUIRED_ALERT_MARKER)}\n'
-                'activate\n'
-                f'display dialog {applescript_string(message)} with title {applescript_string(title)} '
-                'buttons {"我知道了"} default button "我知道了" with icon caution'
-            )
-            proc = subprocess.Popen(
-                ["osascript", "-e", script],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
-            # A valid dialog keeps osascript alive until dismissed; an invalid script
-            # exits non-zero within milliseconds. Briefly check so we report honestly.
-            time.sleep(0.4)
-            if proc.poll() is not None and proc.returncode != 0:
-                error = (proc.stderr.read().decode("utf-8", "replace").strip() if proc.stderr else "")
-                return {"shown": False, "reason": "osascript_failed", "error": error[:300]}
-            return {"shown": True, "reason": "shown"}
-
-        if system == "linux":
-            zenity = shutil.which("zenity")
-            if not zenity:
-                return {"shown": False, "reason": "zenity_not_found"}
-            shell_command = (
-                f"{shlex.quote(zenity)} --warning --width=560 "
-                f"--title={shlex.quote(title)} --text={shlex.quote(message)}"
-            )
-            spawn_detached(["sh", "-c", shell_command, LOGIN_REQUIRED_ALERT_MARKER])
-            return {"shown": True, "reason": "shown"}
-
-        if system == "windows":
-            powershell = shutil.which("powershell") or shutil.which("powershell.exe") or shutil.which("pwsh")
-            if not powershell:
-                return {"shown": False, "reason": "powershell_not_found"}
-            script = (
-                f"$quotaReportHubAlertMarker = {json.dumps(LOGIN_REQUIRED_ALERT_MARKER)}; "
-                "$wshell = New-Object -ComObject WScript.Shell; "
-                f"$wshell.Popup({json.dumps(message)}, 0, {json.dumps(title)}, 48) | Out-Null"
-            )
-            spawn_detached([powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
-            return {"shown": True, "reason": "shown"}
-    except Exception as error:
-        return {"shown": False, "reason": "spawn_failed", "error": str(error)}
-
-    return {"shown": False, "reason": "unsupported_platform"}
 
 
 def notify_replacement_success(source: str, replacement: dict) -> dict:
@@ -803,7 +728,30 @@ def invalidated_auths_message(rows: list[dict]) -> str:
     return "你上传的 auth 已失效：" + "；".join(labels) + suffix + "。请重新登录这些账号，然后再运行一次 quota_guard.py。"
 
 
-def notify_uploaded_invalidated_auths(config: dict) -> dict:
+INVALIDATED_NOTIFY_STATE_PATH = Path.home() / ".agents" / "auth" / "invalidated-notify-state.json"
+INVALIDATED_NOTIFY_REPEAT_SECONDS = 24 * 60 * 60
+
+
+def read_invalidated_notify_state(path: Path = INVALIDATED_NOTIFY_STATE_PATH) -> dict:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def write_invalidated_notify_state(state: dict, path: Path = INVALIDATED_NOTIFY_STATE_PATH) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def notify_uploaded_invalidated_auths(
+    config: dict,
+    now: float | None = None,
+    state_path: Path = INVALIDATED_NOTIFY_STATE_PATH,
+) -> dict:
     if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
         return {"shown": False, "reason": "missing_auth_pool_config"}
     try:
@@ -813,23 +761,48 @@ def notify_uploaded_invalidated_auths(config: dict) -> dict:
 
     rows = uploaded_invalidated_auths(status_payload)
     if not rows:
+        # Nothing invalidated: clear state so a later re-invalidation notifies promptly.
+        write_invalidated_notify_state({}, state_path)
         return {"shown": False, "reason": "no_uploaded_invalidated_auths", "count": 0}
+
+    accounts = [
+        {
+            "source": row.get("source"),
+            "account_id": row.get("account_id"),
+            "email": row.get("email"),
+            "plan_name": row.get("plan_name"),
+            "error": row.get("error"),
+        }
+        for row in rows
+    ]
     message = invalidated_auths_message(rows)
-    window_result = show_persistent_login_required_window("额度守护：需要重新登录", message)
+    signature = ";".join(sorted(f"{row.get('source')}:{row.get('account_id')}" for row in rows))
+    now_ts = time.time() if now is None else now
+
+    # Non-intrusive system notification (not a modal dialog). Re-notify only when the
+    # set of invalidated auths changes, or once the repeat window elapses, so a still-
+    # broken auth does not post a banner on every 15-minute guard run.
+    state = read_invalidated_notify_state(state_path)
+    if (
+        state.get("signature") == signature
+        and (now_ts - float(state.get("notified_at") or 0)) < INVALIDATED_NOTIFY_REPEAT_SECONDS
+    ):
+        return {
+            "shown": False,
+            "reason": "recently_notified",
+            "count": len(rows),
+            "accounts": accounts,
+            "message": message,
+        }
+
+    shown = show_desktop_notification("额度守护：需要重新登录", message)
+    if shown:
+        write_invalidated_notify_state({"signature": signature, "notified_at": now_ts}, state_path)
     return {
-        "shown": window_result.get("shown", False),
-        "reason": window_result.get("reason"),
+        "shown": shown,
+        "reason": "shown" if shown else "notify_failed",
         "count": len(rows),
-        "accounts": [
-            {
-                "source": row.get("source"),
-                "account_id": row.get("account_id"),
-                "email": row.get("email"),
-                "plan_name": row.get("plan_name"),
-                "error": row.get("error"),
-            }
-            for row in rows
-        ],
+        "accounts": accounts,
         "message": message,
     }
 
@@ -1151,8 +1124,8 @@ def format_guard_summary(result: dict) -> str:
             labels.append(f"{source_label} {name}" + (f" ({plan})" if plan else ""))
         extra = invalidated["count"] - len(labels)
         suffix = f", +{extra} more" if extra > 0 else ""
-        popup_note = "" if invalidated.get("shown") else f" [popup not shown: {invalidated.get('reason')}]"
-        lines.append("Login required (re-login then rerun): " + "; ".join(labels) + suffix + popup_note)
+        note = "" if invalidated.get("shown") else f" [{invalidated.get('reason')}]"
+        lines.append("Login required (re-login then rerun): " + "; ".join(labels) + suffix + note)
 
     lines.append("Errors: " + (", ".join(sorted(errors.keys())) if errors else "none"))
     return "\n".join(lines)
