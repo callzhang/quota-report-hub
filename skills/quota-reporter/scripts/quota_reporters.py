@@ -865,6 +865,9 @@ def compact_claude_usage_summary(
     statusline_snapshot: dict | None,
     stats_summary: dict | None,
     windows: dict,
+    *,
+    quota_source: str | None = None,
+    oauth_usage_probe: dict | None = None,
 ) -> dict:
     summary = {
         "login_method": auth_text_details.get("login_method"),
@@ -872,9 +875,25 @@ def compact_claude_usage_summary(
         "subscription_type": oauth.get("subscriptionType"),
         "rate_limit_tier": oauth.get("rateLimitTier"),
         "oauth_expires_at": oauth.get("expiresAt"),
-        "quota_source": "statusline_snapshot" if windows["5h"] is not None or windows["1week"] is not None else "unavailable",
+        "quota_source": quota_source or ("statusline_snapshot" if windows["5h"] is not None or windows["1week"] is not None else "unavailable"),
         "snapshot_reported_at": (statusline_snapshot or {}).get("captured_at"),
     }
+    if oauth_usage_probe:
+        summary["oauth_usage_probe"] = {
+            key: oauth_usage_probe.get(key)
+            for key in (
+                "available",
+                "source",
+                "status_code",
+                "base_url",
+                "status",
+                "representative_claim",
+                "overage_status",
+                "api_error",
+                "reason",
+            )
+            if oauth_usage_probe.get(key) is not None
+        }
     if auth_status.get("authMethod"):
         summary["auth_method"] = auth_status.get("authMethod")
     if auth_status.get("apiProvider"):
@@ -1001,6 +1020,22 @@ def parse_claude_rate_limit_headers(headers) -> dict:
     return windows
 
 
+def claude_retry_after_window(headers) -> dict | None:
+    retry_after = headers.get("Retry-After") if headers else None
+    try:
+        seconds = max(int(float(retry_after)), 0)
+    except (TypeError, ValueError):
+        return None
+    now = datetime.now(timezone.utc)
+    reset_at = (
+        datetime.fromtimestamp(now.timestamp() + seconds, tz=timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    return zero_remaining_window(300, reset_at=reset_at, reset_in_seconds=seconds)
+
+
 def parse_claude_statusline_rate_limits(snapshot: dict | None) -> dict:
     windows = empty_windows()
     rate_limits = (snapshot or {}).get("rate_limits") or {}
@@ -1070,6 +1105,8 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
     except json.JSONDecodeError:
         payload = {}
     windows = parse_claude_rate_limit_headers(headers)
+    if status_code == 429 and windows["5h"] is None and windows["1week"] is None:
+        windows["5h"] = claude_retry_after_window(headers)
     return {
         "available": windows["5h"] is not None or windows["1week"] is not None,
         "source": source,
@@ -1161,6 +1198,19 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
     stats = read_claude_stats(claude_home)
     statusline_snapshot = read_claude_statusline_snapshot(claude_home)
     statusline_windows = parse_claude_statusline_rate_limits(statusline_snapshot)
+    oauth_usage_probe = None
+    windows = statusline_windows
+    quota_source = "statusline_snapshot" if statusline_windows["5h"] is not None or statusline_windows["1week"] is not None else "unavailable"
+    if quota_source == "unavailable":
+        oauth_usage_probe = probe_claude_rate_limits(claude_home)
+        if oauth_usage_probe.get("available"):
+            windows = oauth_usage_probe.get("windows") or empty_windows()
+            quota_source = "oauth_usage_api"
+    auth_error = (
+        "claude auth invalid (authentication_error)"
+        if oauth_usage_probe and oauth_usage_probe.get("status_code") == 401
+        else None
+    )
     summary = summarize_claude_stats(stats)
     return {
         **base,
@@ -1168,22 +1218,26 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
         "email": auth_text_details.get("email"),
         "name": auth_text_details.get("organization"),
         "plan_name": human_plan_name(auth_text_details.get("subscription_type")) or human_plan_name(oauth.get("subscriptionType")) or oauth.get("subscriptionType"),
-        "status": "ok" if auth_status.get("loggedIn") and auth_text_details.get("email") else "error",
+        "status": "ok" if auth_error is None and auth_status.get("loggedIn") and auth_text_details.get("email") else "error",
         "error": (
-            None
+            auth_error
+            if auth_error is not None
+            else None
             if auth_status.get("loggedIn") and auth_text_details.get("email")
             else "claude auth email unavailable"
             if auth_status.get("loggedIn")
             else "claude auth status reported loggedIn=false"
         ),
-        "windows": statusline_windows,
+        "windows": windows,
         "usage_summary": compact_claude_usage_summary(
             auth_status,
             auth_text_details,
             oauth,
             statusline_snapshot,
             summary,
-            statusline_windows,
+            windows,
+            quota_source=quota_source,
+            oauth_usage_probe=oauth_usage_probe,
         ),
     }
 

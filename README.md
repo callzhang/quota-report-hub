@@ -137,8 +137,8 @@ The dashboard now reflects the cloud auth pool, not arbitrary client report rows
 - quota metadata is shown as the latest effective quota associated with that cloud auth entry
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
-- Codex rows can be refreshed by either the cloud worker or a stable local client report; after a stable local client report is accepted, the cloud worker skips probing that same auth for 1 hour when the report matches the auth refresh time. A newer worker soft failure does not overwrite an existing good local Codex quota snapshot
-- Claude rows can be refreshed by the cloud worker for direct Claude subscriptions, or by stable local client reports when Claude is running in an environment that the worker cannot replay reliably
+- Codex rows can be refreshed by either the cloud worker or a stable local client report; a complete local client report is allowed to replace stale worker-preserved windows. After a stable local client report is accepted, the cloud worker skips probing that same auth for 1 hour when the report matches the auth refresh time. A newer worker soft failure does not overwrite an existing good local Codex quota snapshot
+- Claude rows can be refreshed by the cloud worker for direct Claude subscriptions, or by stable local client reports when Claude is running in an environment that the worker cannot replay reliably. Local Claude reporting reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time.
 
 Auth pool support:
 
@@ -148,7 +148,7 @@ Auth pool support:
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
 - Codex uploads are keyed by normalized email when available, not by the raw provider account UUID, so different Team users do not collide in the pool.
 - GitHub Actions refreshes the cloud auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
-- Local machines may also post stable quota snapshots to `/api/auth/quota`. For Codex, the server accepts only complete windows or hard invalidations so partial client probes cannot poison the hub.
+- Local machines may also post stable quota snapshots to `/api/auth/quota`. For Codex, the server accepts only complete windows or hard invalidations so partial client probes cannot poison the hub. A complete client report can replace stale effective windows that were previously preserved from worker data.
 - A fresh accepted client quota report backs off the GitHub Actions cloud probe for that same auth for 1 hour, as long as the report's `auth_last_refresh` still matches the auth pool entry.
 - Turso stores auth-pool metadata, quota snapshots, and audit events. `/api/status` and `/api/auth/fetch-best` candidate selection read metadata only; they do not read encrypted auth JSON for every account.
 - In production, configure Tigris object storage so encrypted auth JSON is written to object storage and Turso keeps only `auth_blob_key`. Existing inline Turso rows remain readable and are moved to object storage when that auth is refreshed and uploaded again.

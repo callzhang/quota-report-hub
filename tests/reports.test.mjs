@@ -312,6 +312,43 @@ test("mergeLatestReport preserves known quota when a client jumps reset before t
   assert.equal(merged.windows["1week"].reset_at, "2026-05-26T21:23:39Z");
 });
 
+test("mergeLatestReport accepts complete local client quota over stale worker windows", () => {
+  const previous = sanitizeReport({
+    source: "codex",
+    hostname: "worker",
+    reporter_name: "actions@runner",
+    reported_at: "2026-06-10T01:26:11Z",
+    report_origin: "worker",
+    account_id: "derek@preseen.ai",
+    status: "ok",
+    windows_stale: true,
+    windows: {
+      "5h": { used_percent: 9, remaining_percent: 91, reset_at: "2026-06-10T04:33:37Z" },
+      "1week": { used_percent: 100, remaining_percent: 0, reset_at: "2026-06-10T02:04:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    hostname: "MacBook-Air.local",
+    reporter_name: "derek@MacBook-Air.local",
+    reported_at: "2026-06-10T01:30:51Z",
+    report_origin: "client",
+    account_id: "derek@preseen.ai",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 9, remaining_percent: 91, reset_at: "2026-06-10T04:33:37Z" },
+      "1week": { used_percent: 94, remaining_percent: 6, reset_at: "2026-06-11T00:30:03Z" },
+    },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.report_origin, "client");
+  assert.equal(merged.windows_stale, false);
+  assert.equal(merged.windows["1week"].remaining_percent, 6);
+  assert.equal(merged.windows["1week"].reset_at, "2026-06-11T00:30:03Z");
+});
+
 test("mergeLatestReport accepts newer zero client quota over stale positive quota", () => {
   const previous = sanitizeReport({
     source: "codex",

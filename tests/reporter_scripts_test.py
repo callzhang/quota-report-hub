@@ -888,6 +888,27 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(windows["1week"]["used_percent"], 17.0)
         self.assertEqual(windows["1week"]["remaining_percent"], 83.0)
 
+    def test_probe_claude_rate_limits_maps_429_retry_after_to_zero_5h_window(self):
+        error = urllib.error.HTTPError(
+            "https://api.anthropic.com/api/oauth/usage",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "3600"},
+            io.BytesIO(b'{"error":{"message":"Rate limited. Please try again later."}}'),
+        )
+        with mock.patch(
+            "quota_reporters.read_claude_oauth_credentials",
+            return_value=({"claudeAiOauth": {"accessToken": "token"}}, "credentials_file"),
+        ):
+            with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=error):
+                payload = quota_reporters.probe_claude_rate_limits(Path("/tmp/claude-home"))
+
+        self.assertTrue(payload["available"])
+        self.assertEqual(payload["status_code"], 429)
+        self.assertEqual(payload["windows"]["5h"]["remaining_percent"], 0.0)
+        self.assertIsNotNone(payload["windows"]["5h"]["reset_at"])
+        self.assertIsNone(payload["windows"]["1week"])
+
     def test_parse_claude_statusline_rate_limits_returns_windows(self):
         now = datetime.now(timezone.utc)
         snapshot = {
@@ -1062,6 +1083,64 @@ Reading additional input from stdin...
         self.assertNotIn("rate_limit_probe", payload["usage_summary"])
         self.assertNotIn("statusline_snapshot", payload["usage_summary"])
         self.assertNotIn("stats", payload["usage_summary"])
+
+    def test_probe_claude_uses_oauth_usage_api_when_statusline_has_no_windows(self):
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
+            stderr="",
+        )
+        api_windows = {
+            "5h": {"used_percent": 25.0, "remaining_percent": 75.0, "window_minutes": 300, "reset_at": "2026-04-22T15:00:00Z"},
+            "1week": {"used_percent": 40.0, "remaining_percent": 60.0, "window_minutes": 10080, "reset_at": "2026-04-28T15:00:00Z"},
+        }
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
+                with mock.patch(
+                    "quota_reporters.read_claude_oauth_credentials",
+                    return_value=({"claudeAiOauth": {"subscriptionType": "max", "rateLimitTier": "default_claude_max_20x"}}, "credentials_file"),
+                ):
+                    with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"captured_at": "2026-04-22T08:00:00Z", "rate_limits": None}):
+                        with mock.patch("quota_reporters.probe_claude_rate_limits", return_value={"available": True, "windows": api_windows, "status_code": 200}):
+                            with mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                                payload = probe_claude(Path("/tmp/claude-home"))
+
+        self.assertEqual(payload["windows"]["5h"]["remaining_percent"], 75.0)
+        self.assertEqual(payload["windows"]["1week"]["remaining_percent"], 60.0)
+        self.assertEqual(payload["usage_summary"]["quota_source"], "oauth_usage_api")
+        self.assertEqual(payload["usage_summary"]["oauth_usage_probe"]["status_code"], 200)
+
+    def test_probe_claude_marks_oauth_usage_401_as_invalid_auth(self):
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
+            stderr="",
+        )
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
+                with mock.patch(
+                    "quota_reporters.read_claude_oauth_credentials",
+                    return_value=({"claudeAiOauth": {"subscriptionType": "max", "rateLimitTier": "default_claude_max_20x"}}, "credentials_file"),
+                ):
+                    with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"captured_at": "2026-04-22T08:00:00Z", "rate_limits": None}):
+                        with mock.patch(
+                            "quota_reporters.probe_claude_rate_limits",
+                            return_value={
+                                "available": False,
+                                "windows": {"5h": None, "1week": None},
+                                "status_code": 401,
+                                "api_error": "Invalid authentication credentials",
+                            },
+                        ):
+                            with mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                                payload = probe_claude(Path("/tmp/claude-home"))
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], "claude auth invalid (authentication_error)")
+        self.assertEqual(payload["usage_summary"]["quota_source"], "unavailable")
+        self.assertEqual(payload["usage_summary"]["oauth_usage_probe"]["status_code"], 401)
 
     def test_probe_claude_without_email_uses_single_missing_email_id(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")

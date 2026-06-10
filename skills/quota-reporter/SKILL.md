@@ -140,6 +140,7 @@ The guard then:
 - Codex probes run in an isolated temporary `CODEX_HOME` and strip provider/auth override environment variables such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `CODEX_ACCESS_TOKEN`; otherwise a teammate's shell config can produce quota for a different provider while labeling it as the copied `auth.json` account
 - may push stable local quota snapshots back to the hub when available
 - for Codex, only complete windows or hard invalidations are uploaded, so partial local probes do not overwrite good hub data
+- for Claude, the local probe reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time
 - if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
 - the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
@@ -161,7 +162,7 @@ Operational notes:
 - the guard restarts or stops the local Codex app-server after a Codex auth write, but any already-open TUI still needs to be reopened to attach to the fresh backend
 - the local config file contains a personal token and should stay private
 - the cloud dashboard shows the latest effective quota for each auth entry
-- Codex rows may be refreshed by either the cloud worker or a stable local client report; a newer worker soft failure does not replace an existing good local Codex quota snapshot
+- Codex rows may be refreshed by either the cloud worker or a stable local client report; a complete local client report may replace stale worker-preserved windows, and a newer worker soft failure does not replace an existing good local Codex quota snapshot
 - Claude rows may come from the cloud worker or from a stable local client snapshot, depending on whether the current Claude environment can be replayed reliably on the worker. If `~/.claude/settings.json` injects `ANTHROPIC_*` provider credentials, the skill skips Claude cloud uploads for that machine.
 
 ## Output expectations
