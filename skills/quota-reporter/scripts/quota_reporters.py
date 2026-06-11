@@ -40,6 +40,11 @@ CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CLAUDE_OAUTH_USER_AGENT = "claude-cli (quota-reporter)"
 CLAUDE_TOKEN_REFRESH_SKEW_MS = 120_000
+# /api/oauth/usage rate-limits the polling itself (429 + a long Retry-After). Persist a
+# backoff deadline so we don't hammer it every 15-minute guard run, and stay polite even
+# after a 200 by not re-polling more often than this.
+CLAUDE_USAGE_BACKOFF_PATH = AUTH_STATE_DIR / "claude-usage-backoff.json"
+CLAUDE_USAGE_MIN_INTERVAL_SECONDS = 1800
 CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS = 10
 CLAUDE_STATUS_TIMEOUT_SECONDS = 10
 CLAUDE_ENV_DROP_KEYS = {
@@ -283,6 +288,20 @@ def detect_claude_custom_provider_env(claude_home: Path = CLAUDE_HOME) -> dict |
                 "settings_key": key,
                 "env": provider_env,
             }
+    # Also honor a custom provider configured in the live process environment: an API
+    # key/token, or a non-default ANTHROPIC_BASE_URL. When the machine routes Claude
+    # through a custom provider, its claude.ai keychain login isn't the active auth, so
+    # the pool shouldn't probe/upload it.
+    env_provider = {}
+    for env_key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
+        value = os.environ.get(env_key)
+        if not value:
+            continue
+        if env_key == "ANTHROPIC_BASE_URL" and value.rstrip("/") == CLAUDE_DEFAULT_BASE_URL.rstrip("/"):
+            continue
+        env_provider[env_key] = value
+    if env_provider:
+        return {"settings_key": "process_env", "env": env_provider}
     return None
 
 
@@ -1313,11 +1332,19 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
         and windows["1week"] is None
     ):
         windows["5h"] = claude_retry_after_window(headers)
+    retry_after_seconds = None
+    raw_retry_after = headers.get("Retry-After") if headers else None
+    if raw_retry_after is not None:
+        try:
+            retry_after_seconds = max(int(float(raw_retry_after)), 0)
+        except (TypeError, ValueError):
+            retry_after_seconds = None
     return {
         "available": windows["5h"] is not None or windows["1week"] is not None,
         "source": source,
         "status_code": status_code,
         "usage_endpoint_throttled": usage_endpoint_throttled,
+        "retry_after_seconds": retry_after_seconds,
         "token_refresh": token_refresh,
         "base_url": CLAUDE_DEFAULT_BASE_URL,
         "windows": windows,
@@ -1338,7 +1365,27 @@ def claude_account_id(auth_text_details: dict | None = None) -> str:
     return "claude-email-missing"
 
 
-def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None) -> dict:
+def read_claude_usage_backoff(path: Path = CLAUDE_USAGE_BACKOFF_PATH) -> float:
+    try:
+        return float(json.loads(path.read_text(encoding="utf-8")).get("next_allowed_at") or 0)
+    except Exception:
+        return 0.0
+
+
+def write_claude_usage_backoff(next_allowed_at: float, path: Path = CLAUDE_USAGE_BACKOFF_PATH) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"next_allowed_at": next_allowed_at}) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def probe_claude(
+    claude_home: Path = CLAUDE_HOME,
+    claude_bin: str | None = None,
+    now: float | None = None,
+    usage_backoff_path: Path = CLAUDE_USAGE_BACKOFF_PATH,
+) -> dict:
     claude_executable = discover_claude_executable(claude_bin)
     base = {
         "source": "claude",
@@ -1409,11 +1456,24 @@ def probe_claude(claude_home: Path = CLAUDE_HOME, claude_bin: str | None = None)
     oauth_usage_probe = None
     windows = statusline_windows
     quota_source = "statusline_snapshot" if statusline_windows["5h"] is not None or statusline_windows["1week"] is not None else "unavailable"
+    # Prefer a fresh statusline snapshot (free); fall back to the /api/oauth/usage probe
+    # only when the snapshot has no usable windows. Respect a 429 backoff window so we
+    # don't keep hammering the usage endpoint that throttled us.
     if quota_source == "unavailable":
-        oauth_usage_probe = probe_claude_rate_limits(claude_home)
-        if oauth_usage_probe.get("available"):
-            windows = oauth_usage_probe.get("windows") or empty_windows()
-            quota_source = "oauth_usage_api"
+        now_ts = now if now is not None else datetime.now(timezone.utc).timestamp()
+        if now_ts < read_claude_usage_backoff(usage_backoff_path):
+            quota_source = "usage_endpoint_backoff"
+        else:
+            oauth_usage_probe = probe_claude_rate_limits(claude_home)
+            retry_after = oauth_usage_probe.get("retry_after_seconds")
+            if oauth_usage_probe.get("usage_endpoint_throttled") and retry_after:
+                write_claude_usage_backoff(now_ts + retry_after, usage_backoff_path)
+            elif oauth_usage_probe.get("available"):
+                # Be polite even on success: don't re-poll for a while.
+                write_claude_usage_backoff(now_ts + CLAUDE_USAGE_MIN_INTERVAL_SECONDS, usage_backoff_path)
+            if oauth_usage_probe.get("available"):
+                windows = oauth_usage_probe.get("windows") or empty_windows()
+                quota_source = "oauth_usage_api"
     auth_error = None
     if oauth_usage_probe and oauth_usage_probe.get("status_code") == 401:
         # A 401 is a real auth failure only when the token couldn't be refreshed back
