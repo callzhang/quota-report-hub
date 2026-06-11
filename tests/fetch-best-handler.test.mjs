@@ -77,7 +77,7 @@ function mockResponse() {
   };
 }
 
-test("fetch-best returns a replacement even when repair auth is also present", async () => {
+test("fetch-best prioritizes the owner's repair auth over lending a replacement", async () => {
   await withTempEnv(async () => {
     const db = await import(`../lib/db.js?ts=${Date.now()}`);
     const { default: handler } = await import(`../api/auth/fetch-best.js?ts=${Date.now()}`);
@@ -138,7 +138,9 @@ test("fetch-best returns a replacement even when repair auth is also present", a
       body: {
         source: "codex",
         requester_id: "derek@gpu4",
-        current_account_id: "current@stardust.ai",
+        // derek is currently on a borrowed auth, NOT their own dead one — the handback
+        // should still return their dead auth (no longer requires it to be current).
+        current_account_id: "borrowed@stardust.ai",
         current_quota: {
           five_h_remaining_percent: -1,
           one_week_remaining_percent: -1,
@@ -151,9 +153,16 @@ test("fetch-best returns a replacement even when repair auth is also present", a
     const payload = JSON.parse(res.body);
 
     assert.equal(res.statusCode, 200);
+    // Owner has a dead auth -> hand it back for re-login; do not lend the healthy one.
     assert.equal(payload.repair_auth.account_id, "current@stardust.ai");
-    assert.equal(payload.replacement.account_id, "healthy@stardust.ai");
-    assert.equal(payload.replacement.email, "healthy@stardust.ai");
-    assert.equal(payload.reason, undefined);
+    assert.equal(payload.replacement, null);
+    assert.equal(payload.reason, "uploaded_auth_requires_reauth");
+
+    // The handback is recorded so the dashboard can show it as returned to the owner.
+    const log = await db.authPoolFetchLog({ limit: 5 });
+    const returned = log.find((row) => row.reason === "repair_returned");
+    assert.ok(returned, "expected a repair_returned fetch-log entry");
+    assert.equal(returned.served_account_id, "current@stardust.ai");
+    assert.equal(returned.requester_email, "derek@stardust.ai");
   });
 });

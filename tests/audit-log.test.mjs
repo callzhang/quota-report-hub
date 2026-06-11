@@ -568,7 +568,7 @@ test("authPoolActiveReporterCounts counts each reporter's latest quota account",
   }
 });
 
-test("getInvalidatedUploaderEntry only returns the current account repair auth", async () => {
+test("getInvalidatedUploaderEntry returns the owner's invalidated auth, preferring the current account", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
     await mod.upsertAuthPoolEntry({
@@ -613,7 +613,11 @@ test("getInvalidatedUploaderEntry only returns the current account repair auth",
       accountId: "invalid-b@example.com",
     });
 
-    assert.equal(different, null);
+    // Even when the requested account isn't one the owner has, we still hand back one
+    // of their own invalidated auths so they can re-login it.
+    assert.ok(different);
+    assert.ok(["invalid-a@example.com", "invalid-b@example.com"].includes(different.account_id));
+    // When the current account matches one of the owner's dead auths, that one is preferred.
     assert.equal(matching.account_id, "invalid-b@example.com");
   } finally {
     cleanup();

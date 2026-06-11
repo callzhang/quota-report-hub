@@ -32,6 +32,7 @@ from quota_reporters import (
     probe_codex,
     sync_current_claude_auth_pool,
     sync_current_codex_auth_pool,
+    write_claude_keychain_credentials,
     write_known_auth_state,
 )
 
@@ -759,16 +760,11 @@ def maybe_replace_codex_auth(
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
     if replacement is None and repair_auth is not None:
+        # The hub handed back an auth this user uploaded that has gone invalid — install
+        # it (even if it isn't the current account) so the owner lands on their own dead
+        # account and re-logs in, instead of borrowing a pool auth. The local auth that
+        # triggered this fetch was already unhealthy, so nothing healthy is overwritten.
         fetched_account_id = repair_auth.get("account_id")
-        if fetched_account_id != current_account_id:
-            return {
-                "ok": True,
-                "replaced": False,
-                "reason": "repair_auth_for_different_account",
-                "triggered_by": ["codex"],
-                "current_account_id": current_account_id,
-                "repair_account_id": fetched_account_id,
-            }
         current_digest = None
         if codex_auth_path.exists():
             try:
@@ -899,6 +895,44 @@ def maybe_replace_claude_auth(
         requester_id=current_claude_payload.get("reporter_name") if current_claude_payload else None,
     )
     replacement = result.get("replacement")
+    repair_auth = result.get("repair_auth")
+    if replacement is None and repair_auth is not None:
+        # The hub handed back this user's own invalidated Claude auth — install it so the
+        # owner lands on their own dead account and re-logs in, instead of borrowing.
+        try:
+            repair_blob = json.loads(repair_auth["auth_json"])
+        except Exception:
+            return {"ok": True, "replaced": False, "reason": "repair_auth_unparseable", "triggered_by": ["claude"]}
+        repair_credentials = repair_blob.get("credentials")
+        wrote_keychain = False
+        if platform.system().lower() == "darwin":
+            wrote_keychain = write_claude_keychain_credentials(repair_credentials)
+        if not wrote_keychain:
+            credentials_path = claude_home / ".credentials.json"
+            credentials_path.parent.mkdir(parents=True, exist_ok=True)
+            credentials_path.write_text(json.dumps(repair_credentials, indent=2) + "\n", encoding="utf-8")
+            credentials_path.chmod(0o600)
+        metadata = claude_auth_blob_metadata(repair_auth["auth_json"])
+        known_auth = write_known_auth_state(
+            source="claude",
+            metadata=metadata,
+            known_auth_path=known_auth_path,
+            last_uploaded_digest=metadata["digest"],
+            last_uploaded_account_id=metadata["account_id"],
+            last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+            state_source="repair_auth_from_auth_pool",
+        )
+        return {
+            "ok": True,
+            "replaced": True,
+            "repair": True,
+            "triggered_by": ["claude"],
+            "from_account_id": current_account_id,
+            "to_account_id": repair_auth.get("account_id"),
+            "to_email": repair_auth.get("email"),
+            "to_plan_name": repair_auth.get("plan_name"),
+            "known_auth": known_auth,
+        }
     if replacement is None:
         return {"ok": True, "replaced": False, "reason": result.get("reason") or "no_better_auth_available", "triggered_by": ["claude"]}
 

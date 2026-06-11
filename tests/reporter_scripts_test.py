@@ -1844,7 +1844,7 @@ Reading additional input from stdin...
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "no_better_auth_available")
 
-    def test_maybe_replace_codex_auth_ignores_repair_auth_for_different_account(self):
+    def test_maybe_replace_codex_auth_installs_repair_auth_for_different_account(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             live_auth = base / "auth.json"
@@ -1868,7 +1868,16 @@ Reading additional input from stdin...
                     "digest": "digest-repair",
                     "email": "junjie.zhou@stardust.ai",
                     "plan_name": "Team",
-                    "auth_json": json.dumps({"tokens": {"account_id": "junjie.zhou@stardust.ai"}}),
+                    "auth_json": json.dumps({
+                        "tokens": {
+                            "account_id": "junjie.zhou@stardust.ai",
+                            "id_token": self._jwt({
+                                "email": "junjie.zhou@stardust.ai",
+                                "name": "Junjie",
+                                "https://api.openai.com/auth": {"chatgpt_plan_type": "team"},
+                            }),
+                        },
+                    }),
                     "latest_report": None,
                 },
                 "reason": "uploaded_auth_requires_reauth",
@@ -1883,10 +1892,12 @@ Reading additional input from stdin...
                 )
             installed_account_id = json.loads(live_auth.read_text(encoding="utf-8"))["tokens"]["account_id"]
 
-        self.assertFalse(replacement["replaced"])
-        self.assertEqual(replacement["reason"], "repair_auth_for_different_account")
-        self.assertEqual(replacement["repair_account_id"], "junjie.zhou@stardust.ai")
-        self.assertEqual(installed_account_id, "other")
+        # The owner's own invalidated auth is now installed even when it isn't the
+        # current account, so they land on their dead account and re-login it.
+        self.assertTrue(replacement["replaced"])
+        self.assertTrue(replacement["repair"])
+        self.assertEqual(replacement["to_account_id"], "junjie.zhou@stardust.ai")
+        self.assertEqual(installed_account_id, "junjie.zhou@stardust.ai")
 
     def test_uploaded_invalidated_auths_filters_by_current_viewer_uploads(self):
         status_payload = {

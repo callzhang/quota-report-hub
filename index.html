@@ -650,7 +650,7 @@
         const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
         const fetchLogByAccount = new Map();
         for (const log of (payload.fetch_log || [])) {
-          if (log.reason !== "served") continue;
+          if (log.reason !== "served" && log.reason !== "repair_returned") continue;
           const key = `${log.source}:${log.served_account_id}`;
           const list = fetchLogByAccount.get(key);
           if (!list) {
@@ -682,9 +682,12 @@
                 const flList = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
                 if (!flList || !flList.length) return `<div class="meta">-</div>`;
                 const age = Math.max(0, Math.floor((Date.now() - Date.parse(flList[0].fetched_at || "")) / 1000));
-                return flList.map((fl) =>
-                  `<div class="wrap"><span class="email-tag" style="background:${emailColor(fl.requester_email)}">${fl.requester_email}</span></div>`
-                ).join("") + `<div class="meta wrap">${formatAge(age)}</div>`;
+                return flList.map((fl) => {
+                  const repaired = fl.reason === "repair_returned";
+                  const label = repaired ? `↩ ${fl.requester_email}` : fl.requester_email;
+                  const title = repaired ? ' title="returned to owner for re-login"' : "";
+                  return `<div class="wrap"><span class="email-tag"${title} style="background:${emailColor(fl.requester_email)}">${label}</span></div>`;
+                }).join("") + `<div class="meta wrap">${formatAge(age)}</div>`;
               })()}</td>
             <td>${usageCell(item)}</td>
           </tr>

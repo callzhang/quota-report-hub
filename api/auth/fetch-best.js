@@ -47,6 +47,34 @@ export default async function handler(req, res) {
   });
   const repairAuth = invalidatedEntryToRepairAuth(invalidatedEntry);
 
+  if (repairAuth) {
+    // The owner has a dead auth: hand it back to them for re-login instead of lending
+    // a pool auth. Record it as a "repair_returned" fetch so the dashboard shows the
+    // auth as returned to its owner — confirming the handback.
+    await recordAuthPoolFetch({
+      requesterEmail: authContext.email,
+      requesterId,
+      source,
+      servedEntry: invalidatedEntry,
+      reason: "repair_returned",
+      currentAccountId,
+      currentQuota,
+    });
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(
+      JSON.stringify(withTokenUpgrade({
+        ok: true,
+        requested_by: authContext.email,
+        replacement: null,
+        repair_auth: repairAuth,
+        reason: "uploaded_auth_requires_reauth",
+        message: "Your uploaded auth has been invalidated. Re-login this auth and upload fresh credentials.",
+      }, authContext))
+    );
+    return;
+  }
+
   const uploaded = await hasUploadedAnyHealthyAuth({ uploaderEmail: authContext.email });
   if (!uploaded) {
     await recordAuthPoolFetch({
