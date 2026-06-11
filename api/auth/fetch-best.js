@@ -47,42 +47,19 @@ export default async function handler(req, res) {
   });
   const repairAuth = invalidatedEntryToRepairAuth(invalidatedEntry);
 
-  if (repairAuth) {
-    // The owner has a dead auth: hand it back to them for re-login instead of lending
-    // a pool auth. Record it as a "repair_returned" fetch so the dashboard shows the
-    // auth as returned to its owner — confirming the handback.
-    await recordAuthPoolFetch({
-      requesterEmail: authContext.email,
-      requesterId,
-      source,
-      servedEntry: invalidatedEntry,
-      reason: "repair_returned",
-      currentAccountId,
-      currentQuota,
-    });
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(
-      JSON.stringify(withTokenUpgrade({
-        ok: true,
-        requested_by: authContext.email,
-        replacement: null,
-        repair_auth: repairAuth,
-        reason: "uploaded_auth_requires_reauth",
-        message: "Your uploaded auth has been invalidated. Re-login this auth and upload fresh credentials.",
-      }, authContext))
-    );
-    return;
-  }
-
+  // The handback only applies when the requester has NO healthy auth of their own: as
+  // long as they have at least one valid uploaded auth we serve a replacement and never
+  // return a failed auth. With no healthy auth, hand back their own dead one for
+  // re-login (recorded as "repair_returned" so the dashboard shows it as returned to its
+  // owner), or ask them to upload if they have nothing at all.
   const uploaded = await hasUploadedAnyHealthyAuth({ uploaderEmail: authContext.email });
   if (!uploaded) {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
       requesterId,
       source,
-      servedEntry: null,
-      reason: "no_uploaded_auth",
+      servedEntry: repairAuth ? invalidatedEntry : null,
+      reason: repairAuth ? "repair_returned" : "no_uploaded_auth",
       currentAccountId,
       currentQuota,
     });
@@ -95,8 +72,10 @@ export default async function handler(req, res) {
         requested_by: authContext.email,
         replacement: null,
         repair_auth: repairAuth,
-        reason: "must_upload_auth_to_pool",
-        message: "You must upload at least one healthy Codex or Claude auth to the pool before you can fetch shared auth.",
+        reason: repairAuth ? "uploaded_auth_requires_reauth" : "must_upload_auth_to_pool",
+        message: repairAuth
+          ? "Your uploaded auth has been invalidated. Re-login this auth and upload fresh credentials."
+          : "You must upload at least one healthy Codex or Claude auth to the pool before you can fetch shared auth.",
       }, authContext))
     );
     return;
@@ -121,8 +100,8 @@ export default async function handler(req, res) {
       requesterEmail: authContext.email,
       requesterId,
       source,
-      servedEntry: invalidatedEntry,
-      reason: repairAuth ? "repair_auth_returned" : "no_better_auth_available",
+      servedEntry: null,
+      reason: "no_better_auth_available",
       currentAccountId,
       currentQuota,
     });
@@ -131,11 +110,7 @@ export default async function handler(req, res) {
     res.end(JSON.stringify(withTokenUpgrade({
       ok: true,
       replacement: null,
-      repair_auth: repairAuth,
-      reason: repairAuth ? "uploaded_auth_requires_reauth" : "no_better_auth_available",
-      message: repairAuth
-        ? "Your uploaded auth has been invalidated. Re-login this auth and upload fresh credentials."
-        : undefined,
+      reason: "no_better_auth_available",
     }, authContext)));
     return;
   }
@@ -156,7 +131,6 @@ export default async function handler(req, res) {
     JSON.stringify(withTokenUpgrade({
       ok: true,
       requested_by: authContext.email,
-      repair_auth: repairAuth,
       replacement: {
         source: entry.source,
         account_id: entry.account_id,

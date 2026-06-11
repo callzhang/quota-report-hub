@@ -77,7 +77,7 @@ function mockResponse() {
   };
 }
 
-test("fetch-best prioritizes the owner's repair auth over lending a replacement", async () => {
+test("fetch-best serves a replacement (never a failed auth) when the requester has a valid upload", async () => {
   await withTempEnv(async () => {
     const db = await import(`../lib/db.js?ts=${Date.now()}`);
     const { default: handler } = await import(`../api/auth/fetch-best.js?ts=${Date.now()}`);
@@ -138,8 +138,6 @@ test("fetch-best prioritizes the owner's repair auth over lending a replacement"
       body: {
         source: "codex",
         requester_id: "derek@gpu4",
-        // derek is currently on a borrowed auth, NOT their own dead one — the handback
-        // should still return their dead auth (no longer requires it to be current).
         current_account_id: "borrowed@stardust.ai",
         current_quota: {
           five_h_remaining_percent: -1,
@@ -153,16 +151,13 @@ test("fetch-best prioritizes the owner's repair auth over lending a replacement"
     const payload = JSON.parse(res.body);
 
     assert.equal(res.statusCode, 200);
-    // Owner has a dead auth -> hand it back for re-login; do not lend the healthy one.
-    assert.equal(payload.repair_auth.account_id, "current@stardust.ai");
-    assert.equal(payload.replacement, null);
-    assert.equal(payload.reason, "uploaded_auth_requires_reauth");
+    // derek has a valid uploaded auth, so they get a replacement — never the dead one.
+    assert.equal(payload.replacement.account_id, "healthy@stardust.ai");
+    assert.equal(payload.repair_auth, undefined);
 
-    // The handback is recorded so the dashboard can show it as returned to the owner.
+    // No handback while a valid auth exists; the fetch is recorded as a normal serve.
     const log = await db.authPoolFetchLog({ limit: 5 });
-    const returned = log.find((row) => row.reason === "repair_returned");
-    assert.ok(returned, "expected a repair_returned fetch-log entry");
-    assert.equal(returned.served_account_id, "current@stardust.ai");
-    assert.equal(returned.requester_email, "derek@stardust.ai");
+    assert.ok(!log.some((row) => row.reason === "repair_returned"), "must not hand back a dead auth when a valid one exists");
+    assert.ok(log.some((row) => row.reason === "served"));
   });
 });
