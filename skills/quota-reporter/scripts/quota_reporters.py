@@ -40,6 +40,11 @@ CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CLAUDE_OAUTH_USER_AGENT = "claude-cli (quota-reporter)"
 CLAUDE_TOKEN_REFRESH_SKEW_MS = 120_000
+# Placeholder refresh tokens the hub serves in disabled_refresh_token mode (must match the hub's
+# lib/fetch-best.js). A local auth carrying one of these is access-token-only: never re-upload it
+# (the hub would reject it anyway, and it must not overwrite the real shared refresh token).
+STRIPPED_CODEX_REFRESH_TOKEN = "rt.1." + "A" * 32
+STRIPPED_CLAUDE_REFRESH_TOKEN = "disabled-by-hub-refresh-token"
 # /api/oauth/usage rate-limits the polling itself (429 + a long Retry-After). Persist a
 # backoff deadline so we don't hammer it every 15-minute guard run, and stay polite even
 # after a 200 by not re-polling more often than this.
@@ -1979,6 +1984,21 @@ def sync_current_auth_pool_entry(
     }
 
 
+def auth_json_is_stripped(source: str, auth_json_text: str) -> bool:
+    """True when a local auth blob carries a hub placeholder refresh token (access-token-only),
+    so it must not be re-uploaded into the shared pool."""
+    try:
+        parsed = json.loads(auth_json_text)
+    except Exception:
+        return False
+    if source == "codex":
+        return (parsed.get("tokens") or {}).get("refresh_token") == STRIPPED_CODEX_REFRESH_TOKEN
+    if source == "claude":
+        oauth = (parsed.get("credentials") or {}).get("claudeAiOauth") or {}
+        return oauth.get("refreshToken") == STRIPPED_CLAUDE_REFRESH_TOKEN
+    return False
+
+
 def sync_current_codex_auth_pool(
     auth_pool_url: str,
     auth_pool_user_token: str,
@@ -1988,12 +2008,16 @@ def sync_current_codex_auth_pool(
     if not auth_path.exists():
         return {"ok": True, "uploaded": False, "reason": "missing_auth"}
 
+    auth_json_text = auth_path.read_text(encoding="utf-8")
+    if auth_json_is_stripped("codex", auth_json_text):
+        return {"ok": True, "uploaded": False, "reason": "local_auth_is_at_only"}
+
     metadata = auth_metadata(auth_path)
     return sync_current_auth_pool_entry(
         source="codex",
         auth_pool_url=auth_pool_url,
         auth_pool_user_token=auth_pool_user_token,
-        auth_json_text=auth_path.read_text(encoding="utf-8"),
+        auth_json_text=auth_json_text,
         metadata=metadata,
         known_auth_path=known_auth_path,
     )
@@ -2014,6 +2038,9 @@ def sync_current_claude_auth_pool(
             "uploaded": False,
             "reason": payload.get("error") or "missing_auth",
         }
+
+    if auth_json_is_stripped("claude", blob_text):
+        return {"ok": True, "uploaded": False, "reason": "local_auth_is_at_only"}
 
     metadata = claude_auth_blob_metadata(blob_text)
     result = sync_current_auth_pool_entry(

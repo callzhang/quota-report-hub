@@ -3814,5 +3814,47 @@ Reading additional input from stdin...
         self.assertEqual(result["email"], "derek@stardust.ai")
 
 
+class AtOnlyLocalSyncTests(unittest.TestCase):
+    def test_auth_json_is_stripped_detects_placeholders(self):
+        codex = json.dumps({"tokens": {"refresh_token": quota_reporters.STRIPPED_CODEX_REFRESH_TOKEN, "access_token": "AT"}})
+        claude = json.dumps({"credentials": {"claudeAiOauth": {"refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}})
+        self.assertTrue(quota_reporters.auth_json_is_stripped("codex", codex))
+        self.assertTrue(quota_reporters.auth_json_is_stripped("claude", claude))
+        self.assertFalse(quota_reporters.auth_json_is_stripped("codex", json.dumps({"tokens": {"refresh_token": "rt.1.REAL"}})))
+        self.assertFalse(quota_reporters.auth_json_is_stripped("claude", json.dumps({"credentials": {"claudeAiOauth": {"refreshToken": "REAL"}}})))
+        self.assertFalse(quota_reporters.auth_json_is_stripped("codex", "not json"))
+
+    def test_sync_codex_skips_at_only_local_auth(self):
+        with tempfile.TemporaryDirectory() as d:
+            auth_path = Path(d) / "auth.json"
+            auth_path.write_text(
+                json.dumps({"tokens": {"refresh_token": quota_reporters.STRIPPED_CODEX_REFRESH_TOKEN, "access_token": "AT"}}),
+                encoding="utf-8",
+            )
+            with mock.patch.object(quota_reporters, "sync_current_auth_pool_entry") as upload:
+                result = quota_reporters.sync_current_codex_auth_pool(
+                    "https://hub", "tok", auth_path=auth_path, known_auth_path=Path(d) / "known.json"
+                )
+            self.assertFalse(result["uploaded"])
+            self.assertEqual(result["reason"], "local_auth_is_at_only")
+            upload.assert_not_called()
+
+    def test_sync_claude_skips_at_only_local_auth(self):
+        blob = json.dumps({
+            "schema": "claude_credentials_v1",
+            "account_id": "x",
+            "email": "x@stardust.ai",
+            "credentials": {"claudeAiOauth": {"refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "accessToken": "AT"}},
+        })
+        with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})):
+            with mock.patch.object(quota_reporters, "sync_current_auth_pool_entry") as upload:
+                result = quota_reporters.sync_current_claude_auth_pool(
+                    "https://hub", "tok", claude_home=Path("/tmp/x"), known_auth_path=Path("/tmp/known.json")
+                )
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "local_auth_is_at_only")
+        upload.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
