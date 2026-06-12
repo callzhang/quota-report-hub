@@ -20,6 +20,8 @@ function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", las
     tokens: {
       account_id: accountId,
       id_token: `x.${payload}.y`,
+      access_token: "access-" + accountId,
+      refresh_token: "rt.1.REAL-" + accountId,
     },
   });
 }
@@ -145,6 +147,9 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
         },
       },
     });
+    // at_only_mode on -> the served auth must have its refresh token stripped.
+    await db.setFeatureFlag("at_only_mode", true, "derek@stardust.ai");
+
     const res = mockResponse();
 
     await handler(req, res);
@@ -154,6 +159,13 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     // derek has a valid uploaded auth, so they get a replacement — never the dead one.
     assert.equal(payload.replacement.account_id, "healthy@stardust.ai");
     assert.equal(payload.repair_auth, undefined);
+    assert.equal(payload.at_only_mode, true);
+
+    // The served credential keeps the access token but has a stripped (well-formed) RT.
+    const served = JSON.parse(payload.replacement.auth_json);
+    assert.equal(served.tokens.access_token, "access-healthy-provider");
+    assert.notEqual(served.tokens.refresh_token, "rt.1.REAL-healthy-provider");
+    assert.match(served.tokens.refresh_token, /^rt\.1\./);
 
     // No handback while a valid auth exists; the fetch is recorded as a normal serve.
     const log = await db.authPoolFetchLog({ limit: 5 });

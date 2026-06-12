@@ -1003,3 +1003,17 @@ test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", a
     cleanup();
   }
 });
+
+test("feature flags default off, set, read back, and toggle", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    assert.equal(await mod.getFeatureFlag("at_only_mode", false), false);
+    await mod.setFeatureFlag("at_only_mode", true, "derek@stardust.ai");
+    assert.equal(await mod.getFeatureFlag("at_only_mode", false), true);
+    assert.equal((await mod.allFeatureFlags()).at_only_mode, true);
+    await mod.setFeatureFlag("at_only_mode", false, "derek@stardust.ai");
+    assert.equal(await mod.getFeatureFlag("at_only_mode", false), false);
+  } finally {
+    cleanup();
+  }
+});

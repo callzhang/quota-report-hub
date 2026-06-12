@@ -3,12 +3,13 @@ import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../.
 import {
   bestAuthPoolEntry,
   dbConfigured,
+  getFeatureFlag,
   getInvalidatedUploaderEntry,
   hasUploadedAnyHealthyAuth,
   recordAuthPoolFetch,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
-import { invalidatedEntryToRepairAuth } from "../../lib/fetch-best.js";
+import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch-best.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -125,12 +126,18 @@ export default async function handler(req, res) {
     currentQuota,
   });
 
+  // When at_only_mode is on, strip the refresh token so the borrower can use the access
+  // token but cannot rotate the shared refresh token (the hub refreshes centrally).
+  const atOnlyMode = await getFeatureFlag("at_only_mode", false);
+  const servedAuthJson = atOnlyMode ? stripRefreshToken(entry.auth_json, entry.source) : entry.auth_json;
+
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(
     JSON.stringify(withTokenUpgrade({
       ok: true,
       requested_by: authContext.email,
+      at_only_mode: atOnlyMode,
       replacement: {
         source: entry.source,
         account_id: entry.account_id,
@@ -144,7 +151,7 @@ export default async function handler(req, res) {
         reporter_name: entry.reporter_name,
         hostname: entry.hostname,
         latest_report: entry.report,
-        auth_json: entry.auth_json,
+        auth_json: servedAuthJson,
       },
     }, authContext))
   );

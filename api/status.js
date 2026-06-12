@@ -5,6 +5,7 @@ import {
   authPoolInvalidatedNotifications,
   authPoolQuotaLatest,
   dbConfigured,
+  getFeatureFlag,
 } from "../lib/db.js";
 import { authPoolStatusPayload } from "../lib/reports.js";
 
@@ -30,6 +31,7 @@ export default async function handler(req, res) {
   const dataset = authPoolStatusPayload(entries, reports, new Date().toISOString(), invalidatedStates);
   dataset.fetch_log = fetchLog;
   dataset.viewer_email = authContext.email;
+  dataset.at_only_mode = await getFeatureFlag("at_only_mode", false);
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(withTokenUpgrade(dataset, authContext)));

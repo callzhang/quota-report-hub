@@ -3,10 +3,25 @@ import assert from "node:assert/strict";
 import {
   bearerTokenFromHeaders,
   companyEmailAllowed,
+  isAdminEmail,
   normalizeEmail,
   sendAccessTokenEmail,
   sendAuthInvalidatedEmail,
 } from "../lib/company-auth.js";
+
+test("isAdminEmail reads ADMIN_EMAIL (comma-separated, normalized)", () => {
+  const previous = process.env.ADMIN_EMAIL;
+  process.env.ADMIN_EMAIL = "derek@stardust.ai, boss@stardust.ai";
+  try {
+    assert.equal(isAdminEmail("Derek@Stardust.ai "), true);
+    assert.equal(isAdminEmail("boss@stardust.ai"), true);
+    assert.equal(isAdminEmail("intern@stardust.ai"), false);
+    assert.equal(isAdminEmail(""), false);
+  } finally {
+    if (previous === undefined) delete process.env.ADMIN_EMAIL;
+    else process.env.ADMIN_EMAIL = previous;
+  }
+});
 
 test("normalizeEmail trims and lowercases", () => {
   assert.equal(normalizeEmail(" Derek@Stardust.ai "), "derek@stardust.ai");
