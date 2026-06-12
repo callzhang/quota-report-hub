@@ -8,6 +8,7 @@ import {
   authPoolQuotaLatestForEntry,
   deleteAuthPoolEntry,
   getFeatureFlag,
+  recordPoolHealthSnapshot,
   upsertAuthPoolEntry,
   upsertAuthPoolQuota,
 } from "../lib/db.js";
@@ -313,6 +314,54 @@ export async function processAuthPoolEntry(
   };
 }
 
+const POOL_HEALTH_HARD_ERRORS = new Set([
+  "auth invalidated (token_invalidated)",
+  "auth failed (401 unauthorized)",
+  "claude auth invalid (authentication_error)",
+  "claude auth email unavailable",
+]);
+
+// Aggregate a worker run's per-entry results into one health row per source: how many auths are
+// ok vs hard-dead (RT gone, needs owner re-login) vs other errors, plus central-refresh outcomes.
+// Deleted entries are excluded (they're no longer in the pool).
+export function summarizePoolHealth(items) {
+  const bySource = {};
+  for (const item of items) {
+    if (!item || item.deleted_from_auth_pool) {
+      continue;
+    }
+    const source = item.source || "unknown";
+    const h = bySource[source] || (bySource[source] = {
+      source,
+      total: 0,
+      ok_count: 0,
+      hard_dead_count: 0,
+      other_err_count: 0,
+      central_refresh_attempted: 0,
+      central_refresh_ok: 0,
+      central_refresh_rejected: 0,
+    });
+    h.total++;
+    if (item.status === "ok") {
+      h.ok_count++;
+    } else if (POOL_HEALTH_HARD_ERRORS.has(item.error)) {
+      h.hard_dead_count++;
+    } else {
+      h.other_err_count++;
+    }
+    const refresh = item.claude_refresh;
+    if (refresh && refresh.attempted) {
+      h.central_refresh_attempted++;
+      if (refresh.ok) {
+        h.central_refresh_ok++;
+      } else if (refresh.auth_rejected) {
+        h.central_refresh_rejected++;
+      }
+    }
+  }
+  return bySource;
+}
+
 export async function main() {
   const entries = await authPoolEntries();
   const atOnlyMode = await getFeatureFlag("disabled_refresh_token", false);
@@ -322,7 +371,17 @@ export async function main() {
     items.push(await processAuthPoolEntry(entry, { atOnlyMode }));
   }
 
-  console.log(JSON.stringify({ ok: true, count: items.length, atOnlyMode, items }, null, 2));
+  const health = summarizePoolHealth(items);
+  const capturedAt = new Date().toISOString();
+  for (const snapshot of Object.values(health)) {
+    try {
+      await recordPoolHealthSnapshot({ ...snapshot, captured_at: capturedAt });
+    } catch (error) {
+      console.error("failed to record pool health snapshot:", error?.message || error);
+    }
+  }
+
+  console.log(JSON.stringify({ ok: true, count: items.length, atOnlyMode, health, items }, null, 2));
 }
 
 const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];

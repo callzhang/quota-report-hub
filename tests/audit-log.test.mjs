@@ -1033,3 +1033,20 @@ test("upsertAuthPoolEntry rejects a stripped (placeholder-RT) blob so it can't p
     cleanup();
   }
 });
+
+test("pool health snapshots record and read back in chronological order", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.recordPoolHealthSnapshot({ captured_at: "2026-06-12T00:00:00Z", source: "codex", total: 10, ok_count: 7, hard_dead_count: 3, other_err_count: 0 });
+    await mod.recordPoolHealthSnapshot({ captured_at: "2026-06-12T00:15:00Z", source: "codex", total: 10, ok_count: 8, hard_dead_count: 2, other_err_count: 0, central_refresh_attempted: 2, central_refresh_ok: 1, central_refresh_rejected: 1 });
+    const snaps = await mod.poolHealthSnapshots({ limit: 96 });
+    assert.equal(snaps.length, 2);
+    // poolHealthSnapshots returns oldest-first for charting
+    assert.equal(snaps[0].captured_at, "2026-06-12T00:00:00Z");
+    assert.equal(snaps[0].hard_dead_count, 3);
+    assert.equal(snaps[1].ok_count, 8);
+    assert.equal(snaps[1].central_refresh_ok, 1);
+  } finally {
+    cleanup();
+  }
+});

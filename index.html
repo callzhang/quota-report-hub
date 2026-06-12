@@ -99,6 +99,23 @@
       .switch input:checked + .slider::before { transform: translateX(20px); }
       .switch input:disabled + .slider { opacity: 0.5; cursor: default; }
 
+      .health-rows { display: grid; gap: 12px; }
+      .health-row {
+        display: grid;
+        grid-template-columns: 90px 1fr 1.4fr 130px 1.6fr;
+        align-items: center;
+        gap: 14px;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.5);
+      }
+      @media (max-width: 720px) { .health-row { grid-template-columns: 1fr 1fr; } }
+      .health-row .trend.bad { color: var(--red); font-weight: 600; }
+      .health-row .trend.good { color: var(--green, #1a7f37); font-weight: 600; }
+      .health-row .trend.flat { color: var(--muted); }
+      .health-row .spark { display: block; }
+
       .meta { color: var(--muted); }
       .cards {
         margin-top: 10px;
@@ -408,6 +425,12 @@
         <pre id="token-command" class="token-command mono" hidden></pre>
       </section>
 
+      <section class="panel section" id="health-section" hidden>
+        <h2>Pool health trend</h2>
+        <div class="meta">Per source, from each worker run (~15 min): how many pooled auths are healthy vs hard-dead (refresh token gone — needs the owner to re-login), and central-refresh outcomes. The death spiral is closed when hard-dead stops climbing.</div>
+        <div id="health-rows" class="health-rows"></div>
+      </section>
+
       <section class="panel section">
         <h2>Cloud Auth Entries</h2>
         <div class="table-shell">
@@ -468,6 +491,8 @@
       const flagToggle = document.getElementById("flag-disabled-rt");
       const flagStatus = document.getElementById("flag-disabled-rt-status");
       const flagMessage = document.getElementById("flag-message");
+      const healthSection = document.getElementById("health-section");
+      const healthRows = document.getElementById("health-rows");
       const COOKIE_NAME = "quota_report_hub_token";
       let currentToken = "";
 
@@ -536,6 +561,7 @@
         empty.hidden = true;
         archivedEmpty.hidden = true;
         adminFlagPanel.hidden = true;
+        healthSection.hidden = true;
       }
 
       function formatPercent(value) {
@@ -690,6 +716,7 @@
         applyTokenUpgrade(payload);
         setAuthenticatedView(payload.viewer_email || "unknown");
         renderAdminFlag(payload);
+        renderHealthTrend(payload.health_history);
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
         const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
         const fetchLogByAccount = new Map();
@@ -775,6 +802,41 @@
         return on
           ? "ON · borrowers get access-token-only credentials"
           : "OFF · borrowers get full credentials (including refresh token)";
+      }
+
+      function sparkline(values, color) {
+        if (!values.length) return "";
+        const w = 120, h = 28;
+        const max = Math.max(...values, 1), min = Math.min(...values, 0);
+        const range = max - min || 1;
+        const step = values.length > 1 ? w / (values.length - 1) : 0;
+        const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(h - ((v - min) / range) * h).toFixed(1)}`).join(" ");
+        return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/></svg>`;
+      }
+
+      function renderHealthTrend(history) {
+        if (!history || !history.length) { healthSection.hidden = true; return; }
+        healthSection.hidden = false;
+        const bySource = {};
+        for (const s of history) (bySource[s.source] = bySource[s.source] || []).push(s);
+        healthRows.innerHTML = Object.entries(bySource).map(([source, series]) => {
+          const latest = series[series.length - 1];
+          const first = series[0];
+          const deadSeries = series.map((s) => s.hard_dead_count);
+          const delta = latest.hard_dead_count - first.hard_dead_count;
+          const trendLabel = delta === 0 ? "flat" : (delta > 0 ? `▲${delta}` : `▼${Math.abs(delta)}`);
+          const trendClass = delta > 0 ? "bad" : (delta < 0 ? "good" : "flat");
+          const crOk = series.reduce((a, s) => a + s.central_refresh_ok, 0);
+          const crRej = series.reduce((a, s) => a + s.central_refresh_rejected, 0);
+          return `
+            <div class="health-row">
+              <div>${sourceTag(source)}</div>
+              <div class="wrap"><strong>${latest.ok_count}/${latest.total}</strong> healthy</div>
+              <div class="wrap">${latest.hard_dead_count} hard-dead · <span class="trend ${trendClass}">${trendLabel}</span> <span class="meta">/ ${series.length} runs</span></div>
+              <div>${sparkline(deadSeries, trendClass === "good" ? "var(--green, #1a7f37)" : "var(--red)")}</div>
+              <div class="meta wrap">central refresh: ${crOk} ok · ${crRej} dead-RT</div>
+            </div>`;
+        }).join("");
       }
 
       function renderAdminFlag(payload) {

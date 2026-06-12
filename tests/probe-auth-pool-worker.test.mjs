@@ -440,3 +440,26 @@ test("processAuthPoolEntry keeps first 401 probe in the pool", async () => {
   assert.equal(quotaReports.length, 1);
   assert.equal(deletions.length, 0);
 });
+
+test("summarizePoolHealth aggregates per-source health and central-refresh outcomes", async () => {
+  const { summarizePoolHealth } = await loadWorkerModule();
+  const items = [
+    { source: "codex", status: "ok" },
+    { source: "codex", status: "error", error: "auth failed (401 unauthorized)" },
+    { source: "codex", status: "error", error: "something transient" },
+    { source: "codex", status: "ok", deleted_from_auth_pool: true }, // excluded from the snapshot
+    { source: "claude", status: "ok", claude_refresh: { attempted: true, ok: true } },
+    { source: "claude", status: "error", error: "claude auth invalid (authentication_error)", claude_refresh: { attempted: true, ok: false, auth_rejected: true } },
+  ];
+  const health = summarizePoolHealth(items);
+  assert.equal(health.codex.total, 3);
+  assert.equal(health.codex.ok_count, 1);
+  assert.equal(health.codex.hard_dead_count, 1);
+  assert.equal(health.codex.other_err_count, 1);
+  assert.equal(health.claude.total, 2);
+  assert.equal(health.claude.ok_count, 1);
+  assert.equal(health.claude.hard_dead_count, 1);
+  assert.equal(health.claude.central_refresh_attempted, 2);
+  assert.equal(health.claude.central_refresh_ok, 1);
+  assert.equal(health.claude.central_refresh_rejected, 1);
+});

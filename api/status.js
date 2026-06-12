@@ -6,6 +6,7 @@ import {
   authPoolQuotaLatest,
   dbConfigured,
   getFeatureFlag,
+  poolHealthSnapshots,
 } from "../lib/db.js";
 import { authPoolStatusPayload } from "../lib/reports.js";
 import { isAdminEmail } from "../lib/company-auth.js";
@@ -23,14 +24,16 @@ export default async function handler(req, res) {
     res.end(JSON.stringify(withTokenUpgrade(authPoolStatusPayload([], []), authContext)));
     return;
   }
-  const [entries, reports, invalidatedStates, fetchLog] = await Promise.all([
+  const [entries, reports, invalidatedStates, fetchLog, healthHistory] = await Promise.all([
     authPoolEntrySummaries(),
     authPoolQuotaLatest(),
     authPoolInvalidatedNotifications(),
     authPoolFetchLog({ limit: 50 }),
+    poolHealthSnapshots({ limit: 96 }),
   ]);
   const dataset = authPoolStatusPayload(entries, reports, new Date().toISOString(), invalidatedStates);
   dataset.fetch_log = fetchLog;
+  dataset.health_history = healthHistory;
   dataset.viewer_email = authContext.email;
   dataset.disabled_refresh_token = await getFeatureFlag("disabled_refresh_token", false);
   dataset.is_admin = isAdminEmail(authContext.email);
