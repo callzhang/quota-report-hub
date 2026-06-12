@@ -149,3 +149,36 @@ expire with no way to refresh.
 - Applies to the pooled subscription auths (codex chatgpt + claude.ai). API-key / setup-token
   paths are out of scope (different billing / scope; see the setup-token research — rejected for
   pooling).
+
+## Implementation status — 2026-06-12
+
+**Shipped (committed + pushed to main, all behind the default-off `at_only_mode` flag):**
+- **Flag infra + kill switch** (commit 91a4bd2): `feature_flags` table + `getFeatureFlag`/
+  `setFeatureFlag`/`allFeatureFlags` (lib/db.js); `isAdminEmail` via `ADMIN_EMAIL` env
+  (lib/company-auth.js); admin-gated `POST /api/admin/flags` (403 for non-admins); flag
+  surfaced in `/api/status`.
+- **Phase 3 — AT-only serve** (commit 91a4bd2): `stripRefreshToken` (lib/fetch-best.js);
+  `fetch-best` strips the RT when the flag is on (codex → well-formed `rt.1.…` placeholder;
+  claude → placeholder), keeping the real AT.
+- **Phase 1 — central refresh** (commit eb9dc3f): `lib/token-refresh.js` (server-side
+  claude/codex refresh + `applyRefreshToBlob` + `accessTokenMsUntilExpiry`); the worker
+  proactively rotates any claude AT within 30 min of expiry and persists it to the pool when
+  the flag is on. Codex was already refreshed centrally via the probe's `refresh_capture`.
+
+**End-to-end behaviour once an admin flips the flag on:** worker keeps pool ATs fresh →
+fetch-best serves AT-only → borrowers run on the AT → when a borrowed AT expires the dummy RT
+can't refresh, so the probe reports non-`ok`, `source_needs_replacement` returns True, and the
+guard re-fetches a fresh AT-only auth the worker has kept live. **The pool death-spiral is
+closed for borrowers without any further client change.**
+
+**Deliberately deferred (optimizations / hardening, not correctness):**
+- **Phase 2 proactive re-fetch** — the reactive re-fetch above already gives correctness; the
+  proactive version only removes the brief between-runs window where a just-expired borrowed AT
+  fails. Deferred to avoid rushing a real-auth-touching client change.
+- **Phase 4 owner local RT strip** — deferred *by design*: stripping the owner's RT makes the
+  hub the sole refresher for that account too, trading robustness for symmetry. Phases 1–3
+  already stop borrowers from killing the pool; owners self-refreshing is harmless.
+
+**Deployment action required (manual):** set `ADMIN_EMAIL=derek@stardust.ai` in the Vercel
+project env so the admin flag endpoint recognises the admin. The flag stays off until an admin
+POSTs `{ "at_only_mode": true }` to `/api/admin/flags`.
