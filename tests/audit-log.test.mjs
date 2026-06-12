@@ -1017,3 +1017,19 @@ test("feature flags default off, set, read back, and toggle", async () => {
     cleanup();
   }
 });
+
+test("upsertAuthPoolEntry rejects a stripped (placeholder-RT) blob so it can't poison the pool", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const dummyCodex = JSON.stringify({ tokens: { account_id: "x@stardust.ai", refresh_token: "rt.1." + "A".repeat(32), access_token: "AT" } });
+    const codexResult = await mod.upsertAuthPoolEntry({ source: "codex", auth_json: dummyCodex, uploader_email: "x@stardust.ai" });
+    assert.equal(codexResult.rejected, true);
+    assert.equal(codexResult.reason, "stripped_refresh_token");
+
+    const dummyClaude = JSON.stringify({ credentials: { claudeAiOauth: { refreshToken: "disabled-by-hub-refresh-token", accessToken: "AT" } } });
+    const claudeResult = await mod.upsertAuthPoolEntry({ source: "claude", auth_json: dummyClaude, uploader_email: "x@stardust.ai" });
+    assert.equal(claudeResult.rejected, true);
+  } finally {
+    cleanup();
+  }
+});

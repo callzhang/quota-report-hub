@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { invalidatedEntryToRepairAuth, repairAuthOnlyPayload, stripRefreshToken } from "../lib/fetch-best.js";
+import { invalidatedEntryToRepairAuth, repairAuthOnlyPayload, stripRefreshToken, isStrippedRefreshToken } from "../lib/fetch-best.js";
 
 test("stripRefreshToken replaces the codex refresh token with a well-formed placeholder", () => {
   const blob = JSON.stringify({ tokens: { access_token: "AT", refresh_token: "rt.1.REALSECRET", account_id: "x" }, last_refresh: "t" });
@@ -20,6 +20,17 @@ test("stripRefreshToken replaces the claude refresh token, keeping the access to
 test("stripRefreshToken leaves malformed / null blobs untouched", () => {
   assert.equal(stripRefreshToken("not json", "codex"), "not json");
   assert.equal(stripRefreshToken(null, "codex"), null);
+});
+
+test("isStrippedRefreshToken detects hub placeholder RTs and ignores real ones", () => {
+  const codexDummy = stripRefreshToken(JSON.stringify({ tokens: { refresh_token: "rt.1.REAL", access_token: "AT" } }), "codex");
+  const claudeDummy = stripRefreshToken(JSON.stringify({ credentials: { claudeAiOauth: { refreshToken: "REAL", accessToken: "AT" } } }), "claude");
+  assert.equal(isStrippedRefreshToken(codexDummy, "codex"), true);
+  assert.equal(isStrippedRefreshToken(claudeDummy, "claude"), true);
+  assert.equal(isStrippedRefreshToken(JSON.stringify({ tokens: { refresh_token: "rt.1.REALSECRET" } }), "codex"), false);
+  assert.equal(isStrippedRefreshToken(JSON.stringify({ credentials: { claudeAiOauth: { refreshToken: "REAL" } } }), "claude"), false);
+  assert.equal(isStrippedRefreshToken("not json", "codex"), false);
+  assert.equal(isStrippedRefreshToken(null, "claude"), false);
 });
 
 test("fetch-best exposes invalidated uploader auth as repair_auth, not replacement", () => {
