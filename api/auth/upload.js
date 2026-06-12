@@ -1,6 +1,6 @@
 import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
-import { dbConfigured, upsertAuthPoolEntry } from "../../lib/db.js";
+import { dbConfigured, getFeatureFlag, upsertAuthPoolEntry } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 
 export default async function handler(req, res) {
@@ -44,7 +44,10 @@ export default async function handler(req, res) {
     source: String(body.source),
     uploader_email: authContext.email,
   });
+  // Surface the flag so a client that just uploaded its real RT knows to go AT-only locally
+  // (Phase 4): strip its own refresh token once the hub holds it.
+  const disabledRefreshToken = await getFeatureFlag("disabled_refresh_token", false);
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(withTokenUpgrade({ ok: true, entry }, authContext)));
+  res.end(JSON.stringify(withTokenUpgrade({ ok: true, entry, disabled_refresh_token: disabledRefreshToken }, authContext)));
 }

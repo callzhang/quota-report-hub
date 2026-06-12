@@ -3921,5 +3921,59 @@ class Phase2NearExpiryTests(unittest.TestCase):
         self.assertEqual(result["reason"], "healthy")
 
 
+class Phase4StripLocalRtTests(unittest.TestCase):
+    META = {"account_id": "x", "digest": "dg", "email": "x@stardust.ai", "name": None,
+            "plan_name": None, "auth_last_refresh": None, "auth_path": "/tmp/auth.json"}
+
+    def test_strip_local_codex_refresh_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            auth = Path(d) / "auth.json"
+            auth.write_text(json.dumps({"tokens": {"access_token": "AT", "refresh_token": "rt.1.REAL", "account_id": "x"}}), encoding="utf-8")
+            result = quota_reporters.strip_local_codex_refresh_token(auth)
+            self.assertTrue(result["stripped"])
+            blob = json.loads(auth.read_text(encoding="utf-8"))
+            self.assertEqual(blob["tokens"]["access_token"], "AT")
+            self.assertEqual(blob["tokens"]["refresh_token"], quota_reporters.STRIPPED_CODEX_REFRESH_TOKEN)
+            self.assertFalse(quota_reporters.strip_local_codex_refresh_token(auth)["stripped"])
+
+    def test_strip_local_claude_refresh_token(self):
+        creds = {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "REAL"}}
+        with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "keychain")):
+            with mock.patch.object(quota_reporters, "persist_claude_credentials", return_value={"keychain": True, "file": False}) as persist:
+                result = quota_reporters.strip_local_claude_refresh_token(Path("/x"))
+        self.assertTrue(result["stripped"])
+        persisted = persist.call_args.args[0]
+        self.assertEqual(persisted["claudeAiOauth"]["refreshToken"], quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN)
+        self.assertEqual(persisted["claudeAiOauth"]["accessToken"], "AT")
+
+    def test_sync_codex_strips_rt_after_upload_when_flag_on(self):
+        with tempfile.TemporaryDirectory() as d:
+            auth = Path(d) / "auth.json"
+            auth.write_text(json.dumps({"tokens": {"access_token": "AT", "refresh_token": "rt.1.REAL", "account_id": "x"}}), encoding="utf-8")
+            known = Path(d) / "known.json"
+            known.write_text(json.dumps({"sources": {"codex": {"state_source": "owner_local", "account_id": "x"}}}), encoding="utf-8")
+            with mock.patch.object(quota_reporters, "auth_metadata", return_value=self.META):
+                with mock.patch.object(quota_reporters, "sync_current_auth_pool_entry",
+                                       return_value={"ok": True, "uploaded": True, "entry": {"disabled_refresh_token": True}}):
+                    result = quota_reporters.sync_current_codex_auth_pool(
+                        "https://hub", "tok", auth_path=auth, known_auth_path=known)
+            self.assertTrue(result["local_refresh_token_stripped"]["stripped"])
+            self.assertEqual(json.loads(auth.read_text(encoding="utf-8"))["tokens"]["refresh_token"], quota_reporters.STRIPPED_CODEX_REFRESH_TOKEN)
+            self.assertEqual(json.loads(known.read_text(encoding="utf-8"))["sources"]["codex"]["state_source"], "fetched_from_auth_pool")
+
+    def test_sync_codex_does_not_strip_when_flag_off(self):
+        with tempfile.TemporaryDirectory() as d:
+            auth = Path(d) / "auth.json"
+            auth.write_text(json.dumps({"tokens": {"access_token": "AT", "refresh_token": "rt.1.REAL", "account_id": "x"}}), encoding="utf-8")
+            known = Path(d) / "known.json"
+            with mock.patch.object(quota_reporters, "auth_metadata", return_value=self.META):
+                with mock.patch.object(quota_reporters, "sync_current_auth_pool_entry",
+                                       return_value={"ok": True, "uploaded": True, "entry": {"disabled_refresh_token": False}}):
+                    result = quota_reporters.sync_current_codex_auth_pool(
+                        "https://hub", "tok", auth_path=auth, known_auth_path=known)
+            self.assertNotIn("local_refresh_token_stripped", result)
+            self.assertEqual(json.loads(auth.read_text(encoding="utf-8"))["tokens"]["refresh_token"], "rt.1.REAL")
+
+
 if __name__ == "__main__":
     unittest.main()

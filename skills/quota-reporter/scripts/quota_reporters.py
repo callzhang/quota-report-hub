@@ -2047,6 +2047,67 @@ def fetched_auth_near_expiry(
     return expiry - now <= skew_seconds
 
 
+def strip_local_codex_refresh_token(auth_path: Path = SOURCE_AUTH_PATH) -> dict:
+    """Replace the local codex refresh token with the hub placeholder so this CLI runs AT-only
+    and never rotates the shared refresh token. The hub already holds the real RT (just
+    uploaded). Written atomically via a temp file + replace."""
+    if not auth_path.exists():
+        return {"stripped": False, "reason": "missing_auth"}
+    try:
+        blob = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"stripped": False, "reason": "unparseable"}
+    tokens = blob.get("tokens")
+    if not isinstance(tokens, dict) or not tokens.get("access_token"):
+        return {"stripped": False, "reason": "no_access_token"}
+    if tokens.get("refresh_token") == STRIPPED_CODEX_REFRESH_TOKEN:
+        return {"stripped": False, "reason": "already_stripped"}
+    tokens["refresh_token"] = STRIPPED_CODEX_REFRESH_TOKEN
+    blob["tokens"] = tokens
+    tmp_path = auth_path.with_name(auth_path.name + ".tmp")
+    tmp_path.write_text(json.dumps(blob), encoding="utf-8")
+    tmp_path.chmod(0o600)
+    tmp_path.replace(auth_path)
+    return {"stripped": True}
+
+
+def strip_local_claude_refresh_token(claude_home: Path = CLAUDE_HOME) -> dict:
+    """Replace the local claude refresh token with the hub placeholder (AT-only). Reuses the
+    hardened keychain/file writer so the keychain entry can't be corrupted; on any write
+    failure the original credentials are left untouched (returns stripped=False)."""
+    credentials, source = read_claude_oauth_credentials(claude_home)
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    if not oauth.get("accessToken"):
+        return {"stripped": False, "reason": "no_credentials"}
+    if oauth.get("refreshToken") == STRIPPED_CLAUDE_REFRESH_TOKEN:
+        return {"stripped": False, "reason": "already_stripped"}
+    oauth["refreshToken"] = STRIPPED_CLAUDE_REFRESH_TOKEN
+    credentials["claudeAiOauth"] = oauth
+    written = persist_claude_credentials(credentials, claude_home, source)
+    return {"stripped": bool(written.get("keychain") or written.get("file")), "persisted": written}
+
+
+def set_known_auth_state_source(source: str, known_auth_path: Path, state_source: str) -> bool:
+    """Flip the recorded state_source for a source — used after an owner strips its local RT so
+    the near-expiry proactive-refresh path (fetched_auth_near_expiry) applies to it too."""
+    state = read_known_auth_state(known_auth_path)
+    source_state = (state.get("sources") or {}).get(source)
+    if not isinstance(source_state, dict):
+        return False
+    source_state["state_source"] = state_source
+    state["sources"][source] = source_state
+    known_auth_path.parent.mkdir(parents=True, exist_ok=True)
+    known_auth_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    known_auth_path.chmod(0o600)
+    return True
+
+
+def upload_reported_disabled_refresh_token(sync_result: dict) -> bool:
+    """The /api/auth/upload response carries the hub's disabled_refresh_token flag; read it
+    from the sync result so the client knows whether to go AT-only locally (Phase 4)."""
+    return bool((sync_result.get("entry") or {}).get("disabled_refresh_token"))
+
+
 def sync_current_codex_auth_pool(
     auth_pool_url: str,
     auth_pool_user_token: str,
@@ -2061,7 +2122,7 @@ def sync_current_codex_auth_pool(
         return {"ok": True, "uploaded": False, "reason": "local_auth_is_at_only"}
 
     metadata = auth_metadata(auth_path)
-    return sync_current_auth_pool_entry(
+    result = sync_current_auth_pool_entry(
         source="codex",
         auth_pool_url=auth_pool_url,
         auth_pool_user_token=auth_pool_user_token,
@@ -2069,6 +2130,15 @@ def sync_current_codex_auth_pool(
         metadata=metadata,
         known_auth_path=known_auth_path,
     )
+    # Phase 4: once the hub holds our real RT (just uploaded) and reports disabled_refresh_token
+    # mode, strip the local RT so this owner also runs AT-only — its CLI can no longer rotate
+    # the shared RT — and mark it fetched so the near-expiry path keeps its AT fresh.
+    if result.get("uploaded") and upload_reported_disabled_refresh_token(result):
+        strip = strip_local_codex_refresh_token(auth_path)
+        result["local_refresh_token_stripped"] = strip
+        if strip.get("stripped"):
+            set_known_auth_state_source("codex", known_auth_path, "fetched_from_auth_pool")
+    return result
 
 
 def sync_current_claude_auth_pool(
@@ -2099,6 +2169,14 @@ def sync_current_claude_auth_pool(
         metadata=metadata,
         known_auth_path=known_auth_path,
     )
+    # Phase 4: once the hub holds our real RT (just uploaded) and reports disabled_refresh_token
+    # mode, strip the local RT so this owner also runs AT-only and mark it fetched so the
+    # near-expiry path keeps its AT fresh.
+    if result.get("uploaded") and upload_reported_disabled_refresh_token(result):
+        strip = strip_local_claude_refresh_token(claude_home)
+        result["local_refresh_token_stripped"] = strip
+        if strip.get("stripped"):
+            set_known_auth_state_source("claude", known_auth_path, "fetched_from_auth_pool")
     return result
 
 
