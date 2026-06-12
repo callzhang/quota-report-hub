@@ -3617,6 +3617,40 @@ Reading additional input from stdin...
         self.assertFalse(out["ok"])
         self.assertFalse(out["auth_rejected"])
 
+    def test_write_claude_keychain_credentials_verifies_round_trip(self):
+        creds = {"claudeAiOauth": {"accessToken": "A1", "refreshToken": "R1"}}
+        compact = json.dumps(creds, separators=(",", ":"))
+        write_ok = mock.Mock(returncode=0, stdout="", stderr="")
+        read_ok = mock.Mock(returncode=0, stdout=compact + "\n", stderr="")
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"):
+            with mock.patch.dict(os.environ, {"USER": "tester"}):
+                with mock.patch("quota_reporters.subprocess.run", side_effect=[write_ok, read_ok]) as run:
+                    self.assertTrue(quota_reporters.write_claude_keychain_credentials(creds))
+        # the value written must be compact with no trailing whitespace
+        written_value = run.call_args_list[0].args[0][-1]
+        self.assertEqual(written_value, compact)
+        self.assertNotIn("\n", written_value)
+
+    def test_write_claude_keychain_credentials_fails_on_corrupt_readback(self):
+        creds = {"claudeAiOauth": {"accessToken": "A1", "refreshToken": "R1"}}
+        write_ok = mock.Mock(returncode=0, stdout="", stderr="")
+        read_hex = mock.Mock(returncode=0, stdout="7b226d63704f4175", stderr="")  # hex, unparseable
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"):
+            with mock.patch.dict(os.environ, {"USER": "tester"}):
+                with mock.patch("quota_reporters.subprocess.run", side_effect=[write_ok, read_hex]):
+                    self.assertFalse(quota_reporters.write_claude_keychain_credentials(creds))
+
+    def test_persist_claude_credentials_writes_file_on_non_darwin(self):
+        creds = {"claudeAiOauth": {"accessToken": "A1", "refreshToken": "R1"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with mock.patch.object(quota_reporters.sys, "platform", "linux"):
+                written = quota_reporters.persist_claude_credentials(creds, home, "credentials_file")
+            self.assertFalse(written["keychain"])
+            self.assertTrue(written["file"])
+            data = json.loads((home / ".credentials.json").read_text())
+            self.assertEqual(data["claudeAiOauth"]["accessToken"], "A1")
+
     def test_ensure_fresh_claude_access_token_refreshes_and_persists(self):
         creds = {"claudeAiOauth": {"accessToken": "old", "refreshToken": "r", "expiresAt": 1000}}
         with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "keychain")):

@@ -893,37 +893,71 @@ def refresh_claude_oauth_token(refresh_token: str, scopes: list | None = None) -
 
 
 def write_claude_keychain_credentials(credentials: dict) -> bool:
+    """Write the Claude credential blob to the macOS keychain, then verify the write
+    round-trips to readable JSON.
+
+    The value MUST be compact with no trailing whitespace: a trailing newline (or any
+    control byte) makes `security` store the value as binary, which it then returns
+    hex-encoded and Claude Code fails to parse — silently logging the user out. We write
+    compact JSON and read it back to confirm it parses and still carries the same token;
+    if not, we report failure so the caller can fall back to the file.
+    """
     if sys.platform != "darwin":
         return False
     user = os.environ.get("USER") or getpass.getuser() or ""
     if not user:
         return False
+    blob = json.dumps(credentials, separators=(",", ":"))
     result = subprocess.run(
         ["security", "add-generic-password", "-U", "-s", CLAUDE_KEYCHAIN_SERVICE,
-         "-a", user, "-w", json.dumps(credentials)],
+         "-a", user, "-w", blob],
         capture_output=True,
         text=True,
         check=False,
     )
-    return result.returncode == 0
+    if result.returncode != 0:
+        return False
+    check = subprocess.run(
+        ["security", "find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-a", user, "-w"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        parsed = json.loads((check.stdout or "").strip())
+    except Exception:
+        return False  # hex-corrupted / unreadable round-trip
+    want = (credentials.get("claudeAiOauth") or {}).get("accessToken")
+    got = (parsed.get("claudeAiOauth") or {}).get("accessToken")
+    return bool(want) and got == want
+
+
+def write_claude_credentials_file(credentials: dict, claude_home: Path) -> bool:
+    """Write the Claude credential blob to ~/.claude/.credentials.json (the credential
+    store on Linux/Windows, and the macOS fallback when the keychain write fails)."""
+    try:
+        path = claude_home / ".credentials.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(credentials, indent=2) + "\n", encoding="utf-8")
+        try:
+            path.chmod(0o600)  # best-effort; no-op / may fail on Windows
+        except Exception:
+            pass
+        return True
+    except Exception:
+        return False
 
 
 def persist_claude_credentials(credentials: dict, claude_home: Path, source: str) -> dict:
-    """Persist refreshed credentials back to their source (keychain on macOS, or the
-    credentials file). Refresh rotates the refresh token, so a successful refresh MUST
-    be persisted or the stored auth is left pointing at a dead token."""
+    """Persist refreshed credentials back to their store. Refresh rotates the refresh
+    token, so a successful refresh MUST be persisted or the stored auth points at a dead
+    token. macOS keychain when available (verified); otherwise the credentials file
+    (Linux/Windows, or macOS fallback)."""
     written = {"keychain": False, "file": False}
-    if source == "keychain" or (source != "credentials_file" and sys.platform == "darwin"):
+    if sys.platform == "darwin" and source != "credentials_file":
         written["keychain"] = write_claude_keychain_credentials(credentials)
-    if source == "credentials_file" or not written["keychain"]:
-        try:
-            path = claude_home / ".credentials.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(credentials, indent=2) + "\n", encoding="utf-8")
-            path.chmod(0o600)
-            written["file"] = True
-        except Exception:
-            pass
+    if not written["keychain"]:
+        written["file"] = write_claude_credentials_file(credentials, claude_home)
     return written
 
 
