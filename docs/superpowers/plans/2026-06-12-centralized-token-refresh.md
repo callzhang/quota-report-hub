@@ -189,3 +189,33 @@ endpoint also 403s them. No need to hand-craft the API call.
 
 **Deployment status:** `ADMIN_EMAIL=derek@stardust.ai` is set in Vercel production (done). The
 flag stays off until an admin flips the dashboard toggle (or POSTs the endpoint directly).
+
+## Update — 2026-06-12: all phases shipped + poison guard (flag is ON)
+
+The admin turned `disabled_refresh_token` ON. Verifying it surfaced a live risk that is now fixed,
+and Phases 2 & 4 were completed.
+
+**Server-side poison guard (critical, deployed):** a borrower running AT-only holds a placeholder
+RT; its guard would re-upload that blob and overwrite the pool's real shared RT, leaving the hub
+unable to refresh centrally and killing the entry for everyone. `upsertAuthPoolEntry` now rejects
+any upload whose RT is a hub placeholder (`isStrippedRefreshToken`). Client `sync_current_*` also
+skips uploading an AT-only local auth (`local_auth_is_at_only`).
+
+**Phase 1 live-verified:** a manually-triggered worker run logged `atOnlyMode: true` and correctly
+attempted central claude refresh (the few failures were pool accounts whose RT was already dead from
+the historical spiral — mechanism correct, data stale).
+
+**Phase 2 (shipped):** `fetched_auth_near_expiry` (claude `expiresAt` / codex id_token `exp` +
+state_source) → the guard asks fetch-best's new `refresh_current` mode to refresh the SAME account
+in place (worker-kept-fresh, stripped), instead of switching accounts or waiting for the reactive
+path.
+
+**Phase 4 (shipped):** `/api/auth/upload` returns the flag; after a successful upload in
+disabled_refresh_token mode the guard strips the local RT (hardened claude keychain/file writer;
+atomic codex temp-file replace) and marks the source `fetched_from_auth_pool`, so the owner becomes
+AT-only and the Phase 2 path keeps its AT fresh. Flag off → nothing is stripped.
+
+**Owner-impact note:** with the flag ON, each uploader's guard (after it self-updates from main)
+will strip its own local RT on the next successful upload. The owner's CLI then runs access-token-
+only and relies on the hub for fresh tokens; to fully log out / rotate, re-login normally (which
+writes a fresh real RT, re-uploaded, and the cycle repeats).
