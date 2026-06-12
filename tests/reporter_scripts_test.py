@@ -2520,7 +2520,7 @@ Reading additional input from stdin...
         self.assertEqual(result["notifications"]["claude"]["reason"], "not_replaced")
         self.assertEqual(result["notifications"]["uploaded_invalidated_auths"]["reason"], "no_uploaded_invalidated_auths")
 
-    def test_run_guard_warns_and_notifies_when_scheduler_is_missing(self):
+    def test_run_guard_warns_and_notifies_when_scheduler_repair_fails(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
@@ -2544,7 +2544,7 @@ Reading additional input from stdin...
             "auth_pool_url": "https://quota-report-hub.vercel.app",
             "auth_pool_user_token": "qrp_token",
         }):
-            with mock.patch.object(quota_guard, "check_scheduler_registration", return_value=scheduler_warning):
+            with mock.patch.object(quota_guard, "ensure_scheduler_registration", return_value=scheduler_warning):
                 with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
                     with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
                         with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
@@ -2560,6 +2560,76 @@ Reading additional input from stdin...
         self.assertEqual(result["warnings"]["scheduler"], scheduler_warning)
         self.assertTrue(result["notifications"]["scheduler"]["shown"])
         self.assertIn("install_quota_guard.py", result["notifications"]["scheduler"]["message"])
+
+    def test_ensure_scheduler_registration_installs_missing_launchd_job(self):
+        missing = {
+            "ok": False,
+            "scheduler": "launchd",
+            "reason": "not_registered",
+            "label": "com.openai.quota-guard",
+        }
+        registered = {
+            "ok": True,
+            "scheduler": "launchd",
+            "label": "com.openai.quota-guard",
+        }
+
+        with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+            with mock.patch.object(quota_guard, "check_scheduler_registration", side_effect=[missing, registered]) as check:
+                with mock.patch.object(quota_guard, "write_plist") as write_plist:
+                    with mock.patch.object(quota_guard, "load_launch_agent") as load_launch_agent:
+                        result = quota_guard.ensure_scheduler_registration({"auth_pool_url": "https://hub.example.com"})
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["installed"])
+        self.assertEqual(result["initial_check"], missing)
+        self.assertEqual(check.call_count, 2)
+        write_plist.assert_called_once()
+        load_launch_agent.assert_called_once()
+
+    def test_ensure_scheduler_registration_installs_missing_linux_cron(self):
+        missing = {"ok": False, "scheduler": "cron", "reason": "not_registered"}
+        registered = {"ok": True, "scheduler": "cron", "entries": ["@reboot ...", "*/15 ..."]}
+
+        with mock.patch.object(quota_guard.platform, "system", return_value="Linux"):
+            with mock.patch.object(quota_guard, "check_scheduler_registration", side_effect=[missing, registered]):
+                with mock.patch.object(quota_guard, "install_linux_crontab") as install_linux_crontab:
+                    result = quota_guard.ensure_scheduler_registration({})
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["installed"])
+        install_linux_crontab.assert_called_once()
+
+    def test_ensure_scheduler_registration_installs_missing_windows_task(self):
+        missing = {"ok": False, "scheduler": "task_scheduler", "reason": "not_registered"}
+        registered = {"ok": True, "scheduler": "task_scheduler", "task_name": "com.openai.quota-guard"}
+
+        with mock.patch.object(quota_guard.platform, "system", return_value="Windows"):
+            with mock.patch.object(quota_guard, "check_scheduler_registration", side_effect=[missing, registered]):
+                with mock.patch.object(quota_guard, "install_windows_task_scheduler", return_value={"scheduler": "task_scheduler"}) as install_windows:
+                    result = quota_guard.ensure_scheduler_registration({})
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["installed"])
+        install_windows.assert_called_once()
+
+    def test_ensure_scheduler_registration_returns_warning_when_repair_fails(self):
+        missing = {
+            "ok": False,
+            "scheduler": "launchd",
+            "reason": "not_registered",
+            "install_command": "python3 install_quota_guard.py",
+        }
+
+        with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+            with mock.patch.object(quota_guard, "check_scheduler_registration", return_value=missing):
+                with mock.patch.object(quota_guard, "write_plist", side_effect=RuntimeError("boom")):
+                    result = quota_guard.ensure_scheduler_registration({})
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "install_failed")
+        self.assertEqual(result["initial_check"], missing)
+        self.assertIn("boom", result["error"])
 
     def test_run_guard_restarts_but_does_not_notify_after_same_account_auth_refresh(self):
         args = mock.Mock(

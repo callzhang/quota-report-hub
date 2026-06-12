@@ -24,6 +24,10 @@ from install_quota_guard import (
     LABEL as SCHEDULER_LABEL,
     PLIST_PATH as LAUNCH_AGENT_PLIST_PATH,
     WINDOWS_TASK_NAME,
+    install_linux_crontab,
+    install_windows_task_scheduler,
+    load_launch_agent,
+    write_plist,
 )
 from quota_reporters import (
     CLAUDE_HOME,
@@ -502,6 +506,62 @@ def check_scheduler_registration(config: dict | None = None) -> dict:
         return {"ok": True, "scheduler": "task_scheduler", "task_name": WINDOWS_TASK_NAME}
 
     return {"ok": True, "scheduler": "unsupported", "reason": f"unsupported_platform:{system}"}
+
+
+def install_scheduler_registration(config: dict | None = None) -> dict:
+    system = platform.system()
+    python_path = sys.executable or "python3"
+    worker_script = Path(__file__).resolve()
+    if system == "Darwin":
+        write_plist(python_path, worker_script)
+        load_launch_agent()
+        return {
+            "ok": True,
+            "scheduler": "launchd",
+            "label": SCHEDULER_LABEL,
+            "plist_path": str(LAUNCH_AGENT_PLIST_PATH),
+        }
+    if system == "Linux":
+        install_linux_crontab(python_path, worker_script)
+        return {"ok": True, "scheduler": "cron"}
+    if system == "Windows":
+        result = install_windows_task_scheduler(python_path, worker_script)
+        return {"ok": True, **result}
+    return {"ok": True, "scheduler": "unsupported", "reason": f"unsupported_platform:{system}"}
+
+
+def ensure_scheduler_registration(config: dict | None = None) -> dict:
+    initial = check_scheduler_registration(config)
+    if initial.get("ok") is not False:
+        return initial
+
+    try:
+        install_result = install_scheduler_registration(config)
+        verified = check_scheduler_registration(config)
+        if verified.get("ok") is not False:
+            return {
+                **verified,
+                "installed": True,
+                "initial_check": initial,
+                "install_result": install_result,
+            }
+        return {
+            **verified,
+            "ok": False,
+            "reason": verified.get("reason") or "install_verification_failed",
+            "initial_check": initial,
+            "install_result": install_result,
+            "install_command": verified.get("install_command") or initial.get("install_command") or scheduler_install_command(config),
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "scheduler": initial.get("scheduler"),
+            "reason": "install_failed",
+            "initial_check": initial,
+            "error": str(error),
+            "install_command": initial.get("install_command") or scheduler_install_command(config),
+        }
 
 
 def scheduler_warning_message(warning: dict) -> str:
@@ -1428,7 +1488,7 @@ def run_guard(args: argparse.Namespace) -> dict:
     warnings = {}
     scheduler_check = run_guard_step(
         "scheduler_check_failed",
-        lambda: timed_guard_step(timings, "scheduler_check", lambda: check_scheduler_registration(config)),
+        lambda: timed_guard_step(timings, "scheduler_check", lambda: ensure_scheduler_registration(config)),
     )
     if scheduler_check.get("ok") is False:
         warnings["scheduler"] = scheduler_check
