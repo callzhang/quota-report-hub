@@ -2520,6 +2520,47 @@ Reading additional input from stdin...
         self.assertEqual(result["notifications"]["claude"]["reason"], "not_replaced")
         self.assertEqual(result["notifications"]["uploaded_invalidated_auths"]["reason"], "no_uploaded_invalidated_auths")
 
+    def test_run_guard_warns_and_notifies_when_scheduler_is_missing(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=False,
+            no_restart_codex_app_server=False,
+        )
+        scheduler_warning = {
+            "ok": False,
+            "scheduler": "launchd",
+            "reason": "not_registered",
+            "label": "com.openai.quota-guard",
+            "install_command": "python3 /repo/install_quota_guard.py --auth-pool-url https://quota-report-hub.vercel.app",
+        }
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "check_scheduler_registration", return_value=scheduler_warning):
+                with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
+                    with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                        with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                    with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                        with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
+                                            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                                                result = quota_guard.run_guard(args)
+
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[0], "额度守护：定时任务未安装")
+        self.assertEqual(result["warnings"]["scheduler"], scheduler_warning)
+        self.assertTrue(result["notifications"]["scheduler"]["shown"])
+        self.assertIn("install_quota_guard.py", result["notifications"]["scheduler"]["message"])
+
     def test_run_guard_restarts_but_does_not_notify_after_same_account_auth_refresh(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",

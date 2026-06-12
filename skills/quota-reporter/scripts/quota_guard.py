@@ -12,12 +12,19 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
+from install_quota_guard import (
+    CRON_MARKER,
+    LABEL as SCHEDULER_LABEL,
+    PLIST_PATH as LAUNCH_AGENT_PLIST_PATH,
+    WINDOWS_TASK_NAME,
+)
 from quota_reporters import (
     CLAUDE_HOME,
     KNOWN_AUTH_PATH,
@@ -399,6 +406,120 @@ def notify_replacement_success(source: str, replacement: dict) -> dict:
     message = replacement_toast_message(source, replacement)
     shown = show_desktop_notification("额度守护", message)
     return {"shown": shown, "message": message}
+
+
+def scheduler_install_command(config: dict | None = None) -> str:
+    config = config or {}
+    command = [sys.executable or "python3", str(Path(__file__).with_name("install_quota_guard.py"))]
+    if config.get("auth_pool_url"):
+        command.extend(["--auth-pool-url", str(config["auth_pool_url"])])
+    email = str(config.get("auth_pool_user_email") or "").strip()
+    if email and not email.startswith("your.name@"):
+        command.extend(["--email", email])
+    return shlex.join(command)
+
+
+def check_scheduler_registration(config: dict | None = None) -> dict:
+    system = platform.system()
+    install_command = scheduler_install_command(config)
+    if system == "Darwin":
+        uid = str(os.getuid())
+        service = f"gui/{uid}/{SCHEDULER_LABEL}"
+        if not LAUNCH_AGENT_PLIST_PATH.exists():
+            return {
+                "ok": False,
+                "scheduler": "launchd",
+                "reason": "plist_missing",
+                "label": SCHEDULER_LABEL,
+                "plist_path": str(LAUNCH_AGENT_PLIST_PATH),
+                "install_command": install_command,
+            }
+        result = subprocess.run(["launchctl", "print", service], capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            return {
+                "ok": False,
+                "scheduler": "launchd",
+                "reason": "not_registered",
+                "label": SCHEDULER_LABEL,
+                "service": service,
+                "plist_path": str(LAUNCH_AGENT_PLIST_PATH),
+                "detail": (result.stderr or result.stdout or "").strip()[-1000:],
+                "install_command": install_command,
+            }
+        return {
+            "ok": True,
+            "scheduler": "launchd",
+            "label": SCHEDULER_LABEL,
+            "service": service,
+            "plist_path": str(LAUNCH_AGENT_PLIST_PATH),
+        }
+
+    if system == "Linux":
+        result = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False)
+        managed_lines = [line for line in result.stdout.splitlines() if CRON_MARKER in line] if result.returncode == 0 else []
+        if len(managed_lines) < 2:
+            return {
+                "ok": False,
+                "scheduler": "cron",
+                "reason": "not_registered",
+                "detail": (result.stderr or result.stdout or "").strip()[-1000:],
+                "install_command": install_command,
+            }
+        return {"ok": True, "scheduler": "cron", "entries": managed_lines}
+
+    if system == "Windows":
+        powershell_path = shutil.which("powershell") or shutil.which("powershell.exe") or shutil.which("pwsh") or shutil.which("pwsh.exe")
+        if powershell_path is None:
+            return {
+                "ok": False,
+                "scheduler": "task_scheduler",
+                "reason": "powershell_missing",
+                "task_name": WINDOWS_TASK_NAME,
+                "install_command": install_command,
+            }
+        result = subprocess.run(
+            [
+                powershell_path,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                f"Get-ScheduledTask -TaskName {json.dumps(WINDOWS_TASK_NAME)} | Select-Object -ExpandProperty TaskName",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 or WINDOWS_TASK_NAME not in result.stdout:
+            return {
+                "ok": False,
+                "scheduler": "task_scheduler",
+                "reason": "not_registered",
+                "task_name": WINDOWS_TASK_NAME,
+                "detail": (result.stderr or result.stdout or "").strip()[-1000:],
+                "install_command": install_command,
+            }
+        return {"ok": True, "scheduler": "task_scheduler", "task_name": WINDOWS_TASK_NAME}
+
+    return {"ok": True, "scheduler": "unsupported", "reason": f"unsupported_platform:{system}"}
+
+
+def scheduler_warning_message(warning: dict) -> str:
+    scheduler = warning.get("scheduler") or "scheduler"
+    reason = warning.get("reason") or "not_registered"
+    command = warning.get("install_command") or scheduler_install_command({})
+    return (
+        f"未检测到 quota_guard 的 15 分钟定时任务（{scheduler}: {reason}）。"
+        f"请让 agent 运行安装命令修复：{command}"
+    )
+
+
+def notify_scheduler_warning(warning: dict) -> dict:
+    if not warning or warning.get("ok") is not False:
+        return {"shown": False, "reason": "scheduler_ok"}
+    message = scheduler_warning_message(warning)
+    shown = show_desktop_notification("额度守护：定时任务未安装", message)
+    return {"shown": shown, "message": message, "reason": "shown" if shown else "notify_failed"}
 
 
 def codex_binary_for_app_server_restart() -> str | None:
@@ -1138,6 +1259,17 @@ def format_guard_summary(result: dict) -> str:
         note = "" if invalidated.get("shown") else f" [{invalidated.get('reason')}]"
         lines.append("Login required (re-login then rerun): " + "; ".join(labels) + suffix + note)
 
+    warnings = result.get("warnings") or {}
+    if warnings:
+        warning_labels = []
+        scheduler = warnings.get("scheduler")
+        if scheduler:
+            warning_labels.append(f"scheduler {scheduler.get('reason') or 'warning'}")
+        for key in sorted(k for k in warnings.keys() if k != "scheduler"):
+            warning = warnings.get(key) or {}
+            warning_labels.append(f"{key} {warning.get('reason') or 'warning'}")
+        lines.append("Warnings: " + ", ".join(warning_labels))
+
     lines.append("Errors: " + (", ".join(sorted(errors.keys())) if errors else "none"))
     return "\n".join(lines)
 
@@ -1293,6 +1425,14 @@ def run_guard(args: argparse.Namespace) -> dict:
         weekly_threshold_percent = args.weekly_threshold_percent
         guard_errors["config_thresholds"] = guard_exception_result("load_config_thresholds_failed", error)
 
+    warnings = {}
+    scheduler_check = run_guard_step(
+        "scheduler_check_failed",
+        lambda: timed_guard_step(timings, "scheduler_check", lambda: check_scheduler_registration(config)),
+    )
+    if scheduler_check.get("ok") is False:
+        warnings["scheduler"] = scheduler_check
+
     try:
         codex_payload = timed_guard_step(timings, "codex_probe", lambda: current_codex_payload(args.codex_auth_path))
     except Exception as error:
@@ -1411,6 +1551,8 @@ def run_guard(args: argparse.Namespace) -> dict:
     notifications = {}
     if not getattr(args, "no_toast", False):
         def notify_all():
+            if warnings.get("scheduler"):
+                notifications["scheduler"] = notify_scheduler_warning(warnings["scheduler"])
             notifications["codex"] = notify_replacement_success("codex", codex_replacement)
             notifications["claude"] = notify_replacement_success("claude", claude_replacement)
             notifications["uploaded_invalidated_auths"] = notify_uploaded_invalidated_auths(config)
@@ -1434,6 +1576,7 @@ def run_guard(args: argparse.Namespace) -> dict:
         },
         "codex_app_server": codex_app_server,
         "notifications": notifications,
+        "warnings": warnings,
         "errors": guard_errors,
         "timings": timings,
     }
