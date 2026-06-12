@@ -7,11 +7,57 @@ import {
   authPoolEntries,
   authPoolQuotaLatestForEntry,
   deleteAuthPoolEntry,
+  getFeatureFlag,
   upsertAuthPoolEntry,
   upsertAuthPoolQuota,
 } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
+import { refreshClaudeToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
+
+// Refresh a claude access token this far from expiry. The worker runs every ~15 min, so a
+// 30-minute window guarantees the served token always has comfortable life left. Unknown
+// expiry (null) also triggers a refresh.
+const CLAUDE_REFRESH_THRESHOLD_MS = 30 * 60 * 1000;
+
+function claudeRefreshToken(authJsonText) {
+  try {
+    return JSON.parse(authJsonText)?.credentials?.claudeAiOauth?.refreshToken || null;
+  } catch {
+    return null;
+  }
+}
+
+// In at_only_mode the hub is the sole refresher for claude (borrowers hold a stripped RT), so
+// proactively rotate any near-expiry claude AT and persist the rotated tokens to the pool.
+// Returns the (possibly refreshed) auth_json plus a small result for the run report.
+async function refreshClaudeEntryIfNeeded(
+  authJsonText,
+  entry,
+  { refreshClaudeTokenImpl, upsertAuthPoolEntryImpl, nowImpl },
+) {
+  const msLeft = accessTokenMsUntilExpiry(authJsonText, "claude", nowImpl().getTime());
+  if (msLeft !== null && msLeft > CLAUDE_REFRESH_THRESHOLD_MS) {
+    return { authJsonText, result: { attempted: false } };
+  }
+  const refreshToken = claudeRefreshToken(authJsonText);
+  if (!refreshToken) {
+    return { authJsonText, result: { attempted: false, reason: "no_refresh_token" } };
+  }
+  const refreshed = await refreshClaudeTokenImpl(refreshToken);
+  if (!refreshed.ok) {
+    return { authJsonText, result: { attempted: true, ok: false, auth_rejected: refreshed.auth_rejected, status: refreshed.status } };
+  }
+  const refreshedAuthJson = applyRefreshToBlob(authJsonText, "claude", refreshed, nowImpl().getTime());
+  await upsertAuthPoolEntryImpl({
+    source: "claude",
+    auth_json: refreshedAuthJson,
+    uploader_email: entry.uploader_email || null,
+    reporter_name: "actions@github-actions",
+    hostname: "github-actions",
+  });
+  return { authJsonText: refreshedAuthJson, result: { attempted: true, ok: true } };
+}
 
 function probeCodexAuthJson(authJsonText) {
   const tempDir = mkdtempSync(join(tmpdir(), "quota-report-codex-"));
@@ -182,6 +228,8 @@ export async function processAuthPoolEntry(
     upsertAuthPoolEntryImpl = upsertAuthPoolEntry,
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
     authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
+    refreshClaudeTokenImpl = refreshClaudeToken,
+    atOnlyMode = false,
     nowImpl = () => new Date(),
   } = {}
 ) {
@@ -201,8 +249,18 @@ export async function processAuthPoolEntry(
   }
 
   let report;
+  let claudeRefreshResult = null;
   try {
-    const authJsonText = await decryptAuthJsonImpl(entry);
+    let authJsonText = await decryptAuthJsonImpl(entry);
+    if (atOnlyMode && entry.source === "claude") {
+      const refreshed = await refreshClaudeEntryIfNeeded(authJsonText, entry, {
+        refreshClaudeTokenImpl,
+        upsertAuthPoolEntryImpl,
+        nowImpl,
+      });
+      authJsonText = refreshed.authJsonText;
+      claudeRefreshResult = refreshed.result;
+    }
     report =
       entry.source === "codex"
         ? probeCodexAuthJsonImpl(authJsonText)
@@ -228,6 +286,7 @@ export async function processAuthPoolEntry(
       delete_reason: deleteReason(entry, report, previousReport),
       refreshed_auth_written: false,
       refreshed_auth_result: null,
+      claude_refresh: claudeRefreshResult,
     };
   }
   let refreshedAuthResult = null;
@@ -250,18 +309,20 @@ export async function processAuthPoolEntry(
     error: report.error,
     refreshed_auth_written: Boolean(refreshedAuthResult && !refreshedAuthResult.deduplicated),
     refreshed_auth_result: refreshedAuthResult,
+    claude_refresh: claudeRefreshResult,
   };
 }
 
 export async function main() {
   const entries = await authPoolEntries();
+  const atOnlyMode = await getFeatureFlag("at_only_mode", false);
   const items = [];
 
   for (const entry of entries) {
-    items.push(await processAuthPoolEntry(entry));
+    items.push(await processAuthPoolEntry(entry, { atOnlyMode }));
   }
 
-  console.log(JSON.stringify({ ok: true, count: items.length, items }, null, 2));
+  console.log(JSON.stringify({ ok: true, count: items.length, atOnlyMode, items }, null, 2));
 }
 
 const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];

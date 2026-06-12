@@ -70,6 +70,76 @@ test("processAuthPoolEntry writes refreshed codex auth back to the pool", async 
   assert.equal(result.refreshed_auth_written, true);
 });
 
+test("processAuthPoolEntry centrally refreshes a near-expiry claude auth in at_only_mode", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const authWrites = [];
+  const now = new Date("2026-06-12T00:00:00Z");
+  // expiresAt only 5 minutes out -> inside the 30-minute refresh window.
+  const expiringBlob = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "OLD_AT", refreshToken: "REAL_RT", expiresAt: now.getTime() + 5 * 60 * 1000 } },
+  });
+
+  const result = await processAuthPoolEntry(
+    { source: "claude", account_id: "acct-claude", uploader_email: "derek@stardust.ai" },
+    {
+      atOnlyMode: true,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => expiringBlob,
+      refreshClaudeTokenImpl: async (rt) => {
+        assert.equal(rt, "REAL_RT");
+        return { ok: true, access_token: "NEW_AT", refresh_token: "NEW_RT", expires_in: 28800 };
+      },
+      probeClaudeAuthJsonImpl: (authJsonText) => {
+        // the probe must see the freshly refreshed access token, not the stale one
+        const oauth = JSON.parse(authJsonText).credentials.claudeAiOauth;
+        assert.equal(oauth.accessToken, "NEW_AT");
+        return { source: "claude", account_id: "acct-claude", status: "ok", error: null, windows: { "5h": null, "1week": null } };
+      },
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async (entry) => {
+        authWrites.push(entry);
+        return { deduplicated: false };
+      },
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+
+  assert.equal(result.claude_refresh.ok, true);
+  assert.equal(authWrites.length, 1);
+  const persisted = JSON.parse(authWrites[0].auth_json).credentials.claudeAiOauth;
+  assert.equal(persisted.accessToken, "NEW_AT");
+  assert.equal(persisted.refreshToken, "NEW_RT");
+});
+
+test("processAuthPoolEntry leaves a claude auth untouched when at_only_mode is off", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  let refreshCalled = false;
+  const now = new Date("2026-06-12T00:00:00Z");
+  const expiringBlob = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "OLD_AT", refreshToken: "REAL_RT", expiresAt: now.getTime() + 5 * 60 * 1000 } },
+  });
+
+  const result = await processAuthPoolEntry(
+    { source: "claude", account_id: "acct-claude", uploader_email: "derek@stardust.ai" },
+    {
+      atOnlyMode: false,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => expiringBlob,
+      refreshClaudeTokenImpl: async () => {
+        refreshCalled = true;
+        return { ok: true, access_token: "NEW_AT", refresh_token: "NEW_RT", expires_in: 28800 };
+      },
+      probeClaudeAuthJsonImpl: () => ({ source: "claude", account_id: "acct-claude", status: "ok", error: null, windows: { "5h": null, "1week": null } }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async () => ({ deduplicated: false }),
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+
+  assert.equal(refreshCalled, false);
+  assert.equal(result.claude_refresh, null);
+});
+
 test("processAuthPoolEntry does not write back when codex probe did not refresh auth", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const authWrites = [];
