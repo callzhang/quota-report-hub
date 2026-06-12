@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import os
 import base64
+import hashlib
 import urllib.error
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -1797,7 +1798,7 @@ Reading additional input from stdin...
             with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
                 "replacement": {
                     "account_id": "current",
-                    "digest": "digest-same",
+                    "digest": hashlib.sha256(live_auth.read_text(encoding="utf-8").encode("utf-8")).hexdigest(),
                     "auth_json": live_auth.read_text(encoding="utf-8"),
                 },
             }):
@@ -1805,7 +1806,7 @@ Reading additional input from stdin...
                     quota_guard,
                     "auth_metadata",
                     return_value={
-                        "digest": "digest-same",
+                        "digest": hashlib.sha256(live_auth.read_text(encoding="utf-8").encode("utf-8")).hexdigest(),
                         "account_id": "current",
                         "auth_last_refresh": "2026-04-19T21:00:00Z",
                     },
@@ -1820,6 +1821,166 @@ Reading additional input from stdin...
                     )
 
         self.assertFalse(replacement["replaced"])
+        self.assertEqual(replacement["reason"], "best_auth_already_installed")
+
+    def test_maybe_replace_codex_auth_refreshes_same_account_without_replacement(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            live_auth.write_text(json.dumps({"tokens": {"account_id": "current", "access_token": "old"}}), encoding="utf-8")
+            config = {
+                "auth_pool_url": "https://quota-report-hub.vercel.app",
+                "auth_pool_user_token": "qrp_token",
+            }
+            codex_payload = {
+                "account_id": "current",
+                "status": "ok",
+                "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 70}},
+            }
+            refreshed_auth = json.dumps({"tokens": {"account_id": "current", "access_token": "new"}})
+
+            with mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=True):
+                with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                    "replacement": {
+                        "account_id": "current",
+                        "digest": "digest-new",
+                        "auth_json": refreshed_auth,
+                    },
+                }):
+                    with mock.patch.object(
+                        quota_guard,
+                        "auth_metadata",
+                        side_effect=[
+                            {
+                                "digest": "digest-old",
+                                "account_id": "current",
+                                "auth_last_refresh": "2026-04-19T21:00:00Z",
+                            },
+                            {
+                                "digest": "digest-new",
+                                "account_id": "current",
+                                "auth_last_refresh": "2026-04-19T22:00:00Z",
+                            },
+                        ],
+                    ):
+                        with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "digest-new"}) as write_known:
+                            replacement = quota_guard.maybe_replace_codex_auth(
+                                config,
+                                codex_payload,
+                                live_auth,
+                                known_auth_path,
+                                threshold_percent=20.0,
+                                weekly_threshold_percent=5.0,
+                            )
+            stored_auth = json.loads(live_auth.read_text(encoding="utf-8"))
+
+        self.assertFalse(replacement["replaced"])
+        self.assertTrue(replacement["auth_refreshed"])
+        self.assertEqual(replacement["reason"], "same_account_auth_refreshed")
+        self.assertEqual(stored_auth["tokens"]["access_token"], "new")
+        write_known.assert_called_once()
+
+    def test_maybe_replace_codex_auth_skips_same_account_same_auth_without_server_digest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_json = json.dumps({"tokens": {"account_id": "current", "access_token": "same"}})
+            live_auth.write_text(auth_json, encoding="utf-8")
+            config = {
+                "auth_pool_url": "https://quota-report-hub.vercel.app",
+                "auth_pool_user_token": "qrp_token",
+            }
+            codex_payload = {
+                "account_id": "current",
+                "status": "ok",
+                "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 70}},
+            }
+
+            with mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=True):
+                with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                    "replacement": {
+                        "account_id": "current",
+                        "auth_json": auth_json,
+                    },
+                }):
+                    with mock.patch.object(
+                        quota_guard,
+                        "auth_metadata",
+                        return_value={
+                            "digest": hashlib.sha256(auth_json.encode("utf-8")).hexdigest(),
+                            "account_id": "current",
+                            "email": "current@example.com",
+                            "name": None,
+                            "plan_name": "Pro",
+                            "auth_path": str(live_auth),
+                            "auth_last_refresh": "2026-04-19T21:00:00Z",
+                        },
+                    ):
+                        replacement = quota_guard.maybe_replace_codex_auth(
+                            config,
+                            codex_payload,
+                            live_auth,
+                            known_auth_path,
+                            threshold_percent=20.0,
+                            weekly_threshold_percent=5.0,
+                        )
+
+        self.assertFalse(replacement["replaced"])
+        self.assertFalse(replacement.get("auth_refreshed", False))
+        self.assertEqual(replacement["reason"], "best_auth_already_installed")
+
+    def test_maybe_replace_codex_auth_prefers_auth_json_digest_over_stale_server_digest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_json = json.dumps({"tokens": {"account_id": "current", "access_token": "same"}})
+            live_auth.write_text(auth_json, encoding="utf-8")
+            current_digest = hashlib.sha256(auth_json.encode("utf-8")).hexdigest()
+            config = {
+                "auth_pool_url": "https://quota-report-hub.vercel.app",
+                "auth_pool_user_token": "qrp_token",
+            }
+            codex_payload = {
+                "account_id": "current",
+                "status": "ok",
+                "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 70}},
+            }
+
+            with mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=True):
+                with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                    "replacement": {
+                        "account_id": "current",
+                        "digest": "stale-server-digest",
+                        "auth_json": auth_json,
+                    },
+                }):
+                    with mock.patch.object(
+                        quota_guard,
+                        "auth_metadata",
+                        return_value={
+                            "digest": current_digest,
+                            "account_id": "current",
+                            "email": "current@example.com",
+                            "name": None,
+                            "plan_name": "Pro",
+                            "auth_path": str(live_auth),
+                            "auth_last_refresh": "2026-04-19T21:00:00Z",
+                        },
+                    ):
+                        replacement = quota_guard.maybe_replace_codex_auth(
+                            config,
+                            codex_payload,
+                            live_auth,
+                            known_auth_path,
+                            threshold_percent=20.0,
+                            weekly_threshold_percent=5.0,
+                        )
+
+        self.assertFalse(replacement["replaced"])
+        self.assertFalse(replacement.get("auth_refreshed", False))
         self.assertEqual(replacement["reason"], "best_auth_already_installed")
 
     def test_maybe_replace_codex_auth_returns_null_replacement_when_server_has_no_better_auth(self):
@@ -2358,6 +2519,47 @@ Reading additional input from stdin...
         self.assertIn("请退出当前 Codex 会话并重新打开", result["notifications"]["codex"]["message"])
         self.assertEqual(result["notifications"]["claude"]["reason"], "not_replaced")
         self.assertEqual(result["notifications"]["uploaded_invalidated_auths"]["reason"], "no_uploaded_invalidated_auths")
+
+    def test_run_guard_restarts_but_does_not_notify_after_same_account_auth_refresh(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=False,
+            no_restart_codex_app_server=False,
+        )
+        codex_replacement = {
+            "ok": True,
+            "replaced": False,
+            "auth_refreshed": True,
+            "reason": "same_account_auth_refreshed",
+            "account_id": "current",
+        }
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value=codex_replacement):
+                                with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                    with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
+                                        with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
+                                            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                                                result = quota_guard.run_guard(args)
+
+        notify.assert_not_called()
+        restart.assert_called_once()
+        self.assertTrue(result["codex_app_server"]["restarted"])
+        self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
+        self.assertEqual(result["notifications"]["codex"]["reason"], "not_replaced")
 
     def test_run_guard_restarts_codex_app_server_after_local_auth_refresh(self):
         args = mock.Mock(

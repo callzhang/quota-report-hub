@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import platform
@@ -41,6 +42,17 @@ DEFAULT_SELF_UPDATE_REPO = "callzhang/quota-report-hub"
 DEFAULT_SELF_UPDATE_REF = "main"
 SELF_UPDATE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-self-update.json"
 SKILL_ROOT = Path(__file__).resolve().parents[1]
+
+
+def auth_json_digest(auth_json: str | None) -> str | None:
+    if auth_json is None:
+        return None
+    return hashlib.sha256(auth_json.encode("utf-8")).hexdigest()
+
+
+def fetched_auth_digest(auth_record: dict | None) -> str | None:
+    auth_record = auth_record or {}
+    return auth_json_digest(auth_record.get("auth_json")) or auth_record.get("digest")
 
 
 def read_self_update_state(state_path: Path = SELF_UPDATE_STATE_PATH) -> dict:
@@ -779,7 +791,8 @@ def maybe_replace_codex_auth(
                 current_digest = auth_metadata(codex_auth_path).get("digest")
             except Exception:
                 current_digest = None
-        if fetched_account_id == current_account_id and repair_auth.get("digest") == current_digest:
+        repair_digest = fetched_auth_digest(repair_auth)
+        if fetched_account_id == current_account_id and repair_digest == current_digest:
             return {
                 "ok": True,
                 "replaced": False,
@@ -830,7 +843,8 @@ def maybe_replace_codex_auth(
         except Exception:
             current_digest = None
 
-    if fetched_account_id == current_account_id and replacement.get("digest") == current_digest:
+    replacement_digest = fetched_auth_digest(replacement)
+    if fetched_account_id == current_account_id and replacement_digest == current_digest:
         return {
             "ok": True,
             "replaced": False,
@@ -852,6 +866,16 @@ def maybe_replace_codex_auth(
         last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
         state_source="fetched_from_auth_pool",
     )
+    if fetched_account_id == current_account_id:
+        return {
+            "ok": True,
+            "replaced": False,
+            "auth_refreshed": True,
+            "reason": "same_account_auth_refreshed",
+            "triggered_by": ["codex"],
+            "account_id": fetched_account_id,
+            "known_auth": known_auth,
+        }
 
     return {
         "ok": True,
@@ -966,6 +990,17 @@ def maybe_replace_claude_auth(
         last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
         state_source="fetched_from_auth_pool",
     )
+    if replacement.get("account_id") == current_account_id:
+        return {
+            "ok": True,
+            "replaced": False,
+            "auth_refreshed": True,
+            "reason": "same_account_auth_refreshed",
+            "triggered_by": ["claude"],
+            "account_id": replacement.get("account_id"),
+            "known_auth": known_auth,
+        }
+
     return {
         "ok": True,
         "replaced": True,
@@ -1024,6 +1059,9 @@ def format_replacement(result: dict | None) -> str:
     if result.get("replaced"):
         target = result.get("to_email") or result.get("to_account_id") or "new auth"
         return f"replaced -> {target}"
+    if result.get("auth_refreshed"):
+        target = result.get("account_id") or "current auth"
+        return f"auth refreshed -> {target}"
     reason = result.get("reason")
     if result.get("ok") is False:
         return f"replacement failed ({reason or 'error'})"
@@ -1351,6 +1389,7 @@ def run_guard(args: argparse.Namespace) -> dict:
     codex_auth_changed = bool(
         (codex_payload or {}).get("local_auth_refresh", {}).get("written")
         or codex_replacement.get("replaced")
+        or codex_replacement.get("auth_refreshed")
     )
     stale_app_server = stale_codex_app_server_for_auth(args.codex_auth_path)
     codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged", "stale_check": stale_app_server}
