@@ -75,6 +75,30 @@
         white-space: nowrap;
       }
 
+      .admin-flag {
+        margin-top: 16px;
+        padding: 14px 16px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.6);
+        display: grid;
+        gap: 8px;
+      }
+      .admin-flag-row { display: flex; align-items: center; gap: 14px; }
+      .switch { position: relative; display: inline-block; width: 46px; height: 26px; flex: none; }
+      .switch input { opacity: 0; width: 0; height: 0; }
+      .switch .slider {
+        position: absolute; inset: 0; cursor: pointer;
+        background: var(--muted); border-radius: 999px; transition: 0.2s;
+      }
+      .switch .slider::before {
+        content: ""; position: absolute; height: 20px; width: 20px; left: 3px; top: 3px;
+        background: #fff; border-radius: 50%; transition: 0.2s;
+      }
+      .switch input:checked + .slider { background: var(--accent); }
+      .switch input:checked + .slider::before { transform: translateX(20px); }
+      .switch input:disabled + .slider { opacity: 0.5; cursor: default; }
+
       .meta { color: var(--muted); }
       .cards {
         margin-top: 10px;
@@ -356,6 +380,20 @@
         <h1>Cloud Auth Pool</h1>
         <div class="meta" id="summary">Loading...</div>
         <div class="cards" id="cards"></div>
+        <div id="admin-flag-panel" class="admin-flag" hidden>
+          <div class="admin-flag-row">
+            <label class="switch">
+              <input type="checkbox" id="flag-disabled-rt" />
+              <span class="slider"></span>
+            </label>
+            <div>
+              <strong id="flag-disabled-rt-label">Disable refresh-token distribution</strong>
+              <div class="meta" id="flag-disabled-rt-status">…</div>
+            </div>
+          </div>
+          <div class="meta wrap">Admin only · When ON, the hub stops handing out refresh tokens: borrowers receive access-token-only credentials and the hub refreshes them centrally, closing the shared-pool refresh-token death spiral. Toggle OFF to instantly revert to serving full credentials.</div>
+          <div class="meta wrap" id="flag-message"></div>
+        </div>
       </section>
 
       <section class="panel section auth-panel" id="auth-panel">
@@ -426,6 +464,10 @@
       const clearTokenButton = document.getElementById("clear-token");
       const authMessage = document.getElementById("auth-message");
       const tokenCommand = document.getElementById("token-command");
+      const adminFlagPanel = document.getElementById("admin-flag-panel");
+      const flagToggle = document.getElementById("flag-disabled-rt");
+      const flagStatus = document.getElementById("flag-disabled-rt-status");
+      const flagMessage = document.getElementById("flag-message");
       const COOKIE_NAME = "quota_report_hub_token";
       let currentToken = "";
 
@@ -493,6 +535,7 @@
         archivedRows.innerHTML = "";
         empty.hidden = true;
         archivedEmpty.hidden = true;
+        adminFlagPanel.hidden = true;
       }
 
       function formatPercent(value) {
@@ -646,6 +689,7 @@
         const payload = await response.json();
         applyTokenUpgrade(payload);
         setAuthenticatedView(payload.viewer_email || "unknown");
+        renderAdminFlag(payload);
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
         const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
         const fetchLogByAccount = new Map();
@@ -725,6 +769,51 @@
         clearTokenCookie();
         tokenInput.value = "";
         setLockedView("Token cleared.");
+      });
+
+      function flagStatusText(on) {
+        return on
+          ? "ON · borrowers get access-token-only credentials"
+          : "OFF · borrowers get full credentials (including refresh token)";
+      }
+
+      function renderAdminFlag(payload) {
+        if (!payload.is_admin) {
+          adminFlagPanel.hidden = true;
+          return;
+        }
+        adminFlagPanel.hidden = false;
+        const on = Boolean(payload.disabled_refresh_token);
+        flagToggle.checked = on;
+        flagStatus.textContent = flagStatusText(on);
+        flagMessage.textContent = "";
+      }
+
+      flagToggle.addEventListener("change", async () => {
+        const desired = flagToggle.checked;
+        const token = currentToken || getStoredToken();
+        flagToggle.disabled = true;
+        flagMessage.textContent = "Saving…";
+        try {
+          const response = await fetch("/api/admin/flags", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ disabled_refresh_token: desired }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(payload.error || `request failed (${response.status})`);
+          }
+          const nowOn = Boolean(payload.flags?.disabled_refresh_token);
+          flagToggle.checked = nowOn;
+          flagStatus.textContent = flagStatusText(nowOn);
+          flagMessage.textContent = `Saved ${new Date().toLocaleTimeString()}`;
+        } catch (error) {
+          flagToggle.checked = !desired;
+          flagMessage.textContent = `Failed: ${error.message}`;
+        } finally {
+          flagToggle.disabled = false;
+        }
       });
 
       load();

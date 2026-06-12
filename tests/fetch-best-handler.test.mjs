@@ -147,8 +147,8 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
         },
       },
     });
-    // at_only_mode on -> the served auth must have its refresh token stripped.
-    await db.setFeatureFlag("at_only_mode", true, "derek@stardust.ai");
+    // disabled_refresh_token on -> the served auth must have its refresh token stripped.
+    await db.setFeatureFlag("disabled_refresh_token", true, "derek@stardust.ai");
 
     const res = mockResponse();
 
@@ -159,7 +159,7 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     // derek has a valid uploaded auth, so they get a replacement — never the dead one.
     assert.equal(payload.replacement.account_id, "healthy@stardust.ai");
     assert.equal(payload.repair_auth, undefined);
-    assert.equal(payload.at_only_mode, true);
+    assert.equal(payload.disabled_refresh_token, true);
 
     // The served credential keeps the access token but has a stripped (well-formed) RT.
     const served = JSON.parse(payload.replacement.auth_json);

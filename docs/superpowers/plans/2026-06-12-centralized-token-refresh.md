@@ -56,15 +56,15 @@ working RT, so nobody else can rotate.
 The RT-stripping behavior (Phase 3/4) is gated behind a **runtime feature flag** stored in
 the DB, so it can be flipped instantly without a redeploy if anything goes wrong.
 
-- **Flag:** `at_only_mode` (boolean), stored in a small `feature_flags` table (or settings row)
+- **Flag:** `disabled_refresh_token` (boolean), stored in a small `feature_flags` table (or settings row)
   in `lib/db.js`. **Default = off** → deploying the code changes nothing until an admin turns it
   on; turning it off instantly reverts to serving full credentials.
 - **Admin gate:** env var `ADMIN_EMAIL` (comma-separated allowed; e.g. `derek@stardust.ai`).
   Only a request whose authenticated `authContext.email` is in `ADMIN_EMAIL` may change the flag.
 - **Endpoints** (`api/admin/flags.js`):
   - `GET /api/admin/flags` → current flag values (any authed user may read).
-  - `POST /api/admin/flags` `{at_only_mode: bool}` → set; **admin-only** (403 otherwise).
-- **Read path:** `fetch-best` (and the client, via `/api/status`) read `at_only_mode`. When on,
+  - `POST /api/admin/flags` `{disabled_refresh_token: bool}` → set; **admin-only** (403 otherwise).
+- **Read path:** `fetch-best` (and the client, via `/api/status`) read `disabled_refresh_token`. When on,
   serve AT-only; when off, serve the full credential.
 - The flag value is also surfaced in `/api/status` so the client guard knows whether to strip
   its own RT after upload (Phase 4) — toggling the flag off means owners keep their RT again.
@@ -95,16 +95,16 @@ expire with no way to refresh.
 - Tests: guard re-fetches when a fetched auth is near expiry; does not attempt refresh on a
   fetched auth.
 
-### Phase 3 — Hub serves AT-only, gated by the `at_only_mode` flag (the switch)
+### Phase 3 — Hub serves AT-only, gated by the `disabled_refresh_token` flag (the switch)
 - Add the feature-flag table + `getFeatureFlag`/`setFeatureFlag` in `lib/db.js`, and the
   admin-gated `api/admin/flags.js` endpoints (see "Admin-controlled kill switch" above).
-- `api/auth/fetch-best.js`: when `at_only_mode` is on, before returning a `replacement`, strip
+- `api/auth/fetch-best.js`: when `disabled_refresh_token` is on, before returning a `replacement`, strip
   the RT via a helper `stripRefreshToken(authJson, source)`:
   - codex: `tokens.refresh_token = "rt.1." + <fixed dummy>` (present + well-formed).
   - claude: `claudeAiOauth.refreshToken = "<dummy>"`.
   Leave `repair_auth` (owner re-login handback) untouched. When the flag is off, behave exactly
   as today (full credential).
-- Surface `at_only_mode` in `/api/status`.
+- Surface `disabled_refresh_token` in `/api/status`.
 - Roll out: deploy with flag **off** (no behavior change), then admin flips it on. If anything
   breaks, admin flips it off → instant revert, no redeploy.
 - Tests: with flag on, replacement carries a dummy RT (well-formed for codex) + real AT; with
@@ -138,7 +138,7 @@ expire with no way to refresh.
 - **Worker refresh write must be atomic** to avoid serving a half-written blob.
 
 ## Rollback
-- **Primary (instant, no redeploy):** an admin flips `at_only_mode` off via
+- **Primary (instant, no redeploy):** an admin flips `disabled_refresh_token` off via
   `POST /api/admin/flags` → `fetch-best` immediately returns full credentials again; clients
   re-fetch and get a real RT back. This is the fast kill switch.
 - **Deeper fallback:** `git revert` the relevant phase commit and let Vercel redeploy (~1 min),
@@ -152,7 +152,7 @@ expire with no way to refresh.
 
 ## Implementation status — 2026-06-12
 
-**Shipped (committed + pushed to main, all behind the default-off `at_only_mode` flag):**
+**Shipped (committed + pushed to main, all behind the default-off `disabled_refresh_token` flag):**
 - **Flag infra + kill switch** (commit 91a4bd2): `feature_flags` table + `getFeatureFlag`/
   `setFeatureFlag`/`allFeatureFlags` (lib/db.js); `isAdminEmail` via `ADMIN_EMAIL` env
   (lib/company-auth.js); admin-gated `POST /api/admin/flags` (403 for non-admins); flag
@@ -179,6 +179,13 @@ closed for borrowers without any further client change.**
   hub the sole refresher for that account too, trading robustness for symmetry. Phases 1–3
   already stop borrowers from killing the pool; owners self-refreshing is harmless.
 
-**Deployment action required (manual):** set `ADMIN_EMAIL=derek@stardust.ai` in the Vercel
-project env so the admin flag endpoint recognises the admin. The flag stays off until an admin
-POSTs `{ "at_only_mode": true }` to `/api/admin/flags`.
+**Flag renamed** `at_only_mode` → `disabled_refresh_token` (DB key + API field) for clarity:
+true = the hub no longer distributes refresh tokens.
+
+**Admin UI:** the dashboard (`index.html`) shows an admin-only toggle (gated on
+`/api/status`'s `is_admin`, computed via `isAdminEmail`). Flipping it POSTs
+`{ "disabled_refresh_token": <bool> }` to `/api/admin/flags`; non-admins never see it and the
+endpoint also 403s them. No need to hand-craft the API call.
+
+**Deployment status:** `ADMIN_EMAIL=derek@stardust.ai` is set in Vercel production (done). The
+flag stays off until an admin flips the dashboard toggle (or POSTs the endpoint directly).

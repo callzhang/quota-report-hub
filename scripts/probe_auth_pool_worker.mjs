@@ -28,7 +28,7 @@ function claudeRefreshToken(authJsonText) {
   }
 }
 
-// In at_only_mode the hub is the sole refresher for claude (borrowers hold a stripped RT), so
+// When disabled_refresh_token is on, the hub is the sole refresher for claude (borrowers hold a stripped RT), so
 // proactively rotate any near-expiry claude AT and persist the rotated tokens to the pool.
 // Returns the (possibly refreshed) auth_json plus a small result for the run report.
 async function refreshClaudeEntryIfNeeded(
@@ -315,7 +315,7 @@ export async function processAuthPoolEntry(
 
 export async function main() {
   const entries = await authPoolEntries();
-  const atOnlyMode = await getFeatureFlag("at_only_mode", false);
+  const atOnlyMode = await getFeatureFlag("disabled_refresh_token", false);
   const items = [];
 
   for (const entry of entries) {

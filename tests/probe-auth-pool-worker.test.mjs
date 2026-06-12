@@ -70,7 +70,7 @@ test("processAuthPoolEntry writes refreshed codex auth back to the pool", async 
   assert.equal(result.refreshed_auth_written, true);
 });
 
-test("processAuthPoolEntry centrally refreshes a near-expiry claude auth in at_only_mode", async () => {
+test("processAuthPoolEntry centrally refreshes a near-expiry claude auth in disabled_refresh_token", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const authWrites = [];
   const now = new Date("2026-06-12T00:00:00Z");
@@ -111,7 +111,7 @@ test("processAuthPoolEntry centrally refreshes a near-expiry claude auth in at_o
   assert.equal(persisted.refreshToken, "NEW_RT");
 });
 
-test("processAuthPoolEntry leaves a claude auth untouched when at_only_mode is off", async () => {
+test("processAuthPoolEntry leaves a claude auth untouched when disabled_refresh_token is off", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   let refreshCalled = false;
   const now = new Date("2026-06-12T00:00:00Z");

@@ -8,6 +8,7 @@ import {
   getFeatureFlag,
 } from "../lib/db.js";
 import { authPoolStatusPayload } from "../lib/reports.js";
+import { isAdminEmail } from "../lib/company-auth.js";
 
 export default async function handler(req, res) {
   const authContext = await authenticateApiRequest(req);
@@ -31,7 +32,8 @@ export default async function handler(req, res) {
   const dataset = authPoolStatusPayload(entries, reports, new Date().toISOString(), invalidatedStates);
   dataset.fetch_log = fetchLog;
   dataset.viewer_email = authContext.email;
-  dataset.at_only_mode = await getFeatureFlag("at_only_mode", false);
+  dataset.disabled_refresh_token = await getFeatureFlag("disabled_refresh_token", false);
+  dataset.is_admin = isAdminEmail(authContext.email);
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(withTokenUpgrade(dataset, authContext)));

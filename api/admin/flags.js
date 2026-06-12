@@ -4,7 +4,7 @@ import { allFeatureFlags, dbConfigured, setFeatureFlag } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 
 // Flags an admin is allowed to flip at runtime.
-const ALLOWED_FLAGS = new Set(["at_only_mode"]);
+const ALLOWED_FLAGS = new Set(["disabled_refresh_token"]);
 
 function json(res, statusCode, payload) {
   res.statusCode = statusCode;
