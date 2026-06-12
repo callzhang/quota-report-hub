@@ -26,6 +26,7 @@ from quota_reporters import (
     detect_claude_custom_provider_env,
     fetch_auth_pool_status,
     fetch_best_auth,
+    fetched_auth_near_expiry,
     load_config,
     post_auth_pool_quota,
     probe_claude,
@@ -745,8 +746,14 @@ def maybe_replace_codex_auth(
         "five_h_remaining_percent": remaining_percent(current_codex_payload or {}, "5h"),
         "one_week_remaining_percent": remaining_percent(current_codex_payload or {}, "1week"),
     }
+    # Quota-low (or invalidated) triggers a normal replacement; a healthy-but-near-expiry
+    # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
+    refresh_current = False
     if not source_needs_replacement(current_codex_payload, threshold_percent, weekly_threshold_percent):
-        return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
+        if fetched_auth_near_expiry("codex", known_auth_path, codex_auth_path=codex_auth_path):
+            refresh_current = True
+        else:
+            return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
 
     result = fetch_best_auth(
         config["auth_pool_url"],
@@ -756,6 +763,7 @@ def maybe_replace_codex_auth(
         current_quota=current_quota,
         exclude_account_ids=[],
         requester_id=current_codex_payload.get("reporter_name") if current_codex_payload else None,
+        refresh_current=refresh_current,
     )
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
@@ -882,8 +890,14 @@ def maybe_replace_claude_auth(
         "five_h_remaining_percent": remaining_percent(current_claude_payload, "5h"),
         "one_week_remaining_percent": remaining_percent(current_claude_payload, "1week"),
     }
+    # Quota-low (or invalidated) triggers a normal replacement; a healthy-but-near-expiry
+    # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
+    refresh_current = False
     if not source_needs_replacement(current_claude_payload, threshold_percent, weekly_threshold_percent):
-        return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
+        if fetched_auth_near_expiry("claude", known_auth_path, claude_home=claude_home):
+            refresh_current = True
+        else:
+            return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
 
     result = fetch_best_auth(
         config["auth_pool_url"],
@@ -893,6 +907,7 @@ def maybe_replace_claude_auth(
         current_quota=current_quota,
         exclude_account_ids=[],
         requester_id=current_claude_payload.get("reporter_name") if current_claude_payload else None,
+        refresh_current=refresh_current,
     )
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")

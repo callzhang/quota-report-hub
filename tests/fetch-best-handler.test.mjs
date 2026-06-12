@@ -171,5 +171,21 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     const log = await db.authPoolFetchLog({ limit: 5 });
     assert.ok(!log.some((row) => row.reason === "repair_returned"), "must not hand back a dead auth when a valid one exists");
     assert.ok(log.some((row) => row.reason === "served"));
+
+    // Phase 2: refresh_current returns the SAME account's fresh blob (stripped, flag still on),
+    // not a different account — a near-expiry client refreshes its access token in place.
+    const refreshReq = mockJsonRequest({
+      token,
+      body: { source: "codex", requester_id: "derek@gpu4", current_account_id: "healthy@stardust.ai", refresh_current: true },
+    });
+    const refreshRes = mockResponse();
+    await handler(refreshReq, refreshRes);
+    const refreshPayload = JSON.parse(refreshRes.body);
+    assert.equal(refreshPayload.refreshed_current, true);
+    assert.equal(refreshPayload.replacement.account_id, "healthy@stardust.ai");
+    const refreshedServed = JSON.parse(refreshPayload.replacement.auth_json);
+    assert.equal(refreshedServed.tokens.access_token, "access-healthy-provider");
+    assert.match(refreshedServed.tokens.refresh_token, /^rt\.1\./);
+    assert.ok((await db.authPoolFetchLog({ limit: 8 })).some((row) => row.reason === "refreshed_current"));
   });
 });

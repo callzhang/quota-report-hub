@@ -1710,6 +1710,7 @@ Reading additional input from stdin...
                 },
                 exclude_account_ids=[],
                 requester_id=None,
+                refresh_current=False,
             )
 
     def test_maybe_replace_codex_auth_fetches_when_known_account_quota_is_unavailable(self):
@@ -1749,6 +1750,7 @@ Reading additional input from stdin...
             },
             exclude_account_ids=[],
             requester_id="derek@mac",
+            refresh_current=False,
         )
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "no_better_auth_available")
@@ -3854,6 +3856,69 @@ class AtOnlyLocalSyncTests(unittest.TestCase):
         self.assertFalse(result["uploaded"])
         self.assertEqual(result["reason"], "local_auth_is_at_only")
         upload.assert_not_called()
+
+
+class Phase2NearExpiryTests(unittest.TestCase):
+    NOW = 1_000_000.0
+
+    def _known(self, d, source, state_source):
+        known = Path(d) / "known.json"
+        known.write_text(json.dumps({"sources": {source: {"state_source": state_source}}}), encoding="utf-8")
+        return known
+
+    def _id_token(self, exp):
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": exp}).encode()).decode().rstrip("=")
+        return f"h.{payload}.s"
+
+    def test_claude_near_expiry_true_only_within_skew(self):
+        with tempfile.TemporaryDirectory() as d:
+            known = self._known(d, "claude", "fetched_from_auth_pool")
+            with mock.patch.object(quota_reporters, "read_claude_oauth_credentials",
+                                   return_value=({"claudeAiOauth": {"expiresAt": int((self.NOW + 600) * 1000)}}, "keychain")):
+                self.assertTrue(quota_reporters.fetched_auth_near_expiry("claude", known, claude_home=Path("/x"), now=self.NOW))
+            with mock.patch.object(quota_reporters, "read_claude_oauth_credentials",
+                                   return_value=({"claudeAiOauth": {"expiresAt": int((self.NOW + 3600) * 1000)}}, "keychain")):
+                self.assertFalse(quota_reporters.fetched_auth_near_expiry("claude", known, claude_home=Path("/x"), now=self.NOW))
+
+    def test_near_expiry_requires_fetched_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            known = self._known(d, "claude", "owner_local")
+            with mock.patch.object(quota_reporters, "read_claude_oauth_credentials",
+                                   return_value=({"claudeAiOauth": {"expiresAt": int((self.NOW + 60) * 1000)}}, "keychain")):
+                self.assertFalse(quota_reporters.fetched_auth_near_expiry("claude", known, claude_home=Path("/x"), now=self.NOW))
+
+    def test_codex_near_expiry_reads_id_token_exp(self):
+        with tempfile.TemporaryDirectory() as d:
+            known = self._known(d, "codex", "fetched_from_auth_pool")
+            auth = Path(d) / "auth.json"
+            auth.write_text(json.dumps({"tokens": {"id_token": self._id_token(int(self.NOW + 600))}}), encoding="utf-8")
+            self.assertTrue(quota_reporters.fetched_auth_near_expiry("codex", known, codex_auth_path=auth, now=self.NOW))
+            auth.write_text(json.dumps({"tokens": {"id_token": self._id_token(int(self.NOW + 3600))}}), encoding="utf-8")
+            self.assertFalse(quota_reporters.fetched_auth_near_expiry("codex", known, codex_auth_path=auth, now=self.NOW))
+
+    def test_maybe_replace_codex_refresh_current_when_near_expiry(self):
+        config = {"auth_pool_url": "https://hub", "auth_pool_user_token": "tok"}
+        codex_payload = {"account_id": "acct", "reporter_name": "r", "status": "ok",
+                         "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 90}}}
+        with mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=True):
+            with mock.patch.object(quota_guard, "fetch_best_auth", return_value={"replacement": None, "repair_auth": None}) as fb:
+                quota_guard.maybe_replace_codex_auth(
+                    config, codex_payload, Path("/tmp/auth.json"), Path("/tmp/known.json"),
+                    threshold_percent=20.0, weekly_threshold_percent=5.0)
+        fb.assert_called_once()
+        self.assertTrue(fb.call_args.kwargs["refresh_current"])
+
+    def test_maybe_replace_codex_stays_healthy_when_not_near_expiry(self):
+        config = {"auth_pool_url": "https://hub", "auth_pool_user_token": "tok"}
+        codex_payload = {"account_id": "acct", "reporter_name": "r", "status": "ok",
+                         "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 90}}}
+        with mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=False):
+            with mock.patch.object(quota_guard, "fetch_best_auth") as fb:
+                result = quota_guard.maybe_replace_codex_auth(
+                    config, codex_payload, Path("/tmp/auth.json"), Path("/tmp/known.json"),
+                    threshold_percent=20.0, weekly_threshold_percent=5.0)
+        fb.assert_not_called()
+        self.assertEqual(result["reason"], "healthy")
 
 
 if __name__ == "__main__":

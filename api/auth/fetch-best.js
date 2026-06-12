@@ -1,6 +1,7 @@
 import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
 import {
+  authPoolEntry,
   bestAuthPoolEntry,
   dbConfigured,
   getFeatureFlag,
@@ -10,6 +11,7 @@ import {
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch-best.js";
+import { decryptAuthJson } from "../../lib/auth-pool.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -80,6 +82,53 @@ export default async function handler(req, res) {
       }, authContext))
     );
     return;
+  }
+
+  // Phase 2: a client whose access token is near expiry asks to refresh the account it is
+  // already using rather than switch accounts. Return that account's current pool blob (kept
+  // fresh by the worker's central refresh), stripped when disabled_refresh_token is on — same
+  // account, a fresh access token, no rotation by the client. Falls through to a normal
+  // replacement if that account is no longer in the pool.
+  if (body?.refresh_current && currentAccountId) {
+    const sameEntry = await authPoolEntry(source, currentAccountId);
+    if (sameEntry) {
+      const disabledRefreshToken = await getFeatureFlag("disabled_refresh_token", false);
+      const sameAuthJson = await decryptAuthJson(sameEntry);
+      const servedAuthJson = disabledRefreshToken ? stripRefreshToken(sameAuthJson, source) : sameAuthJson;
+      await recordAuthPoolFetch({
+        requesterEmail: authContext.email,
+        requesterId,
+        source,
+        servedEntry: sameEntry,
+        reason: "refreshed_current",
+        currentAccountId,
+        currentQuota,
+      });
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify(withTokenUpgrade({
+        ok: true,
+        requested_by: authContext.email,
+        disabled_refresh_token: disabledRefreshToken,
+        refreshed_current: true,
+        replacement: {
+          source: sameEntry.source,
+          account_id: sameEntry.account_id,
+          session_id: sameEntry.session_id || "",
+          email: sameEntry.email,
+          name: sameEntry.name,
+          plan_name: sameEntry.plan_name,
+          auth_last_refresh: sameEntry.auth_last_refresh,
+          digest: sameEntry.digest,
+          uploaded_at: sameEntry.uploaded_at,
+          reporter_name: sameEntry.reporter_name,
+          hostname: sameEntry.hostname,
+          latest_report: null,
+          auth_json: servedAuthJson,
+        },
+      }, authContext)));
+      return;
+    }
   }
 
   const entry = await bestAuthPoolEntry({

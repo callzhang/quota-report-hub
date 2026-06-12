@@ -1999,6 +1999,54 @@ def auth_json_is_stripped(source: str, auth_json_text: str) -> bool:
     return False
 
 
+# Re-fetch a fetched AT-only auth this long before its access token expires, so the CLI never
+# has to fall back to the (dead) placeholder refresh token between guard runs.
+AT_NEAR_EXPIRY_SKEW_SECONDS = 20 * 60
+
+
+def _local_access_token_expiry_epoch(source: str, *, codex_auth_path: Path | None = None, claude_home: Path | None = None) -> float | None:
+    """Epoch seconds when the local access token expires, or None if unknown."""
+    try:
+        if source == "codex":
+            if not codex_auth_path or not codex_auth_path.exists():
+                return None
+            blob = json.loads(codex_auth_path.read_text(encoding="utf-8"))
+            id_token = (blob.get("tokens") or {}).get("id_token")
+            if not isinstance(id_token, str):
+                return None
+            exp = decode_jwt_payload(id_token).get("exp")
+            return float(exp) if isinstance(exp, (int, float)) else None
+        if source == "claude":
+            credentials, _ = read_claude_oauth_credentials(claude_home or CLAUDE_HOME)
+            expires_at = ((credentials or {}).get("claudeAiOauth") or {}).get("expiresAt")
+            return float(expires_at) / 1000.0 if isinstance(expires_at, (int, float)) else None
+    except Exception:
+        return None
+    return None
+
+
+def fetched_auth_near_expiry(
+    source: str,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
+    *,
+    codex_auth_path: Path | None = None,
+    claude_home: Path | None = None,
+    skew_seconds: int = AT_NEAR_EXPIRY_SKEW_SECONDS,
+    now: float | None = None,
+) -> bool:
+    """True when the local auth was fetched from the pool (so it is AT-only) and its access
+    token is within skew_seconds of expiry — time to proactively re-fetch a fresh one."""
+    state = read_known_auth_state(known_auth_path)
+    source_state = (state.get("sources") or {}).get(source) or {}
+    if source_state.get("state_source") != "fetched_from_auth_pool":
+        return False
+    expiry = _local_access_token_expiry_epoch(source, codex_auth_path=codex_auth_path, claude_home=claude_home)
+    if expiry is None:
+        return False
+    now = now if now is not None else datetime.now(timezone.utc).timestamp()
+    return expiry - now <= skew_seconds
+
+
 def sync_current_codex_auth_pool(
     auth_pool_url: str,
     auth_pool_user_token: str,
@@ -2063,6 +2111,7 @@ def fetch_best_auth(
     current_quota: dict | None = None,
     exclude_account_ids: list[str] | None = None,
     requester_id: str | None = None,
+    refresh_current: bool = False,
 ) -> dict:
     body = json.dumps(
         {
@@ -2071,6 +2120,7 @@ def fetch_best_auth(
             "current_account_id": current_account_id,
             "current_quota": current_quota or {},
             "requester_id": requester_id or reporter_name(),
+            "refresh_current": refresh_current,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
