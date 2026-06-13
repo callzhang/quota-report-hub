@@ -1079,7 +1079,7 @@ Reading additional input from stdin...
                 "quota_reporters.subprocess.run",
                 side_effect=[auth_json, auth_text],
             ):
-                with mock.patch(
+                with mock.patch("quota_reporters.read_claude_keychain_credentials", return_value=None), mock.patch(
                     "quota_reporters.read_claude_credentials",
                     return_value={
                         "claudeAiOauth": {
@@ -4286,6 +4286,33 @@ class Phase4StripLocalRtTests(unittest.TestCase):
                         "https://hub", "tok", auth_path=auth, known_auth_path=known)
             self.assertNotIn("local_refresh_token_stripped", result)
             self.assertEqual(json.loads(auth.read_text(encoding="utf-8"))["tokens"]["refresh_token"], "rt.1.REAL")
+
+
+class ClaudeCredentialSourceOrderTests(unittest.TestCase):
+    KEYCHAIN = {"claudeAiOauth": {"refreshToken": "LIVE_RT", "accessToken": "LIVE_AT"}}
+    FILE = {"claudeAiOauth": {"refreshToken": "disabled-by-hub-refresh-token", "accessToken": "STALE_AT"}}
+
+    def test_macos_prefers_keychain_over_stale_file(self):
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=self.KEYCHAIN), \
+             mock.patch.object(quota_reporters, "read_claude_credentials", return_value=self.FILE):
+            creds, src = quota_reporters.read_claude_oauth_credentials()
+        self.assertEqual(src, "keychain")
+        self.assertEqual(creds["claudeAiOauth"]["refreshToken"], "LIVE_RT")
+
+    def test_macos_falls_back_to_file_when_keychain_empty(self):
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=None), \
+             mock.patch.object(quota_reporters, "read_claude_credentials", return_value=self.FILE):
+            creds, src = quota_reporters.read_claude_oauth_credentials()
+        self.assertEqual(src, "credentials_file")
+
+    def test_non_darwin_prefers_file(self):
+        with mock.patch.object(quota_reporters.sys, "platform", "linux"), \
+             mock.patch.object(quota_reporters, "read_claude_credentials", return_value=self.FILE), \
+             mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=self.KEYCHAIN):
+            creds, src = quota_reporters.read_claude_oauth_credentials()
+        self.assertEqual(src, "credentials_file")
 
 
 if __name__ == "__main__":

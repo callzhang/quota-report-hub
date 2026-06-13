@@ -828,6 +828,19 @@ def read_claude_credentials(claude_home: Path) -> dict | None:
 
 
 def read_claude_oauth_credentials(claude_home: Path = CLAUDE_HOME) -> tuple[dict | None, str]:
+    # On macOS the keychain is Claude Code's source of truth. A ~/.claude/.credentials.json can
+    # linger and go stale (e.g. a past file-fallback write or a Phase-4 strip that landed in the
+    # file): reading it first would shadow the live keychain blob and make every downstream step
+    # (probe, sync, strip) act on dead credentials. So prefer the keychain on darwin and only fall
+    # back to the file. Other platforms keep file-first (no keychain there).
+    if sys.platform == "darwin":
+        credentials = read_claude_keychain_credentials()
+        if credentials is not None:
+            return credentials, "keychain"
+        credentials = read_claude_credentials(claude_home)
+        if credentials is not None:
+            return credentials, "credentials_file"
+        return None, "unavailable"
     credentials = read_claude_credentials(claude_home)
     if credentials is not None:
         return credentials, "credentials_file"
