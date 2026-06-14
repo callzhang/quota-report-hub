@@ -30,6 +30,17 @@ if (!process.env.TURSO_DATABASE_URL) {
 
 const windowHours = Number(process.argv[2] || 4);
 const db = await import(join(root, "lib/db.js"));
+
+const { isAbuseClassError } = await import(join(root, "lib/abuse-errors.js"));
+const latestForAbuse = await db.authPoolQuotaLatest();
+const abuseHits = latestForAbuse.filter((r) => r.status === "error" && isAbuseClassError(r.error));
+if (abuseHits.length) {
+  console.log(`\n🚨 ABUSE/BAN-CLASS ERRORS DETECTED (${abuseHits.length}) — possible pushback on shared access tokens:`);
+  for (const r of abuseHits) console.log(`  ${r.source} ${r.account_id} | ${r.error}`);
+  console.log("VERDICT: ABUSE_SUSPECTED — investigate; consider turning disabled_refresh_token OFF.");
+  process.exit(3);
+}
+
 const snaps = await db.poolHealthSnapshots({ limit: 400 }); // oldest-first
 
 if (!snaps.length) {
