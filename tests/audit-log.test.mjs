@@ -263,7 +263,7 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
       hostname: "mac",
     });
     const entries = (await mod.authPoolEntries()).filter((entry) => entry.account_id === "same@stardust.ai");
-    assert.equal(entries.length, 2);
+    assert.equal(entries.length, 1);
     assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["alice@stardust.ai"]));
   } finally {
     if (previousUrl === undefined) {
@@ -323,7 +323,7 @@ test("upsertAuthPoolEntry preserves the first uploader for later same-account up
     assert.equal(update.reporter_name, "borrower@mac");
 
     const entries = (await mod.authPoolEntries()).filter((entry) => entry.account_id === "shared@stardust.ai");
-    assert.equal(entries.length, 2);
+    assert.equal(entries.length, 1);
     assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["owner@stardust.ai"]));
   } finally {
     cleanup();
@@ -1046,6 +1046,48 @@ test("pool health snapshots record and read back in chronological order", async 
     assert.equal(snaps[0].hard_dead_count, 3);
     assert.equal(snaps[1].ok_count, 8);
     assert.equal(snaps[1].central_refresh_ok, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("upsertAuthPoolEntry collapses the same account to one row (drops other sessions)", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const codexBlob = (sid) => JSON.stringify({
+      tokens: {
+        account_id: "acct-uuid",
+        refresh_token: "rt.1.REAL" + sid,
+        access_token: "AT" + sid,
+        id_token: "h." + Buffer.from(JSON.stringify({ email: "u@stardust.ai", sid })).toString("base64url") + ".s",
+      },
+      last_refresh: sid === "B" ? "2026-06-13T02:00:00Z" : "2026-06-13T01:00:00Z",
+    });
+    await mod.upsertAuthPoolEntry({ source: "codex", auth_json: codexBlob("A"), uploader_email: "u@stardust.ai" });
+    await mod.upsertAuthPoolEntry({ source: "codex", auth_json: codexBlob("B"), uploader_email: "u@stardust.ai" });
+    const rows = (await client.execute({ sql: "SELECT session_id FROM auth_pool_entries WHERE source='codex' AND account_id='u@stardust.ai'" })).rows;
+    assert.equal(rows.length, 1, "same account must collapse to one row");
+  } finally {
+    cleanup();
+  }
+});
+
+test("collapseAuthPoolSessions keeps only the newest row per account", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    const ins = async (sid, uploadedAt) => client.execute({
+      sql: `INSERT INTO auth_pool_entries (source, account_id, session_id, email, digest, uploaded_at) VALUES ('codex','a@x.ai',?,?,'dummy',?)`,
+      args: [sid, "a@x.ai", uploadedAt],
+    });
+    await ins("s1", "2026-06-01T00:00:00Z");
+    await ins("s2", "2026-06-03T00:00:00Z");
+    await ins("s3", "2026-06-02T00:00:00Z");
+    const removed = await mod.collapseAuthPoolSessions();
+    assert.equal(removed, 2);
+    const rows = (await client.execute({ sql: "SELECT session_id FROM auth_pool_entries WHERE account_id='a@x.ai'" })).rows;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].session_id, "s2");
   } finally {
     cleanup();
   }
