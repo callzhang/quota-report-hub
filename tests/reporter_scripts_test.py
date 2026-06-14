@@ -2294,9 +2294,15 @@ Reading additional input from stdin...
             "qrp_token",
             auth_path=args.codex_auth_path,
             known_auth_path=args.known_auth_path,
+            quota_payload={"account_id": "current"},
         )
         sync_claude_auth_pool.assert_called_once()
         self.assertIs(sync_claude_auth_pool.call_args.kwargs["probed_payload"], probe_claude_mock.return_value)
+        # the freshly-probed quota is now bundled into the upload so the hub has no stale-quota gap
+        self.assertEqual(
+            sync_claude_auth_pool.call_args.kwargs["quota_payload"],
+            {"account_id": "claude-a", "status": "ok"},
+        )
         replace_codex_auth.assert_called_once()
         replace_claude_auth.assert_called_once()
         probe_claude_mock.assert_called_once_with(args.claude_home)

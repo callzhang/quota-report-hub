@@ -1526,6 +1526,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                     config["auth_pool_user_token"],
                     auth_path=args.codex_auth_path,
                     known_auth_path=args.known_auth_path,
+                    quota_payload=without_sensitive_refresh_capture(codex_payload),
                 ),
             ),
         )
@@ -1552,6 +1553,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                         claude_home=args.claude_home,
                         known_auth_path=args.known_auth_path,
                         probed_payload=claude_payload,
+                        quota_payload=without_sensitive_refresh_capture(claude_payload),
                     ),
                 ),
             )

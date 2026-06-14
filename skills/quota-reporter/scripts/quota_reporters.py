@@ -1772,15 +1772,20 @@ def post_auth_pool_entry(
     *,
     source: str,
     auth_json_text: str,
+    quota_payload: dict | None = None,
 ) -> dict:
-    body = json.dumps(
-        {
-            "source": source,
-            "auth_json": auth_json_text,
-            "reporter_name": reporter_name(),
-            "hostname": socket.gethostname(),
-        }
-    ).encode("utf-8")
+    upload_body = {
+        "source": source,
+        "auth_json": auth_json_text,
+        "reporter_name": reporter_name(),
+        "hostname": socket.gethostname(),
+    }
+    # Bundle the locally-probed quota so the hub updates quota_latest in the same request as the
+    # auth — no gap where a fresh upload still shows stale quota. The server applies the same
+    # acceptance rules as /api/auth/quota and ignores an incomplete/unavailable payload.
+    if quota_payload is not None:
+        upload_body["quota_payload"] = quota_payload
+    body = json.dumps(upload_body).encode("utf-8")
     request = urllib.request.Request(
         auth_pool_url.rstrip("/") + "/api/auth/upload",
         data=body,
@@ -1863,6 +1868,7 @@ def sync_current_auth_pool_entry(
     auth_json_text: str,
     metadata: dict,
     known_auth_path: Path,
+    quota_payload: dict | None = None,
 ) -> dict:
     known = known_auth_state_for_source(read_known_auth_state(known_auth_path), source)
     if is_excluded_free_plan(metadata.get("plan_name")):
@@ -1927,6 +1933,7 @@ def sync_current_auth_pool_entry(
             auth_pool_user_token,
             source=source,
             auth_json_text=auth_json_text,
+            quota_payload=quota_payload,
         )
         if uploaded.get("ok") is False:
             return {
@@ -2126,6 +2133,7 @@ def sync_current_codex_auth_pool(
     auth_pool_user_token: str,
     auth_path: Path = SOURCE_AUTH_PATH,
     known_auth_path: Path = KNOWN_AUTH_PATH,
+    quota_payload: dict | None = None,
 ) -> dict:
     if not auth_path.exists():
         return {"ok": True, "uploaded": False, "reason": "missing_auth"}
@@ -2142,6 +2150,7 @@ def sync_current_codex_auth_pool(
         auth_json_text=auth_json_text,
         metadata=metadata,
         known_auth_path=known_auth_path,
+        quota_payload=quota_payload,
     )
     # Phase 4: once the hub holds our real RT (just uploaded) and reports disabled_refresh_token
     # mode, strip the local RT so this owner also runs AT-only — its CLI can no longer rotate
@@ -2161,6 +2170,7 @@ def sync_current_claude_auth_pool(
     known_auth_path: Path = KNOWN_AUTH_PATH,
     claude_bin: str | None = None,
     probed_payload: dict | None = None,
+    quota_payload: dict | None = None,
 ) -> dict:
     blob_text, payload = build_claude_auth_blob(claude_home, claude_bin, probed_payload=probed_payload)
     if blob_text is None:
@@ -2181,6 +2191,7 @@ def sync_current_claude_auth_pool(
         auth_json_text=blob_text,
         metadata=metadata,
         known_auth_path=known_auth_path,
+        quota_payload=quota_payload,
     )
     # Phase 4: once the hub holds our real RT (just uploaded) and reports disabled_refresh_token
     # mode, strip the local RT so this owner also runs AT-only and mark it fetched so the

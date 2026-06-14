@@ -1,40 +1,8 @@
 import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
-import { dbConfigured, upsertAuthPoolQuota } from "../../lib/db.js";
+import { dbConfigured } from "../../lib/db.js";
+import { ingestClientQuota } from "../../lib/quota-ingest.js";
 import { readJsonBody } from "../../lib/http.js";
-
-function isHardInvalidation(payload) {
-  return (
-    payload?.status === "error" &&
-    (
-      payload?.error === "auth invalidated (token_invalidated)" ||
-      payload?.error === "auth failed (401 unauthorized)"
-    )
-  );
-}
-
-function hasCompleteWindow(window) {
-  return Boolean(
-    window &&
-    window.remaining_percent !== null &&
-    window.remaining_percent !== undefined &&
-    window.reset_at
-  );
-}
-
-function codexClientPayloadAccepted(payload) {
-  if (!payload?.account_id) {
-    return false;
-  }
-  if (isHardInvalidation(payload)) {
-    return true;
-  }
-  return (
-    payload?.status === "ok" &&
-    hasCompleteWindow(payload?.windows?.["5h"]) &&
-    hasCompleteWindow(payload?.windows?.["1week"])
-  );
-}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -72,30 +40,21 @@ export default async function handler(req, res) {
   }
 
   const source = String(body.source);
-  const payload = {
-    ...body.quota_payload,
-    source,
-    report_origin: "client",
-    reporter_name: body.quota_payload.reporter_name || authContext.email,
-    hostname: body.quota_payload.hostname || "client-report",
-  };
+  const result = await ingestClientQuota({ source, quotaPayload: body.quota_payload, reporterEmail: authContext.email });
 
-  if (!payload.account_id) {
+  if (result.reason === "missing_account_id") {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ error: "quota_payload.account_id is required" }));
     return;
   }
 
-  if (source === "codex" && !codexClientPayloadAccepted(payload)) {
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(withTokenUpgrade({ ok: true, source, ignored: true, reason: "quota_unavailable" }, authContext)));
-    return;
-  }
-
-  await upsertAuthPoolQuota(payload);
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(withTokenUpgrade({ ok: true, source, account_id: payload.account_id }, authContext)));
+  res.end(JSON.stringify(withTokenUpgrade(
+    result.ignored
+      ? { ok: true, source, ignored: true, reason: "quota_unavailable" }
+      : { ok: true, source, account_id: result.account_id },
+    authContext,
+  )));
 }
