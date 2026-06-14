@@ -15,13 +15,12 @@ import {
 } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
-import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
+import { refreshClaudeToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
 
 // Refresh a claude access token this far from expiry. The worker runs every ~15 min, so a
 // 30-minute window guarantees the served token always has comfortable life left. Unknown
 // expiry (null) also triggers a refresh.
 const CLAUDE_REFRESH_THRESHOLD_MS = 30 * 60 * 1000;
-const CODEX_REFRESH_THRESHOLD_MS = 30 * 60 * 1000;
 
 function claudeRefreshToken(authJsonText) {
   try {
@@ -54,45 +53,6 @@ async function refreshClaudeEntryIfNeeded(
   const refreshedAuthJson = applyRefreshToBlob(authJsonText, "claude", refreshed, nowImpl().getTime());
   await upsertAuthPoolEntryImpl({
     source: "claude",
-    auth_json: refreshedAuthJson,
-    uploader_email: entry.uploader_email || null,
-    reporter_name: "actions@github-actions",
-    hostname: "github-actions",
-  });
-  return { authJsonText: refreshedAuthJson, result: { attempted: true, ok: true } };
-}
-
-function codexRefreshToken(authJsonText) {
-  try {
-    return JSON.parse(authJsonText)?.tokens?.refresh_token || null;
-  } catch {
-    return null;
-  }
-}
-
-// When disabled_refresh_token is on, proactively rotate a near-expiry codex AT (id_token exp)
-// and persist the rotated tokens to the pool — mirroring refreshClaudeEntryIfNeeded — so the
-// pooled copy stays fresh instead of relying on the passive probe-time refresh_capture path.
-async function refreshCodexEntryIfNeeded(
-  authJsonText,
-  entry,
-  { refreshCodexTokenImpl, upsertAuthPoolEntryImpl, nowImpl },
-) {
-  const msLeft = accessTokenMsUntilExpiry(authJsonText, "codex", nowImpl().getTime());
-  if (msLeft !== null && msLeft > CODEX_REFRESH_THRESHOLD_MS) {
-    return { authJsonText, result: { attempted: false } };
-  }
-  const refreshToken = codexRefreshToken(authJsonText);
-  if (!refreshToken) {
-    return { authJsonText, result: { attempted: false, reason: "no_refresh_token" } };
-  }
-  const refreshed = await refreshCodexTokenImpl(refreshToken);
-  if (!refreshed.ok) {
-    return { authJsonText, result: { attempted: true, ok: false, auth_rejected: refreshed.auth_rejected, status: refreshed.status } };
-  }
-  const refreshedAuthJson = applyRefreshToBlob(authJsonText, "codex", refreshed, nowImpl().getTime());
-  await upsertAuthPoolEntryImpl({
-    source: "codex",
     auth_json: refreshedAuthJson,
     uploader_email: entry.uploader_email || null,
     reporter_name: "actions@github-actions",
@@ -271,7 +231,6 @@ export async function processAuthPoolEntry(
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
     authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
     refreshClaudeTokenImpl = refreshClaudeToken,
-    refreshCodexTokenImpl = refreshCodexToken,
     atOnlyMode = false,
     nowImpl = () => new Date(),
   } = {}
@@ -293,7 +252,6 @@ export async function processAuthPoolEntry(
 
   let report;
   let claudeRefreshResult = null;
-  let codexRefreshResult = null;
   try {
     let authJsonText = await decryptAuthJsonImpl(entry);
     if (atOnlyMode && entry.source === "claude") {
@@ -304,14 +262,6 @@ export async function processAuthPoolEntry(
       });
       authJsonText = refreshed.authJsonText;
       claudeRefreshResult = refreshed.result;
-    } else if (atOnlyMode && entry.source === "codex") {
-      const refreshed = await refreshCodexEntryIfNeeded(authJsonText, entry, {
-        refreshCodexTokenImpl,
-        upsertAuthPoolEntryImpl,
-        nowImpl,
-      });
-      authJsonText = refreshed.authJsonText;
-      codexRefreshResult = refreshed.result;
     }
     report =
       entry.source === "codex"
@@ -339,7 +289,6 @@ export async function processAuthPoolEntry(
       refreshed_auth_written: false,
       refreshed_auth_result: null,
       claude_refresh: claudeRefreshResult,
-      codex_refresh: codexRefreshResult,
     };
   }
   let refreshedAuthResult = null;
@@ -363,7 +312,6 @@ export async function processAuthPoolEntry(
     refreshed_auth_written: Boolean(refreshedAuthResult && !refreshedAuthResult.deduplicated),
     refreshed_auth_result: refreshedAuthResult,
     claude_refresh: claudeRefreshResult,
-    codex_refresh: codexRefreshResult,
   };
 }
 

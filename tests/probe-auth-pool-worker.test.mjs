@@ -507,61 +507,6 @@ test("dedupeEntriesByAccount breaks uploaded_at ties deterministically by sessio
   assert.equal(second.canonical[0].session_id, "zzz");
 });
 
-test("processAuthPoolEntry centrally refreshes a near-expiry codex auth in atOnlyMode", async () => {
-  const { processAuthPoolEntry } = await loadWorkerModule();
-  const authWrites = [];
-  const now = new Date("2026-06-12T00:00:00Z");
-  // id_token exp 5 minutes out -> inside the 30-minute window.
-  const idToken = "h." + Buffer.from(JSON.stringify({ exp: Math.floor(now.getTime() / 1000) + 300 })).toString("base64url") + ".s";
-  const expiringBlob = JSON.stringify({ tokens: { account_id: "acct-x", id_token: idToken, access_token: "OLD_AT", refresh_token: "REAL_RT" }, last_refresh: "old" });
-
-  const result = await processAuthPoolEntry(
-    { source: "codex", account_id: "acct-x", uploader_email: "derek@stardust.ai" },
-    {
-      atOnlyMode: true,
-      nowImpl: () => now,
-      decryptAuthJsonImpl: () => expiringBlob,
-      refreshCodexTokenImpl: async (rt) => {
-        assert.equal(rt, "REAL_RT");
-        return { ok: true, access_token: "NEW_AT", refresh_token: "NEW_RT", id_token: idToken, expires_in: 3600 };
-      },
-      probeCodexAuthJsonImpl: (authJsonText) => {
-        assert.equal(JSON.parse(authJsonText).tokens.access_token, "NEW_AT"); // probe sees refreshed AT
-        return { source: "codex", account_id: "acct-x", status: "ok", error: null, windows: { "5h": null, "1week": null } };
-      },
-      upsertAuthPoolQuotaImpl: async () => {},
-      upsertAuthPoolEntryImpl: async (entry) => { authWrites.push(entry); return { deduplicated: false }; },
-      authPoolQuotaLatestForEntryImpl: async () => null,
-    }
-  );
-  assert.equal(result.codex_refresh.ok, true);
-  assert.equal(authWrites.length, 1);
-  assert.equal(JSON.parse(authWrites[0].auth_json).tokens.refresh_token, "NEW_RT");
-});
-
-test("processAuthPoolEntry leaves codex untouched when atOnlyMode is off", async () => {
-  const { processAuthPoolEntry } = await loadWorkerModule();
-  let refreshCalled = false;
-  const now = new Date("2026-06-12T00:00:00Z");
-  const idToken = "h." + Buffer.from(JSON.stringify({ exp: Math.floor(now.getTime() / 1000) + 300 })).toString("base64url") + ".s";
-  const blob = JSON.stringify({ tokens: { account_id: "acct-x", id_token: idToken, access_token: "OLD", refresh_token: "REAL_RT" } });
-  const result = await processAuthPoolEntry(
-    { source: "codex", account_id: "acct-x" },
-    {
-      atOnlyMode: false,
-      nowImpl: () => now,
-      decryptAuthJsonImpl: () => blob,
-      refreshCodexTokenImpl: async () => { refreshCalled = true; return { ok: true, access_token: "N", refresh_token: "N" }; },
-      probeCodexAuthJsonImpl: () => ({ source: "codex", account_id: "acct-x", status: "ok", error: null, windows: { "5h": null, "1week": null } }),
-      upsertAuthPoolQuotaImpl: async () => {},
-      upsertAuthPoolEntryImpl: async () => ({ deduplicated: false }),
-      authPoolQuotaLatestForEntryImpl: async () => null,
-    }
-  );
-  assert.equal(refreshCalled, false);
-  assert.equal(result.codex_refresh ?? null, null);
-});
-
 test("summarizePoolHealth aggregates per-source health and central-refresh outcomes", async () => {
   const { summarizePoolHealth } = await loadWorkerModule();
   const items = [
