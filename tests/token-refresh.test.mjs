@@ -81,13 +81,34 @@ test("applyRefreshToBlob updates codex tokens and last_refresh", () => {
   assert.equal(out.last_refresh, new Date(0).toISOString());
 });
 
-test("accessTokenMsUntilExpiry reads claude expiresAt and codex id_token exp", () => {
+test("accessTokenMsUntilExpiry reads claude expiresAt and codex access_token exp", () => {
   const claude = JSON.stringify({ credentials: { claudeAiOauth: { expiresAt: 10_000 } } });
   assert.equal(accessTokenMsUntilExpiry(claude, "claude", 4_000), 6_000);
 
-  const idPayload = Buffer.from(JSON.stringify({ exp: 100 })).toString("base64url");
-  const codex = JSON.stringify({ tokens: { id_token: `h.${idPayload}.s` } });
-  assert.equal(accessTokenMsUntilExpiry(codex, "codex", 50_000), 100 * 1000 - 50_000);
+  // codex: access_token JWT exp takes priority over id_token exp
+  const atPayload = Buffer.from(JSON.stringify({ exp: 100 })).toString("base64url");
+  const idPayload = Buffer.from(JSON.stringify({ exp: 5 })).toString("base64url");
+  const codexBothTokens = JSON.stringify({
+    tokens: {
+      access_token: `h.${atPayload}.s`,
+      id_token: `h.${idPayload}.s`,
+    },
+  });
+  // access_token exp=100s, id_token exp=5s, now=0 → should use access_token → 100_000ms
+  assert.equal(accessTokenMsUntilExpiry(codexBothTokens, "codex", 0), 100 * 1000);
+
+  // codex: falls back to id_token when access_token is absent or not a decodable JWT
+  const codexIdTokenOnly = JSON.stringify({ tokens: { id_token: `h.${idPayload}.s` } });
+  assert.equal(accessTokenMsUntilExpiry(codexIdTokenOnly, "codex", 0), 5 * 1000);
+
+  // codex: access_token present but not a valid JWT (e.g. opaque string) → fallback to id_token
+  const codexOpaqueAt = JSON.stringify({
+    tokens: {
+      access_token: "not-a-jwt",
+      id_token: `h.${idPayload}.s`,
+    },
+  });
+  assert.equal(accessTokenMsUntilExpiry(codexOpaqueAt, "codex", 0), 5 * 1000);
 
   assert.equal(accessTokenMsUntilExpiry("not json", "claude"), null);
   assert.equal(accessTokenMsUntilExpiry(JSON.stringify({ tokens: {} }), "codex"), null);
