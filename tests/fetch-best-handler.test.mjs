@@ -4,16 +4,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", lastRefresh = "2026-05-06T00:00:00Z" }) {
-  const payload = Buffer.from(
-    JSON.stringify({
-      email,
-      name,
-      "https://api.openai.com/auth": {
-        chatgpt_plan_type: plan,
-      },
-    })
-  ).toString("base64url");
+function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", lastRefresh = "2026-05-06T00:00:00Z", exp = null }) {
+  const claims = {
+    email,
+    name,
+    "https://api.openai.com/auth": {
+      chatgpt_plan_type: plan,
+    },
+  };
+  if (exp !== null) claims.exp = exp; // codex AT expiry is read from the id_token exp
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
 
   return JSON.stringify({
     last_refresh: lastRefresh,
@@ -187,5 +187,25 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     assert.equal(refreshedServed.tokens.access_token, "access-healthy-provider");
     assert.match(refreshedServed.tokens.refresh_token, /^rt\.1\./);
     assert.ok((await db.authPoolFetchLog({ limit: 8 })).some((row) => row.reason === "refreshed_current"));
+
+    // Fallback: refresh_current on an account whose pooled copy has an ALREADY-EXPIRED AT must NOT
+    // serve that stale same-account copy (it would dead-lock the owner) — it falls through to a
+    // normal replacement instead.
+    await db.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({ accountId: "stale-provider", email: "stale@stardust.ai", exp: 1000000000 }),
+      uploader_email: "derek@stardust.ai",
+      reporter_name: "derek@mac",
+      hostname: "mac",
+    });
+    const staleReq = mockJsonRequest({
+      token,
+      body: { source: "codex", requester_id: "derek@gpu4", current_account_id: "stale@stardust.ai", refresh_current: true },
+    });
+    const staleRes = mockResponse();
+    await handler(staleReq, staleRes);
+    const stalePayload = JSON.parse(staleRes.body);
+    assert.notEqual(stalePayload.refreshed_current, true);
+    assert.notEqual(stalePayload.replacement?.account_id, "stale@stardust.ai");
   });
 });
