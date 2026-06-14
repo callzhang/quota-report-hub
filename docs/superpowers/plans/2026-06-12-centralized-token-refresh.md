@@ -219,3 +219,14 @@ AT-only and the Phase 2 path keeps its AT fresh. Flag off → nothing is strippe
 will strip its own local RT on the next successful upload. The owner's CLI then runs access-token-
 only and relies on the hub for fresh tokens; to fully log out / rotate, re-login normally (which
 writes a fresh real RT, re-uploaded, and the cycle repeats).
+
+## Update — owner-account robustness (2026-06-14)
+
+Fixes so owner accounts self-heal under disabled_refresh_token without dead-locking, and don't break multi-device use:
+
+- **keychain-first read** (149b186) + **refresh_current fallback** (972e284): the owner's live RT actually reaches the pool; a stale pooled copy no longer dead-locks the owner (falls through to a healthy account).
+- **ban/abuse monitor** (47a19e5): `lib/abuse-errors.js` + `assess_health.mjs` flag rate_limit/suspicious/locked/forbidden errors (sharing one AT across machines is unique to this mode) and exit 3 — read-only, no auto-disable.
+- **single entry per account** (76b919a, ef3010a): re-login generates a new session_id ⇒ a new row; quota is account-level so extra sessions only pollute `latest`. Collapsed three ways — upsert drops other sessions, the worker prunes stale duplicates each run (processing only the canonical newest), and a one-shot `collapseAuthPoolSessions()` cleans existing rows.
+- **codex proactive worker refresh** (ef3010a): mirrors claude's `refreshClaudeEntryIfNeeded` — the worker rotates a near-expiry codex AT and writes it back, instead of relying on the passive probe-time refresh_capture.
+
+Plan: docs/superpowers/plans/2026-06-14-owner-account-robustness.md
