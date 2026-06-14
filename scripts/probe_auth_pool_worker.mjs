@@ -15,44 +15,58 @@ import {
 } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
-import { refreshClaudeToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
+import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
 
-// Refresh a claude access token this far from expiry. The worker runs every ~15 min, so a
-// 30-minute window guarantees the served token always has comfortable life left. Unknown
-// expiry (null) also triggers a refresh.
-const CLAUDE_REFRESH_THRESHOLD_MS = 30 * 60 * 1000;
+// Proactively refresh an access token (claude OR codex) once it is within this window of expiry.
+// The cron nominally fires every ~15 min, but GitHub Actions can delay it; a 1-hour window keeps the
+// served token comfortably alive across normal jitter. Unknown expiry (null) also triggers a refresh.
+// One threshold for both sources keeps the refresh path uniform — no per-source special casing.
+const REFRESH_THRESHOLD_MS = 60 * 60 * 1000;
 
-function claudeRefreshToken(authJsonText) {
+// Skip the cloud probe for an entry whose owner re-uploaded fresh auth within this window. A recent
+// upload means the credential is alive and the client just reported its quota, so re-probing only
+// ages the token for no new information. Entries quiet for longer than this — or with no prior
+// report to fall back on — are still probed. The cron cycle re-evaluates this per entry every run.
+const PROBE_STALE_MS = 60 * 60 * 1000;
+
+function refreshTokenFromBlob(authJsonText, source) {
   try {
-    return JSON.parse(authJsonText)?.credentials?.claudeAiOauth?.refreshToken || null;
+    const parsed = JSON.parse(authJsonText);
+    if (source === "claude") return parsed?.credentials?.claudeAiOauth?.refreshToken || null;
+    if (source === "codex") return parsed?.tokens?.refresh_token || null;
   } catch {
     return null;
   }
+  return null;
 }
 
-// When disabled_refresh_token is on, the hub is the sole refresher for claude (borrowers hold a stripped RT), so
-// proactively rotate any near-expiry claude AT and persist the rotated tokens to the pool.
+// When disabled_refresh_token is on, the hub is the sole refresher (borrowers hold a stripped RT), so
+// proactively rotate any near-expiry access token — claude or codex alike — and persist the rotated
+// tokens to the pool. Selective: only entries whose AT is within REFRESH_THRESHOLD_MS of expiry are
+// refreshed; everything else returns { attempted: false } untouched (no RT replay, no needless rotation).
 // Returns the (possibly refreshed) auth_json plus a small result for the run report.
-async function refreshClaudeEntryIfNeeded(
+async function refreshEntryIfNeeded(
   authJsonText,
   entry,
-  { refreshClaudeTokenImpl, upsertAuthPoolEntryImpl, nowImpl },
+  source,
+  { refreshTokenImpl, upsertAuthPoolEntryImpl, nowImpl },
 ) {
-  const msLeft = accessTokenMsUntilExpiry(authJsonText, "claude", nowImpl().getTime());
-  if (msLeft !== null && msLeft > CLAUDE_REFRESH_THRESHOLD_MS) {
+  const now = nowImpl().getTime();
+  const msLeft = accessTokenMsUntilExpiry(authJsonText, source, now);
+  if (msLeft !== null && msLeft > REFRESH_THRESHOLD_MS) {
     return { authJsonText, result: { attempted: false } };
   }
-  const refreshToken = claudeRefreshToken(authJsonText);
+  const refreshToken = refreshTokenFromBlob(authJsonText, source);
   if (!refreshToken) {
     return { authJsonText, result: { attempted: false, reason: "no_refresh_token" } };
   }
-  const refreshed = await refreshClaudeTokenImpl(refreshToken);
+  const refreshed = await refreshTokenImpl(refreshToken);
   if (!refreshed.ok) {
     return { authJsonText, result: { attempted: true, ok: false, auth_rejected: refreshed.auth_rejected, status: refreshed.status } };
   }
-  const refreshedAuthJson = applyRefreshToBlob(authJsonText, "claude", refreshed, nowImpl().getTime());
+  const refreshedAuthJson = applyRefreshToBlob(authJsonText, source, refreshed, now);
   await upsertAuthPoolEntryImpl({
-    source: "claude",
+    source,
     auth_json: refreshedAuthJson,
     uploader_email: entry.uploader_email || null,
     reporter_name: "actions@github-actions",
@@ -219,6 +233,44 @@ function shouldSkipFreshClientQuotaReport(entry, previousReport, now = new Date(
   return true;
 }
 
+function entryRecentlyUpdated(entry, now = new Date()) {
+  const uploadedAt = parseDateMillis(entry.uploaded_at);
+  if (uploadedAt === null) {
+    return false;
+  }
+  const ageMillis = now.getTime() - uploadedAt;
+  return ageMillis >= 0 && ageMillis < PROBE_STALE_MS;
+}
+
+// Why this entry's probe can be skipped this cycle, or null if it must be probed. The cron cycle
+// re-runs this per entry: we skip when the client already reported fresh quota, or when the owner
+// re-uploaded fresh auth within PROBE_STALE_MS. A brand-new entry (no prior report) is always probed
+// so it gets a baseline quota reading.
+function probeSkipReason(entry, previousReport, now = new Date()) {
+  if (shouldSkipFreshClientQuotaReport(entry, previousReport, now)) {
+    return "fresh_client_quota_report";
+  }
+  if (previousReport && entryRecentlyUpdated(entry, now)) {
+    return "recently_updated";
+  }
+  return null;
+}
+
+function skippedProbeItem(entry, previousReport, skipReason, centralRefreshResult) {
+  return {
+    source: entry.source,
+    account_id: entry.account_id,
+    status: previousReport?.status ?? null,
+    error: previousReport?.error ?? null,
+    skipped_cloud_probe: true,
+    skip_reason: skipReason,
+    latest_reported_at: previousReport?.reported_at ?? null,
+    refreshed_auth_written: false,
+    refreshed_auth_result: null,
+    central_refresh: centralRefreshResult,
+  };
+}
+
 export async function processAuthPoolEntry(
   entry,
   {
@@ -231,37 +283,38 @@ export async function processAuthPoolEntry(
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
     authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
     refreshClaudeTokenImpl = refreshClaudeToken,
+    refreshCodexTokenImpl = refreshCodexToken,
     atOnlyMode = false,
     nowImpl = () => new Date(),
   } = {}
 ) {
+  const now = nowImpl();
   const previousReport = await authPoolQuotaLatestForEntryImpl({ source: entry.source, accountId: entry.account_id });
-  if (shouldSkipFreshClientQuotaReport(entry, previousReport, nowImpl())) {
-    return {
-      source: entry.source,
-      account_id: entry.account_id,
-      status: previousReport.status,
-      error: previousReport.error,
-      skipped_cloud_probe: true,
-      skip_reason: "fresh_client_quota_report",
-      latest_reported_at: previousReport.reported_at,
-      refreshed_auth_written: false,
-      refreshed_auth_result: null,
-    };
+  const skipReason = probeSkipReason(entry, previousReport, now);
+  const probeNeeded = skipReason === null;
+
+  // Nothing to do this cycle: not probing and not in central-refresh mode. Skip before decrypt.
+  if (!probeNeeded && !atOnlyMode) {
+    return skippedProbeItem(entry, previousReport, skipReason, null);
   }
 
-  let report;
-  let claudeRefreshResult = null;
+  let report = null;
+  let centralRefreshResult = null;
   try {
     let authJsonText = await decryptAuthJsonImpl(entry);
-    if (atOnlyMode && entry.source === "claude") {
-      const refreshed = await refreshClaudeEntryIfNeeded(authJsonText, entry, {
-        refreshClaudeTokenImpl,
+    if (atOnlyMode && (entry.source === "claude" || entry.source === "codex")) {
+      const refreshTokenImpl = entry.source === "claude" ? refreshClaudeTokenImpl : refreshCodexTokenImpl;
+      const refreshed = await refreshEntryIfNeeded(authJsonText, entry, entry.source, {
+        refreshTokenImpl,
         upsertAuthPoolEntryImpl,
         nowImpl,
       });
       authJsonText = refreshed.authJsonText;
-      claudeRefreshResult = refreshed.result;
+      centralRefreshResult = refreshed.result;
+    }
+    if (!probeNeeded) {
+      // Central refresh was evaluated above; the probe is the only part we defer for a fresh entry.
+      return skippedProbeItem(entry, previousReport, skipReason, centralRefreshResult);
     }
     report =
       entry.source === "codex"
@@ -274,6 +327,9 @@ export async function processAuthPoolEntry(
       report_origin: "worker",
     };
   } catch (error) {
+    if (!probeNeeded) {
+      return skippedProbeItem(entry, previousReport, skipReason, centralRefreshResult);
+    }
     report = failureReport(entry, error);
   }
   if (shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport)) {
@@ -288,7 +344,7 @@ export async function processAuthPoolEntry(
       delete_reason: deleteReason(entry, report, previousReport),
       refreshed_auth_written: false,
       refreshed_auth_result: null,
-      claude_refresh: claudeRefreshResult,
+      central_refresh: centralRefreshResult,
     };
   }
   let refreshedAuthResult = null;
@@ -311,7 +367,7 @@ export async function processAuthPoolEntry(
     error: report.error,
     refreshed_auth_written: Boolean(refreshedAuthResult && !refreshedAuthResult.deduplicated),
     refreshed_auth_result: refreshedAuthResult,
-    claude_refresh: claudeRefreshResult,
+    central_refresh: centralRefreshResult,
   };
 }
 
@@ -350,7 +406,7 @@ export function summarizePoolHealth(items) {
     } else {
       h.other_err_count++;
     }
-    const refresh = item.claude_refresh;
+    const refresh = item.central_refresh;
     if (refresh && refresh.attempted) {
       h.central_refresh_attempted++;
       if (refresh.ok) {

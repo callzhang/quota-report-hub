@@ -104,7 +104,7 @@ test("processAuthPoolEntry centrally refreshes a near-expiry claude auth in disa
     }
   );
 
-  assert.equal(result.claude_refresh.ok, true);
+  assert.equal(result.central_refresh.ok, true);
   assert.equal(authWrites.length, 1);
   const persisted = JSON.parse(authWrites[0].auth_json).credentials.claudeAiOauth;
   assert.equal(persisted.accessToken, "NEW_AT");
@@ -137,7 +137,7 @@ test("processAuthPoolEntry leaves a claude auth untouched when disabled_refresh_
   );
 
   assert.equal(refreshCalled, false);
-  assert.equal(result.claude_refresh, null);
+  assert.equal(result.central_refresh, null);
 });
 
 test("processAuthPoolEntry does not write back when codex probe did not refresh auth", async () => {
@@ -257,6 +257,175 @@ test("processAuthPoolEntry probes when fresh client quota belongs to older auth 
   assert.equal(decryptCalled, true);
   assert.equal(result.skipped_cloud_probe, undefined);
   assert.equal(result.status, "ok");
+});
+
+test("processAuthPoolEntry centrally refreshes a near-expiry codex auth in disabled_refresh_token", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const authWrites = [];
+  const now = new Date("2026-06-12T00:00:00Z");
+  // access_token JWT exp 30 min out -> inside the 1-hour refresh window.
+  const expSeconds = Math.floor(now.getTime() / 1000) + 30 * 60;
+  const atPayload = Buffer.from(JSON.stringify({ exp: expSeconds })).toString("base64url");
+  const expiringBlob = JSON.stringify({
+    tokens: { access_token: `h.${atPayload}.s`, refresh_token: "REAL_RT", id_token: "OLD_ID", account_id: "acct-codex" },
+  });
+
+  const result = await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-codex", uploader_email: "derek@stardust.ai" },
+    {
+      atOnlyMode: true,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => expiringBlob,
+      refreshCodexTokenImpl: async (rt) => {
+        assert.equal(rt, "REAL_RT");
+        return { ok: true, access_token: "NEW_AT", refresh_token: "NEW_RT", id_token: "NEW_ID" };
+      },
+      probeCodexAuthJsonImpl: (authJsonText) => {
+        // the probe must see the freshly refreshed access token, not the stale one
+        const tokens = JSON.parse(authJsonText).tokens;
+        assert.equal(tokens.access_token, "NEW_AT");
+        return { source: "codex", account_id: "acct-codex", status: "ok", error: null, windows: { "5h": null, "1week": null } };
+      },
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async (entry) => {
+        authWrites.push(entry);
+        return { deduplicated: false };
+      },
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+
+  assert.equal(result.central_refresh.ok, true);
+  assert.equal(authWrites.length, 1);
+  const persisted = JSON.parse(authWrites[0].auth_json).tokens;
+  assert.equal(persisted.access_token, "NEW_AT");
+  assert.equal(persisted.refresh_token, "NEW_RT");
+  assert.equal(persisted.id_token, "NEW_ID");
+});
+
+test("processAuthPoolEntry refreshes a claude auth 45 min from expiry (1-hour threshold)", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const now = new Date("2026-06-12T00:00:00Z");
+  let refreshCalled = false;
+  // 45 min out: past the old 30-min window, inside the new unified 1-hour window.
+  const blob = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "OLD_AT", refreshToken: "REAL_RT", expiresAt: now.getTime() + 45 * 60 * 1000 } },
+  });
+
+  const result = await processAuthPoolEntry(
+    { source: "claude", account_id: "acct-claude-45" },
+    {
+      atOnlyMode: true,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => blob,
+      refreshClaudeTokenImpl: async () => {
+        refreshCalled = true;
+        return { ok: true, access_token: "NEW_AT", refresh_token: "NEW_RT", expires_in: 28800 };
+      },
+      probeClaudeAuthJsonImpl: () => ({ source: "claude", account_id: "acct-claude-45", status: "ok", error: null, windows: { "5h": null, "1week": null } }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async () => ({ deduplicated: false }),
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+
+  assert.equal(refreshCalled, true);
+  assert.equal(result.central_refresh.ok, true);
+});
+
+test("processAuthPoolEntry skips the probe for an entry re-uploaded within the hour", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  let decryptCalled = false;
+  let quotaWritten = false;
+  const now = new Date("2026-06-12T01:00:00Z");
+
+  const result = await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-fresh-upload", uploaded_at: "2026-06-12T00:40:00Z" }, // 20 min ago
+    {
+      decryptAuthJsonImpl: () => {
+        decryptCalled = true;
+        return '{"tokens":{"account_id":"acct-fresh-upload"}}';
+      },
+      upsertAuthPoolQuotaImpl: async () => {
+        quotaWritten = true;
+      },
+      authPoolQuotaLatestForEntryImpl: async () => ({
+        source: "codex",
+        account_id: "acct-fresh-upload",
+        status: "ok",
+        reported_at: "2026-06-12T00:40:00Z",
+      }),
+      nowImpl: () => now,
+    }
+  );
+
+  assert.equal(decryptCalled, false);
+  assert.equal(quotaWritten, false);
+  assert.equal(result.skipped_cloud_probe, true);
+  assert.equal(result.skip_reason, "recently_updated");
+  assert.equal(result.status, "ok");
+});
+
+test("processAuthPoolEntry probes a recently-uploaded entry that has no prior report", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  let decryptCalled = false;
+  const now = new Date("2026-06-12T01:00:00Z");
+
+  const result = await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-new", uploaded_at: "2026-06-12T00:40:00Z" }, // 20 min ago, but brand new
+    {
+      decryptAuthJsonImpl: () => {
+        decryptCalled = true;
+        return '{"tokens":{"account_id":"acct-new"}}';
+      },
+      probeCodexAuthJsonImpl: () => ({
+        source: "codex",
+        account_id: "acct-new",
+        status: "ok",
+        windows: { "5h": { remaining_percent: 50 }, "1week": null },
+      }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      authPoolQuotaLatestForEntryImpl: async () => null,
+      nowImpl: () => now,
+    }
+  );
+
+  assert.equal(decryptCalled, true);
+  assert.equal(result.skipped_cloud_probe, undefined);
+  assert.equal(result.status, "ok");
+});
+
+test("processAuthPoolEntry probes an entry whose last upload is older than the hour", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  let decryptCalled = false;
+  const now = new Date("2026-06-12T03:00:00Z");
+
+  const result = await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-stale", uploaded_at: "2026-06-12T00:40:00Z" }, // >2h ago
+    {
+      decryptAuthJsonImpl: () => {
+        decryptCalled = true;
+        return '{"tokens":{"account_id":"acct-stale"}}';
+      },
+      probeCodexAuthJsonImpl: () => ({
+        source: "codex",
+        account_id: "acct-stale",
+        status: "ok",
+        windows: { "5h": { remaining_percent: 50 }, "1week": null },
+      }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      authPoolQuotaLatestForEntryImpl: async () => ({
+        source: "codex",
+        account_id: "acct-stale",
+        status: "ok",
+        reported_at: "2026-06-12T00:40:00Z",
+      }),
+      nowImpl: () => now,
+    }
+  );
+
+  assert.equal(decryptCalled, true);
+  assert.equal(result.skipped_cloud_probe, undefined);
 });
 
 test("processAuthPoolEntry deletes unusable codex auths with missing quota details", async () => {
@@ -514,8 +683,8 @@ test("summarizePoolHealth aggregates per-source health and central-refresh outco
     { source: "codex", status: "error", error: "auth failed (401 unauthorized)" },
     { source: "codex", status: "error", error: "something transient" },
     { source: "codex", status: "ok", deleted_from_auth_pool: true }, // excluded from the snapshot
-    { source: "claude", status: "ok", claude_refresh: { attempted: true, ok: true } },
-    { source: "claude", status: "error", error: "claude auth invalid (authentication_error)", claude_refresh: { attempted: true, ok: false, auth_rejected: true } },
+    { source: "claude", status: "ok", central_refresh: { attempted: true, ok: true } },
+    { source: "claude", status: "error", error: "claude auth invalid (authentication_error)", central_refresh: { attempted: true, ok: false, auth_rejected: true } },
   ];
   const health = summarizePoolHealth(items);
   assert.equal(health.codex.total, 3);
