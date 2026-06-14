@@ -441,6 +441,127 @@ test("processAuthPoolEntry keeps first 401 probe in the pool", async () => {
   assert.equal(deletions.length, 0);
 });
 
+test("dedupeEntriesByAccount keeps the freshest session per account and marks the rest stale", async () => {
+  const { dedupeEntriesByAccount } = await loadWorkerModule();
+  const entries = [
+    { source: "claude", account_id: "claude-lei", session_id: "newest", uploaded_at: "2026-06-12T14:24:08.664Z" },
+    { source: "claude", account_id: "claude-lei", session_id: "mid", uploaded_at: "2026-06-12T06:16:29.254Z" },
+    { source: "claude", account_id: "claude-lei", session_id: "oldest", uploaded_at: "2026-06-11T22:08:53.384Z" },
+    { source: "claude", account_id: "claude-qpt", session_id: "q-new", uploaded_at: "2026-06-12T05:03:09.126Z" },
+    { source: "claude", account_id: "claude-qpt", session_id: "q-old", uploaded_at: "2026-06-11T10:37:03.000Z" },
+    { source: "claude", account_id: "claude-solo", session_id: "s1", uploaded_at: "2026-05-28T04:46:08.384Z" },
+  ];
+
+  const { canonical, stale } = dedupeEntriesByAccount(entries);
+
+  // one canonical per distinct account, each the freshest upload
+  assert.deepEqual(
+    canonical.map((entry) => `${entry.account_id}:${entry.session_id}`).sort(),
+    ["claude-lei:newest", "claude-qpt:q-new", "claude-solo:s1"]
+  );
+  // every other session is pruned
+  assert.deepEqual(
+    stale.map((entry) => `${entry.account_id}:${entry.session_id}`).sort(),
+    ["claude-lei:mid", "claude-lei:oldest", "claude-qpt:q-old"]
+  );
+});
+
+test("dedupeEntriesByAccount keys on source+account so a shared id across sources is not merged", async () => {
+  const { dedupeEntriesByAccount } = await loadWorkerModule();
+  const entries = [
+    { source: "claude", account_id: "leizhang0121@gmail.com", session_id: "c", uploaded_at: "2026-06-12T00:00:00Z" },
+    { source: "codex", account_id: "leizhang0121@gmail.com", session_id: "x", uploaded_at: "2026-06-12T00:00:00Z" },
+  ];
+
+  const { canonical, stale } = dedupeEntriesByAccount(entries);
+
+  assert.equal(canonical.length, 2);
+  assert.equal(stale.length, 0);
+});
+
+test("dedupeEntriesByAccount never merges or prunes entries without an account_id", async () => {
+  const { dedupeEntriesByAccount } = await loadWorkerModule();
+  const entries = [
+    { source: "claude", account_id: "", session_id: "a", uploaded_at: "2026-06-12T00:00:00Z" },
+    { source: "claude", account_id: null, session_id: "b", uploaded_at: "2026-06-11T00:00:00Z" },
+  ];
+
+  const { canonical, stale } = dedupeEntriesByAccount(entries);
+
+  assert.equal(canonical.length, 2);
+  assert.equal(stale.length, 0);
+});
+
+test("dedupeEntriesByAccount breaks uploaded_at ties deterministically by session_id", async () => {
+  const { dedupeEntriesByAccount } = await loadWorkerModule();
+  const sameInstant = "2026-06-12T14:24:08.664Z";
+  const entries = [
+    { source: "claude", account_id: "acct", session_id: "aaa", uploaded_at: sameInstant },
+    { source: "claude", account_id: "acct", session_id: "zzz", uploaded_at: sameInstant },
+  ];
+
+  const first = dedupeEntriesByAccount(entries);
+  const second = dedupeEntriesByAccount([...entries].reverse());
+
+  assert.equal(first.canonical[0].session_id, "zzz");
+  assert.equal(second.canonical[0].session_id, "zzz");
+});
+
+test("processAuthPoolEntry centrally refreshes a near-expiry codex auth in atOnlyMode", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const authWrites = [];
+  const now = new Date("2026-06-12T00:00:00Z");
+  // id_token exp 5 minutes out -> inside the 30-minute window.
+  const idToken = "h." + Buffer.from(JSON.stringify({ exp: Math.floor(now.getTime() / 1000) + 300 })).toString("base64url") + ".s";
+  const expiringBlob = JSON.stringify({ tokens: { account_id: "acct-x", id_token: idToken, access_token: "OLD_AT", refresh_token: "REAL_RT" }, last_refresh: "old" });
+
+  const result = await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-x", uploader_email: "derek@stardust.ai" },
+    {
+      atOnlyMode: true,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => expiringBlob,
+      refreshCodexTokenImpl: async (rt) => {
+        assert.equal(rt, "REAL_RT");
+        return { ok: true, access_token: "NEW_AT", refresh_token: "NEW_RT", id_token: idToken, expires_in: 3600 };
+      },
+      probeCodexAuthJsonImpl: (authJsonText) => {
+        assert.equal(JSON.parse(authJsonText).tokens.access_token, "NEW_AT"); // probe sees refreshed AT
+        return { source: "codex", account_id: "acct-x", status: "ok", error: null, windows: { "5h": null, "1week": null } };
+      },
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async (entry) => { authWrites.push(entry); return { deduplicated: false }; },
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+  assert.equal(result.codex_refresh.ok, true);
+  assert.equal(authWrites.length, 1);
+  assert.equal(JSON.parse(authWrites[0].auth_json).tokens.refresh_token, "NEW_RT");
+});
+
+test("processAuthPoolEntry leaves codex untouched when atOnlyMode is off", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  let refreshCalled = false;
+  const now = new Date("2026-06-12T00:00:00Z");
+  const idToken = "h." + Buffer.from(JSON.stringify({ exp: Math.floor(now.getTime() / 1000) + 300 })).toString("base64url") + ".s";
+  const blob = JSON.stringify({ tokens: { account_id: "acct-x", id_token: idToken, access_token: "OLD", refresh_token: "REAL_RT" } });
+  const result = await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-x" },
+    {
+      atOnlyMode: false,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => blob,
+      refreshCodexTokenImpl: async () => { refreshCalled = true; return { ok: true, access_token: "N", refresh_token: "N" }; },
+      probeCodexAuthJsonImpl: () => ({ source: "codex", account_id: "acct-x", status: "ok", error: null, windows: { "5h": null, "1week": null } }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async () => ({ deduplicated: false }),
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+  assert.equal(refreshCalled, false);
+  assert.equal(result.codex_refresh ?? null, null);
+});
+
 test("summarizePoolHealth aggregates per-source health and central-refresh outcomes", async () => {
   const { summarizePoolHealth } = await loadWorkerModule();
   const items = [

@@ -7,6 +7,7 @@ import {
   authPoolEntries,
   authPoolQuotaLatestForEntry,
   deleteAuthPoolEntry,
+  deleteAuthPoolEntryRow,
   getFeatureFlag,
   recordPoolHealthSnapshot,
   upsertAuthPoolEntry,
@@ -14,12 +15,13 @@ import {
 } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
-import { refreshClaudeToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
+import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
 
 // Refresh a claude access token this far from expiry. The worker runs every ~15 min, so a
 // 30-minute window guarantees the served token always has comfortable life left. Unknown
 // expiry (null) also triggers a refresh.
 const CLAUDE_REFRESH_THRESHOLD_MS = 30 * 60 * 1000;
+const CODEX_REFRESH_THRESHOLD_MS = 30 * 60 * 1000;
 
 function claudeRefreshToken(authJsonText) {
   try {
@@ -52,6 +54,45 @@ async function refreshClaudeEntryIfNeeded(
   const refreshedAuthJson = applyRefreshToBlob(authJsonText, "claude", refreshed, nowImpl().getTime());
   await upsertAuthPoolEntryImpl({
     source: "claude",
+    auth_json: refreshedAuthJson,
+    uploader_email: entry.uploader_email || null,
+    reporter_name: "actions@github-actions",
+    hostname: "github-actions",
+  });
+  return { authJsonText: refreshedAuthJson, result: { attempted: true, ok: true } };
+}
+
+function codexRefreshToken(authJsonText) {
+  try {
+    return JSON.parse(authJsonText)?.tokens?.refresh_token || null;
+  } catch {
+    return null;
+  }
+}
+
+// When disabled_refresh_token is on, proactively rotate a near-expiry codex AT (id_token exp)
+// and persist the rotated tokens to the pool — mirroring refreshClaudeEntryIfNeeded — so the
+// pooled copy stays fresh instead of relying on the passive probe-time refresh_capture path.
+async function refreshCodexEntryIfNeeded(
+  authJsonText,
+  entry,
+  { refreshCodexTokenImpl, upsertAuthPoolEntryImpl, nowImpl },
+) {
+  const msLeft = accessTokenMsUntilExpiry(authJsonText, "codex", nowImpl().getTime());
+  if (msLeft !== null && msLeft > CODEX_REFRESH_THRESHOLD_MS) {
+    return { authJsonText, result: { attempted: false } };
+  }
+  const refreshToken = codexRefreshToken(authJsonText);
+  if (!refreshToken) {
+    return { authJsonText, result: { attempted: false, reason: "no_refresh_token" } };
+  }
+  const refreshed = await refreshCodexTokenImpl(refreshToken);
+  if (!refreshed.ok) {
+    return { authJsonText, result: { attempted: true, ok: false, auth_rejected: refreshed.auth_rejected, status: refreshed.status } };
+  }
+  const refreshedAuthJson = applyRefreshToBlob(authJsonText, "codex", refreshed, nowImpl().getTime());
+  await upsertAuthPoolEntryImpl({
+    source: "codex",
     auth_json: refreshedAuthJson,
     uploader_email: entry.uploader_email || null,
     reporter_name: "actions@github-actions",
@@ -230,6 +271,7 @@ export async function processAuthPoolEntry(
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
     authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
     refreshClaudeTokenImpl = refreshClaudeToken,
+    refreshCodexTokenImpl = refreshCodexToken,
     atOnlyMode = false,
     nowImpl = () => new Date(),
   } = {}
@@ -251,6 +293,7 @@ export async function processAuthPoolEntry(
 
   let report;
   let claudeRefreshResult = null;
+  let codexRefreshResult = null;
   try {
     let authJsonText = await decryptAuthJsonImpl(entry);
     if (atOnlyMode && entry.source === "claude") {
@@ -261,6 +304,14 @@ export async function processAuthPoolEntry(
       });
       authJsonText = refreshed.authJsonText;
       claudeRefreshResult = refreshed.result;
+    } else if (atOnlyMode && entry.source === "codex") {
+      const refreshed = await refreshCodexEntryIfNeeded(authJsonText, entry, {
+        refreshCodexTokenImpl,
+        upsertAuthPoolEntryImpl,
+        nowImpl,
+      });
+      authJsonText = refreshed.authJsonText;
+      codexRefreshResult = refreshed.result;
     }
     report =
       entry.source === "codex"
@@ -288,6 +339,7 @@ export async function processAuthPoolEntry(
       refreshed_auth_written: false,
       refreshed_auth_result: null,
       claude_refresh: claudeRefreshResult,
+      codex_refresh: codexRefreshResult,
     };
   }
   let refreshedAuthResult = null;
@@ -311,6 +363,7 @@ export async function processAuthPoolEntry(
     refreshed_auth_written: Boolean(refreshedAuthResult && !refreshedAuthResult.deduplicated),
     refreshed_auth_result: refreshedAuthResult,
     claude_refresh: claudeRefreshResult,
+    codex_refresh: codexRefreshResult,
   };
 }
 
@@ -362,11 +415,76 @@ export function summarizePoolHealth(items) {
   return bySource;
 }
 
-export async function main() {
-  const entries = await authPoolEntries();
-  const atOnlyMode = await getFeatureFlag("disabled_refresh_token", false);
-  const items = [];
+// Collapse pool entries to one canonical session per (source, account_id), keeping the freshest
+// by uploaded_at. Multiple sessions of one account each hold a refresh token from a different
+// rotation generation of the SAME OAuth token family; centrally refreshing more than one of them
+// makes the hub replay a superseded refresh token, which the provider treats as token reuse and
+// answers by revoking the whole family — i.e. the death spiral the disabled_refresh_token kill
+// switch was meant to stop, reintroduced inside the worker itself. We only ever process/refresh
+// the canonical session and prune the rest. Rows with no account_id are always kept (each is its
+// own group), so an unidentified entry can never swallow another.
+export function dedupeEntriesByAccount(entries) {
+  const groups = new Map();
+  let anonymousSeq = 0;
+  for (const entry of entries) {
+    const accountId = entry?.account_id ? String(entry.account_id) : "";
+    const key = accountId
+      ? `${entry.source} ${accountId}`
+      : `${entry.source} __anon__ ${anonymousSeq++}`;
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(entry);
+    else groups.set(key, [entry]);
+  }
 
+  const canonical = [];
+  const stale = [];
+  for (const bucket of groups.values()) {
+    if (bucket.length === 1) {
+      canonical.push(bucket[0]);
+      continue;
+    }
+    const ranked = bucket
+      .map((entry, index) => ({ entry, index }))
+      .sort((left, right) => {
+        const leftAt = Date.parse(left.entry.uploaded_at || "") || 0;
+        const rightAt = Date.parse(right.entry.uploaded_at || "") || 0;
+        if (leftAt !== rightAt) return rightAt - leftAt; // freshest upload first
+        const leftSession = String(left.entry.session_id || "");
+        const rightSession = String(right.entry.session_id || "");
+        if (leftSession !== rightSession) return leftSession < rightSession ? 1 : -1;
+        return left.index - right.index;
+      })
+      .map((ranked) => ranked.entry);
+    canonical.push(ranked[0]);
+    for (const duplicate of ranked.slice(1)) stale.push(duplicate);
+  }
+  return { canonical, stale };
+}
+
+export async function main() {
+  const allEntries = await authPoolEntries();
+  const { canonical: entries, stale } = dedupeEntriesByAccount(allEntries);
+  const atOnlyMode = await getFeatureFlag("disabled_refresh_token", false);
+
+  // Prune stale duplicate sessions before any refresh runs, so the worker never replays a
+  // superseded refresh token of an account whose canonical session it is about to refresh.
+  const prunedDuplicates = [];
+  for (const entry of stale) {
+    try {
+      const result = await deleteAuthPoolEntryRow({
+        source: entry.source,
+        accountId: entry.account_id,
+        sessionId: entry.session_id || "",
+      });
+      if (result?.deleted) {
+        prunedDuplicates.push({ source: entry.source, account_id: entry.account_id, session_id: entry.session_id || "" });
+      }
+    } catch (error) {
+      console.error("failed to prune duplicate auth pool entry:", error?.message || error);
+    }
+  }
+
+  const items = [];
   for (const entry of entries) {
     items.push(await processAuthPoolEntry(entry, { atOnlyMode }));
   }
@@ -381,7 +499,13 @@ export async function main() {
     }
   }
 
-  console.log(JSON.stringify({ ok: true, count: items.length, atOnlyMode, health, items }, null, 2));
+  console.log(
+    JSON.stringify(
+      { ok: true, count: items.length, pruned_duplicates: prunedDuplicates.length, atOnlyMode, health, pruned: prunedDuplicates, items },
+      null,
+      2
+    )
+  );
 }
 
 const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
