@@ -5,6 +5,15 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
+# Never let two probe runs overlap: each run snapshots the pool at start and centrally
+# refreshes tokens, so two concurrent runs can replay an already-rotated refresh token and
+# get the whole token family revoked by the provider. A fixed concurrency group serializes
+# runs; cancel-in-progress:false lets the active run finish (never kill a refresh mid-flight)
+# and queues the next one to start on a fresh snapshot.
+concurrency:
+  group: probe-auth-pool
+  cancel-in-progress: false
+
 jobs:
   probe:
     runs-on: ubuntu-latest
