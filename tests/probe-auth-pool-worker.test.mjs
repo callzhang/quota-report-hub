@@ -366,6 +366,42 @@ test("processAuthPoolEntry skips the probe for an entry re-uploaded within the h
   assert.equal(result.status, "ok");
 });
 
+test("processAuthPoolEntry re-probes a recently-uploaded entry whose prior report was an error (recovery)", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  let decryptCalled = false;
+  const now = new Date("2026-06-12T01:00:00Z");
+
+  const result = await processAuthPoolEntry(
+    { source: "claude", account_id: "claude-recovered", uploaded_at: "2026-06-12T00:40:00Z" }, // 20 min ago
+    {
+      decryptAuthJsonImpl: () => {
+        decryptCalled = true;
+        return '{"credentials":{"claudeAiOauth":{"accessToken":"AT"}}}';
+      },
+      probeClaudeAuthJsonImpl: () => ({
+        source: "claude",
+        account_id: "claude-recovered",
+        status: "ok",
+        windows: { "5h": { remaining_percent: 88 }, "1week": { remaining_percent: 95 } },
+      }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      // prior report was a hard error — a re-upload is a recovery, so we must re-probe, not skip
+      authPoolQuotaLatestForEntryImpl: async () => ({
+        source: "claude",
+        account_id: "claude-recovered",
+        status: "error",
+        error: "claude auth invalid (authentication_error)",
+        reported_at: "2026-06-12T00:30:00Z",
+      }),
+      nowImpl: () => now,
+    }
+  );
+
+  assert.equal(decryptCalled, true);
+  assert.equal(result.skipped_cloud_probe, undefined);
+  assert.equal(result.status, "ok");
+});
+
 test("processAuthPoolEntry probes a recently-uploaded entry that has no prior report", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   let decryptCalled = false;

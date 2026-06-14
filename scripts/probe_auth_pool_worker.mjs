@@ -245,12 +245,15 @@ function entryRecentlyUpdated(entry, now = new Date()) {
 // Why this entry's probe can be skipped this cycle, or null if it must be probed. The cron cycle
 // re-runs this per entry: we skip when the client already reported fresh quota, or when the owner
 // re-uploaded fresh auth within PROBE_STALE_MS. A brand-new entry (no prior report) is always probed
-// so it gets a baseline quota reading.
+// so it gets a baseline quota reading. The recently-updated skip applies ONLY when the prior report
+// was healthy (status ok): a previously-errored account that was just re-uploaded is a recovery, and
+// must be re-probed promptly to clear the stale error and publish fresh quota — the client often
+// cannot report quota right after a re-login (empty statusline snapshot / usage backoff).
 function probeSkipReason(entry, previousReport, now = new Date()) {
   if (shouldSkipFreshClientQuotaReport(entry, previousReport, now)) {
     return "fresh_client_quota_report";
   }
-  if (previousReport && entryRecentlyUpdated(entry, now)) {
+  if (previousReport && previousReport.status === "ok" && entryRecentlyUpdated(entry, now)) {
     return "recently_updated";
   }
   return null;
