@@ -1072,6 +1072,37 @@ test("upsertAuthPoolEntry collapses the same account to one row (drops other ses
   }
 });
 
+test("deleteAuthPoolEntryRow deletes a single session row without cascading", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({ accountId: "x", email: "row@stardust.ai", sid: "sess-1" }),
+      uploader_email: "row@stardust.ai",
+    });
+
+    // Read the actual session_id stored by upsertAuthPoolEntry rather than assuming.
+    const { rows: sessionRows } = await client.execute({
+      sql: `SELECT session_id FROM auth_pool_entries WHERE source='codex' AND account_id='row@stardust.ai'`,
+    });
+    assert.equal(sessionRows.length, 1, "precondition: one row inserted");
+    const sessionId = sessionRows[0].session_id;
+
+    const del = await mod.deleteAuthPoolEntryRow({ source: "codex", accountId: "row@stardust.ai", sessionId });
+    assert.equal(del.deleted, true);
+
+    const { rows: afterRows } = await client.execute({
+      sql: `SELECT COUNT(*) AS cnt FROM auth_pool_entries WHERE source='codex' AND account_id='row@stardust.ai'`,
+    });
+    assert.equal(Number(afterRows[0].cnt), 0, "row must be gone after delete");
+
+    const del2 = await mod.deleteAuthPoolEntryRow({ source: "codex", accountId: "row@stardust.ai", sessionId });
+    assert.equal(del2.deleted, false, "second delete must be a no-op");
+  } finally {
+    cleanup();
+  }
+});
+
 test("collapseAuthPoolSessions keeps only the newest row per account", async () => {
   const { mod, client, cleanup } = await loadDbWithTempStore();
   try {
