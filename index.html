@@ -525,6 +525,16 @@
         setTokenCookie(currentToken);
       }
 
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        }[ch]));
+      }
+
       function setAuthenticatedView(email) {
         authPanel.hidden = true;
         viewerChip.hidden = false;
@@ -655,7 +665,7 @@
         const refreshAge = item.uploaded_at
           ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(item.uploaded_at)) / 1000)))
           : "n/a";
-        const error = item.error ? `<div class="meta wrap" style="color:var(--red)">${item.error}</div>` : "";
+        const error = item.error ? `<div class="meta wrap" style="color:var(--red)">${escapeHtml(item.error)}</div>` : "";
         return `
           <div class="usage-block">
             <div class="wrap">probe ${probeAge}</div>
@@ -676,7 +686,8 @@
 
       function sourceTag(value) {
         const normalized = String(value || "unknown").toLowerCase();
-        return `<span class="source-tag ${normalized}">${normalized}</span>`;
+        const safe = escapeHtml(normalized);
+        return `<span class="source-tag ${safe}">${safe}</span>`;
       }
 
       function formatAge(seconds) {
@@ -736,16 +747,16 @@
           `<article class="card"><div class="meta">Cloud auth entries</div><strong>${payload.auth_pool_count || 0}</strong><div class="meta">Encrypted auths in pool</div></article>`,
           `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Cloud auth pool sources</div></article>`,
           `<article class="card"><div class="meta">Archived invalidated</div><strong>${payload.archived_invalidated_count || 0}</strong><div class="meta">Hidden from active rotation</div></article>`,
-          `<article class="card"><div class="meta">Latest upload</div><strong class="text">${items[0]?.email || items[0]?.uploader_email || "n/a"}</strong><div class="meta wrap">${formatDate(items[0]?.uploaded_at)}</div></article>`
+          `<article class="card"><div class="meta">Latest upload</div><strong class="text">${escapeHtml(items[0]?.email || items[0]?.uploader_email || "n/a")}</strong><div class="meta wrap">${formatDate(items[0]?.uploaded_at)}</div></article>`
         ].join("");
 
         rows.innerHTML = items.map((item) => `
           <tr>
             <td>${sourceTag(item.source)}</td>
             <td>
-              <div class="wrap"><strong>${item.email || item.account_id}</strong></div>
-              <div class="meta wrap">${item.plan_name || "-"}</div>
-              <div class="meta wrap">uploaded by ${item.uploader_email || item.reporter_name || "-"}${item.hostname ? ` / ${item.hostname}` : ""}</div>
+              <div class="wrap"><strong>${escapeHtml(item.email || item.account_id)}</strong></div>
+              <div class="meta wrap">${escapeHtml(item.plan_name || "-")}</div>
+              <div class="meta wrap">uploaded by ${escapeHtml(item.uploader_email || item.reporter_name || "-")}${item.hostname ? ` / ${escapeHtml(item.hostname)}` : ""}</div>
             </td>
             <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
@@ -755,7 +766,8 @@
                 const age = Math.max(0, Math.floor((Date.now() - Date.parse(flList[0].fetched_at || "")) / 1000));
                 return flList.map((fl) => {
                   const repaired = fl.reason === "repair_returned";
-                  const label = repaired ? `↩ ${fl.requester_email}` : fl.requester_email;
+                  const who = escapeHtml(fl.requester_email);
+                  const label = repaired ? `↩ ${who}` : who;
                   const title = repaired ? ' title="returned to owner for re-login"' : "";
                   return `<div class="wrap"><span class="email-tag"${title} style="background:${emailColor(fl.requester_email)}">${label}</span></div>`;
                 }).join("") + `<div class="meta wrap">${formatAge(age)}</div>`;
@@ -768,11 +780,11 @@
         archivedRows.innerHTML = archivedItems.map((item) => `
           <tr>
             <td>${sourceTag(item.source)}</td>
-            <td><div class="wrap">${item.uploader_email || item.reporter_name || "-"}</div><div class="mono wrap">${item.hostname || ""}</div></td>
-            <td><div class="wrap">${item.email || item.account_id}</div><div class="mono wrap">${item.plan_name || "-"}</div><div class="mono wrap">${item.account_id || ""}</div></td>
+            <td><div class="wrap">${escapeHtml(item.uploader_email || item.reporter_name || "-")}</div><div class="mono wrap">${escapeHtml(item.hostname || "")}</div></td>
+            <td><div class="wrap">${escapeHtml(item.email || item.account_id)}</div><div class="mono wrap">${escapeHtml(item.plan_name || "-")}</div><div class="mono wrap">${escapeHtml(item.account_id || "")}</div></td>
             <td><div class="wrap">${formatDate(item.first_invalidated_at)}</div></td>
             <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div></td>
-            <td><div class="meta wrap">${item.error || ""}</div></td>
+            <td><div class="meta wrap">${escapeHtml(item.error || "")}</div></td>
           </tr>
         `).join("");
         archivedEmpty.hidden = archivedItems.length !== 0;
