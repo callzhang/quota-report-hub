@@ -1955,6 +1955,33 @@ Reading additional input from stdin...
         wkc.assert_called_once_with({"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}})
         self.assertFalse((claude_home / ".credentials.json").exists())
 
+    def test_cli_auth_seed_state_codex(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "auth.json"
+            self.assertEqual(quota_reporters.cli_auth_seed_state("codex", codex_auth_path=p)["state"], quota_reporters.SEED_STATE_NOT_LOGGED_IN)
+            p.write_text(json.dumps({"tokens": {"refresh_token": "a-real-refresh-token", "account_id": "x"}}), encoding="utf-8")
+            self.assertEqual(quota_reporters.cli_auth_seed_state("codex", codex_auth_path=p)["state"], quota_reporters.SEED_STATE_READY)
+            p.write_text(json.dumps({"tokens": {"refresh_token": quota_reporters.STRIPPED_CODEX_REFRESH_TOKEN}}), encoding="utf-8")
+            self.assertEqual(quota_reporters.cli_auth_seed_state("codex", codex_auth_path=p)["state"], quota_reporters.SEED_STATE_POOLED)
+
+    def test_cli_auth_seed_state_claude(self):
+        with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"refreshToken": "real"}}, "keychain")):
+            self.assertEqual(quota_reporters.cli_auth_seed_state("claude")["state"], quota_reporters.SEED_STATE_READY)
+        with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}, "keychain")):
+            self.assertEqual(quota_reporters.cli_auth_seed_state("claude")["state"], quota_reporters.SEED_STATE_POOLED)
+        with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(None, "unavailable")):
+            self.assertEqual(quota_reporters.cli_auth_seed_state("claude")["state"], quota_reporters.SEED_STATE_NOT_LOGGED_IN)
+
+    def test_seed_guidance_lines_not_logged_in_prompts_one_time_cli_login(self):
+        claude_txt = "\n".join(quota_reporters.seed_guidance_lines({"source": "claude", "state": quota_reporters.SEED_STATE_NOT_LOGGED_IN}))
+        self.assertIn("claude login", claude_txt)
+        self.assertIn("desktop app", claude_txt)
+        self.assertIn("ONCE", claude_txt)
+        codex_txt = "\n".join(quota_reporters.seed_guidance_lines({"source": "codex", "state": quota_reporters.SEED_STATE_NOT_LOGGED_IN}))
+        self.assertIn("codex login", codex_txt)
+        ready_txt = "\n".join(quota_reporters.seed_guidance_lines({"source": "codex", "state": quota_reporters.SEED_STATE_READY}))
+        self.assertIn("seed", ready_txt.lower())
+
     def test_maybe_replace_codex_auth_skips_same_account_same_auth_without_server_digest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
@@ -3721,8 +3748,10 @@ Reading additional input from stdin...
                 result = install_quota_guard.run_install_verification("/usr/bin/python3", worker_script, "Linux")
 
         verify_scheduler.assert_called_once()
+        # #4: install no longer passes --skip-self-update, so the freshly-installed machine pulls the
+        # latest guard on its first verification run instead of waiting for the next scheduled cycle.
         run.assert_called_once_with(
-            ["/usr/bin/python3", str(worker_script), "--skip-self-update", "--no-toast"],
+            ["/usr/bin/python3", str(worker_script), "--no-toast"],
             capture_output=True,
             text=True,
             check=False,

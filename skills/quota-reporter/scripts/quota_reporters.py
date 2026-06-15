@@ -2019,6 +2019,68 @@ def auth_json_is_stripped(source: str, auth_json_text: str) -> bool:
     return False
 
 
+# --- Seed-state detection -------------------------------------------------------------------------
+# Classify the local CLI-lane (guard-managed) credential for a source so the installer/guard can guide
+# one-time seeding. Only the CLI lane (keychain "Claude Code-credentials" / ~/.codex/auth.json) can be
+# pooled; the desktop apps (Claude Desktop, Codex.app) keep a SEPARATE credential the guard can't read,
+# so a desktop-app-only user must `<cli> login` once to put a real refresh token where the guard sees it.
+SEED_STATE_READY = "ready_to_seed"          # real RT present locally → guard will upload it to the pool
+SEED_STATE_POOLED = "already_pooled"        # RT stripped to placeholder (AT-only) → hub already refreshes it
+SEED_STATE_NOT_LOGGED_IN = "not_logged_in"  # no CLI credential → needs `<cli> login` once to seed
+
+
+def cli_auth_seed_state(
+    source: str,
+    *,
+    claude_home: Path = CLAUDE_HOME,
+    codex_auth_path: Path = SOURCE_AUTH_PATH,
+) -> dict:
+    """Classify the local CLI-lane credential for `source` as one of SEED_STATE_*.
+    The desktop-app lane is intentionally NOT consulted — it cannot be pooled. Returns {source, state}."""
+    if source == "claude":
+        creds, _origin = read_claude_oauth_credentials(claude_home)
+        rt = ((creds or {}).get("claudeAiOauth") or {}).get("refreshToken") or ""
+        placeholder = STRIPPED_CLAUDE_REFRESH_TOKEN
+    elif source == "codex":
+        rt = ""
+        try:
+            if codex_auth_path.exists():
+                rt = (json.loads(codex_auth_path.read_text(encoding="utf-8")).get("tokens") or {}).get("refresh_token") or ""
+        except Exception:
+            rt = ""
+        placeholder = STRIPPED_CODEX_REFRESH_TOKEN
+    else:
+        return {"source": source, "state": "unknown"}
+
+    if not rt:
+        return {"source": source, "state": SEED_STATE_NOT_LOGGED_IN}
+    if rt == placeholder:
+        return {"source": source, "state": SEED_STATE_POOLED}
+    return {"source": source, "state": SEED_STATE_READY}
+
+
+def seed_guidance_lines(state: dict) -> list[str]:
+    """Human-readable guidance for a cli_auth_seed_state() result. The not-logged-in case is the
+    important one: a desktop-app-only user has no CLI credential, so their account is silently never
+    pooled until they run `<cli> login` once."""
+    source = state.get("source", "?")
+    cli = "claude" if source == "claude" else "codex"
+    st = state.get("state")
+    if st == SEED_STATE_READY:
+        return [f"  [ok] {source}: logged in via CLI — the guard will seed it to the pool on the next cycle."]
+    if st == SEED_STATE_POOLED:
+        return [f"  [ok] {source}: already pooled (access-token-only locally; the hub refreshes it)."]
+    if st == SEED_STATE_NOT_LOGGED_IN:
+        return [
+            f"  [!] {source}: NOT logged in via the CLI -> it will NOT be shared to the pool.",
+            f"      To contribute {source}, run `{cli} login` ONCE to seed the pool.",
+            f"      If you use the {source} desktop app it keeps working on its own session; the CLI login",
+            f"      only seeds the pool and is then auto-stripped to access-token-only locally.",
+            f"      Don't run `{cli} login` again afterward.",
+        ]
+    return [f"  [?] {source}: unknown auth state."]
+
+
 # Re-fetch a fetched AT-only auth this long before its access token expires, so the CLI never
 # has to fall back to the (dead) placeholder refresh token between guard runs.
 AT_NEAR_EXPIRY_SKEW_SECONDS = 20 * 60

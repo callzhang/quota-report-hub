@@ -32,11 +32,16 @@ from install_quota_guard import (
 from quota_reporters import (
     CLAUDE_HOME,
     KNOWN_AUTH_PATH,
+    SEED_STATE_NOT_LOGGED_IN,
+    SEED_STATE_POOLED,
+    SEED_STATE_READY,
     SOURCE_AUTH_PATH,
     auth_metadata,
+    cli_auth_seed_state,
     claude_auth_blob_metadata,
     detect_claude_custom_provider_env,
     fetch_auth_pool_status,
+    seed_guidance_lines,
     fetch_best_auth,
     fetched_auth_near_expiry,
     load_config,
@@ -1401,6 +1406,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="State file that remembers the last uploaded auth metadata for each source.",
     )
     parser.add_argument(
+        "--seed",
+        choices=["claude", "codex"],
+        default=None,
+        help="One-shot: seed the pool from this source's CLI login (upload its real refresh token, then "
+        "verify it is healthy in the hub) instead of running the full guard cycle. If the CLI lane is not "
+        "logged in, prints how to `<cli> login` once.",
+    )
+    parser.add_argument(
         "--threshold-percent",
         type=float,
         default=20.0,
@@ -1676,8 +1689,81 @@ def run_guard(args: argparse.Namespace) -> dict:
     }
 
 
+def pooled_items_for_source(config: dict, source: str) -> dict:
+    """Fetch the hub /api/status and return this source's pool entries with their status — used to
+    verify a seed actually landed healthy in the pool."""
+    try:
+        status = fetch_auth_pool_status(config["auth_pool_url"], config["auth_pool_user_token"])
+    except Exception as error:
+        return {"ok": False, "error": str(error), "items": []}
+    items = [
+        {
+            "account_id": i.get("account_id"),
+            "status": i.get("status"),
+            "error": i.get("error"),
+            "uploader_email": i.get("uploader_email"),
+        }
+        for i in (status.get("items") or [])
+        if i.get("source") == source
+    ]
+    return {"ok": True, "items": items}
+
+
+def run_seed(args, source: str) -> int:
+    """One-shot: seed the pool from a source's CLI login, then verify it came up healthy in the hub.
+    Exit code: 0 = a healthy account is pooled, 1 = needs attention (login / RT-dead), 2 = misconfigured."""
+    try:
+        config = load_config(args)
+    except Exception as error:
+        print(f"seed {source}: could not load config: {error}")
+        return 2
+    if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
+        print(f"seed {source}: no auth pool configured — run the installer first.")
+        return 2
+
+    state = cli_auth_seed_state(source, claude_home=args.claude_home, codex_auth_path=args.codex_auth_path)
+    print(f"seed {source}: local CLI auth = {state.get('state')}")
+    if state.get("state") == SEED_STATE_NOT_LOGGED_IN:
+        for line in seed_guidance_lines(state):
+            print(line)
+        return 1
+
+    # ready_to_seed -> uploads the real RT (guard then auto-strips it to AT-only); already_pooled -> a
+    # no-op upload. Either way, then verify the account is healthy in the hub.
+    if source == "codex":
+        sync = sync_current_codex_auth_pool(
+            config["auth_pool_url"], config["auth_pool_user_token"],
+            auth_path=args.codex_auth_path, known_auth_path=args.known_auth_path,
+        )
+    else:
+        sync = sync_current_claude_auth_pool(
+            config["auth_pool_url"], config["auth_pool_user_token"],
+            claude_home=args.claude_home, known_auth_path=args.known_auth_path,
+        )
+    print(f"seed {source}: sync uploaded={sync.get('uploaded')} reason={sync.get('reason')}")
+
+    health = pooled_items_for_source(config, source)
+    if not health.get("ok"):
+        print(f"seed {source}: could not verify hub status: {health.get('error')}")
+        return 1
+    mine = [i for i in health["items"] if i.get("uploader_email") == config.get("auth_pool_user_email")] or health["items"]
+    healthy = False
+    for i in mine:
+        flag = "ok" if i.get("status") == "ok" else f"ERROR ({i.get('error') or 'n/a'})"
+        print(f"  hub: {source} {i.get('account_id')} -> {flag}")
+        healthy = healthy or i.get("status") == "ok"
+    if healthy:
+        print(f"seed {source}: DONE — a {source} account is healthy in the pool.")
+        return 0
+    print(f"seed {source}: uploaded, but no {source} account is healthy in the hub yet "
+          f"(give the worker a cycle; if it stays RT-dead, the refresh token is revoked — re-login once).")
+    return 1
+
+
 def main() -> None:
     args = build_parser().parse_args()
+    if getattr(args, "seed", None):
+        sys.exit(run_seed(args, args.seed))
     process_started = time.perf_counter()
     self_update_started = time.perf_counter()
     try:

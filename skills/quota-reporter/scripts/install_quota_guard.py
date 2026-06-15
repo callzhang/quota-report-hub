@@ -21,7 +21,29 @@ import webbrowser
 from textwrap import dedent
 from pathlib import Path
 
-from quota_reporters import request_auth_pool_token
+from quota_reporters import (
+    cli_auth_seed_state,
+    fetch_auth_pool_status,
+    request_auth_pool_token,
+    seed_guidance_lines,
+)
+
+
+def emit_seed_guidance() -> dict:
+    """Print per-source pool-seeding guidance to stderr. The key case (#5): a user who only uses the
+    desktop app (Claude Desktop / Codex.app) and never logged in via the CLI has no credential the
+    guard can upload, so their account is silently never pooled until they run `<cli> login` once."""
+    states = {}
+    print("\nPool seeding (only accounts you log into via the CLI are shared to the pool):", file=sys.stderr)
+    for source in ("claude", "codex"):
+        try:
+            state = cli_auth_seed_state(source)
+        except Exception as error:
+            state = {"source": source, "state": "unknown", "error": str(error)}
+        states[source] = state
+        for line in seed_guidance_lines(state):
+            print(line, file=sys.stderr)
+    return states
 
 
 LABEL = "com.openai.quota-guard"
@@ -253,7 +275,31 @@ def verify_windows_task_registered() -> dict:
     return {"ok": True, "scheduler": "task_scheduler", "task_name": WINDOWS_TASK_NAME}
 
 
-def run_install_verification(python_path: str, worker_script: Path, system: str) -> dict:
+def pool_health_summary(auth_pool_url: str | None, auth_pool_user_token: str | None) -> dict:
+    """#3: confirm the pool actually has healthy accounts (not just a clean guard exit). Returns
+    per-source {ok, total} from the hub, or an error marker."""
+    if not auth_pool_url or not auth_pool_user_token:
+        return {"checked": False, "reason": "no_auth_pool"}
+    try:
+        status = fetch_auth_pool_status(auth_pool_url, auth_pool_user_token)
+    except Exception as error:
+        return {"checked": False, "error": str(error)}
+    by_source: dict = {}
+    for item in (status.get("items") or []):
+        bucket = by_source.setdefault(item.get("source") or "?", {"ok": 0, "total": 0})
+        bucket["total"] += 1
+        if item.get("status") == "ok":
+            bucket["ok"] += 1
+    return {"checked": True, "by_source": by_source}
+
+
+def run_install_verification(
+    python_path: str,
+    worker_script: Path,
+    system: str,
+    auth_pool_url: str | None = None,
+    auth_pool_user_token: str | None = None,
+) -> dict:
     if system == "Darwin":
         scheduler = verify_launch_agent_registered()
     elif system == "Linux":
@@ -263,8 +309,10 @@ def run_install_verification(python_path: str, worker_script: Path, system: str)
     else:
         raise RuntimeError(f"unsupported platform: {system}")
 
+    # #4: do NOT skip self-update here — pull the latest guard on install so the freshly-installed
+    # machine runs current code immediately (otherwise it waits for the first scheduled self-update).
     guard_result = subprocess.run(
-        [python_path, str(worker_script), "--skip-self-update", "--no-toast"],
+        [python_path, str(worker_script), "--no-toast"],
         capture_output=True,
         text=True,
         check=False,
@@ -282,6 +330,7 @@ def run_install_verification(python_path: str, worker_script: Path, system: str)
             "stdout": guard_result.stdout.strip()[-4000:],
             "stderr": guard_result.stderr.strip()[-4000:],
         },
+        "pool_health": pool_health_summary(auth_pool_url, auth_pool_user_token),
     }
 
 
@@ -478,6 +527,7 @@ def main() -> None:
         args.no_browser,
     )
     write_config(args.auth_pool_url, email, token)
+    emit_seed_guidance()  # #1/#5: tell the user which sources will be pooled / need a one-time CLI login
     statusline = configure_claude_statusline(args.python_path, skill_scripts_dir)
     system = platform.system()
 
@@ -487,7 +537,7 @@ def main() -> None:
         verification = (
             {"skipped": True}
             if args.skip_install_verification
-            else run_install_verification(args.python_path, worker_script, system)
+            else run_install_verification(args.python_path, worker_script, system, args.auth_pool_url, token)
         )
         print(
             json.dumps(
@@ -512,7 +562,7 @@ def main() -> None:
         verification = (
             {"skipped": True}
             if args.skip_install_verification
-            else run_install_verification(args.python_path, worker_script, system)
+            else run_install_verification(args.python_path, worker_script, system, args.auth_pool_url, token)
         )
         print(
             json.dumps(
@@ -537,7 +587,7 @@ def main() -> None:
         verification = (
             {"skipped": True}
             if args.skip_install_verification
-            else run_install_verification(args.python_path, worker_script, system)
+            else run_install_verification(args.python_path, worker_script, system, args.auth_pool_url, token)
         )
         print(
             json.dumps(
