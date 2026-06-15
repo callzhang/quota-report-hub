@@ -30,9 +30,9 @@
 
 ## 1. Codex auth
 
-### Storage
-- File: `~/.codex/auth.json`. Shape: `{ "tokens": { access_token, refresh_token, id_token, account_id }, "last_refresh": <iso> }`.
-- The Codex CLI owns this file and **self-refreshes** during use (rotates `access_token`/`refresh_token`, bumps `last_refresh`).
+### Storage — CLI lane vs desktop-app lane (two lanes, like Claude — see [§7](#7-claude-desktop-vs-the-cli-two-independent-auth-systems))
+- **CLI lane (guard-managed):** `~/.codex/auth.json`. Shape: `{ "tokens": { access_token, refresh_token, id_token, account_id }, "last_refresh": <iso> }`. The Codex CLI owns this file and **self-refreshes** during use (rotates `access_token`/`refresh_token`, bumps `last_refresh`).
+- **Desktop-app lane (`Codex.app`, guard CANNOT manage):** the standalone Codex desktop app caches its own auth in `~/Library/Application Support/Codex/` (`Cookies`, `Local`/`Session Storage`), encrypted by keychain item **`Codex Safe Storage`** — the exact mirror of Claude Desktop. A running `Codex.app` **caches auth at startup and won't switch** just because the guard rewrote `~/.codex/auth.json`. (The guard partially mitigates the *CLI* `codex app-server --listen` daemon via `stale_codex_app_server_for_auth` + `restart_codex_app_server`, but it does **not** control `Codex.app`'s store.)
 
 ### The two JWTs (critical, easy to get wrong)
 - **`access_token`** — a JWT with `exp` **~10 days**. This is the *real* access-token lifetime and what the API uses.
@@ -171,13 +171,21 @@ rate-limit / suspend / ban / abuse. Watched separately (`lib/abuse-errors.js`, `
 
 ## 7. Claude Desktop vs the CLI (two independent auth systems)
 
-Claude has **two completely separate auth systems**. Conflating them caused several wrong conclusions
-earlier in this project — the truth below is verified empirically.
+**Both Claude and Codex** have **two separate auth lanes** — a CLI lane the guard manages, and a
+desktop-app lane it cannot. Conflating them caused several wrong conclusions earlier in this project;
+the truth below is verified empirically.
 
-| | Carrier | Credential type | Managed by |
+| Lane | Carrier | Credential type | Managed by |
 |---|---|---|---|
-| **Claude CLI / the pool** | keychain `Claude Code-credentials` (+ `~/.claude/.credentials.json` fallback) | **OAuth** (accessToken + rotating refreshToken) | terminal CLI **and the quota guard** |
-| **Claude Desktop** | claude.ai **session cookie** (`sessionKey`/`sessionKeyLC`) in `~/Library/Application Support/Claude/Cookies`, encrypted by keychain item `Claude Safe Storage` | a **claude.ai web session** (like a browser login) — **not** OAuth | Claude Desktop only |
+| **Claude CLI / pool** | keychain `Claude Code-credentials` (+ `~/.claude/.credentials.json` fallback) | **OAuth** (accessToken + rotating refreshToken) | terminal CLI **and the quota guard** |
+| **Claude Desktop** | claude.ai **session cookie** (`sessionKey`) in `~/Library/Application Support/Claude/Cookies`, encrypted by keychain `Claude Safe Storage` | claude.ai **web session** — **not** OAuth | Claude Desktop only |
+| **Codex CLI / pool** | `~/.codex/auth.json` | **OAuth** (access_token + rotating refresh_token) | Codex CLI **and the quota guard** |
+| **Codex.app** | `~/Library/Application Support/Codex/{Cookies, Local/Session Storage}`, encrypted by keychain `Codex Safe Storage` | app web session — separate from `auth.json` | `Codex.app` only |
+
+A **running desktop app** (Claude Desktop or `Codex.app`) caches its auth at startup in its own store
+and **won't switch** when the guard updates the CLI lane. The guard can only mitigate the *CLI*-side
+`codex app-server --listen` daemon (restart on auth change); it has no channel into either desktop app's
+store. So the rules below apply symmetrically to both products.
 
 **They are independent** (each step verified by experiment):
 - Moving Desktop's `Local Storage`/leveldb aside and relaunching did **not** log Desktop out → the
