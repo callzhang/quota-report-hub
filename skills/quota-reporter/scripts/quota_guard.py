@@ -1016,6 +1016,19 @@ def maybe_replace_codex_auth(
             "triggered_by": ["codex"],
         }
 
+    # refresh_current means this account is healthy and only needs a fresh access token for the
+    # SAME account. If the hub fell through to a DIFFERENT account, do not swap a healthy owned
+    # account onto a borrowed one — keep current and retry next cycle. Quota-low/invalid accounts
+    # take the source_needs_replacement path (refresh_current=False) and are still replaced.
+    if refresh_current and replacement.get("account_id") != current_account_id:
+        return {
+            "ok": True,
+            "replaced": False,
+            "reason": "kept_current_refresh_deferred",
+            "triggered_by": ["codex"],
+            "account_id": current_account_id,
+        }
+
     fetched_account_id = replacement.get("account_id")
     current_digest = None
     if codex_auth_path.exists():
@@ -1155,6 +1168,16 @@ def maybe_replace_claude_auth(
         }
     if replacement is None:
         return {"ok": True, "replaced": False, "reason": result.get("reason") or "no_better_auth_available", "triggered_by": ["claude"]}
+
+    # refresh_current means this account is healthy and only needs a fresh access token for the
+    # SAME account. If the hub couldn't refresh it and fell through to a DIFFERENT account, do NOT
+    # swap a healthy owned account onto a borrowed one — keep the current account and retry next
+    # cycle (its AT still has life; the worker keeps the pooled copy fresh). Genuinely quota-low or
+    # invalidated accounts take the source_needs_replacement path (refresh_current=False) and are
+    # still replaced/repaired. This prevents endless "switched to <pool account>" churn on a machine
+    # whose own healthy account is host-managed (e.g. Claude Desktop) and can't be refreshed in place.
+    if refresh_current and replacement.get("account_id") != current_account_id:
+        return {"ok": True, "replaced": False, "reason": "kept_current_refresh_deferred", "triggered_by": ["claude"], "account_id": current_account_id}
 
     blob = json.loads(replacement["auth_json"])
     credentials_path = claude_home / ".credentials.json"

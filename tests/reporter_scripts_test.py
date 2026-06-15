@@ -1881,6 +1881,43 @@ Reading additional input from stdin...
         self.assertEqual(stored_auth["tokens"]["access_token"], "new")
         write_known.assert_called_once()
 
+    def test_maybe_replace_codex_auth_keeps_current_when_refresh_falls_through_to_other_account(self):
+        # Healthy account, near AT-expiry (refresh_current). If the hub can't refresh the SAME
+        # account and falls through to a DIFFERENT (borrowed) account, the guard must NOT swap a
+        # healthy owned account onto the borrowed one — it keeps current and defers. This is the
+        # fix for endless "switched to <pool account>" churn on a host-managed (Desktop) machine.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            live_auth.write_text(json.dumps({"tokens": {"account_id": "current", "access_token": "old"}}), encoding="utf-8")
+            config = {"auth_pool_url": "https://quota-report-hub.vercel.app", "auth_pool_user_token": "qrp_token"}
+            codex_payload = {
+                "account_id": "current",
+                "status": "ok",
+                "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 70}},
+            }
+            with mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=True):
+                with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                    "replacement": {
+                        "account_id": "someone-else@example.com",
+                        "digest": "digest-other",
+                        "auth_json": json.dumps({"tokens": {"account_id": "someone-else@example.com", "access_token": "borrowed"}}),
+                        "email": "someone-else@example.com",
+                    },
+                }):
+                    replacement = quota_guard.maybe_replace_codex_auth(
+                        config, codex_payload, live_auth, known_auth_path,
+                        threshold_percent=20.0, weekly_threshold_percent=5.0,
+                    )
+            stored_auth = json.loads(live_auth.read_text(encoding="utf-8"))
+
+        self.assertFalse(replacement["replaced"])
+        self.assertEqual(replacement["reason"], "kept_current_refresh_deferred")
+        # the local auth must be untouched — not swapped to the borrowed account
+        self.assertEqual(stored_auth["tokens"]["account_id"], "current")
+        self.assertEqual(stored_auth["tokens"]["access_token"], "old")
+
     def test_maybe_replace_codex_auth_skips_same_account_same_auth_without_server_digest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
