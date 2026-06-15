@@ -1180,10 +1180,19 @@ def maybe_replace_claude_auth(
         return {"ok": True, "replaced": False, "reason": "kept_current_refresh_deferred", "triggered_by": ["claude"], "account_id": current_account_id}
 
     blob = json.loads(replacement["auth_json"])
-    credentials_path = claude_home / ".credentials.json"
-    credentials_path.parent.mkdir(parents=True, exist_ok=True)
-    credentials_path.write_text(json.dumps(blob["credentials"], indent=2) + "\n", encoding="utf-8")
-    credentials_path.chmod(0o600)
+    replacement_credentials = blob["credentials"]
+    # Write keychain-first on macOS: Claude (and our own reader) read the keychain BEFORE the file
+    # there, so a file-only write is shadowed by the existing keychain credential — the replacement
+    # would never take effect, and the guard would "replace" again every cycle. Mirror the
+    # repair-auth path above (keychain-first, file as fallback).
+    wrote_keychain = False
+    if platform.system().lower() == "darwin":
+        wrote_keychain = write_claude_keychain_credentials(replacement_credentials)
+    if not wrote_keychain:
+        credentials_path = claude_home / ".credentials.json"
+        credentials_path.parent.mkdir(parents=True, exist_ok=True)
+        credentials_path.write_text(json.dumps(replacement_credentials, indent=2) + "\n", encoding="utf-8")
+        credentials_path.chmod(0o600)
     metadata = claude_auth_blob_metadata(replacement["auth_json"])
     known_auth = write_known_auth_state(
         source="claude",

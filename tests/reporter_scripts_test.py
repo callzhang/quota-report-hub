@@ -1918,6 +1918,43 @@ Reading additional input from stdin...
         self.assertEqual(stored_auth["tokens"]["account_id"], "current")
         self.assertEqual(stored_auth["tokens"]["access_token"], "old")
 
+    def test_maybe_replace_claude_auth_writes_replacement_to_keychain_on_darwin(self):
+        # On macOS Claude reads the keychain BEFORE the file, so a genuine replacement must be
+        # written keychain-first; a file-only write would be shadowed and never take effect.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            claude_home.mkdir(parents=True)
+            known_auth_path = Path(temp_dir) / "known_auth.json"
+            config = {"auth_pool_url": "https://quota-report-hub.vercel.app", "auth_pool_user_token": "qrp_token"}
+            # quota-low -> source_needs_replacement True -> normal replacement (refresh_current False)
+            claude_payload = {
+                "account_id": "claude-mine@example.com",
+                "status": "ok",
+                "windows": {"5h": {"remaining_percent": 5}, "1week": {"remaining_percent": 2}},
+            }
+            replacement_blob = json.dumps({
+                "schema": "claude_credentials_v1",
+                "account_id": "claude-other@example.com",
+                "credentials": {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}},
+            })
+            with mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None):
+                with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                    "replacement": {"account_id": "claude-other@example.com", "email": "other@example.com", "auth_json": replacement_blob},
+                }):
+                    with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+                        with mock.patch.object(quota_guard, "write_claude_keychain_credentials", return_value=True) as wkc:
+                            with mock.patch.object(quota_guard, "claude_auth_blob_metadata", return_value={"digest": "d", "account_id": "claude-other@example.com", "auth_last_refresh": "2026-06-15T00:00:00Z"}):
+                                with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "d"}):
+                                    result = quota_guard.maybe_replace_claude_auth(
+                                        config, claude_payload, claude_home, known_auth_path,
+                                        threshold_percent=20.0, weekly_threshold_percent=5.0,
+                                    )
+
+        self.assertTrue(result["replaced"])
+        # replacement credentials went to the keychain, and the file was NOT written (keychain won)
+        wkc.assert_called_once_with({"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}})
+        self.assertFalse((claude_home / ".credentials.json").exists())
+
     def test_maybe_replace_codex_auth_skips_same_account_same_auth_without_server_digest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
