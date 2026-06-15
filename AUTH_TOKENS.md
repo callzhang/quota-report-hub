@@ -20,7 +20,8 @@
 4. **Claude Desktop and the CLI/pool are *separate* auth systems** — Desktop = a claude.ai **session
    cookie**, CLI/pool = **OAuth** tokens in the keychain; logging in/out of one doesn't affect the other.
    So a Desktop-used account **can** be pooled, as long as nothing local keeps rotating its OAuth RT.
-   Working recipe: CLI-login to seed → CLI-logout → Desktop on its cookie → hub is sole refresher.
+   Working recipe: CLI-login to seed → guard syncs + auto-strips the local RT (Phase-4, no logout needed)
+   → desktop app on its cookie → hub is sole refresher; just don't CLI-login again.
    (See [§7](#7-claude-desktop-vs-the-cli-two-independent-auth-systems).)
 5. **AT expiry ≠ death.** An expired access token is normal and refreshable. Death is an **RT-class**
    error (`token_invalidated` / `401 unauthorized` / `authentication_error`) — the RT itself is gone and
@@ -201,16 +202,21 @@ be pooled independently — *provided nothing local keeps rotating that OAuth RT
 
 ### Working recipe to pool a Desktop-used account
 Verified: `leizhang` came back **`ok`** in the pool (hub-refreshed) while Desktop stayed logged in.
-1. With Claude Desktop running normally (on its cookie session),
-2. **`claude` CLI login** the account once → the guard reads the fresh OAuth RT from the keychain and
-   **uploads it to the pool** (seeds the real RT),
-3. **`claude` CLI logout** → clears the local OAuth creds (keychain `claudeAiOauth` + file). **Verified:
-   logout is local-only — it does NOT revoke the RT server-side** (the pooled RT kept working after).
-4. Result: **no local refresher competes** (CLI logged out; Desktop on a separate cookie) → the **hub is
-   the sole refresher** of the pooled OAuth RT and keeps it alive.
+1. With the desktop app running normally (on its cookie session),
+2. **CLI login** the account once (`claude login` / `codex login`) → a real OAuth RT lands in the CLI store
+   (keychain / `auth.json`),
+3. **Let the guard sync** → it uploads the real RT to the pool and, because the flag is on,
+   **auto-strips the local RT to the placeholder** (Phase-4). The local CLI is now AT-only — it has **no
+   real RT to refresh/rotate**, so the hub is automatically the sole refresher. **No logout needed**
+   (the strip already wipes the local RT; logout is optional housekeeping).
+4. **Don't CLI-login again.** Re-logging-in is the only thing that mints a new grant and orphans the
+   pooled RT — that was the actual cause of the earlier repeated deaths.
+5. Use the desktop app freely — its separate cookie session never touches the pooled OAuth RT.
 
 This satisfies the "one custodian" condition ([§0](#0-tldr--the-rules-that-matter) rule 2). Sustained survival
 across many refresh cycles should still be watched, but the mechanism is sound and confirmed for one cycle.
+(`claude logout` is local-only — verified it does **not** revoke the RT server-side — but with Phase-4
+strip it isn't required.)
 
 > **On the earlier repeated `leizhang` deaths:** they were RT-class but **not** from Desktop rotating the
 > OAuth family (Desktop never touches it). The most consistent explanation is the **repeated CLI/Desktop
