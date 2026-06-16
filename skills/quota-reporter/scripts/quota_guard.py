@@ -876,6 +876,78 @@ def write_invalidated_notify_state(state: dict, path: Path = INVALIDATED_NOTIFY_
         pass
 
 
+RELOGIN_COMMANDS = {"claude": "claude auth login", "codex": "codex login"}
+RELOGIN_REPEAT_SECONDS = 24 * 60 * 60
+
+
+def gui_session_active() -> bool:
+    """Best-effort: True when a real user owns the macOS console (someone is logged in at the GUI), so
+    we never auto-open a browser/Terminal login on a headless or unattended box. Non-darwin → False."""
+    if platform.system().lower() != "darwin":
+        return False
+    try:
+        owner = subprocess.run(["stat", "-f", "%Su", "/dev/console"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return False
+    return bool(owner) and owner not in ("root", "_windowserver", "loginwindow")
+
+
+def launch_owner_relogin(source: str) -> dict:
+    """Open Terminal.app running the source's CLI login so the owner can re-seed a dead owned account.
+    Non-blocking: the login (and its browser) runs in the new Terminal window; osascript returns at once."""
+    command = RELOGIN_COMMANDS.get(source)
+    if not command:
+        return {"launched": False, "reason": "unknown_source"}
+    if platform.system().lower() != "darwin":
+        return {"launched": False, "reason": "unsupported_platform"}
+    safe = command.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'tell application "Terminal"\ndo script "{safe}"\nactivate\nend tell'
+    try:
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=15, check=False)
+    except Exception as error:
+        return {"launched": False, "reason": "launch_failed", "error": str(error)}
+    if result.returncode != 0:
+        return {"launched": False, "reason": "osascript_failed", "error": (result.stderr or "").strip()[:200]}
+    return {"launched": True, "command": command}
+
+
+def maybe_auto_relogin_owner_auths(
+    config: dict,
+    accounts: list[dict],
+    now_ts: float,
+    state_path: Path = INVALIDATED_NOTIFY_STATE_PATH,
+) -> dict:
+    """Opt-in (`auto_relogin_owner_auth` in config): when the owner has dead uploaded auths, auto-open the
+    CLI login for each affected source so the owner re-seeds it. Even a re-login that dies again within a
+    cycle is worth it — it uploads a fresh ~8h access token the pool can share. Per-source once/24h, only
+    when a GUI session is active. Returns per-source results (or a skip reason)."""
+    if not config.get("auto_relogin_owner_auth"):
+        return {"enabled": False}
+    sources = sorted({a.get("source") for a in accounts if a.get("source") in RELOGIN_COMMANDS})
+    if not sources:
+        return {"enabled": True, "reason": "no_relogin_sources"}
+    if not gui_session_active():
+        return {"enabled": True, "reason": "no_gui_session", "sources": sources}
+    state = read_invalidated_notify_state(state_path)
+    relogin_at = dict(state.get("relogin_at") or {})
+    results = {}
+    changed = False
+    for source in sources:
+        if (now_ts - float(relogin_at.get(source) or 0)) < RELOGIN_REPEAT_SECONDS:
+            results[source] = {"launched": False, "reason": "recently_relaunched"}
+            continue
+        res = launch_owner_relogin(source)
+        results[source] = res
+        if res.get("launched"):
+            relogin_at[source] = now_ts
+            changed = True
+    if changed:
+        state = read_invalidated_notify_state(state_path)  # re-read to merge with any concurrent notified_at
+        state["relogin_at"] = relogin_at
+        write_invalidated_notify_state(state, state_path)
+    return {"enabled": True, "results": results}
+
+
 def notify_uploaded_invalidated_auths(
     config: dict,
     now: float | None = None,
@@ -905,6 +977,10 @@ def notify_uploaded_invalidated_auths(
     message = invalidated_auths_message(rows)
     now_ts = time.time() if now is None else now
 
+    # Opt-in: auto-open the CLI login for each dead owned source so the owner re-seeds it (runs on its
+    # own per-source/24h cadence + GUI gate; independent of the notification cooldown below).
+    relogin = maybe_auto_relogin_owner_auths(config, accounts, now_ts, state_path)
+
     # Non-intrusive system notification (not a modal dialog), at most once per 24h
     # REGARDLESS of which auths are invalidated. The cloud-side invalidated set can
     # flap between probes, so keying the cooldown on the set (not just time) would
@@ -917,17 +993,20 @@ def notify_uploaded_invalidated_auths(
             "count": len(rows),
             "accounts": accounts,
             "message": message,
+            "relogin": relogin,
         }
 
     shown = show_desktop_notification("额度守护：需要重新登录", message)
     if shown:
-        write_invalidated_notify_state({"notified_at": now_ts}, state_path)
+        state["notified_at"] = now_ts  # preserve relogin_at the helper may have just written
+        write_invalidated_notify_state(state, state_path)
     return {
         "shown": shown,
         "reason": "shown" if shown else "notify_failed",
         "count": len(rows),
         "accounts": accounts,
         "message": message,
+        "relogin": relogin,
     }
 
 

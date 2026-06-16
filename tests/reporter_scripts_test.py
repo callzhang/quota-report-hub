@@ -2335,6 +2335,55 @@ Reading additional input from stdin...
         self.assertEqual(second["reason"], "recently_notified")
         self.assertEqual(notify.call_count, 1)
 
+    def test_gui_session_active_checks_console_user(self):
+        with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+            with mock.patch.object(quota_guard.subprocess, "run", return_value=mock.Mock(stdout="derek\n")):
+                self.assertTrue(quota_guard.gui_session_active())
+            with mock.patch.object(quota_guard.subprocess, "run", return_value=mock.Mock(stdout="root\n")):
+                self.assertFalse(quota_guard.gui_session_active())
+        with mock.patch.object(quota_guard.platform, "system", return_value="Linux"):
+            self.assertFalse(quota_guard.gui_session_active())
+
+    def test_launch_owner_relogin_opens_terminal_with_login_command(self):
+        with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+            with mock.patch.object(quota_guard.subprocess, "run", return_value=mock.Mock(returncode=0, stderr="")) as run:
+                res = quota_guard.launch_owner_relogin("claude")
+        self.assertTrue(res["launched"])
+        self.assertEqual(res["command"], "claude auth login")
+        args = run.call_args[0][0]
+        self.assertEqual(args[0], "osascript")
+        self.assertIn("claude auth login", " ".join(args))
+
+    def test_maybe_auto_relogin_disabled_by_default(self):
+        # no auto_relogin_owner_auth in config -> never launches
+        with mock.patch.object(quota_guard, "launch_owner_relogin") as launch:
+            res = quota_guard.maybe_auto_relogin_owner_auths({}, [{"source": "claude"}], 1_000_000.0)
+        self.assertEqual(res, {"enabled": False})
+        launch.assert_not_called()
+
+    def test_maybe_auto_relogin_skips_without_gui_session(self):
+        with mock.patch.object(quota_guard, "gui_session_active", return_value=False):
+            with mock.patch.object(quota_guard, "launch_owner_relogin") as launch:
+                res = quota_guard.maybe_auto_relogin_owner_auths({"auto_relogin_owner_auth": True}, [{"source": "claude"}], 1_000_000.0)
+        self.assertEqual(res["reason"], "no_gui_session")
+        launch.assert_not_called()
+
+    def test_maybe_auto_relogin_launches_per_source_once_per_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            config = {"auto_relogin_owner_auth": True}
+            accounts = [{"source": "claude"}, {"source": "claude"}, {"source": "codex"}]
+            with mock.patch.object(quota_guard, "gui_session_active", return_value=True):
+                with mock.patch.object(quota_guard, "launch_owner_relogin", return_value={"launched": True}) as launch:
+                    first = quota_guard.maybe_auto_relogin_owner_auths(config, accounts, 1_000_000.0, state_path=state)
+                    second = quota_guard.maybe_auto_relogin_owner_auths(config, accounts, 1_000_000.0 + 3600, state_path=state)
+                    third = quota_guard.maybe_auto_relogin_owner_auths(config, accounts, 1_000_000.0 + 25 * 3600, state_path=state)
+        # first: one launch each for claude + codex (deduped); second: both within 24h -> skip; third: relaunch
+        self.assertEqual(sorted(first["results"].keys()), ["claude", "codex"])
+        self.assertEqual(second["results"]["claude"]["reason"], "recently_relaunched")
+        self.assertTrue(third["results"]["codex"]["launched"])
+        self.assertEqual(launch.call_count, 4)
+
     def test_maybe_replace_claude_auth_skips_custom_provider_settings(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
