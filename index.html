@@ -459,8 +459,7 @@
             <thead>
               <tr>
                 <th>Source</th>
-                <th>Uploaded By</th>
-                <th>Account</th>
+                <th>Account &amp; Uploader</th>
                 <th>First Invalidated</th>
                 <th>Last Probe</th>
                 <th>Error</th>
@@ -780,8 +779,11 @@
         archivedRows.innerHTML = archivedItems.map((item) => `
           <tr>
             <td>${sourceTag(item.source)}</td>
-            <td><div class="wrap">${escapeHtml(item.uploader_email || item.reporter_name || "-")}</div><div class="mono wrap">${escapeHtml(item.hostname || "")}</div></td>
-            <td><div class="wrap">${escapeHtml(item.email || item.account_id)}</div><div class="mono wrap">${escapeHtml(item.plan_name || "-")}</div><div class="mono wrap">${escapeHtml(item.account_id || "")}</div></td>
+            <td>
+              <div class="wrap"><strong>${escapeHtml(item.email || item.account_id)}</strong></div>
+              <div class="meta wrap">${escapeHtml(item.plan_name || "-")}</div>
+              <div class="meta wrap">uploaded by ${escapeHtml(item.uploader_email || item.reporter_name || "-")}${item.hostname ? ` / ${escapeHtml(item.hostname)}` : ""}</div>
+            </td>
             <td><div class="wrap">${formatDate(item.first_invalidated_at)}</div></td>
             <td><div class="wrap">${formatDate(item.reported_at)}</div><div class="meta wrap">${formatAge(item.age_seconds)}</div></td>
             <td><div class="meta wrap">${escapeHtml(item.error || "")}</div></td>
