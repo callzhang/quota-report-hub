@@ -207,5 +207,82 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     const stalePayload = JSON.parse(staleRes.body);
     assert.notEqual(stalePayload.refreshed_current, true);
     assert.notEqual(stalePayload.replacement?.account_id, "stale@stardust.ai");
+
+    const xinToken = (await db.issueApiToken("xin.jiang@stardust.ai")).token;
+
+    await db.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "xin-provider",
+        email: "xin.jiang@stardust.ai",
+        lastRefresh: "2026-05-06T00:00:00Z",
+      }),
+      uploader_email: "xin.jiang@stardust.ai",
+      reporter_name: "xin@mac",
+      hostname: "mac",
+    });
+    await db.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "github-actions",
+      reporter_name: "worker",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "xin.jiang@stardust.ai",
+      email: "xin.jiang@stardust.ai",
+      plan_name: "Team",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+
+    await db.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "healthy-provider",
+        email: "healthy@stardust.ai",
+        lastRefresh: "2026-05-06T02:00:00Z",
+      }),
+      uploader_email: "healthy.owner@stardust.ai",
+      reporter_name: "healthy@gpu",
+      hostname: "gpu",
+    });
+    await db.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "github-actions",
+      reporter_name: "worker",
+      reported_at: new Date().toISOString(),
+      account_id: "healthy@stardust.ai",
+      email: "healthy@stardust.ai",
+      plan_name: "Team",
+      status: "ok",
+      windows: {
+        "5h": { used_percent: 15, remaining_percent: 85, reset_at: "2099-05-06T07:00:00Z" },
+        "1week": { used_percent: 8, remaining_percent: 92, reset_at: "2099-05-13T02:00:00Z" },
+      },
+    });
+
+    const xinReq = mockJsonRequest({
+      token: xinToken,
+      body: {
+        source: "codex",
+        requester_id: "xin@mac",
+        current_account_id: "xin.jiang@stardust.ai",
+        current_quota: {
+          five_h_remaining_percent: -1,
+          one_week_remaining_percent: -1,
+        },
+      },
+    });
+    const xinRes = mockResponse();
+
+    await handler(xinReq, xinRes);
+    const xinPayload = JSON.parse(xinRes.body);
+
+    assert.equal(xinRes.statusCode, 200);
+    assert.equal(xinPayload.replacement.account_id, "healthy@stardust.ai");
+    assert.equal(xinPayload.repair_auth, undefined);
+
+    const xinLog = await db.authPoolFetchLog({ limit: 5 });
+    assert.ok(xinLog.some((row) => row.reason === "served"));
+    assert.ok(!xinLog.some((row) => row.reason === "repair_returned"), "healthy shared auth should be served before repair handback");
   });
 });

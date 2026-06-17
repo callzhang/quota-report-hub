@@ -51,40 +51,6 @@ export default async function handler(req, res) {
   });
   const repairAuth = invalidatedEntryToRepairAuth(invalidatedEntry);
 
-  // The handback only applies when the requester has NO healthy auth of their own: as
-  // long as they have at least one valid uploaded auth we serve a replacement and never
-  // return a failed auth. With no healthy auth, hand back their own dead one for
-  // re-login (recorded as "repair_returned" so the dashboard shows it as returned to its
-  // owner), or ask them to upload if they have nothing at all.
-  const uploaded = await hasUploadedAnyHealthyAuth({ uploaderEmail: authContext.email });
-  if (!uploaded) {
-    await recordAuthPoolFetch({
-      requesterEmail: authContext.email,
-      requesterId,
-      source,
-      servedEntry: repairAuth ? invalidatedEntry : null,
-      reason: repairAuth ? "repair_returned" : "no_uploaded_auth",
-      currentAccountId,
-      currentQuota,
-    });
-
-    res.statusCode = 200;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(
-      JSON.stringify(withTokenUpgrade({
-        ok: true,
-        requested_by: authContext.email,
-        replacement: null,
-        repair_auth: repairAuth,
-        reason: repairAuth ? "uploaded_auth_requires_reauth" : "must_upload_auth_to_pool",
-        message: repairAuth
-          ? "Your uploaded auth has been invalidated. Re-login this auth and upload fresh credentials."
-          : "You must upload at least one healthy Codex or Claude auth to the pool before you can fetch shared auth.",
-      }, authContext))
-    );
-    return;
-  }
-
   // Phase 2: a client whose access token is near expiry asks to refresh the account it is
   // already using rather than switch accounts. Return that account's current pool blob (kept
   // fresh by the worker's central refresh), stripped when disabled_refresh_token is on — same
@@ -156,6 +122,38 @@ export default async function handler(req, res) {
   });
 
   if (!entry) {
+    // If the pool cannot serve a healthy shared replacement, then fall back to the
+    // contribution/repair gate. This avoids dead-locking users on their own invalidated
+    // auth when another healthy account is available to keep them working.
+    const uploaded = await hasUploadedAnyHealthyAuth({ uploaderEmail: authContext.email });
+    if (!uploaded) {
+      await recordAuthPoolFetch({
+        requesterEmail: authContext.email,
+        requesterId,
+        source,
+        servedEntry: repairAuth ? invalidatedEntry : null,
+        reason: repairAuth ? "repair_returned" : "no_uploaded_auth",
+        currentAccountId,
+        currentQuota,
+      });
+
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(
+        JSON.stringify(withTokenUpgrade({
+          ok: true,
+          requested_by: authContext.email,
+          replacement: null,
+          repair_auth: repairAuth,
+          reason: repairAuth ? "uploaded_auth_requires_reauth" : "must_upload_auth_to_pool",
+          message: repairAuth
+            ? "Your uploaded auth has been invalidated. Re-login this auth and upload fresh credentials."
+            : "You must upload at least one healthy Codex or Claude auth to the pool before you can fetch shared auth.",
+        }, authContext))
+      );
+      return;
+    }
+
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
       requesterId,
