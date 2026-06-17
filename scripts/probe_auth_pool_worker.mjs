@@ -69,8 +69,10 @@ async function refreshEntryIfNeeded(
     source,
     auth_json: refreshedAuthJson,
     uploader_email: entry.uploader_email || null,
-    reporter_name: "actions@github-actions",
-    hostname: "github-actions",
+    // A refresh write-back rotates the token but is not a new upload — keep the original uploader's
+    // machine so the dashboard doesn't reattribute the entry to "github-actions".
+    reporter_name: entry.reporter_name || "actions@github-actions",
+    hostname: entry.hostname || "github-actions",
   });
   return { authJsonText: refreshedAuthJson, result: { attempted: true, ok: true } };
 }
@@ -357,8 +359,9 @@ export async function processAuthPoolEntry(
       source: "codex",
       auth_json: refreshCapture.refreshed_auth_json,
       uploader_email: entry.uploader_email || null,
-      reporter_name: "actions@github-actions",
-      hostname: "github-actions",
+      // Refresh write-back, not a new upload — keep the original uploader's machine (see above).
+      reporter_name: entry.reporter_name || "actions@github-actions",
+      hostname: entry.hostname || "github-actions",
     });
   }
   await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));

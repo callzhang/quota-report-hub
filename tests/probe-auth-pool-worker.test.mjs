@@ -70,6 +70,51 @@ test("processAuthPoolEntry writes refreshed codex auth back to the pool", async 
   assert.equal(result.refreshed_auth_written, true);
 });
 
+test("refresh write-back preserves the original uploader machine (codex refresh_capture + claude central refresh)", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+
+  // codex passive refresh_capture write-back
+  const codexWrites = [];
+  await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-1", uploader_email: "derek@stardust.ai", reporter_name: "derek@MacBook", hostname: "MacBook.local" },
+    {
+      decryptAuthJsonImpl: () => '{"tokens":{"account_id":"acct-1"}}',
+      probeCodexAuthJsonImpl: () => ({
+        source: "codex", account_id: "acct-1", status: "ok", error: null,
+        windows: { "5h": { remaining_percent: 80 }, "1week": { remaining_percent: 70 } },
+        refresh_capture: { delta: { refreshed: true }, refreshed_auth_json: '{"tokens":{"account_id":"acct-1"}}' },
+      }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async (e) => { codexWrites.push(e); return { deduplicated: false }; },
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+  assert.equal(codexWrites[0].reporter_name, "derek@MacBook");
+  assert.equal(codexWrites[0].hostname, "MacBook.local");
+
+  // claude central-refresh write-back (disabled_refresh_token, near-expiry)
+  const claudeWrites = [];
+  const now = new Date("2026-06-12T00:00:00Z");
+  const expiringBlob = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "OLD", refreshToken: "REAL_RT", expiresAt: now.getTime() + 5 * 60 * 1000 } },
+  });
+  await processAuthPoolEntry(
+    { source: "claude", account_id: "acct-claude", uploader_email: "derek@stardust.ai", reporter_name: "derek@MacBook", hostname: "MacBook.local" },
+    {
+      atOnlyMode: true,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => expiringBlob,
+      refreshClaudeTokenImpl: async () => ({ ok: true, access_token: "NEW", refresh_token: "NEW_RT", expires_in: 28800 }),
+      probeClaudeAuthJsonImpl: () => ({ source: "claude", account_id: "acct-claude", status: "ok", error: null, windows: { "5h": null, "1week": null } }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async (e) => { claudeWrites.push(e); return { deduplicated: false }; },
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+  assert.equal(claudeWrites[0].reporter_name, "derek@MacBook");
+  assert.equal(claudeWrites[0].hostname, "MacBook.local");
+});
+
 test("processAuthPoolEntry centrally refreshes a near-expiry claude auth in disabled_refresh_token", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const authWrites = [];
