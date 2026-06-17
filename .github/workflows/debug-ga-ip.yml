@@ -1,0 +1,17 @@
+name: Debug GA IP Test
+# TEMPORARY — manual-only refresh-from-GA-egress probe. Delete after use.
+on:
+  workflow_dispatch:
+
+jobs:
+  refresh-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Refresh a claude RT from this runner's egress
+        env:
+          DEBUG_RT: ${{ secrets.DEBUG_RT }}
+        run: node debug-ga-refresh.mjs
