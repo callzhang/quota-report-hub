@@ -14,7 +14,10 @@
    token family** → permanent `authentication_error` / `token_invalidated`.
 2. **A credential can have only ONE refresher.** If two independent actors refresh the same account
    (two machines, two pool sessions, two overlapping worker runs, or Claude Desktop + the hub), they
-   rotate each other out and the credential dies. This is the "refresh-token death spiral."
+   rotate each other out and the credential dies. It is the *reuse* that kills it, **not** the network/IP
+   the refresh runs from — a valid RT refreshes fine from residential, AWS, and Azure alike (verified,
+   [§3](#3-the-refresh-token-rotation-death-spiral)); a *successful* refresh is precisely what consumes the
+   RT and orphans any other holder of that generation. This is the "refresh-token death spiral."
 3. **`disabled_refresh_token` mode makes the hub the sole refresher**: borrowers get access-token-only
    blobs (RT stripped to a placeholder), the hub holds the one real RT and refreshes centrally.
 4. **The desktop app is a second OAuth refresher — don't pool an account you use in it.** Claude Desktop's
@@ -113,6 +116,34 @@ out. Sources of "more than one custodian" observed in this project:
   account, same family) for every Claude Code session run from the app, so the pooled copy dies ~hourly/per-AT-cycle.
   **Not fixable** from the guard side; the rule is just "don't pool a desktop-used account" ([§7](#7-claude-desktop-vs-the-cli-the-desktop-app-is-a-second-oauth-refresher)).
 - **Repeated CLI re-logins** of the same account, each minting/rotating an OAuth grant and orphaning the previously-pooled copy.
+
+**Refresh is single-use: a *successful* refresh is what consumes the token.** `ok:true` does **not** mean
+"the RT is still yours to keep" — it means "that RT was spent, and here is its replacement (the next
+generation)." The old RT is invalidated at the provider the instant the new one is issued. So if the caller
+doesn't persist the returned RT, **whoever still holds the old generation is now orphaned** (next use →
+`authentication_error`). This is the exact knife-edge two custodians cut each other on, and it has nothing
+to do with *where* the refresh runs.
+
+**Ruled out — it is NOT a datacenter / cloud-IP / geo binding** (tested 2026-06-17, recorded so nobody
+re-chases it). One *valid, current* claude RT was refreshed with identical code/headers from three
+environments; only the egress differed:
+
+| Environment | Egress | Refresh a valid RT? |
+|---|---|---|
+| Residential (owner's Mac) | home IP | ✅ (×3) |
+| AWS — Vercel function | `54.236.11.217` | ✅ |
+| Azure — GitHub Actions runner | `57.151.137.138` (AS8075 Microsoft) | ✅ |
+
+All three succeed, so the worker's `authentication_error` is **not** its cloud IP being rejected — its
+stored copy is simply a **superseded generation**. The owner's still-live local claude (CLI or desktop)
+keeps rotating the family forward, leaving the pooled copy one step behind → reuse → rejected. The
+`client ok` / `worker ERR` interleave in the event log is exactly this, not an environment block. *(And we
+proved "success consumes the token" the hard way: each `ok:true` cloud test above **burned the owner's
+keychain RT** — the two-custodian death, reproduced on purpose, requiring a fresh `claude login` after.)*
+
+**Why codex barely shows this:** codex's access token lives ~10 days, so a codex account refreshes ~30×
+less often than claude's ~8 h AT — vastly fewer windows for two custodians to collide. Same rotation rule,
+far lower collision rate (which is why the pool is ~half-healthy on codex and 0/3 on claude).
 
 ---
 
