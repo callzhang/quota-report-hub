@@ -6,6 +6,7 @@ import {
   applyRefreshToBlob,
   accessTokenMsUntilExpiry,
 } from "../lib/token-refresh.js";
+import { deriveAuthPoolEntry, shouldReplaceAuthPoolEntry } from "../lib/auth-pool.js";
 
 function mockFetch(responses) {
   const calls = [];
@@ -69,6 +70,37 @@ test("applyRefreshToBlob updates claude tokens + expiry and preserves siblings",
   assert.equal(out.credentials.claudeAiOauth.refreshToken, "NEW_RT");
   assert.equal(out.credentials.claudeAiOauth.expiresAt, 1000 + 3600 * 1000);
   assert.deepEqual(out.credentials.mcpOAuth, { keep: "me" });
+  // must advance the top-level mirror too, or the freshness gate drops the rotated blob (see below)
+  assert.equal(out.auth_last_refresh, String(1000 + 3600 * 1000));
+});
+
+test("claude refresh write-back survives the freshness gate (regression: rotated RT used to be silently dropped)", () => {
+  // A pooled claude blob. The guard sets auth_last_refresh = expiresAt (ms string).
+  const stored = JSON.stringify({
+    schema: "claude_credentials_v1",
+    account_id: "acct-1",
+    email: "owner@example.com",
+    auth_last_refresh: "1781600000000",
+    credentials: { claudeAiOauth: { accessToken: "AT0", refreshToken: "RT0", expiresAt: 1781600000000 } },
+  });
+  const existing = deriveAuthPoolEntry("claude", stored);
+
+  // Worker central refresh: RT0 -> RT1 (RT0 now spent at the provider), expiry advances.
+  const refreshedBlob = applyRefreshToBlob(
+    stored,
+    "claude",
+    { access_token: "AT1", refresh_token: "RT1", expires_in: 28800 },
+    1781620000000,
+  );
+  const incoming = deriveAuthPoolEntry("claude", refreshedBlob);
+
+  // The bug: without bumping auth_last_refresh, incoming === existing -> gate returns false ->
+  // the rotated blob is dropped -> the hub keeps the spent RT0 and replays it -> family revoked.
+  assert.notEqual(incoming.auth_last_refresh, existing.auth_last_refresh);
+  assert.ok(
+    shouldReplaceAuthPoolEntry(existing, incoming),
+    "refreshed claude blob must replace the stale pooled entry, else the hub replays a spent RT",
+  );
 });
 
 test("applyRefreshToBlob updates codex tokens and last_refresh", () => {
