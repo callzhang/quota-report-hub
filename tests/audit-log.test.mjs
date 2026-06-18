@@ -720,14 +720,19 @@ test("authUsersList collapses duplicate token rows for the same email", async ()
   }
 });
 
-test("authenticateOrUpgradeApiToken rejects signed stale tokens", async () => {
+test("authenticateOrUpgradeApiToken rejects a signed token once a newer one has been used", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
     const first = await mod.issueApiToken("alice@stardust.ai");
+    await new Promise((r) => setTimeout(r, 15)); // ensure a strictly later created_at
     const second = await mod.issueApiToken("alice@stardust.ai");
 
-    assert.equal(await mod.authenticateApiToken(first.token), null);
+    // Issuing `second` does NOT evict `first` — eviction happens on first USE, not on issue (no lockout).
+    assert.equal((await mod.authenticateApiToken(first.token))?.email, "alice@stardust.ai");
+
+    // Using `second` supersedes `first`, which is then revoked.
     assert.equal((await mod.authenticateApiToken(second.token)).email, "alice@stardust.ai");
+    assert.equal(await mod.authenticateApiToken(first.token), null);
 
     assert.equal(await mod.authenticateOrUpgradeApiToken(first.token), null);
   } finally {
