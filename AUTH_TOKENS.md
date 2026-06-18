@@ -20,13 +20,13 @@
    RT and orphans any other holder of that generation. This is the "refresh-token death spiral."
 3. **`disabled_refresh_token` mode makes the hub the sole refresher**: borrowers get access-token-only
    blobs (RT stripped to a placeholder), the hub holds the one real RT and refreshes centrally.
-4. **The desktop app is a second OAuth refresher — don't pool an account you use in it.** Claude Desktop's
-   UI uses a separate claude.ai *cookie* (independent of the CLI OAuth), **but** it also runs an OAuth
-   `host-auth-refresh` (`CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH=1`, scope `user:inference`) for the Claude
-   Code sessions it spawns — same account, same OAuth family as the pooled RT — so it rotates and kills the
-   pooled copy within ~one cycle. A **purely-CLI** account (never used for Claude Code in the desktop app)
-   is poolable; an account you use in the desktop app is not.
-   (See [§7](#7-claude-desktop-vs-the-cli-the-desktop-app-is-a-second-oauth-refresher).)
+4. **A desktop-used account IS poolable (fixed `4b9b49f`) — the old "don't pool it" rule is obsolete.**
+   Claude Desktop periodically **rewrites the CLI keychain credential access-token-only** (`refreshToken=""`).
+   The guard would upload that, and an empty RT used to slip past the strip-guard and **overwrite the real
+   pooled RT with nothing** → the account died. Both the server (`isStrippedRefreshToken`) and the guard
+   (`auth_json_is_stripped`) now **reject empty/absent RTs**, so the blank can't reach the pool. The desktop
+   does **not** "revoke the OAuth family" (a myth — the CLI RT refreshes fine with the app open).
+   (See [§7](#7-claude-desktop-vs-the-cli).)
 5. **AT expiry ≠ death.** An expired access token is normal and refreshable. Death is an **RT-class**
    error (`token_invalidated` / `401 unauthorized` / `authentication_error`) — the RT itself is gone and
    only an **owner re-login** can recover it; central refresh cannot.
@@ -35,7 +35,7 @@
 
 ## 1. Codex auth
 
-### Storage — CLI lane vs desktop-app lane (two lanes, like Claude — see [§7](#7-claude-desktop-vs-the-cli-the-desktop-app-is-a-second-oauth-refresher))
+### Storage — CLI lane vs desktop-app lane (two lanes, like Claude — see [§7](#7-claude-desktop-vs-the-cli))
 - **CLI lane (guard-managed):** `~/.codex/auth.json`. Shape: `{ "tokens": { access_token, refresh_token, id_token, account_id }, "last_refresh": <iso> }`. The Codex CLI owns this file and **self-refreshes** during use (rotates `access_token`/`refresh_token`, bumps `last_refresh`).
 - **Desktop-app lane (`Codex.app`, guard CANNOT manage):** the standalone Codex desktop app caches its own auth in `~/Library/Application Support/Codex/` (`Cookies`, `Local`/`Session Storage`), encrypted by keychain item **`Codex Safe Storage`** — the exact mirror of Claude Desktop. A running `Codex.app` **caches auth at startup and won't switch** just because the guard rewrote `~/.codex/auth.json`. (The guard partially mitigates the *CLI* `codex app-server --listen` daemon via `stale_codex_app_server_for_auth` + `restart_codex_app_server`, but it does **not** control `Codex.app`'s store.)
 
@@ -72,13 +72,13 @@
 |---|---|---|
 | **macOS keychain** | service `Claude Code-credentials`, account `$USER` | terminal/CLI Claude Code **and the quota guard** |
 | **File** | `~/.claude/.credentials.json` | fallback for the CLI/guard (non-darwin primary) |
-| **Claude Desktop** | claude.ai session cookie (`sessionKey`) in `~/Library/Application Support/Claude/Cookies`, encrypted by keychain `Claude Safe Storage` | **Claude Desktop only** — a *separate* web-session auth, not OAuth (see [§7](#7-claude-desktop-vs-the-cli-the-desktop-app-is-a-second-oauth-refresher)) |
+| **Claude Desktop** | claude.ai session cookie (`sessionKey`) in `~/Library/Application Support/Claude/Cookies`, encrypted by keychain `Claude Safe Storage` | **Claude Desktop only** — a *separate* web-session auth, not OAuth (see [§7](#7-claude-desktop-vs-the-cli)) |
 
 - On **macOS the read order is keychain-first** (`read_claude_oauth_credentials`,
   [quota_reporters.py](skills/quota-reporter/scripts/quota_reporters.py)); the keychain is the source of truth, the file is a
   fallback that can go stale. Writes are keychain-first too, with a read-back verification to avoid a
   known hex-corruption logout bug.
-- **Desktop is a different auth system** (claude.ai cookie session — see [§7](#7-claude-desktop-vs-the-cli-the-desktop-app-is-a-second-oauth-refresher)). A stripped/garbage keychain RT does
+- **Desktop is a different auth system** (claude.ai cookie session — see [§7](#7-claude-desktop-vs-the-cli)). A stripped/garbage keychain RT does
   **not** affect Desktop, and Desktop does **not** touch the keychain / OAuth tokens.
 
 ### Credential shape
@@ -112,9 +112,10 @@ out. Sources of "more than one custodian" observed in this project:
 - **Multiple pool sessions** of one account (different `session_id`), each a different RT generation —
   the worker refreshing >1 in a run = replay (fixed, [§6](#6-failure-modes--invariants)).
 - **Two overlapping worker runs** both refreshing the same entry (fixed, [§6](#6-failure-modes--invariants)).
-- **The Claude Desktop app's `host-auth-refresh`** — it refreshes its own `user:inference` OAuth token (same
-  account, same family) for every Claude Code session run from the app, so the pooled copy dies ~hourly/per-AT-cycle.
-  **Not fixable** from the guard side; the rule is just "don't pool a desktop-used account" ([§7](#7-claude-desktop-vs-the-cli-the-desktop-app-is-a-second-oauth-refresher)).
+- ~~The Claude Desktop app's `host-auth-refresh`~~ **(corrected — NOT a death-spiral source).** The desktop
+  app does **not** refresh/rotate the pooled OAuth family (earlier drafts wrongly listed it here; the CLI RT
+  refreshes fine with the app open). Its real, *separate* harm was blanking the keychain RT, which used to
+  wipe the pooled RT on upload — a different bug, now fixed ([§7](#7-claude-desktop-vs-the-cli)).
 - **Repeated CLI re-logins** of the same account, each minting/rotating an OAuth grant and orphaning the previously-pooled copy.
 
 **Refresh is single-use: a *successful* refresh is what consumes the token.** `ok:true` does **not** mean
@@ -155,7 +156,7 @@ claude's ~8 h AT, so even the latent bug had far fewer chances to fire — but t
 `last_refresh` bump.) This is why the pool was ~half-healthy on codex and **0/3 on claude** before the fix.
 
 *(Aside — the rotating-token "two custodians cut each other" hazard above is still real in general, e.g.
-the desktop host-auth refresher ([§7](#7-claude-desktop-vs-the-cli-the-desktop-app-is-a-second-oauth-refresher)),
+the desktop host-auth refresher ([§7](#7-claude-desktop-vs-the-cli)),
 and the `ok:true` cloud tests genuinely burned the owner's keychain RT by consuming it — but that hazard was
 **not** what was killing the pool. The freshness-gate drop was.)*
 
@@ -219,7 +220,7 @@ rate-limit / suspend / ban / abuse. Watched separately (`lib/abuse-errors.js`, `
 
 ---
 
-## 7. Claude Desktop vs the CLI (the desktop app is a second OAuth refresher)
+## 7. Claude Desktop vs the CLI
 
 **Both Claude and Codex** have **two separate auth lanes** — a CLI lane the guard manages, and a
 desktop-app lane it cannot. Conflating them caused several wrong conclusions earlier in this project;
@@ -243,33 +244,41 @@ store. So the rules below apply symmetrically to both products.
 - `claude logout` (CLI) removed the keychain `claudeAiOauth` block + deleted the file, but **Desktop
   stayed logged in** → the CLI OAuth and the Desktop *cookie* don't touch each other.
 
-**BUT the Desktop also runs an OAuth `host-auth-refresh`, and that is NOT independent — it is the second
-custodian.** A Claude Code session spawned by the desktop app carries
-`CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH=1` and `CLAUDE_CODE_OAUTH_SCOPES=user:inference`: the desktop app
-**mints and refreshes its own `user:inference` OAuth token** (host-injected, *not* in the keychain) for
-the **same account**, every time you run Claude Code from it. That token **shares and rotates the same
-OAuth family** as the pooled CLI refresh token — so each host-auth-refresh **invalidates the pooled copy**,
-within ~one access-token cycle (~8h).
+**The Desktop's real harm to the pool is mundane — it blanks the keychain RT, it does NOT "revoke the OAuth
+family".** A Claude Code session spawned by the desktop app carries `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH=1`
+/ `CLAUDE_CODE_OAUTH_SCOPES=user:inference` and runs on a host-injected token. While it's running, the
+desktop app **periodically rewrites the CLI keychain credential (`Claude Code-credentials`)
+access-token-only — `refreshToken=""`, accessToken present.** It does **not** rotate or revoke the pooled
+CLI refresh-token family — verified: the CLI RT refreshes fine from residential, AWS, and Azure with the app
+open ([§3](#3-the-refresh-token-rotation-death-spiral)). (Earlier drafts of this doc claimed the
+host-auth-refresh "shared and rotated the same family" and killed the pooled copy — that was **wrong**.)
 
-### Can you pool an account you use in the desktop app? — **No** (if you use it for Claude Code there)
-A CLI-seed (`claude login` → guard sync → Phase-4 strip → hub sole refresher) keeps a pooled account alive
-**only while nothing else refreshes its OAuth family.** The desktop app's host-auth-refresh *does* refresh
-it whenever you use Claude Code from the app, so the seed survives ~one cycle and then dies
-(`authentication_error`) — and the guard can neither see nor stop that host-injected token.
+### The bug this caused (fixed `4b9b49f`) — and why a desktop-used account IS poolable now
+With the keychain blanked, the guard read `refreshToken=""` and uploaded it. The strip-guards
+(`isStrippedRefreshToken` server-side, `auth_json_is_stripped` guard-side) only matched the literal
+placeholder `"disabled-by-hub-refresh-token"` — **not empty/absent** — so the empty RT was accepted and
+**overwrote the real pooled RT with `""`**, leaving the hub no token to refresh centrally → the account died
+`authentication_error` at AT expiry → auto-relogin re-seeded → the desktop blanked it again → endless cycle.
+**Fix:** both strip-guards now treat empty/whitespace/absent as "no usable RT" and reject the upload, so a
+desktop AT-only write can never reach the pool. Confirmed end-to-end (an empty-RT upload is now
+`rejected (stripped_refresh_token)`, the real pooled RT preserved).
 
-**Durable rule ("one custodian", [§0](#0-tldr--the-rules-that-matter) rule 2): do NOT pool the account the desktop
-app is logged into / used for Claude Code.** Pool a *different* account via the CLI lane. A **purely-CLI
-account** (logged in via `claude`/`codex` CLI, never used in the desktop app) **is** poolable — the desktop
-app is the second refresher, not the CLI.
+**Current rule: a desktop-used claude account IS poolable.** `claude login` (CLI) once to put a real RT in
+the keychain; the guard uploads it, the hub refreshes it centrally, and the desktop's subsequent AT-only
+blanks are rejected. The earlier "do NOT pool a desktop-used account" rule rested on the wrong
+"second refresher" mechanism and is **obsolete**.
 
 > **History (so future readers don't re-derive it the hard way):** `leizhang0121@gmail.com` kept dying
-> RT-class. Ruled out one by one: multi-session replay (fixed by single-entry), overlapping worker runs
-> (fixed by the concurrency group), the CLI keychain (logged out → `claudeAiOauth` absent), and the Desktop
-> *cookie* (independent). What remained, by elimination + the env evidence above, is the **Desktop
-> host-auth-refresh** rotating the `user:inference` family — confirmed by the seed staying `ok` ~8h then
-> dying while Claude Code was used through the app. Earlier drafts wrongly blamed leveldb, then "repeated
-> re-logins", then called a Desktop account poolable — all wrong; **host-auth-refresh is the second
-> custodian.**
+> RT-class, and we chased a string of wrong causes before finding it. Ruled out: multi-session replay
+> (fixed by single-entry), overlapping worker runs (concurrency group), leveldb, "repeated re-logins",
+> **datacenter-IP binding** (refuted — a valid RT refreshes from residential, AWS, and Azure alike), and
+> the **"Desktop host-auth-refresh revokes the OAuth family"** theory (refuted — the CLI RT refreshes fine
+> with the app open). Two *real* bugs were behind it: **(A)** the hub dropping its own rotated RT and
+> replaying the spent one (`auth_last_refresh` not advancing, [§6](#6-failure-modes--invariants), fixed
+> `bd96ae0`), and **(B)** the **empty-RT wipe** above — the desktop blanks the keychain RT and the
+> strip-guards let the empty value overwrite the real pooled RT (fixed `4b9b49f`). (B) was what kept
+> leizhang specifically dying after (A) was fixed. The evidence that cracked it: the pooled blob literally
+> had `refreshToken=""` with `isStrippedRefreshToken=false`.
 
 ---
 
