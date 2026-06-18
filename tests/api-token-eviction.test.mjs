@@ -16,27 +16,22 @@ async function loadDb() {
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-test("token eviction happens on first USE of the new token, not on issue (no lockout)", async () => {
+test("api tokens for one email coexist — neither issuing nor using one evicts the others", async () => {
   const db = await loadDb();
   const email = "owner@example.com";
 
   const t1 = await db.issueApiToken(email);
-  await delay(15); // ensure a strictly later created_at
+  await delay(15); // strictly later created_at
   const t2 = await db.issueApiToken(email);
 
   assert.notEqual(t1.token, t2.token);
-  assert.ok(t1.created_at < t2.created_at, "t2 must be newer than t1");
 
-  // Issuing t2 must NOT have evicted t1 — the old token still works (this is the lockout fix:
-  // a reissued-but-never-pasted token cannot knock out the currently-working one).
-  assert.ok(await db.authenticateApiToken(t1.token), "old token still valid after a newer one is issued");
-
-  // Using the OLDER token must not evict the newer (unused) one.
-  assert.ok(await db.authenticateApiToken(t2.token), "newer token valid");
-
-  // Now that t2 has been USED, it supersedes t1 → t1 is revoked.
-  assert.equal(await db.authenticateApiToken(t1.token), null, "old token revoked once the new one is used");
-
-  // t2 keeps working.
-  assert.ok(await db.authenticateApiToken(t2.token), "new token still valid");
+  // Issuing t2 does not evict t1.
+  assert.ok(await db.authenticateApiToken(t1.token), "t1 valid after t2 is issued");
+  // Using t2 does not evict t1 — the whole point: a person's guard + browser + 2nd machine each hold
+  // their own token under one identity and must all keep working (no ping-pong).
+  assert.ok(await db.authenticateApiToken(t2.token), "t2 valid");
+  assert.ok(await db.authenticateApiToken(t1.token), "t1 STILL valid after t2 was used");
+  // And using t1 does not evict t2.
+  assert.ok(await db.authenticateApiToken(t2.token), "t2 STILL valid after t1 was used");
 });
