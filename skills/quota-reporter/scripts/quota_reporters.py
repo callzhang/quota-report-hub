@@ -2005,17 +2005,23 @@ def sync_current_auth_pool_entry(
 
 
 def auth_json_is_stripped(source: str, auth_json_text: str) -> bool:
-    """True when a local auth blob carries a hub placeholder refresh token (access-token-only),
-    so it must not be re-uploaded into the shared pool."""
+    """True when a local auth blob has no usable real refresh token (hub placeholder OR empty/absent),
+    so it must not be re-uploaded into the shared pool — uploading it would overwrite the real shared
+    RT with nothing. The Claude Desktop app rewrites the CLI keychain credential access-token-only
+    (refreshToken=""), so empty/absent must count as stripped too, not just the literal placeholder."""
     try:
         parsed = json.loads(auth_json_text)
     except Exception:
         return False
+
+    def _no_usable_rt(rt, placeholder):
+        return not rt or not str(rt).strip() or rt == placeholder
+
     if source == "codex":
-        return (parsed.get("tokens") or {}).get("refresh_token") == STRIPPED_CODEX_REFRESH_TOKEN
+        return _no_usable_rt((parsed.get("tokens") or {}).get("refresh_token"), STRIPPED_CODEX_REFRESH_TOKEN)
     if source == "claude":
         oauth = (parsed.get("credentials") or {}).get("claudeAiOauth") or {}
-        return oauth.get("refreshToken") == STRIPPED_CLAUDE_REFRESH_TOKEN
+        return _no_usable_rt(oauth.get("refreshToken"), STRIPPED_CLAUDE_REFRESH_TOKEN)
     return False
 
 

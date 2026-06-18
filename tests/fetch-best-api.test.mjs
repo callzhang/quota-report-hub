@@ -31,6 +31,14 @@ test("isStrippedRefreshToken detects hub placeholder RTs and ignores real ones",
   assert.equal(isStrippedRefreshToken(JSON.stringify({ credentials: { claudeAiOauth: { refreshToken: "REAL" } } }), "claude"), false);
   assert.equal(isStrippedRefreshToken("not json", "codex"), false);
   assert.equal(isStrippedRefreshToken(null, "claude"), false);
+  // Empty / whitespace / absent RT must ALSO count as stripped — the Claude Desktop app rewrites the
+  // keychain credential access-token-only (refreshToken=""), and accepting that upload would wipe the
+  // real pooled RT and leave the hub unable to refresh centrally.
+  assert.equal(isStrippedRefreshToken(JSON.stringify({ credentials: { claudeAiOauth: { refreshToken: "", accessToken: "AT" } } }), "claude"), true);
+  assert.equal(isStrippedRefreshToken(JSON.stringify({ credentials: { claudeAiOauth: { accessToken: "AT" } } }), "claude"), true);
+  assert.equal(isStrippedRefreshToken(JSON.stringify({ credentials: { claudeAiOauth: { refreshToken: "   ", accessToken: "AT" } } }), "claude"), true);
+  assert.equal(isStrippedRefreshToken(JSON.stringify({ tokens: { refresh_token: "", access_token: "AT" } }), "codex"), true);
+  assert.equal(isStrippedRefreshToken(JSON.stringify({ tokens: { access_token: "AT" } }), "codex"), true);
 });
 
 test("fetch-best exposes invalidated uploader auth as repair_auth, not replacement", () => {

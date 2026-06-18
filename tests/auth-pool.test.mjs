@@ -21,6 +21,7 @@ function fakeAuthJson({ accountId, email, name, plan = "pro", lastRefresh = "202
     tokens: {
       account_id: accountId,
       id_token: `x.${payload}.y`,
+      refresh_token: "rt.1.REALFIXTURETOKEN",
     },
     last_refresh: lastRefresh,
   });

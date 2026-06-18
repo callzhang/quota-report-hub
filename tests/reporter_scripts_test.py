@@ -3222,6 +3222,7 @@ Reading additional input from stdin...
                         "last_refresh": "2026-04-19T21:00:00Z",
                         "tokens": {
                             "account_id": "acct-1",
+                            "refresh_token": "rt.1.REALFIXTURETOKEN",
                             "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
                         },
                     }
@@ -3264,6 +3265,7 @@ Reading additional input from stdin...
                         "last_refresh": "2026-04-19T21:00:00Z",
                         "tokens": {
                             "account_id": "acct-1",
+                            "refresh_token": "rt.1.REALFIXTURETOKEN",
                             "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
                         },
                     }
@@ -3306,6 +3308,7 @@ Reading additional input from stdin...
                         "last_refresh": "2026-04-19T21:00:00Z",
                         "tokens": {
                             "account_id": "acct-1",
+                            "refresh_token": "rt.1.REALFIXTURETOKEN",
                             "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
                         },
                     }
@@ -3349,6 +3352,7 @@ Reading additional input from stdin...
                         "last_refresh": "2026-04-19T21:00:00Z",
                         "tokens": {
                             "account_id": "acct-free",
+                            "refresh_token": "rt.1.REALFIXTURETOKEN",
                             "id_token": "x.eyJlbWFpbCI6ICJmcmVlQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiRnJlZSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogImZyZWUifX0.y",
                         },
                     }
@@ -3389,6 +3393,7 @@ Reading additional input from stdin...
                         "last_refresh": "2026-04-19T22:00:00Z",
                         "tokens": {
                             "account_id": "acct-1",
+                            "refresh_token": "rt.1.REALFIXTURETOKEN",
                             "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
                         },
                     }
@@ -3431,6 +3436,7 @@ Reading additional input from stdin...
                         "last_refresh": "2026-04-19T22:00:00Z",
                         "tokens": {
                             "account_id": "acct-1",
+                            "refresh_token": "rt.1.REALFIXTURETOKEN",
                             "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIiwgIm5hbWUiOiAiQSIsICJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOiB7ImNoYXRncHRfcGxhbl90eXBlIjogInRlYW0ifX0.y",
                         },
                     }
@@ -4296,6 +4302,13 @@ class AtOnlyLocalSyncTests(unittest.TestCase):
         self.assertFalse(quota_reporters.auth_json_is_stripped("codex", json.dumps({"tokens": {"refresh_token": "rt.1.REAL"}})))
         self.assertFalse(quota_reporters.auth_json_is_stripped("claude", json.dumps({"credentials": {"claudeAiOauth": {"refreshToken": "REAL"}}})))
         self.assertFalse(quota_reporters.auth_json_is_stripped("codex", "not json"))
+        # Empty / whitespace / absent RT must ALSO count as stripped (the Claude Desktop app rewrites
+        # the keychain credential access-token-only, refreshToken=""), so the guard never uploads it.
+        self.assertTrue(quota_reporters.auth_json_is_stripped("claude", json.dumps({"credentials": {"claudeAiOauth": {"refreshToken": "", "accessToken": "AT"}}})))
+        self.assertTrue(quota_reporters.auth_json_is_stripped("claude", json.dumps({"credentials": {"claudeAiOauth": {"accessToken": "AT"}}})))
+        self.assertTrue(quota_reporters.auth_json_is_stripped("claude", json.dumps({"credentials": {"claudeAiOauth": {"refreshToken": "   "}}})))
+        self.assertTrue(quota_reporters.auth_json_is_stripped("codex", json.dumps({"tokens": {"refresh_token": "", "access_token": "AT"}})))
+        self.assertTrue(quota_reporters.auth_json_is_stripped("codex", json.dumps({"tokens": {"access_token": "AT"}})))
 
     def test_sync_codex_skips_at_only_local_auth(self):
         with tempfile.TemporaryDirectory() as d:

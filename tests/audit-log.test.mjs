@@ -22,6 +22,7 @@ function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", las
     tokens: {
       account_id: accountId,
       id_token: `x.${payload}.y`,
+      refresh_token: "rt.1.REALFIXTURETOKEN",
     },
   });
 }
@@ -977,6 +978,7 @@ test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", a
       tokens: {
         account_id: "acct-delete",
         id_token: "x.eyJlbWFpbCI6ICJkZWxldGVAZXhhbXBsZS5jb20iLCAibmFtZSI6ICJEZWxldGUiLCAiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjogeyJjaGF0Z3B0X3BsYW5fdHlwZSI6ICJ0ZWFtIn19.y",
+        refresh_token: "rt.1.REALFIXTURETOKEN",
       },
     });
     await mod.upsertAuthPoolEntry({
