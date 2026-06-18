@@ -134,16 +134,30 @@ environments; only the egress differed:
 | AWS — Vercel function | `54.236.11.217` | ✅ |
 | Azure — GitHub Actions runner | `57.151.137.138` (AS8075 Microsoft) | ✅ |
 
-All three succeed, so the worker's `authentication_error` is **not** its cloud IP being rejected — its
-stored copy is simply a **superseded generation**. The owner's still-live local claude (CLI or desktop)
-keeps rotating the family forward, leaving the pooled copy one step behind → reuse → rejected. The
-`client ok` / `worker ERR` interleave in the event log is exactly this, not an environment block. *(And we
-proved "success consumes the token" the hard way: each `ok:true` cloud test above **burned the owner's
-keychain RT** — the two-custodian death, reproduced on purpose, requiring a fresh `claude login` after.)*
+All three succeed — so the worker's `authentication_error` was **not** its cloud IP being rejected. The
+actual cause was a **hub-side bug** (the "two custodians" framing was wrong — there was only ever *one*
+refresher, the hub, killing itself):
 
-**Why codex barely shows this:** codex's access token lives ~10 days, so a codex account refreshes ~30×
-less often than claude's ~8 h AT — vastly fewer windows for two custodians to collide. Same rotation rule,
-far lower collision rate (which is why the pool is ~half-healthy on codex and 0/3 on claude).
+> **The freshness-gate drop (root cause, fixed `bd96ae0`).** `applyRefreshToBlob` updated claude's
+> `expiresAt` but **not** the top-level `auth_last_refresh` mirror (the guard sets that mirror = `expiresAt`,
+> [quota_reporters.py:1602](skills/quota-reporter/scripts/quota_reporters.py:1602)). So a centrally-refreshed
+> blob carried a rotated RT but an **unchanged `auth_last_refresh`** → `shouldReplaceAuthPoolEntry`
+> ([lib/auth-pool.js:314](lib/auth-pool.js:314)) returned `false` (equal, not greater) → `upsertAuthPoolEntry`
+> **dropped the write-back**. The hub kept the now-spent `RT_n`, replayed it next cycle → reuse → family
+> revoked → `authentication_error`. Confirmed on live data: every claude entry's `auth_last_refresh`
+> equalled its `expiresAt` and never advanced across refreshes. **Fix:** the claude branch of
+> `applyRefreshToBlob` now bumps `auth_last_refresh = expiresAt` on every refresh (mirroring what codex
+> already did for `last_refresh`).
+
+**Why codex was immune:** codex's `applyRefreshToBlob` already bumps its own `last_refresh` on every
+refresh, so its write-back was never dropped. (Its ~10-day AT also means it refreshes ~30× less often than
+claude's ~8 h AT, so even the latent bug had far fewer chances to fire — but the decisive difference is the
+`last_refresh` bump.) This is why the pool was ~half-healthy on codex and **0/3 on claude** before the fix.
+
+*(Aside — the rotating-token "two custodians cut each other" hazard above is still real in general, e.g.
+the desktop host-auth refresher ([§7](#7-claude-desktop-vs-the-cli-the-desktop-app-is-a-second-oauth-refresher)),
+and the `ok:true` cloud tests genuinely burned the owner's keychain RT by consuming it — but that hazard was
+**not** what was killing the pool. The freshness-gate drop was.)*
 
 ---
 
