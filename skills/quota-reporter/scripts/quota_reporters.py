@@ -2191,8 +2191,14 @@ def set_known_auth_state_source(source: str, known_auth_path: Path, state_source
 
 
 def upload_reported_disabled_refresh_token(sync_result: dict) -> bool:
-    """The /api/auth/upload response carries the hub's disabled_refresh_token flag; read it
-    from the sync result so the client knows whether to go AT-only locally (Phase 4)."""
+    """The /api/auth/upload response carries the hub's disabled_refresh_token flag at the TOP LEVEL
+    (api/auth/upload.js: {ok, entry, disabled_refresh_token, ...}). Read it from there so the client
+    strips its local RT (Phase 4) in the SAME cycle as the upload — not deferred to a later path,
+    which left the real local RT live as a second refresher (collision window). The previous code
+    read it nested under `entry`, where it never is, so the strip silently never fired. Accept the
+    legacy nested shape too, for safety."""
+    if bool(sync_result.get("disabled_refresh_token")):
+        return True
     return bool((sync_result.get("entry") or {}).get("disabled_refresh_token"))
 
 

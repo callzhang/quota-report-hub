@@ -4310,6 +4310,18 @@ class AtOnlyLocalSyncTests(unittest.TestCase):
         self.assertTrue(quota_reporters.auth_json_is_stripped("codex", json.dumps({"tokens": {"refresh_token": "", "access_token": "AT"}})))
         self.assertTrue(quota_reporters.auth_json_is_stripped("codex", json.dumps({"tokens": {"access_token": "AT"}})))
 
+    def test_upload_reported_disabled_refresh_token_reads_top_level_flag(self):
+        # The /api/auth/upload response puts disabled_refresh_token at the TOP LEVEL (sibling of entry),
+        # NOT nested under entry. The Phase-4 strip must fire off that, or it never strips at upload.
+        self.assertTrue(quota_reporters.upload_reported_disabled_refresh_token(
+            {"ok": True, "entry": {"account_id": "x"}, "disabled_refresh_token": True}))
+        self.assertFalse(quota_reporters.upload_reported_disabled_refresh_token(
+            {"ok": True, "entry": {"account_id": "x"}, "disabled_refresh_token": False}))
+        self.assertFalse(quota_reporters.upload_reported_disabled_refresh_token({"ok": True, "entry": {}}))
+        # legacy nested-under-entry shape still honored
+        self.assertTrue(quota_reporters.upload_reported_disabled_refresh_token(
+            {"entry": {"disabled_refresh_token": True}}))
+
     def test_sync_codex_skips_at_only_local_auth(self):
         with tempfile.TemporaryDirectory() as d:
             auth_path = Path(d) / "auth.json"
