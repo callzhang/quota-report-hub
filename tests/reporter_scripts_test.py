@@ -3002,7 +3002,24 @@ Reading additional input from stdin...
         with mock.patch.object(quota_guard.platform, "system", return_value="Linux"):
             with mock.patch.object(quota_guard.subprocess, "run", return_value=ps_result):
                 with mock.patch.object(quota_guard.os, "getpid", return_value=999):
-                    self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101])
+                    with mock.patch.object(quota_guard.Path, "home", return_value=Path("/home/derek")):
+                        self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101])
+
+    def test_unmanaged_codex_app_server_pids_only_matches_current_home(self):
+        ps_result = mock.Mock(
+            returncode=0,
+            stdout=(
+                "  101 node /home/derek/.local/bin/codex app-server --listen unix://\n"
+                "  102 node /home/stardust/.local/bin/codex app-server --listen unix://\n"
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(quota_guard.platform, "system", return_value="Linux"):
+            with mock.patch.object(quota_guard.subprocess, "run", return_value=ps_result):
+                with mock.patch.object(quota_guard.os, "getpid", return_value=999):
+                    with mock.patch.object(quota_guard.Path, "home", return_value=Path("/home/derek")):
+                        self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101])
 
     def test_quota_guard_parser_supports_skip_self_update(self):
         parser = quota_guard.build_parser()

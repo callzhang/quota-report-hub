@@ -626,10 +626,23 @@ def unmanaged_codex_app_server_pids() -> list[int]:
             continue
         if " be-child ssh " in args or "/bin/bash -c" in args or " grep " in f" {args} ":
             continue
-        if "codex app-server --listen" not in args:
+        if not is_current_home_codex_app_server_listener(args):
             continue
         pids.append(pid)
     return pids
+
+
+def is_current_home_codex_app_server_listener(args: str) -> bool:
+    if "codex app-server --listen" not in args:
+        return False
+    try:
+        current_home = str(Path.home())
+    except Exception:
+        return False
+    current_home = current_home.rstrip(os.sep)
+    if not current_home:
+        return False
+    return f"{current_home}{os.sep}" in args
 
 
 def unmanaged_codex_app_server_processes() -> list[dict]:
@@ -666,7 +679,7 @@ def unmanaged_codex_app_server_processes() -> list[dict]:
             continue
         if " be-child ssh " in args or "/bin/bash -c" in args or " grep " in f" {args} ":
             continue
-        if "codex app-server --listen" not in args:
+        if not is_current_home_codex_app_server_listener(args):
             continue
         processes.append(
             {
