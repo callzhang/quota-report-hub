@@ -379,6 +379,32 @@ def normalize_window(window: dict, now_ts: float) -> dict:
     }
 
 
+def codex_window_key_for_minutes(window_minutes) -> str | None:
+    try:
+        minutes = int(float(window_minutes))
+    except (TypeError, ValueError):
+        return None
+    if minutes == 300:
+        return "5h"
+    if minutes == 10080:
+        return "1week"
+    return None
+
+
+def codex_windows_from_rate_limits(rate_limits: dict | None, now_ts: float) -> dict:
+    windows = empty_windows()
+    if not isinstance(rate_limits, dict):
+        return windows
+    for raw_window in (rate_limits.get("primary"), rate_limits.get("secondary")):
+        if not isinstance(raw_window, dict):
+            continue
+        window_key = codex_window_key_for_minutes(raw_window.get("window_minutes"))
+        if window_key is None or raw_window.get("used_percent") is None:
+            continue
+        windows[window_key] = normalize_window(raw_window, now_ts)
+    return windows
+
+
 def empty_windows() -> dict:
     return {"5h": None, "1week": None}
 
@@ -691,9 +717,10 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
     token_payload = token_event.get("payload", {})
     info = token_payload.get("info")
     rate_limits = token_payload.get("rate_limits")
-    primary_window = rate_limits.get("primary") if isinstance(rate_limits, dict) else None
-    secondary_window = rate_limits.get("secondary") if isinstance(rate_limits, dict) else None
-    has_complete_windows = isinstance(primary_window, dict) and isinstance(secondary_window, dict)
+    now_ts = checked_at.timestamp()
+    windows = codex_windows_from_rate_limits(rate_limits, now_ts)
+    has_any_window = windows["5h"] is not None or windows["1week"] is not None
+    has_complete_windows = windows["5h"] is not None and windows["1week"] is not None
     if rate_limits and not has_complete_windows and codex_workspace_credits_exhausted(rate_limits, result.stderr, result.stdout):
         payload = {
             **base,
@@ -774,7 +801,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
             payload["refresh_capture"] = refresh_capture
         return payload
 
-    if not info or not rate_limits or not has_complete_windows:
+    if not info or not rate_limits or not has_any_window:
         payload = {
             **base,
             "status": "error",
@@ -785,16 +812,12 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
             payload["refresh_capture"] = refresh_capture
         return payload
 
-    now_ts = checked_at.timestamp()
     payload = {
         **base,
         "model_context_window": info.get("model_context_window"),
         "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
         "status": "ok",
-        "windows": {
-            "5h": normalize_window(primary_window, now_ts),
-            "1week": normalize_window(secondary_window, now_ts),
-        },
+        "windows": windows,
     }
     if refresh_capture is not None:
         payload["refresh_capture"] = refresh_capture

@@ -361,6 +361,54 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIn("--ignore-user-config", seen["args"])
         self.assertIn("--ignore-rules", seen["args"])
 
+    def test_probe_codex_maps_available_window_by_duration_when_secondary_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "pro"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.subprocess.run", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 258400},
+                            "rate_limits": {
+                                "plan_type": "pro",
+                                "primary": {"used_percent": 30, "window_minutes": 10080, "resets_in_seconds": 3600},
+                                "secondary": None,
+                                "credits": {"has_credits": False, "balance": "0", "unlimited": False},
+                                "rate_limit_reached_type": None,
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "ok")
+        self.assertIsNone(report.get("error"))
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 70.0)
+        self.assertEqual(report["windows"]["1week"]["reset_in_seconds"], 3600)
+
     def test_probe_codex_maps_usage_limit_event_to_zero_remaining_windows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
@@ -1359,6 +1407,18 @@ Reading additional input from stdin...
             "status": "ok",
             "windows": {
                 "5h": {"remaining_percent": 80},
+                "1week": {"remaining_percent": 2},
+            },
+        }
+
+        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+
+    def test_source_needs_replacement_when_available_weekly_quota_is_below_threshold(self):
+        codex_payload = {
+            "source": "codex",
+            "status": "ok",
+            "windows": {
+                "5h": None,
                 "1week": {"remaining_percent": 2},
             },
         }
