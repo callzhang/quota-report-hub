@@ -3098,6 +3098,52 @@ Reading additional input from stdin...
                     with mock.patch.object(quota_guard.Path, "home", return_value=Path("/home/derek")):
                         self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101])
 
+    def test_unmanaged_codex_app_server_pids_matches_current_user_chatgpt_app_server(self):
+        ps_result = mock.Mock(
+            returncode=0,
+            stdout=(
+                "  101 25:00 501 /Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled\n"
+                "  102 25:00 501 /Applications/ChatGPT.app/Contents/Resources/codex app-server --listen stdio://\n"
+                "  103 25:00 502 /Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled\n"
+                "  104 25:00 501 /Applications/ChatGPT.app/Contents/Resources/codex app-server proxy\n"
+                "  105 25:00 501 /Applications/ChatGPT.app/Contents/Resources/codex-code-mode-host\n"
+            ),
+            stderr="",
+        )
+
+        with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+            with mock.patch.object(quota_guard.subprocess, "run", return_value=ps_result):
+                with mock.patch.object(quota_guard.os, "getpid", return_value=999):
+                    with mock.patch.object(quota_guard.os, "getuid", return_value=501):
+                        with mock.patch.object(quota_guard.Path, "home", return_value=Path("/Users/derek")):
+                            self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101, 102])
+
+    def test_stale_codex_app_server_detects_chatgpt_app_server_after_manual_login(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text("{}", encoding="utf-8")
+            os.utime(auth_path, (2000, 2000))
+
+            ps_result = mock.Mock(
+                returncode=0,
+                stdout=(
+                    "  101 25:00 501 /Applications/ChatGPT.app/Contents/Resources/codex -c features.code_mode_host=true app-server --analytics-default-enabled\n"
+                ),
+                stderr="",
+            )
+
+            with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+                with mock.patch.object(quota_guard.subprocess, "run", return_value=ps_result):
+                    with mock.patch.object(quota_guard.os, "getpid", return_value=999):
+                        with mock.patch.object(quota_guard.os, "getuid", return_value=501):
+                            with mock.patch.object(quota_guard.time, "time", return_value=3000):
+                                with mock.patch.object(quota_guard.Path, "home", return_value=Path("/Users/derek")):
+                                    stale = quota_guard.stale_codex_app_server_for_auth(auth_path)
+
+        self.assertTrue(stale["stale"])
+        self.assertEqual(stale["reason"], "app_server_started_before_auth")
+        self.assertEqual(stale["processes"][0]["pid"], 101)
+
     def test_quota_guard_parser_supports_skip_self_update(self):
         parser = quota_guard.build_parser()
         args = parser.parse_args(["--skip-self-update"])

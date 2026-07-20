@@ -616,28 +616,106 @@ def unmanaged_codex_app_server_pids() -> list[int]:
         return []
 
     current_pid = os.getpid()
+    current_uid = current_process_uid()
     pids = []
     for line in result.stdout.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        pid_text, _, args = stripped.partition(" ")
+        fields = parse_codex_app_server_pid_row(stripped)
+        if fields is None:
+            continue
+        pid_text, uid_text, args = fields
         try:
             pid = int(pid_text)
         except ValueError:
             continue
         if pid == current_pid:
             continue
+        if uid_text is not None and uid_text != str(current_uid):
+            continue
         if " be-child ssh " in args or "/bin/bash -c" in args or " grep " in f" {args} ":
             continue
-        if not is_current_home_codex_app_server_listener(args):
+        if not is_current_home_codex_app_server(args):
             continue
         pids.append(pid)
     return pids
 
 
-def is_current_home_codex_app_server_listener(args: str) -> bool:
-    if " app-server --listen" not in args:
+def parse_codex_app_server_pid_row(stripped: str) -> tuple[str, str | None, str] | None:
+    parts = stripped.split(None, 2)
+    if len(parts) < 2:
+        return None
+    if len(parts) == 2:
+        return parts[0], None, parts[1]
+    pid_text, maybe_uid_text, rest = parts
+    if maybe_uid_text.isdigit():
+        return pid_text, maybe_uid_text, rest
+    return pid_text, None, f"{maybe_uid_text} {rest}"
+
+
+def parse_codex_app_server_process_row(stripped: str) -> tuple[str, str, str | None, str] | None:
+    parts = stripped.split(None, 3)
+    if len(parts) < 3:
+        return None
+    if len(parts) == 3:
+        return parts[0], parts[1], None, parts[2]
+    pid_text, etimes_text, maybe_uid_text, rest = parts
+    if maybe_uid_text.isdigit():
+        return pid_text, etimes_text, maybe_uid_text, rest
+    return pid_text, etimes_text, None, f"{maybe_uid_text} {rest}"
+
+
+def parse_ps_elapsed_seconds(value: str) -> int | None:
+    try:
+        return int(value)
+    except ValueError:
+        pass
+
+    day_count = 0
+    time_value = value
+    if "-" in value:
+        day_text, time_value = value.split("-", 1)
+        try:
+            day_count = int(day_text)
+        except ValueError:
+            return None
+
+    time_parts = time_value.split(":")
+    try:
+        numbers = [int(part) for part in time_parts]
+    except ValueError:
+        return None
+    if len(numbers) == 2:
+        hours = 0
+        minutes, seconds = numbers
+    elif len(numbers) == 3:
+        hours, minutes, seconds = numbers
+    else:
+        return None
+    return day_count * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def current_process_uid() -> int | None:
+    getuid = getattr(os, "getuid", None)
+    return getuid() if callable(getuid) else None
+
+
+def is_codex_app_server_command(args: str) -> bool:
+    try:
+        tokens = shlex.split(args)
+    except ValueError:
+        tokens = args.split()
+    try:
+        app_server_index = tokens.index("app-server")
+    except ValueError:
+        return False
+    next_arg = tokens[app_server_index + 1] if app_server_index + 1 < len(tokens) else None
+    return next_arg not in {"proxy", "daemon"}
+
+
+def is_current_home_codex_app_server(args: str) -> bool:
+    if not is_codex_app_server_command(args):
         return False
     try:
         current_home = str(Path.home())
@@ -646,15 +724,25 @@ def is_current_home_codex_app_server_listener(args: str) -> bool:
     current_home = current_home.rstrip(os.sep)
     if not current_home:
         return False
-    return f"{current_home}{os.sep}" in args
+    if f"{current_home}{os.sep}" in args:
+        return True
+    return (
+        platform.system().lower() == "darwin"
+        and "/Applications/ChatGPT.app/Contents/Resources/codex" in args
+    )
+
+
+def is_current_home_codex_app_server_listener(args: str) -> bool:
+    return is_current_home_codex_app_server(args)
 
 
 def unmanaged_codex_app_server_processes() -> list[dict]:
     if platform.system().lower() == "windows":
         return []
 
+    ps_command = ["ps", "-eo", "pid=,etime=,uid=,args="] if platform.system().lower() == "darwin" else ["ps", "-eo", "pid=,etimes=,uid=,args="]
     result = subprocess.run(
-        ["ps", "-eo", "pid=,etimes=,args="],
+        ps_command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -664,26 +752,31 @@ def unmanaged_codex_app_server_processes() -> list[dict]:
         return []
 
     current_pid = os.getpid()
+    current_uid = current_process_uid()
     now = time.time()
     processes = []
     for line in result.stdout.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        parts = stripped.split(None, 2)
-        if len(parts) != 3:
+        fields = parse_codex_app_server_process_row(stripped)
+        if fields is None:
             continue
-        pid_text, etimes_text, args = parts
+        pid_text, etimes_text, uid_text, args = fields
         try:
             pid = int(pid_text)
-            etimes = int(etimes_text)
         except ValueError:
+            continue
+        etimes = parse_ps_elapsed_seconds(etimes_text)
+        if etimes is None:
             continue
         if pid == current_pid:
             continue
+        if uid_text is not None and uid_text != str(current_uid):
+            continue
         if " be-child ssh " in args or "/bin/bash -c" in args or " grep " in f" {args} ":
             continue
-        if not is_current_home_codex_app_server_listener(args):
+        if not is_current_home_codex_app_server(args):
             continue
         processes.append(
             {
