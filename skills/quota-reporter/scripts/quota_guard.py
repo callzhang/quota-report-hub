@@ -633,7 +633,7 @@ def unmanaged_codex_app_server_pids() -> list[int]:
 
 
 def is_current_home_codex_app_server_listener(args: str) -> bool:
-    if "codex app-server --listen" not in args:
+    if " app-server --listen" not in args:
         return False
     try:
         current_home = str(Path.home())
