@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ctypes
 import getpass
 import hashlib
 import json
@@ -32,6 +33,9 @@ UNCHANGED_AUTH_REUPLOAD_INTERVAL_SECONDS = 3600
 CLAUDE_STATUSLINE_SNAPSHOT_PATH = "statusline-rate-limits.json"
 CODEx_PROMPT = "reply with ok"
 CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
+CLAUDE_SAFE_STORAGE_SERVICE = "Claude Safe Storage"
+CLAUDE_SAFE_STORAGE_ACCOUNTS = ("Claude", "Claude Key")
+CLAUDE_TOKEN_CACHE_FIELDS = ("oauth:tokenCacheV2", "oauth:tokenCache")
 CLAUDE_DEFAULT_BASE_URL = "https://api.anthropic.com"
 # Claude Code first-party OAuth (extracted from the claude CLI: TOKEN_URL + the
 # client_id next to its oauth/code/callback). Used to refresh an expired access
@@ -850,25 +854,254 @@ def read_claude_credentials(claude_home: Path) -> dict | None:
     return read_json(path)
 
 
+def claude_credentials_have_oauth(credentials: dict | None) -> bool:
+    oauth = (credentials or {}).get("claudeAiOauth") if isinstance(credentials, dict) else None
+    return isinstance(oauth, dict) and bool(oauth.get("accessToken"))
+
+
+def claude_keychain_account_candidates() -> list[str]:
+    user = os.environ.get("USER") or getpass.getuser() or ""
+    candidates = ["unknown"]
+    if user and user not in candidates:
+        candidates.append(user)
+    return candidates
+
+
+def claude_application_config_path(claude_home: Path = CLAUDE_HOME) -> Path:
+    return claude_home.parent / "Library" / "Application Support" / "Claude" / "config.json"
+
+
+def read_claude_safe_storage_secret() -> str | None:
+    if sys.platform != "darwin":
+        return None
+    for account in CLAUDE_SAFE_STORAGE_ACCOUNTS:
+        try:
+            result = subprocess.run(
+                ["security", "find-generic-password", "-s", CLAUDE_SAFE_STORAGE_SERVICE, "-a", account, "-w"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except Exception:
+            continue
+        secret = (result.stdout or "").rstrip("\n")
+        if result.returncode == 0 and secret:
+            return secret
+    return None
+
+
+def claude_safe_storage_key(secret: str) -> bytes:
+    return hashlib.pbkdf2_hmac("sha1", secret.encode("utf-8"), b"saltysalt", 1003, 16)
+
+
+def claude_common_crypto_aes_cbc_pkcs7(data: bytes, key: bytes, iv: bytes, operation: int) -> bytes:
+    if sys.platform != "darwin":
+        raise RuntimeError("CommonCrypto Claude token-cache decrypt is only supported on macOS")
+    lib = ctypes.cdll.LoadLibrary("/usr/lib/libSystem.dylib")
+    out = ctypes.create_string_buffer(len(data) + 16)
+    out_len = ctypes.c_size_t(0)
+    status = lib.CCCrypt(
+        ctypes.c_uint32(operation),
+        ctypes.c_uint32(0),  # kCCAlgorithmAES
+        ctypes.c_uint32(1),  # kCCOptionPKCS7Padding
+        ctypes.create_string_buffer(key),
+        ctypes.c_size_t(len(key)),
+        ctypes.create_string_buffer(iv),
+        ctypes.create_string_buffer(data),
+        ctypes.c_size_t(len(data)),
+        out,
+        ctypes.c_size_t(len(out)),
+        ctypes.byref(out_len),
+    )
+    if status != 0:
+        raise ValueError(f"CommonCrypto CCCrypt failed: {status}")
+    return out.raw[: out_len.value]
+
+
+def decrypt_claude_safe_storage_json(encoded: str, secret: str) -> dict | None:
+    try:
+        raw = base64.b64decode(encoded)
+    except Exception:
+        return None
+    if not raw.startswith(b"v10"):
+        return None
+    try:
+        plaintext = claude_common_crypto_aes_cbc_pkcs7(
+            raw[3:],
+            claude_safe_storage_key(secret),
+            b" " * 16,
+            1,  # kCCDecrypt
+        )
+        payload = json.loads(plaintext.decode("utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def encrypt_claude_safe_storage_json(payload: dict, secret: str) -> str | None:
+    try:
+        plaintext = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ciphertext = claude_common_crypto_aes_cbc_pkcs7(
+            plaintext,
+            claude_safe_storage_key(secret),
+            b" " * 16,
+            0,  # kCCEncrypt
+        )
+        return base64.b64encode(b"v10" + ciphertext).decode("ascii")
+    except Exception:
+        return None
+
+
+def claude_token_cache_entry_score(cache_key: str, entry: dict) -> tuple[int, int]:
+    score = 0
+    if cache_key.startswith(CLAUDE_OAUTH_CLIENT_ID + ":"):
+        score += 100
+    if f"{CLAUDE_DEFAULT_BASE_URL}:" in cache_key:
+        score += 20
+    if "user:sessions:claude_code" in cache_key:
+        score += 10
+    if entry.get("refreshToken"):
+        score += 5
+    try:
+        expires_at = int(entry.get("expiresAt") or 0)
+    except (TypeError, ValueError):
+        expires_at = 0
+    return score, expires_at
+
+
+def select_claude_token_cache_entry(cache: dict) -> tuple[str | None, dict | None]:
+    candidates = []
+    for cache_key, entry in cache.items():
+        if not isinstance(cache_key, str) or not isinstance(entry, dict):
+            continue
+        if not entry.get("token"):
+            continue
+        if not entry.get("refreshToken"):
+            continue
+        candidates.append((claude_token_cache_entry_score(cache_key, entry), cache_key, entry))
+    if not candidates:
+        return None, None
+    _, cache_key, entry = max(candidates, key=lambda item: item[0])
+    return cache_key, entry
+
+
+def claude_token_cache_scopes(cache_key: str) -> list[str]:
+    marker = f"{CLAUDE_DEFAULT_BASE_URL}:"
+    if marker not in cache_key:
+        return []
+    return [scope for scope in cache_key.split(marker, 1)[1].split() if scope]
+
+
+def claude_token_cache_entry_to_credentials(cache_key: str, entry: dict) -> dict:
+    oauth = {
+        "accessToken": entry.get("token"),
+        "refreshToken": entry.get("refreshToken"),
+    }
+    for key in ("expiresAt", "subscriptionType", "rateLimitTier"):
+        if entry.get(key) is not None:
+            oauth[key] = entry.get(key)
+    scopes = claude_token_cache_scopes(cache_key)
+    if scopes:
+        oauth["scopes"] = scopes
+    return {"claudeAiOauth": oauth}
+
+
+def read_claude_token_cache_credentials(claude_home: Path = CLAUDE_HOME) -> tuple[dict | None, str]:
+    if sys.platform != "darwin":
+        return None, "unavailable"
+    config_path = claude_application_config_path(claude_home)
+    if not config_path.exists():
+        return None, "unavailable"
+    config = read_json(config_path)
+    if not isinstance(config, dict):
+        return None, "unavailable"
+    secret = read_claude_safe_storage_secret()
+    if not secret:
+        return None, "unavailable"
+    for field in CLAUDE_TOKEN_CACHE_FIELDS:
+        encoded = config.get(field)
+        if not isinstance(encoded, str) or not encoded:
+            continue
+        cache = decrypt_claude_safe_storage_json(encoded, secret)
+        if not isinstance(cache, dict):
+            continue
+        cache_key, entry = select_claude_token_cache_entry(cache)
+        if cache_key and entry:
+            return claude_token_cache_entry_to_credentials(cache_key, entry), "token_cache_v2" if field.endswith("V2") else "token_cache"
+    return None, "unavailable"
+
+
+def write_claude_token_cache_credentials(credentials: dict, claude_home: Path, source: str) -> bool:
+    if sys.platform != "darwin":
+        return False
+    field = "oauth:tokenCacheV2" if source == "token_cache_v2" else "oauth:tokenCache"
+    config_path = claude_application_config_path(claude_home)
+    if not config_path.exists():
+        return False
+    config = read_json(config_path)
+    if not isinstance(config, dict) or not isinstance(config.get(field), str):
+        return False
+    secret = read_claude_safe_storage_secret()
+    if not secret:
+        return False
+    cache = decrypt_claude_safe_storage_json(config[field], secret)
+    if not isinstance(cache, dict):
+        return False
+    cache_key, entry = select_claude_token_cache_entry(cache)
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    if not cache_key or not isinstance(entry, dict) or not oauth.get("accessToken"):
+        return False
+    entry["token"] = oauth["accessToken"]
+    if oauth.get("refreshToken") is not None:
+        entry["refreshToken"] = oauth["refreshToken"]
+    for key in ("expiresAt", "subscriptionType", "rateLimitTier"):
+        if oauth.get(key) is not None:
+            entry[key] = oauth.get(key)
+    cache[cache_key] = entry
+    encoded = encrypt_claude_safe_storage_json(cache, secret)
+    if not encoded:
+        return False
+    config[field] = encoded
+    tmp_path = config_path.with_name(config_path.name + ".tmp")
+    try:
+        tmp_path.write_text(json.dumps(config, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(config_path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+        return False
+    check_credentials, check_source = read_claude_token_cache_credentials(claude_home)
+    check_oauth = (check_credentials or {}).get("claudeAiOauth") or {}
+    return check_source == source and check_oauth.get("accessToken") == oauth.get("accessToken") and check_oauth.get("refreshToken") == oauth.get("refreshToken")
+
+
 def read_claude_oauth_credentials(claude_home: Path = CLAUDE_HOME) -> tuple[dict | None, str]:
-    # On macOS the keychain is Claude Code's source of truth. A ~/.claude/.credentials.json can
+    # On macOS the encrypted token cache is modern Claude Code's source of truth. A ~/.claude/.credentials.json can
     # linger and go stale (e.g. a past file-fallback write or a Phase-4 strip that landed in the
-    # file): reading it first would shadow the live keychain blob and make every downstream step
-    # (probe, sync, strip) act on dead credentials. So prefer the keychain on darwin and only fall
-    # back to the file. Other platforms keep file-first (no keychain there).
+    # file): reading it first would shadow the live OAuth blob and make every downstream step
+    # (probe, sync, strip) act on dead credentials. Modern Claude Code stores the real OAuth
+    # record in Claude's encrypted tokenCacheV2; older builds used the keychain service directly.
+    # So prefer tokenCache on darwin, then the direct keychain entry, and only fall back to the file.
+    # Other platforms keep file-first (no macOS safe storage there).
     if sys.platform == "darwin":
+        credentials, source = read_claude_token_cache_credentials(claude_home)
+        if claude_credentials_have_oauth(credentials):
+            return credentials, source
         credentials = read_claude_keychain_credentials()
-        if credentials is not None:
+        if claude_credentials_have_oauth(credentials):
             return credentials, "keychain"
         credentials = read_claude_credentials(claude_home)
-        if credentials is not None:
+        if claude_credentials_have_oauth(credentials):
             return credentials, "credentials_file"
         return None, "unavailable"
     credentials = read_claude_credentials(claude_home)
-    if credentials is not None:
+    if claude_credentials_have_oauth(credentials):
         return credentials, "credentials_file"
     credentials = read_claude_keychain_credentials()
-    if credentials is not None:
+    if claude_credentials_have_oauth(credentials):
         return credentials, "keychain"
     return None, "unavailable"
 
@@ -945,32 +1178,34 @@ def write_claude_keychain_credentials(credentials: dict) -> bool:
     """
     if sys.platform != "darwin":
         return False
-    user = os.environ.get("USER") or getpass.getuser() or ""
-    if not user:
-        return False
     blob = json.dumps(credentials, separators=(",", ":"))
-    result = subprocess.run(
-        ["security", "add-generic-password", "-U", "-s", CLAUDE_KEYCHAIN_SERVICE,
-         "-a", user, "-w", blob],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return False
-    check = subprocess.run(
-        ["security", "find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-a", user, "-w"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    try:
-        parsed = json.loads((check.stdout or "").strip())
-    except Exception:
-        return False  # hex-corrupted / unreadable round-trip
     want = (credentials.get("claudeAiOauth") or {}).get("accessToken")
-    got = (parsed.get("claudeAiOauth") or {}).get("accessToken")
-    return bool(want) and got == want
+    if not want:
+        return False
+    wrote_any = False
+    for account in claude_keychain_account_candidates():
+        result = subprocess.run(
+            ["security", "add-generic-password", "-U", "-s", CLAUDE_KEYCHAIN_SERVICE,
+             "-a", account, "-w", blob],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            continue
+        check = subprocess.run(
+            ["security", "find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-a", account, "-w"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        try:
+            parsed = json.loads((check.stdout or "").strip())
+        except Exception:
+            continue  # hex-corrupted / unreadable round-trip
+        got = (parsed.get("claudeAiOauth") or {}).get("accessToken")
+        wrote_any = wrote_any or got == want
+    return wrote_any
 
 
 def write_claude_credentials_file(credentials: dict, claude_home: Path) -> bool:
@@ -994,7 +1229,11 @@ def persist_claude_credentials(credentials: dict, claude_home: Path, source: str
     token, so a successful refresh MUST be persisted or the stored auth points at a dead
     token. macOS keychain when available (verified); otherwise the credentials file
     (Linux/Windows, or macOS fallback)."""
-    written = {"keychain": False, "file": False}
+    written = {"keychain": False, "token_cache": False, "file": False}
+    if sys.platform == "darwin" and source in ("token_cache_v2", "token_cache"):
+        written["token_cache"] = write_claude_token_cache_credentials(credentials, claude_home, source)
+        if written["token_cache"]:
+            return written
     if sys.platform == "darwin" and source != "credentials_file":
         written["keychain"] = write_claude_keychain_credentials(credentials)
     if not written["keychain"]:
@@ -1201,18 +1440,22 @@ def parse_claude_auth_status_text(text: str) -> dict:
 def read_claude_keychain_credentials() -> dict | None:
     if sys.platform != "darwin":
         return None
-    user = os.environ.get("USER") or getpass.getuser() or ""
-    if not user:
-        return None
-    result = subprocess.run(
-        ["security", "find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-a", user, "-w"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    return json.loads(result.stdout)
+    for account in claude_keychain_account_candidates():
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-a", account, "-w"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            continue
+        try:
+            credentials = json.loads(result.stdout)
+        except Exception:
+            continue
+        if claude_credentials_have_oauth(credentials):
+            return credentials
+    return None
 
 
 def build_claude_window(utilization: float, resets_at: int, window_minutes: int) -> dict:
@@ -1523,6 +1766,12 @@ def probe_claude(
         timeout=CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS,
     )
     auth_text_details = parse_claude_auth_status_text(auth_text_result.stdout if auth_text_result.returncode == 0 else "")
+    cli_state = read_claude_cli_state(claude_home)
+    oauth_account = (cli_state or {}).get("oauthAccount") if isinstance(cli_state, dict) else None
+    if not auth_text_details.get("email") and isinstance(oauth_account, dict) and oauth_account.get("emailAddress"):
+        auth_text_details["email"] = oauth_account.get("emailAddress")
+    if not auth_text_details.get("organization") and isinstance(oauth_account, dict) and oauth_account.get("organizationUuid"):
+        auth_text_details["organization"] = oauth_account.get("organizationUuid")
     credentials, _ = read_claude_oauth_credentials(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     stats = read_claude_stats(claude_home)
@@ -1598,8 +1847,23 @@ def build_claude_auth_blob(
     if payload.get("status") != "ok" or not payload.get("email"):
         return None, payload
 
+    credentials, credential_source = read_claude_oauth_credentials(claude_home)
+    if not credentials:
+        return None, {
+            **payload,
+            "status": "error",
+            "error": "claude credentials unavailable",
+        }
+
     custom_provider = detect_claude_custom_provider_env(claude_home)
-    if custom_provider is not None:
+    settings_only_custom_provider = custom_provider is not None and custom_provider.get("settings_key") != "process_env"
+    usage_summary = payload.get("usage_summary") or {}
+    uploadable_official_cache = (
+        credential_source in ("token_cache_v2", "token_cache", "keychain", "credentials_file")
+        and usage_summary.get("api_provider") == "firstParty"
+        and usage_summary.get("auth_method") == "oauth_token"
+    )
+    if custom_provider is not None and not (settings_only_custom_provider and uploadable_official_cache):
         return None, {
             **payload,
             "status": "error",
@@ -1612,14 +1876,6 @@ def build_claude_auth_blob(
                     "base_url": custom_provider["env"].get("ANTHROPIC_BASE_URL"),
                 },
             },
-        }
-
-    credentials, credential_source = read_claude_oauth_credentials(claude_home)
-    if not credentials:
-        return None, {
-            **payload,
-            "status": "error",
-            "error": "claude credentials unavailable",
         }
 
     auth_last_refresh = (
@@ -2195,7 +2451,7 @@ def strip_local_claude_refresh_token(claude_home: Path = CLAUDE_HOME) -> dict:
     oauth["refreshToken"] = STRIPPED_CLAUDE_REFRESH_TOKEN
     credentials["claudeAiOauth"] = oauth
     written = persist_claude_credentials(credentials, claude_home, source)
-    return {"stripped": bool(written.get("keychain") or written.get("file")), "persisted": written}
+    return {"stripped": bool(written.get("keychain") or written.get("token_cache") or written.get("file")), "persisted": written}
 
 
 def set_known_auth_state_source(source: str, known_auth_path: Path, state_source: str) -> bool:

@@ -1121,6 +1121,92 @@ Reading additional input from stdin...
         with mock.patch("quota_reporters.sys.platform", "linux"):
             self.assertIsNone(read_claude_keychain_credentials())
 
+    def test_read_claude_keychain_credentials_ignores_mcp_only_unknown_account(self):
+        mcp_only = mock.Mock(returncode=0, stdout=json.dumps({"mcpOAuth": {"tool": {}}}), stderr="")
+        oauth = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}}),
+            stderr="",
+        )
+        with mock.patch("quota_reporters.sys.platform", "darwin"):
+            with mock.patch("quota_reporters.claude_keychain_account_candidates", return_value=["unknown", "tester"]):
+                with mock.patch("quota_reporters.subprocess.run", side_effect=[mcp_only, oauth]):
+                    credentials = read_claude_keychain_credentials()
+
+        self.assertEqual(credentials["claudeAiOauth"]["refreshToken"], "RT")
+
+    def test_select_claude_token_cache_entry_prefers_claude_code_oauth_client(self):
+        cache = {
+            "other-client:user:https://api.anthropic.com:user:profile": {
+                "token": "OTHER_AT",
+                "refreshToken": "OTHER_RT",
+                "expiresAt": 9999999999999,
+            },
+            f"{quota_reporters.CLAUDE_OAUTH_CLIENT_ID}:user:https://api.anthropic.com:user:inference user:profile user:sessions:claude_code": {
+                "token": "CLI_AT",
+                "refreshToken": "CLI_RT",
+                "expiresAt": 1000,
+                "subscriptionType": "max",
+            },
+        }
+
+        cache_key, entry = quota_reporters.select_claude_token_cache_entry(cache)
+        credentials = quota_reporters.claude_token_cache_entry_to_credentials(cache_key, entry)
+
+        self.assertTrue(cache_key.startswith(quota_reporters.CLAUDE_OAUTH_CLIENT_ID + ":"))
+        self.assertEqual(credentials["claudeAiOauth"]["accessToken"], "CLI_AT")
+        self.assertEqual(credentials["claudeAiOauth"]["refreshToken"], "CLI_RT")
+        self.assertIn("user:sessions:claude_code", credentials["claudeAiOauth"]["scopes"])
+
+    def test_read_claude_token_cache_credentials_reads_safe_storage_v2(self):
+        cache = {
+            f"{quota_reporters.CLAUDE_OAUTH_CLIENT_ID}:user:https://api.anthropic.com:user:inference user:sessions:claude_code": {
+                "token": "AT",
+                "refreshToken": "RT",
+                "expiresAt": 1780000000000,
+                "subscriptionType": "max",
+                "rateLimitTier": "default_claude_max_20x",
+            }
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            claude_home = base / ".claude"
+            config_path = base / "Library" / "Application Support" / "Claude" / "config.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(json.dumps({"oauth:tokenCacheV2": "encrypted"}), encoding="utf-8")
+
+            with mock.patch("quota_reporters.sys.platform", "darwin"):
+                with mock.patch("quota_reporters.read_claude_safe_storage_secret", return_value="secret"):
+                    with mock.patch("quota_reporters.decrypt_claude_safe_storage_json", return_value=cache):
+                        credentials, source = quota_reporters.read_claude_token_cache_credentials(claude_home)
+
+        self.assertEqual(source, "token_cache_v2")
+        self.assertEqual(credentials["claudeAiOauth"]["accessToken"], "AT")
+        self.assertEqual(credentials["claudeAiOauth"]["refreshToken"], "RT")
+
+    def test_write_claude_token_cache_credentials_updates_same_cache(self):
+        cache_key = f"{quota_reporters.CLAUDE_OAUTH_CLIENT_ID}:user:https://api.anthropic.com:user:inference user:sessions:claude_code"
+        original_cache = {cache_key: {"token": "OLD_AT", "refreshToken": "OLD_RT", "expiresAt": 1}}
+        updated_cache = {cache_key: {"token": "NEW_AT", "refreshToken": "NEW_RT", "expiresAt": 2}}
+        credentials = {"claudeAiOauth": {"accessToken": "NEW_AT", "refreshToken": "NEW_RT", "expiresAt": 2}}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            claude_home = base / ".claude"
+            config_path = base / "Library" / "Application Support" / "Claude" / "config.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(json.dumps({"oauth:tokenCacheV2": "encrypted-old"}), encoding="utf-8")
+
+            with mock.patch("quota_reporters.sys.platform", "darwin"):
+                with mock.patch("quota_reporters.read_claude_safe_storage_secret", return_value="secret"):
+                    with mock.patch("quota_reporters.decrypt_claude_safe_storage_json", side_effect=[original_cache, updated_cache]):
+                        with mock.patch("quota_reporters.encrypt_claude_safe_storage_json", return_value="encrypted-new"):
+                            ok = quota_reporters.write_claude_token_cache_credentials(credentials, claude_home, "token_cache_v2")
+
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(ok)
+        self.assertEqual(config["oauth:tokenCacheV2"], "encrypted-new")
+
     def test_probe_claude_prefers_auth_status_text_account_details(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
         auth_text = mock.Mock(
@@ -1247,6 +1333,27 @@ Reading additional input from stdin...
 
         self.assertEqual(payload["account_id"], "claude-email-missing")
 
+    def test_probe_claude_falls_back_to_cli_state_oauth_email(self):
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(returncode=0, stdout="Auth token: ANTHROPIC_AUTH_TOKEN\nAnthropic base URL: https://open.bigmodel.cn/api/anthropic\n", stderr="")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            claude_home.mkdir(parents=True, exist_ok=True)
+            (claude_home.parent / ".claude.json").write_text(
+                json.dumps({"oauthAccount": {"emailAddress": "leizhang0121@gmail.com", "organizationUuid": "org-1"}}),
+                encoding="utf-8",
+            )
+            with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+                with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
+                    with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"subscriptionType": "max"}}, "token_cache_v2")):
+                        with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None):
+                            with mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                                payload = probe_claude(claude_home)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["email"], "leizhang0121@gmail.com")
+        self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
+
     def test_build_claude_auth_blob_includes_cli_state(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             claude_home = Path(temp_dir) / ".claude"
@@ -1319,12 +1426,52 @@ Reading additional input from stdin...
                 "plan_name": "Max",
                 "usage_summary": {"oauth_expires_at": "1776933220595"},
             }):
-                blob_text, payload = build_claude_auth_blob(claude_home)
+                with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({
+                    "claudeAiOauth": {"accessToken": "token", "refreshToken": "refresh", "expiresAt": "1776933220595"}
+                }, "credentials_file")):
+                    blob_text, payload = build_claude_auth_blob(claude_home)
 
         self.assertIsNone(blob_text)
         self.assertEqual(payload["status"], "error")
         self.assertIn("custom ANTHROPIC_* settings", payload["error"])
         self.assertEqual(payload["usage_summary"]["custom_provider_env"]["settings_key"], "env1")
+
+    def test_build_claude_auth_blob_allows_first_party_oauth_with_stale_settings_env(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            claude_home.mkdir(parents=True, exist_ok=True)
+            (claude_home / "settings.json").write_text(
+                json.dumps(
+                    {
+                        "env": {
+                            "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
+                            "ANTHROPIC_AUTH_TOKEN": "token",
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch("quota_reporters.probe_claude", return_value={
+                "status": "ok",
+                "account_id": "claude-derek@stardust.ai",
+                "email": "derek@stardust.ai",
+                "name": "Derek Zen",
+                "plan_name": "Max",
+                "usage_summary": {
+                    "oauth_expires_at": "1776933220595",
+                    "api_provider": "firstParty",
+                    "auth_method": "oauth_token",
+                },
+            }):
+                with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({
+                    "claudeAiOauth": {"accessToken": "token", "refreshToken": "refresh", "expiresAt": "1776933220595"}
+                }, "token_cache_v2")):
+                    blob_text, payload = build_claude_auth_blob(claude_home)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertIsNotNone(blob_text)
+        self.assertEqual(json.loads(blob_text)["credential_source"], "token_cache_v2")
 
     @staticmethod
     def _jwt(payload):
@@ -4279,7 +4426,7 @@ Reading additional input from stdin...
         write_ok = mock.Mock(returncode=0, stdout="", stderr="")
         read_ok = mock.Mock(returncode=0, stdout=compact + "\n", stderr="")
         with mock.patch.object(quota_reporters.sys, "platform", "darwin"):
-            with mock.patch.dict(os.environ, {"USER": "tester"}):
+            with mock.patch.object(quota_reporters, "claude_keychain_account_candidates", return_value=["tester"]):
                 with mock.patch("quota_reporters.subprocess.run", side_effect=[write_ok, read_ok]) as run:
                     self.assertTrue(quota_reporters.write_claude_keychain_credentials(creds))
         # the value written must be compact with no trailing whitespace
@@ -4292,7 +4439,7 @@ Reading additional input from stdin...
         write_ok = mock.Mock(returncode=0, stdout="", stderr="")
         read_hex = mock.Mock(returncode=0, stdout="7b226d63704f4175", stderr="")  # hex, unparseable
         with mock.patch.object(quota_reporters.sys, "platform", "darwin"):
-            with mock.patch.dict(os.environ, {"USER": "tester"}):
+            with mock.patch.object(quota_reporters, "claude_keychain_account_candidates", return_value=["tester"]):
                 with mock.patch("quota_reporters.subprocess.run", side_effect=[write_ok, read_hex]):
                     self.assertFalse(quota_reporters.write_claude_keychain_credentials(creds))
 
@@ -4303,6 +4450,7 @@ Reading additional input from stdin...
             with mock.patch.object(quota_reporters.sys, "platform", "linux"):
                 written = quota_reporters.persist_claude_credentials(creds, home, "credentials_file")
             self.assertFalse(written["keychain"])
+            self.assertFalse(written["token_cache"])
             self.assertTrue(written["file"])
             data = json.loads((home / ".credentials.json").read_text())
             self.assertEqual(data["claudeAiOauth"]["accessToken"], "A1")
@@ -4650,10 +4798,21 @@ class Phase4StripLocalRtTests(unittest.TestCase):
 
 class ClaudeCredentialSourceOrderTests(unittest.TestCase):
     KEYCHAIN = {"claudeAiOauth": {"refreshToken": "LIVE_RT", "accessToken": "LIVE_AT"}}
+    TOKEN_CACHE = {"claudeAiOauth": {"refreshToken": "CACHE_RT", "accessToken": "CACHE_AT"}}
     FILE = {"claudeAiOauth": {"refreshToken": "disabled-by-hub-refresh-token", "accessToken": "STALE_AT"}}
 
-    def test_macos_prefers_keychain_over_stale_file(self):
+    def test_macos_prefers_token_cache_over_keychain_and_stale_file(self):
         with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "read_claude_token_cache_credentials", return_value=(self.TOKEN_CACHE, "token_cache_v2")), \
+             mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=self.KEYCHAIN), \
+             mock.patch.object(quota_reporters, "read_claude_credentials", return_value=self.FILE):
+            creds, src = quota_reporters.read_claude_oauth_credentials()
+        self.assertEqual(src, "token_cache_v2")
+        self.assertEqual(creds["claudeAiOauth"]["refreshToken"], "CACHE_RT")
+
+    def test_macos_prefers_keychain_over_stale_file_when_token_cache_empty(self):
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "read_claude_token_cache_credentials", return_value=(None, "unavailable")), \
              mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=self.KEYCHAIN), \
              mock.patch.object(quota_reporters, "read_claude_credentials", return_value=self.FILE):
             creds, src = quota_reporters.read_claude_oauth_credentials()
@@ -4663,6 +4822,7 @@ class ClaudeCredentialSourceOrderTests(unittest.TestCase):
     def test_macos_falls_back_to_file_when_keychain_empty(self):
         with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
              mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=None), \
+             mock.patch.object(quota_reporters, "read_claude_token_cache_credentials", return_value=(None, "unavailable")), \
              mock.patch.object(quota_reporters, "read_claude_credentials", return_value=self.FILE):
             creds, src = quota_reporters.read_claude_oauth_credentials()
         self.assertEqual(src, "credentials_file")
