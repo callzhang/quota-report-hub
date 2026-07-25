@@ -61,6 +61,15 @@ except ModuleNotFoundError:
 
 
 class ReporterScriptsTest(unittest.TestCase):
+    def setUp(self):
+        self.codex_restart_binary_guard = mock.patch.object(
+            quota_guard,
+            "codex_binary_for_app_server_restart",
+            return_value=None,
+        )
+        self.codex_restart_binary_guard.start()
+        self.addCleanup(self.codex_restart_binary_guard.stop)
+
     def test_codex_auth_refresh_delta_requires_same_account(self):
         delta = codex_auth_refresh_delta(
             {"account_id": "acct-1", "auth_last_refresh": "2026-04-22T00:00:00Z", "digest": "a"},
@@ -2498,7 +2507,8 @@ Reading additional input from stdin...
                         with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": True}) as sync_claude_auth_pool:
                             with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_codex_auth:
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_claude_auth:
-                                    result = quota_guard.run_guard(args)
+                                    with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                        result = quota_guard.run_guard(args)
         sync_codex_auth_pool.assert_called_once_with(
             "https://quota-report-hub.vercel.app",
             "qrp_token",
@@ -2593,7 +2603,8 @@ Reading additional input from stdin...
                             with mock.patch.object(quota_guard, "sync_current_claude_auth_pool") as sync_claude:
                                 with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}):
                                     with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
-                                        result = quota_guard.run_guard(args)
+                                        with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                            result = quota_guard.run_guard(args)
 
         probe_claude_mock.assert_not_called()
         sync_claude.assert_not_called()
@@ -2635,7 +2646,8 @@ Reading additional input from stdin...
                             with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": True}) as report_quota:
                                 with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_codex:
                                     with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "missing_stable_claude_auth"}) as replace_claude:
-                                        result = quota_guard.run_guard(args)
+                                        with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                            result = quota_guard.run_guard(args)
 
         sync_codex.assert_called_once()
         sync_claude.assert_called_once()
@@ -2682,7 +2694,8 @@ Reading additional input from stdin...
                             with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}):
                                 with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
                                     with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_claude:
-                                        result = quota_guard.run_guard(args)
+                                        with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                            result = quota_guard.run_guard(args)
 
         sync_claude.assert_called_once()
         replace_claude.assert_called_once()
@@ -2724,7 +2737,8 @@ Reading additional input from stdin...
                                     with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
                                         with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
                                             with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                                                result = quota_guard.run_guard(args)
+                                                with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                                    result = quota_guard.run_guard(args)
 
         notify.assert_called_once()
         restart.assert_called_once()
@@ -2769,7 +2783,8 @@ Reading additional input from stdin...
                                     with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
                                         with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
                                             with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                                                result = quota_guard.run_guard(args)
+                                                with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                                    result = quota_guard.run_guard(args)
 
         notify.assert_called_once()
         self.assertEqual(notify.call_args.args[0], "额度守护：定时任务未安装")
@@ -2880,7 +2895,8 @@ Reading additional input from stdin...
                                     with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
                                         with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
                                             with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                                                result = quota_guard.run_guard(args)
+                                                with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                                    result = quota_guard.run_guard(args)
 
         notify.assert_not_called()
         restart.assert_called_once()
@@ -2918,7 +2934,8 @@ Reading additional input from stdin...
                                 with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
                                     with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
                                         with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
-                                            result = quota_guard.run_guard(args)
+                                            with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                                result = quota_guard.run_guard(args)
 
         restart.assert_called_once()
         self.assertTrue(result["codex_app_server"]["restarted"])
@@ -2988,7 +3005,8 @@ Reading additional input from stdin...
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False}):
                                     with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
                                         with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
-                                            result = quota_guard.run_guard(args)
+                                            with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                                result = quota_guard.run_guard(args)
 
         notify.assert_not_called()
         restart.assert_called_once()
@@ -3143,6 +3161,25 @@ Reading additional input from stdin...
         self.assertTrue(stale["stale"])
         self.assertEqual(stale["reason"], "app_server_started_before_auth")
         self.assertEqual(stale["processes"][0]["pid"], 101)
+
+    def test_stale_codex_app_server_detects_running_server_when_auth_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            processes = [
+                {
+                    "pid": 101,
+                    "started_at_epoch": 1779600000.0,
+                    "etimes_seconds": 600,
+                    "args": "node /home/derek/.local/bin/codex app-server --listen unix://",
+                }
+            ]
+
+            with mock.patch.object(quota_guard, "unmanaged_codex_app_server_processes", return_value=processes):
+                stale = quota_guard.stale_codex_app_server_for_auth(auth_path)
+
+        self.assertTrue(stale["stale"])
+        self.assertEqual(stale["reason"], "auth_missing_app_server_running")
+        self.assertEqual(stale["processes"], processes)
 
     def test_quota_guard_parser_supports_skip_self_update(self):
         parser = quota_guard.build_parser()

@@ -791,6 +791,13 @@ def unmanaged_codex_app_server_processes() -> list[dict]:
 
 def stale_codex_app_server_for_auth(codex_auth_path: Path) -> dict:
     if not codex_auth_path.exists():
+        processes = unmanaged_codex_app_server_processes()
+        if processes:
+            return {
+                "stale": True,
+                "reason": "auth_missing_app_server_running",
+                "processes": processes,
+            }
         return {"stale": False, "reason": "auth_missing"}
 
     try:
