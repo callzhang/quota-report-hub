@@ -700,6 +700,9 @@
 
       function authExpiryLine(item) {
         if (!item.auth_expires_at) return "";
+        if (item.auth_expiry_metadata_stale) {
+          return `<div class="meta wrap">token expiry metadata stale</div>`;
+        }
         if (item.auth_expired) {
           return `<div class="meta wrap" style="color:var(--bad)">token expired ${formatDuration(item.auth_expires_in_seconds)} ago</div>`;
         }

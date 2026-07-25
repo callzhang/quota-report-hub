@@ -644,6 +644,29 @@ test("statusPayload marks expired auth and hides stale error quota windows", () 
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "auth_token_expired");
 });
 
+test("statusPayload does not expire quota when a successful probe is newer than auth expiry metadata", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "ok",
+      error: null,
+      account_id: "codex-a@example.com",
+      auth_expires_at: "2026-04-21T09:00:00Z",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": null,
+        "1week": { used_percent: 3, remaining_percent: 97, reset_at: "2026-04-28T10:00:00Z" },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].auth_expired, false);
+  assert.equal(payload.items[0].auth_expires_in_seconds, null);
+  assert.equal(payload.items[0].auth_expiry_metadata_stale, true);
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, null);
+  assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 97);
+});
+
 test("statusPayload marks past reset windows unavailable for non-auth error probes", () => {
   const payload = statusPayload([
     {
