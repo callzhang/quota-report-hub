@@ -6,7 +6,43 @@ import {
   shouldReplaceAuthPoolEntry,
 } from "../lib/auth-pool.js";
 
-function fakeAuthJson({ accountId, email, name, plan = "pro", lastRefresh = "2026-04-22T00:00:00Z" }) {
+function fakeJwt(payload) {
+  return `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.y`;
+}
+
+function fakeAuthJson({
+  accountId,
+  email,
+  name,
+  plan = "pro",
+  lastRefresh = "2026-04-22T00:00:00Z",
+  idExp,
+  accessExp,
+}) {
+  const idPayload = {
+    email,
+    name,
+    exp: idExp,
+    "https://api.openai.com/auth": {
+      chatgpt_plan_type: plan,
+    },
+  };
+  const accessPayload = {
+    exp: accessExp,
+  };
+
+  return JSON.stringify({
+    tokens: {
+      account_id: accountId,
+      id_token: fakeJwt(idPayload),
+      access_token: fakeJwt(accessPayload),
+      refresh_token: "rt.1.REALFIXTURETOKEN",
+    },
+    last_refresh: lastRefresh,
+  });
+}
+
+function legacyFakeAuthJson({ accountId, email, name, plan = "pro", lastRefresh = "2026-04-22T00:00:00Z" }) {
   const payload = Buffer.from(
     JSON.stringify({
       email,
@@ -45,6 +81,34 @@ test("deriveAuthPoolEntry extracts codex auth metadata", () => {
   assert.equal(entry.plan_name, "Pro Lite");
   assert.equal(entry.reporter_name, "derek@gpu4");
   assert.equal(entry.hostname, "gpu4");
+});
+
+test("deriveAuthPoolEntry uses codex access token expiry before stale id token expiry", () => {
+  const entry = deriveAuthPoolEntry(
+    "codex",
+    fakeAuthJson({
+      accountId: "acct-1",
+      email: "a@example.com",
+      name: "A",
+      idExp: 1776668828,
+      accessExp: 1776933220,
+    })
+  );
+
+  assert.equal(entry.auth_expires_at, "2026-04-23T08:33:40.000Z");
+});
+
+test("deriveAuthPoolEntry falls back to codex id token expiry for older auth blobs", () => {
+  const entry = deriveAuthPoolEntry(
+    "codex",
+    legacyFakeAuthJson({
+      accountId: "acct-1",
+      email: "a@example.com",
+      name: "A",
+    })
+  );
+
+  assert.equal(entry.auth_expires_at, null);
 });
 
 test("deriveAuthPoolEntry extracts claude auth metadata", () => {

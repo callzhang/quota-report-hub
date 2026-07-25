@@ -539,7 +539,7 @@ test("statusPayload marks preserved invalidated windows gray even when windows_s
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
 });
 
-test("statusPayload infers a gray 100 percent window after reset for stale invalidated auth", () => {
+test("statusPayload does not infer ready quota after reset for invalidated auth", () => {
   const payload = statusPayload([
     {
       source: "codex",
@@ -555,12 +555,13 @@ test("statusPayload infers a gray 100 percent window after reset for stale inval
     },
   ], "2026-04-21T10:30:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 100);
-  assert.equal(payload.items[0].display_windows["5h"].used_percent, 0);
-  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, true);
+  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 0);
+  assert.equal(payload.items[0].display_windows["5h"].used_percent, 100);
+  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "auth_invalidated");
 });
 
-test("statusPayload also infers the weekly window independently after weekly reset", () => {
+test("statusPayload does not infer weekly ready quota after reset for invalidated auth", () => {
   const payload = statusPayload([
     {
       source: "codex",
@@ -578,9 +579,10 @@ test("statusPayload also infers the weekly window independently after weekly res
 
   assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 80);
   assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
-  assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 100);
-  assert.equal(payload.items[0].display_windows["1week"].used_percent, 0);
-  assert.equal(payload.items[0].display_windows["1week"].inferred_ready, true);
+  assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 0);
+  assert.equal(payload.items[0].display_windows["1week"].used_percent, 100);
+  assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "auth_invalidated");
 });
 
 test("statusPayload classifies missing reset time on invalidated stale windows", () => {
@@ -618,6 +620,49 @@ test("statusPayload classifies missing reset time as probe failure for non-inval
 
   assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "probe_missing_reset");
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "probe_missing_reset");
+});
+
+test("statusPayload marks expired auth and hides stale error quota windows", () => {
+  const payload = statusPayload([
+    {
+      source: "claude",
+      status: "error",
+      error: "claude probe reached ui but no statusline snapshot was produced",
+      account_id: "claude-a@example.com",
+      auth_expires_at: "2026-04-21T09:00:00Z",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": { used_percent: 0, remaining_percent: 100, reset_at: "2026-04-21T10:00:00Z" },
+        "1week": { used_percent: 0, remaining_percent: 100, reset_at: "2026-04-20T10:00:00Z" },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].auth_expired, true);
+  assert.equal(payload.items[0].auth_expires_in_seconds, -5400);
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "auth_token_expired");
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "auth_token_expired");
+});
+
+test("statusPayload marks past reset windows unavailable for non-auth error probes", () => {
+  const payload = statusPayload([
+    {
+      source: "claude",
+      status: "error",
+      error: "claude probe reached ui but no statusline snapshot was produced",
+      account_id: "claude-a@example.com",
+      auth_expires_at: "2026-04-21T12:00:00Z",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": { used_percent: 0, remaining_percent: 100, reset_at: "2026-04-21T10:00:00Z" },
+        "1week": { used_percent: 20, remaining_percent: 80, reset_at: "2026-04-28T10:00:00Z" },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].auth_expired, false);
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "stale_error_probe");
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, null);
 });
 
 test("authPoolStatusPayload only includes cloud auth pool entries", () => {

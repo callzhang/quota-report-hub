@@ -141,6 +141,9 @@ The dashboard now reflects the cloud auth pool, not arbitrary client report rows
 - quota metadata is shown as the latest effective quota associated with that cloud auth entry
 - hard-invalidated auths should not remain selectable
 - stale windows may still be shown for soft probe failures, but only as metadata attached to the cloud auth entry
+- the dashboard marks expired access tokens explicitly and treats their quota as unavailable until the auth is refreshed
+- hard-invalidated or Free-plan rows never infer a fresh `100%` quota just because an old reset time passed
+- soft probe failures with old quota windows are shown as unavailable after the last known reset time passes, instead of `ready now`
 - Codex rows can be refreshed by either the cloud worker or a stable local client report; a complete local client report is allowed to replace stale worker-preserved windows. After a stable local client report is accepted, the cloud worker skips probing that same auth for 1 hour when the report matches the auth refresh time. A newer worker soft failure does not overwrite an existing good local Codex quota snapshot
 - Claude rows can be refreshed by the cloud worker for direct Claude subscriptions, or by stable local client reports when Claude is running in an environment that the worker cannot replay reliably. Local Claude reporting reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time. Claude Code only sends `rate_limits` after the first successful API response in a session, so the statusline capture preserves any previous unexpired `5H` or `7d` window instead of overwriting it with a startup snapshot that has no quota.
 

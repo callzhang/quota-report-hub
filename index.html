@@ -111,7 +111,7 @@
         background: rgba(255, 255, 255, 0.5);
       }
       @media (max-width: 720px) { .health-row { grid-template-columns: 1fr 1fr; } }
-      .health-row .trend.bad { color: var(--red); font-weight: 600; }
+      .health-row .trend.bad { color: var(--bad); font-weight: 600; }
       .health-row .trend.good { color: var(--green, #1a7f37); font-weight: 600; }
       .health-row .trend.flat { color: var(--muted); }
       .health-row .spark { display: block; }
@@ -378,7 +378,8 @@
       }
 
       .status-chip.unknown,
-      .status-chip.error {
+      .status-chip.error,
+      .status-chip.auth-expired {
         color: var(--bad);
         background: rgba(178, 58, 50, 0.09);
       }
@@ -619,19 +620,28 @@
       }
 
       function progressCell(window, isStale = false) {
-        if (!window || window.remaining_percent === null || window.remaining_percent === undefined) {
+        if (!window) {
           return `<div class="meta">n/a</div>`;
         }
         if (window.reset_unavailable_reason === "auth_invalidated") {
           return `<div class="meta">auth invalidated</div>`;
         }
+        if (window.reset_unavailable_reason === "auth_token_expired") {
+          return `<div class="meta">token expired</div><div class="meta">quota unavailable</div>`;
+        }
         if (window.reset_unavailable_reason === "probe_missing_reset") {
           return `<div class="meta">quota not available</div><div class="meta">quota reset time not found</div>`;
+        }
+        if (window.reset_unavailable_reason === "stale_error_probe") {
+          return `<div class="meta">quota unavailable</div><div class="meta">last probe failed after reset</div>`;
+        }
+        if (window.remaining_percent === null || window.remaining_percent === undefined) {
+          return `<div class="meta">n/a</div>`;
         }
         const remaining = Number(window.remaining_percent);
         const isInvalidatedStale = Boolean(window.invalidated_stale);
         const isInferredReady = Boolean(window.inferred_ready);
-        const isReady = !isInferredReady && window.reset_at && Date.parse(window.reset_at) <= Date.now();
+        const isReady = !isInvalidatedStale && !isInferredReady && window.reset_at && Date.parse(window.reset_at) <= Date.now();
         let level = "";
         if (isInvalidatedStale) level = "inferred";
         else if (isReady) level = "ready";
@@ -672,16 +682,44 @@
         return `<div class="meta">n/a</div>`;
       }
 
+      function formatDuration(seconds) {
+        if (seconds === null || seconds === undefined) return "unknown";
+        const absSeconds = Math.max(0, Math.abs(Number(seconds)));
+        if (absSeconds < 60) return `${Math.floor(absSeconds)}s`;
+        if (absSeconds < 3600) return `${Math.ceil(absSeconds / 60)}m`;
+        if (absSeconds < 86400) return `${(absSeconds / 3600).toFixed(1)}h`;
+        return `${(absSeconds / 86400).toFixed(1)}d`;
+      }
+
+      function statusChip(item) {
+        const rawStatus = item.auth_expired ? "auth_expired" : (item.effective_status || item.status || "unknown");
+        const cssStatus = String(rawStatus).replaceAll("_", "-");
+        const label = String(rawStatus).replaceAll("_", " ");
+        return `<span class="status-chip ${escapeHtml(cssStatus)}">${escapeHtml(label)}</span>`;
+      }
+
+      function authExpiryLine(item) {
+        if (!item.auth_expires_at) return "";
+        if (item.auth_expired) {
+          return `<div class="meta wrap" style="color:var(--bad)">token expired ${formatDuration(item.auth_expires_in_seconds)} ago</div>`;
+        }
+        return `<div class="meta wrap">token expires in ${formatDuration(item.auth_expires_in_seconds)}</div>`;
+      }
+
       function usageCell(item) {
         const probeAge = formatAge(item.age_seconds);
         const refreshAge = item.uploaded_at
           ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(item.uploaded_at)) / 1000)))
           : "n/a";
-        const error = item.error ? `<div class="meta wrap" style="color:var(--red)">${escapeHtml(item.error)}</div>` : "";
+        const error = item.error ? `<div class="meta wrap" style="color:var(--bad)">${escapeHtml(item.error)}</div>` : "";
+        const stale = item.is_stale ? `<div class="meta wrap">probe snapshot stale</div>` : "";
         return `
           <div class="usage-block">
+            <div>${statusChip(item)}</div>
             <div class="wrap">probe ${probeAge}</div>
             <div class="meta wrap">last updated ${refreshAge}</div>
+            ${authExpiryLine(item)}
+            ${stale}
             ${error}
           </div>
         `;
@@ -893,7 +931,7 @@
               <div>${sourceTag(source)}</div>
               <div class="wrap"><strong>${latest.ok_count}/${latest.total}</strong> healthy</div>
               <div class="wrap">${latest.hard_dead_count} hard-dead · <span class="trend ${trendClass}">${trendLabel}</span> <span class="meta">/ ${series.length} runs</span></div>
-              <div>${sparkline(deadSeries, trendClass === "good" ? "var(--green, #1a7f37)" : "var(--red)")}</div>
+              <div>${sparkline(deadSeries, trendClass === "good" ? "var(--green, #1a7f37)" : "var(--bad)")}</div>
               <div class="meta wrap">central refresh: ${crOk} ok · ${crRej} dead-RT</div>
             </div>`;
         }).join("");
