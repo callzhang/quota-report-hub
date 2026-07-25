@@ -509,7 +509,7 @@ test("processAuthPoolEntry probes an entry whose last upload is older than the h
   assert.equal(result.skipped_cloud_probe, undefined);
 });
 
-test("processAuthPoolEntry deletes unusable codex auths with missing quota details", async () => {
+test("processAuthPoolEntry keeps codex auths with missing quota details in the pool", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const quotaReports = [];
   const deletions = [];
@@ -543,9 +543,9 @@ test("processAuthPoolEntry deletes unusable codex auths with missing quota detai
     }
   );
 
-  assert.equal(result.deleted_from_auth_pool, true);
-  assert.equal(result.delete_reason, "missing_quota_details");
-  assert.deepEqual(deletions, [{ source: "codex", accountId: "acct-missing-quota" }]);
+  assert.equal(result.deleted_from_auth_pool, undefined);
+  assert.equal(result.status, "error");
+  assert.equal(deletions.length, 0);
   assert.equal(quotaReports.length, 1);
   assert.equal(quotaReports[0].error, "token_count event was present but missing quota details");
 });

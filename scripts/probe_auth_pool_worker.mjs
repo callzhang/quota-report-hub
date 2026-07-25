@@ -185,9 +185,6 @@ function shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport = null)
   if (isAuthFailed401(report) && isAuthFailed401(previousReport)) {
     return true;
   }
-  if (report?.error === "token_count event was present but missing quota details") {
-    return true;
-  }
   // Old UUID-based entry where probe returns email-based account_id — the
   // email-based entry (or its upsert) covers this auth now.
   if (isAccountIdMigrated(entry, report)) {
@@ -202,9 +199,6 @@ function deleteReason(entry, report, previousReport = null) {
   }
   if (isAuthFailed401(report) && isAuthFailed401(previousReport)) {
     return "continuous_401";
-  }
-  if (report?.error === "token_count event was present but missing quota details") {
-    return "missing_quota_details";
   }
   if (isAccountIdMigrated(entry, report)) {
     return "account_id_migrated";
