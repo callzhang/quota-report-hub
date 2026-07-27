@@ -84,11 +84,11 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 
 ### 3.3 Reading/writing local auth (`quota_reporters.py`)
 - **Codex**: `~/.codex/auth.json`. Account id is **canonicalized to the lowercased email** (`canonical_codex_account_id` `:175-179`) so Team users sharing a provider UUID don't collide. Probe runs `codex exec` in an isolated temp `CODEX_HOME` with an **env blocklist** (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_ACCESS_TOKEN`, …) so an ambient key can't mislabel another provider's quota (`:396-424`).
-- **Claude**: macOS is **keychain-first** (`security find-generic-password -s "Claude Code-credentials"`), file `~/.claude/.credentials.json` second; non-darwin reverses (`read_claude_oauth_credentials` `:830-850`). The keychain is the source of truth so a stale file can't shadow a live credential. Writes are keychain-first with read-back verification to avoid a known hex-corruption logout bug (`:913-950`). Claude account id = `claude-<email-lowercased>` (`:1413-1417`) — **this is where the `claude-` prefix originates** (the server derive takes `account_id` as-is).
+- **Claude**: modern macOS Claude Code stores the active OAuth credential in Claude's encrypted `oauth:tokenCacheV2`; older builds may still use the direct `"Claude Code-credentials"` keychain item, and non-darwin uses `~/.claude/.credentials.json`. `read_claude_oauth_credentials` prefers tokenCacheV2 on macOS so stale files or MCP-only keychain entries cannot shadow the live credential. Writes go back to the same source when possible. Claude account id = `claude-<email-lowercased>` — **this is where the `claude-` prefix originates** (the server derive takes `account_id` as-is).
 - Quota source order for Claude: statusline snapshot first, live `/api/oauth/usage` only as fallback after a 429 backoff (`:1420-1432`).
 
 ### 3.4 Rotation decision (`source_needs_replacement` `:186-197`)
-Replace when the source is hard-invalidated, OR status≠ok, OR `5h_remaining < 20%`, OR `1week_remaining < 5%`. `maybe_replace_*` then calls `/api/auth/fetch-best`. Two outcomes:
+Replace when the source is hard-invalidated or status≠ok. For Codex, quota-based replacement uses `1week_remaining < 5%` only; `5h` is display/legacy metadata because Codex no longer has a meaningful 5-hour rotation limit. For Claude, quota-based replacement still uses `5h_remaining < 20%` or `1week_remaining < 5%`. `maybe_replace_*` then calls `/api/auth/fetch-best`. Two outcomes:
 - **`repair_auth`** — the hub hands back the *owner's own* dead auth so they re-login (state `repair_auth_from_auth_pool`).
 - **`replacement`** — install the better auth. If it's the same account it's an `auth_refreshed` (state `fetched_from_auth_pool`), else a true switch.
 
@@ -267,9 +267,9 @@ The flag defaults OFF (`getFeatureFlag("disabled_refresh_token", false)`), so de
 
 For a borrow request, candidates are filtered then ranked:
 
-**Eligibility** (`:273-280`): same source; not excluded (incl. `current_account_id`); not `Free` plan and not hard-invalidated; report fresh (`reported_at` within `max_report_age_seconds`, default 3600 s); meets a share threshold (5h ≥ 20%, weekly ≥ 5%); and **beats current** — candidate's `5h × weekly` product must exceed the requester's.
+**Eligibility** (`:273-280`): same source; not excluded (incl. `current_account_id`); not `Free` plan and not hard-invalidated; report fresh (`reported_at` within `max_report_age_seconds`, default 3600 s). Codex candidates must meet the weekly share threshold (weekly ≥ 5%) and beat the requester's weekly remaining quota. Claude candidates must meet both thresholds (5h ≥ 20%, weekly ≥ 5%) and beat the requester's `5h × weekly` product.
 
-**Ranking** (`:282-301`): primary key is `projectedWeightedLoad` ascending — a fairness/load score combining a **deterministic exponential jitter** seeded by `selection_key:source:account_id` (stable per requester, spreads load) and a recent-served penalty; ties broken by quota weight, then raw 5h, then weekly, then recency. This balances *give the borrower good quota* against *don't stampede one account*.
+**Ranking** (`:282-301`): primary key is `projectedWeightedLoad` ascending — a fairness/load score combining a **deterministic exponential jitter** seeded by `selection_key:source:account_id` (stable per requester, spreads load) and a recent-served penalty. Codex quota weight and tie-breaks are weekly-first; Claude quota weight still uses the limiting window and tie-breaks by 5h, weekly, then recency. This balances *give the borrower good quota* against *don't stampede one account*.
 
 ---
 

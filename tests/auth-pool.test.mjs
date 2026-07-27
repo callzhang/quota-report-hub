@@ -253,7 +253,7 @@ test("pickBestAuthPoolCandidate spreads fetches across similarly strong accounts
   assert.equal(candidate.entry.account_id, "cool");
 });
 
-test("pickBestAuthPoolCandidate does not overcompensate a low-quota account with fewer recent fetches", () => {
+test("pickBestAuthPoolCandidate ranks codex candidates by weekly quota, not 5H headroom", () => {
   const reports = [
     {
       source: "codex",
@@ -293,7 +293,7 @@ test("pickBestAuthPoolCandidate does not overcompensate a low-quota account with
     now: "2026-04-22T08:30:00Z",
   });
 
-  assert.equal(candidate.entry.account_id, "hot");
+  assert.equal(candidate.entry.account_id, "marginal");
 });
 
 test("pickBestAuthPoolCandidate lets high-quota accounts carry proportionally more fetches", () => {
@@ -378,8 +378,8 @@ test("pickBestAuthPoolCandidate returns null when no candidate beats current quo
       status: "ok",
       error: null,
       windows: {
-        "5h": { remaining_percent: 18 },
-        "1week": { remaining_percent: 80 },
+        "5h": { remaining_percent: 95 },
+        "1week": { remaining_percent: 45 },
       },
       reported_at: "2026-04-22T08:02:00Z",
     },
@@ -407,8 +407,8 @@ test("pickBestAuthPoolCandidate rejects near-exhausted candidates even when curr
       status: "ok",
       error: null,
       windows: {
-        "5h": { remaining_percent: 7 },
-        "1week": { remaining_percent: 38 },
+        "5h": { remaining_percent: 99 },
+        "1week": { remaining_percent: 3 },
       },
       reported_at: "2026-04-22T08:02:00Z",
     },
@@ -428,9 +428,7 @@ test("pickBestAuthPoolCandidate rejects near-exhausted candidates even when curr
   assert.equal(candidate, null);
 });
 
-test("pickBestAuthPoolCandidate compares the 5H x 1week product, not 5H alone", () => {
-  // better-5h has more 5H headroom (42 > 20) but a worse product
-  // (42*15=630 < 20*50=1000), so it must NOT beat current.
+test("pickBestAuthPoolCandidate ignores better codex 5H when weekly quota is worse", () => {
   const reports = [
     {
       source: "codex",
@@ -459,9 +457,7 @@ test("pickBestAuthPoolCandidate compares the 5H x 1week product, not 5H alone", 
   assert.equal(candidate, null);
 });
 
-test("pickBestAuthPoolCandidate swaps in a lower-5H candidate when its product is higher", () => {
-  // bigger-product has less 5H headroom (24 < 30) but a higher product
-  // (24*90=2160 > 30*50=1500), so it should beat current.
+test("pickBestAuthPoolCandidate swaps in a lower-5H codex candidate when weekly quota is higher", () => {
   const reports = [
     {
       source: "codex",
@@ -488,6 +484,64 @@ test("pickBestAuthPoolCandidate swaps in a lower-5H candidate when its product i
   });
 
   assert.equal(candidate.entry.account_id, "bigger-product");
+});
+
+test("pickBestAuthPoolCandidate accepts codex weekly quota even when 5H is absent", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "weekly-only",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 80 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+  ];
+  const pool = [{ account_id: "weekly-only" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 90,
+      one_week_remaining_percent: 10,
+    },
+    now: "2026-04-22T08:30:00Z",
+  });
+
+  assert.equal(candidate.entry.account_id, "weekly-only");
+});
+
+test("pickBestAuthPoolCandidate still requires Claude 5H quota", () => {
+  const reports = [
+    {
+      source: "claude",
+      account_id: "claude-low-5h",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 7 },
+        "1week": { remaining_percent: 90 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+  ];
+  const pool = [{ account_id: "claude-low-5h" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "claude",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 0,
+      one_week_remaining_percent: 0,
+    },
+    now: "2026-04-22T08:30:00Z",
+  });
+
+  assert.equal(candidate, null);
 });
 
 test("pickBestAuthPoolCandidate does not mix codex and claude sources", () => {

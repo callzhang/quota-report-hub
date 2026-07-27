@@ -107,7 +107,7 @@ Important runtime notes:
 - each run self-updates the installed skill from `https://github.com/callzhang/quota-report-hub` before probing, unless `--skip-self-update` is passed for debugging
 - each machine stores only one local state file: `~/.agents/auth/known_auth.json`
 - the local guard probes the current local Codex auth and Claude auth
-- if Codex has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Codex auth
+- if Codex has less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Codex auth; Codex `5H` is kept for display and old reports, but no longer drives rotation
 - if Claude has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Claude auth
 - the request to `/api/auth/fetch-best` includes:
   - `source`
@@ -116,7 +116,8 @@ Important runtime notes:
   - the current local `1week remaining percent`
   - a local `requester_id` such as `user@hostname`, so machines sharing the same hub token are still spread across different replacement auths
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
-- the server only shares candidate auths that still have at least `20%` remaining in the `5H` window and at least `5%` remaining in the `1week` window
+- for Codex, the server only shares candidates whose `1week` remaining quota is at least `5%`, and ranks them by weekly quota plus load balancing
+- for Claude, the server still requires candidates to have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
 - replacement selection is weighted by remaining quota: the server uses requester-specific deterministic weighted sampling with a softened quota weight, plus a small active-assignment penalty, so high-quota accounts carry more load without taking nearly every request
 - the server also tracks active assignments by each machine's latest fetch event; an auth already installed on many machines is treated as loaded even if those machines have not fetched again within the last 5 hours
 - local quota reports are also used as active-assignment evidence: each reporter's latest Codex account contributes to that auth's load, which catches machines that keep using an auth without calling `fetch-best`
@@ -172,7 +173,7 @@ Auth pool support:
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - Fetch access is gated by contribution at the user level: once a user has uploaded at least one healthy Codex or Claude auth, they may fetch any supported source. Candidate selection still stays source-specific, so Codex never receives Claude auth and Claude never receives Codex auth.
 - The dashboard API at `/api/status` also requires the same personal bearer token.
-- The selection logic only compares candidates within the same source, prefers the highest `5H remaining`, then `1week remaining`, and skips hard-invalidated auths.
+- The selection logic only compares candidates within the same source and skips hard-invalidated auths. Codex selection is weekly-quota-first; Claude selection still uses both `5H` and `1week`.
 - Soft probe failures such as missing quota details can still contribute stale-but-last-known-good windows; hard token invalidations clear the old windows.
 - The auth pool requires server-side encryption plus Mailgun delivery for issuing personal user tokens.
 - The auth pool deduplicates by stable `source + account_id`, preserves the first uploader as the account owner, and only replaces an existing entry when the incoming `auth_last_refresh` is newer. If two machines upload different files for the same account without a newer refresh time, the cloud keeps the existing entry.

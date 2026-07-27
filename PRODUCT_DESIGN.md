@@ -179,9 +179,8 @@ If a request presents an older hub-signed token, the server can verify the embed
   - only compares candidates from the same source
   - excludes the current local account
   - excludes hard-invalidated accounts
-  - excludes accounts with `5H <= 0` or `1week <= 0`
-  - only considers candidates whose `5H` is strictly better than the current local `5H`
-  - only considers candidates whose `1week` is still above `0`
+  - for Codex, excludes accounts whose `1week` remaining quota is below the share threshold, and only considers candidates whose `1week` is strictly better than the current local `1week`
+  - for Claude, excludes accounts with insufficient `5H` or `1week` quota and compares candidates against both current windows
   - weights selection by remaining quota using requester-specific deterministic weighted sampling with a softened quota weight, plus a small active-assignment penalty, then returns the lowest projected load
   - treats each machine's latest fetch result as an active assignment, so a shared auth remains load-bearing until that machine fetches a different auth
   - also treats each machine's latest quota report as active-assignment evidence, so machines that keep using an auth without fetching again still count against that auth's load
@@ -302,8 +301,8 @@ The local rotation condition is:
 
 Currently “unhealthy” means:
 
-- current `5H remaining` is below `20%`
-- or current `1week remaining` is below `5%`
+- for Codex: current `1week remaining` is below `5%`
+- for Claude: current `5H remaining` is below `20%`, or current `1week remaining` is below `5%`
 - or current auth is hard-invalidated
 
 When the trigger fires, the machine calls `/api/auth/fetch-best` with:
@@ -318,16 +317,15 @@ The server returns:
 - a better auth when one exists
 - otherwise `replacement: null`
 
-- `5H < 20%`
-- or `1week == 0`
+- Codex `1week < 5%`
+- Claude `5H < 20%` or `1week < 5%`
 
 But rotation only proceeds when the candidate is truly better:
 
-- candidate `5H > current 5H`
-- candidate `5H > 0`
-- candidate `1week > 0`
+- Codex candidate `1week > current 1week` and meets the weekly share threshold
+- Claude candidate beats the current `5H × 1week` product and meets both share thresholds
 
-This prevents useless swaps where weekly quota is exhausted or 5H would regress.
+This prevents useless swaps where the relevant source quota would regress.
 
 ### Cloud Selection Rule
 
@@ -335,9 +333,8 @@ Cloud fetch selection compares against the caller's current local quota:
 
 - exclude hard-invalidated accounts
 - exclude unusable accounts
-- only keep candidates whose `5H` is strictly higher than the current local `5H`
-- require candidate `1week > 0`
-- among the remaining candidates, pick highest `5H`, then highest `1week`
+- for Codex, keep candidates whose weekly quota beats the caller and rank weekly-first with load balancing
+- for Claude, keep candidates that satisfy both window thresholds and rank by the existing double-window quota/load rule
 
 ### Cloud Deduplication Rule
 

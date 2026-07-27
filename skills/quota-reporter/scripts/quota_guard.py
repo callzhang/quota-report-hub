@@ -197,6 +197,8 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
         return bool(payload.get("account_id"))
     five_hour_remaining = remaining_percent(payload, "5h")
     weekly_remaining = remaining_percent(payload, "1week")
+    if payload.get("source") == "codex":
+        return weekly_remaining >= 0 and weekly_remaining < weekly_threshold_percent
     if five_hour_remaining < 0 and weekly_remaining < 0:
         return False
     if five_hour_remaining >= 0 and five_hour_remaining < threshold_percent:

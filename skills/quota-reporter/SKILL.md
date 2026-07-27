@@ -148,9 +148,11 @@ The guard then:
 - for Codex, only complete windows or hard invalidations are uploaded, so partial local probes do not overwrite good hub data
 - for Claude, the local probe reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time
 - Claude Code only sends statusline `rate_limits` after the first successful API response in a session. The statusline capture preserves previous unexpired `5H` or `7d` windows when a startup or failed-response statusline payload has no quota fields.
-- if a local source is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
+- if Codex is below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`; Codex `5H` is display/legacy metadata and does not trigger or rank rotation
+- if Claude is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
-- the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
+- for Codex, the server only shares candidate auths with at least `5%` remaining in `1week` and ranks candidates by weekly quota plus load balancing
+- for Claude, the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
 - if the server returns `repair_auth`, the guard installs that auth instead of a shared replacement so the uploader can re-login and refresh their own invalidated auth
 - only replaces local source credentials when the fetched auth is different from what is already installed
 - after Codex `auth.json` is replaced or refreshed, restarts the local Codex app-server; if the app-server is an unmanaged ephemeral process, the guard stops it so the next Codex launch starts a fresh one

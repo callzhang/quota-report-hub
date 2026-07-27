@@ -1545,7 +1545,7 @@ Reading additional input from stdin...
             saved = json.loads(known_auth_path.read_text(encoding="utf-8"))
             self.assertIn("codex", saved["sources"])
 
-    def test_source_needs_replacement_when_5h_is_low(self):
+    def test_source_needs_replacement_ignores_codex_5h_when_weekly_is_healthy(self):
         codex_payload = {
             "source": "codex",
             "status": "ok",
@@ -1555,7 +1555,19 @@ Reading additional input from stdin...
             },
         }
 
-        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+        self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+
+    def test_source_needs_replacement_when_claude_5h_is_low(self):
+        claude_payload = {
+            "source": "claude",
+            "status": "ok",
+            "windows": {
+                "5h": {"remaining_percent": 12},
+                "1week": {"remaining_percent": 70},
+            },
+        }
+
+        self.assertTrue(quota_guard.source_needs_replacement(claude_payload, 20.0, 5.0))
 
     def test_source_needs_replacement_when_weekly_quota_is_below_threshold(self):
         codex_payload = {
