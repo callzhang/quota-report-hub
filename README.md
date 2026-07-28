@@ -162,6 +162,7 @@ Auth pool support:
 - A fresh accepted client quota report backs off the GitHub Actions cloud probe for that same auth for 1 hour, as long as the report's `auth_last_refresh` still matches the auth pool entry.
 - Turso stores auth-pool metadata, quota snapshots, and audit events. `/api/status` and `/api/auth/fetch-best` candidate selection read metadata only; they do not read encrypted auth JSON for every account.
 - `fetch-best` keeps read volume bounded by reading only the requested source and by using compact current-state assignment tables. It does not scan the full fetch log or quota event history to calculate active machine/account load.
+- The users/audit page reads `auth_pool_user_fetch_stats`, which is updated when fetch events are written, instead of counting the full fetch audit log on each page load.
 - The dashboard refreshes after unlock and then at most every 15 minutes while the tab is visible. Hidden tabs do not keep polling `/api/status`.
 - In production, configure Tigris object storage so encrypted auth JSON is written to object storage and Turso keeps only `auth_blob_key`. Existing inline Turso rows remain readable and are moved to object storage when that auth is refreshed and uploaded again.
 - Every probe result is appended to `auth_pool_quota_events` before the latest row is updated or an unusable auth is removed, so invalidation windows and audit views can be reconstructed from Turso instead of GitHub Actions logs.

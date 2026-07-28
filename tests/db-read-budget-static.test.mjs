@@ -52,3 +52,15 @@ test("fetch-best candidate reads are scoped to the requested source", async () =
   assert.match(best, /authPoolQuotaLatest\(\{ source \}\)/);
   assert.match(best, /authPoolEntrySummaries\(\{ source \}\)/);
 });
+
+test("users list reads materialized fetch stats instead of counting the audit log", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+
+  assert.match(source, /CREATE TABLE IF NOT EXISTS auth_pool_user_fetch_stats/);
+  assert.match(source, /INSERT INTO auth_pool_user_fetch_stats/);
+
+  const users = functionBody(source, "authUsersList");
+  assert.match(users, /LEFT JOIN auth_pool_user_fetch_stats/);
+  assert.doesNotMatch(users, /COUNT\(\*\) FROM auth_pool_fetch_log/);
+  assert.doesNotMatch(users, /MAX\(f\.fetched_at\) FROM auth_pool_fetch_log/);
+});
