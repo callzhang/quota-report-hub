@@ -504,6 +504,7 @@
       const healthSection = document.getElementById("health-section");
       const healthRows = document.getElementById("health-rows");
       const COOKIE_NAME = "quota_report_hub_token";
+      const DASHBOARD_REFRESH_MS = 15 * 60 * 1000;
       let currentToken = "";
 
       function getCookie(name) {
@@ -1019,7 +1020,11 @@
       });
 
       load();
-      setInterval(load, 60000);
+      setInterval(() => {
+        if (document.visibilityState === "visible") {
+          load();
+        }
+      }, DASHBOARD_REFRESH_MS);
     </script>
   </body>
 </html>

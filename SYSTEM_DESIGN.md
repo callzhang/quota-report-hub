@@ -114,10 +114,12 @@ Single module-load client (`lib/db.js:15-18`); schema created lazily + memoized 
 |---|---|---|
 | `auth_pool_entries` | PK `(source, account_id, session_id)` | The encrypted credential pool. One row per account in practice (see collapse, [§5.2](#52-single-entry-per-account)). Holds metadata + either inline ciphertext **or** an `auth_blob_key` pointer. (`:331-353`) |
 | `auth_pool_quota_latest` | PK `(source, account_id)` | Newest merged quota report per account (dashboard + selection). (`:363-387`) |
-| `auth_pool_quota_events` | PK `id` (uuid) | Append-only quota history; used for continuous-invalidation windows + active-reporter counts. (`:388-420`) |
+| `auth_pool_quota_events` | PK `id` (uuid) | Append-only quota history; used for audit and continuous-invalidation windows. Not on the normal selection hot path. (`:388-420`) |
 | `auth_users` | PK `email` | Known members. (`:421-427`) |
 | `auth_api_tokens` | PK `token_hash` | Issued tokens, **hash only**, one active per email. (`:428-435`) |
 | `auth_pool_fetch_log` | PK autoinc | Audit of every pool fetch (served / repair / no-match) + requester quota. (`:436-456`) |
+| `auth_pool_requester_assignments` | PK `(source, requester_key)` | Latest fetch/current-account state per requester. Used for active assignment counts and dashboard fetch summaries without scanning `auth_pool_fetch_log`. |
+| `auth_pool_reporter_assignments` | PK `(source, reporter_key)` | Latest quota-account state per reporting machine. Used for active reporter counts without scanning `auth_pool_quota_events`. |
 | `auth_pool_invalidated_notifications` | PK `(source, account_id)` | Since-when an account is hard-dead + last email sent. (`:459-468`) |
 | `feature_flags` | PK `key` | `disabled_refresh_token` (stored as `"true"`/`"false"`). (`:469-476`) |
 | `pool_health_snapshots` | PK autoinc | Observability time series: ok/hard-dead/other + central-refresh outcomes per source per worker run. (`:477-494`) |
@@ -270,6 +272,8 @@ For a borrow request, candidates are filtered then ranked:
 **Eligibility** (`:273-280`): same source; not excluded (incl. `current_account_id`); not `Free` plan and not hard-invalidated; report fresh (`reported_at` within `max_report_age_seconds`, default 3600 s). Codex candidates must meet the weekly share threshold (weekly ≥ 5%) and beat the requester's weekly remaining quota. Claude candidates must meet both thresholds (5h ≥ 20%, weekly ≥ 5%) and beat the requester's `5h × weekly` product.
 
 **Ranking** (`:282-301`): primary key is `projectedWeightedLoad` ascending — a fairness/load score combining a **deterministic exponential jitter** seeded by `selection_key:source:account_id` (stable per requester, spreads load) and a recent-served penalty. Codex quota weight and tie-breaks are weekly-first; Claude quota weight still uses the limiting window and tie-breaks by 5h, weekly, then recency. This balances *give the borrower good quota* against *don't stampede one account*.
+
+**Read budget**: `fetch-best` reads only the requested source's pool entries and latest quota rows. Active load is read from the compact requester/reporter assignment tables, which have one row per requester or reporter, rather than using window functions over the append-only fetch/quota history tables on every request.
 
 ---
 
