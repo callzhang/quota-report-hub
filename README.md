@@ -131,6 +131,7 @@ Important runtime notes:
 - if the cloud has no better auth than the current one, the guard does nothing and keeps the current auth installed.
 - `~/.agents/auth/quota-reporter.json` should stay private because it contains the user's personal auth-pool token.
 - the hub dashboard also uses the same personal token. Without a valid token, `/api/status` returns `401` and the page stays locked.
+- if `/api/status` cannot read the backing database, it returns `503` with `hub_unavailable`; when the reason is `database_reads_blocked`, the token is not rejected and the Turso plan/quota must be restored before the dashboard can unlock.
 - every time a user requests a new token by email, the old token is revoked. Only the latest token for that email remains valid, even if that latest token is then reused across multiple machines.
 - when a request uses an invalid or expired hub-signed token, the hub returns `401` with `token_invalidated`. The local guard requests a new token email once for that invalid local token, then waits for the user to paste the latest token.
 - deleted legacy opaque `qrp_...` tokens cannot be upgraded in-band because they do not carry a verifiable email; request a fresh token by email once on that machine.

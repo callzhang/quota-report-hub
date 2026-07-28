@@ -1,4 +1,4 @@
-import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../lib/api-auth.js";
+import { authenticateApiRequest, sendServiceUnavailable, sendUnauthorized, withTokenUpgrade } from "../lib/api-auth.js";
 import {
   authPoolEntrySummaries,
   authPoolFetchLog,
@@ -12,32 +12,56 @@ import { authPoolStatusPayload } from "../lib/reports.js";
 import { isAdminEmail } from "../lib/company-auth.js";
 
 export default async function handler(req, res) {
-  const authContext = await authenticateApiRequest(req);
-  if (!authContext) {
-    sendUnauthorized(res);
-    return;
-  }
+  return statusHandlerImpl(req, res);
+}
 
-  if (!dbConfigured()) {
+export async function statusHandlerImpl(req, res, deps = {
+  authenticateApiRequest,
+  sendServiceUnavailable,
+  sendUnauthorized,
+  withTokenUpgrade,
+  dbConfigured,
+  authPoolEntrySummaries,
+  authPoolQuotaLatest,
+  authPoolInvalidatedNotifications,
+  authPoolFetchLog,
+  poolHealthSnapshots,
+  authPoolStatusPayload,
+  getFeatureFlag,
+  isAdminEmail,
+}) {
+  try {
+    const authContext = await deps.authenticateApiRequest(req);
+    if (!authContext) {
+      deps.sendUnauthorized(res);
+      return;
+    }
+
+    if (!deps.dbConfigured()) {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.end(JSON.stringify(deps.withTokenUpgrade(deps.authPoolStatusPayload([], []), authContext)));
+      return;
+    }
+    const [entries, reports, invalidatedStates, fetchLog, healthHistory] = await Promise.all([
+      deps.authPoolEntrySummaries(),
+      deps.authPoolQuotaLatest(),
+      deps.authPoolInvalidatedNotifications(),
+      deps.authPoolFetchLog({ limit: 50 }),
+      deps.poolHealthSnapshots({ limit: 96 }),
+    ]);
+    const dataset = deps.authPoolStatusPayload(entries, reports, new Date().toISOString(), invalidatedStates);
+    dataset.fetch_log = fetchLog;
+    dataset.health_history = healthHistory;
+    dataset.viewer_email = authContext.email;
+    dataset.disabled_refresh_token = await deps.getFeatureFlag("disabled_refresh_token", false);
+    dataset.is_admin = deps.isAdminEmail(authContext.email);
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(withTokenUpgrade(authPoolStatusPayload([], []), authContext)));
+    res.end(JSON.stringify(deps.withTokenUpgrade(dataset, authContext)));
     return;
+  } catch (error) {
+    console.error(error);
+    deps.sendServiceUnavailable(res, error);
   }
-  const [entries, reports, invalidatedStates, fetchLog, healthHistory] = await Promise.all([
-    authPoolEntrySummaries(),
-    authPoolQuotaLatest(),
-    authPoolInvalidatedNotifications(),
-    authPoolFetchLog({ limit: 50 }),
-    poolHealthSnapshots({ limit: 96 }),
-  ]);
-  const dataset = authPoolStatusPayload(entries, reports, new Date().toISOString(), invalidatedStates);
-  dataset.fetch_log = fetchLog;
-  dataset.health_history = healthHistory;
-  dataset.viewer_email = authContext.email;
-  dataset.disabled_refresh_token = await getFeatureFlag("disabled_refresh_token", false);
-  dataset.is_admin = isAdminEmail(authContext.email);
-  res.statusCode = 200;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(withTokenUpgrade(dataset, authContext)));
 }

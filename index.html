@@ -750,6 +750,25 @@
         return `${(seconds / 3600).toFixed(1)}h ago`;
       }
 
+      async function readResponsePayload(response) {
+        const contentType = response.headers.get("content-type") || "";
+        if (contentType.includes("application/json")) {
+          return response.json().catch(() => ({}));
+        }
+        const text = await response.text().catch(() => "");
+        return text ? { message: text } : {};
+      }
+
+      function statusErrorMessage(response, payload) {
+        const detail = payload.message || payload.error || "";
+        if (payload.reason === "database_reads_blocked") {
+          return detail;
+        }
+        return detail
+          ? `Hub request failed (${response.status}): ${detail}`
+          : `Hub request failed (${response.status}). Try again after the service recovers.`;
+      }
+
       async function load() {
         const token = currentToken || getStoredToken();
         if (!token) {
@@ -757,15 +776,21 @@
           return;
         }
 
-        const response = await fetch("/api/status", {
-          cache: "no-store",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        });
+        let response;
+        try {
+          response = await fetch("/api/status", {
+            cache: "no-store",
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          });
+        } catch {
+          setLockedView("Cannot reach the hub. Your token was not rejected; check the network or try again later.");
+          return;
+        }
 
         if (response.status === 401) {
-          const errorPayload = await response.json().catch(() => ({}));
+          const errorPayload = await readResponsePayload(response);
           currentToken = "";
           clearTokenCookie();
           tokenInput.value = "";
@@ -776,7 +801,12 @@
           return;
         }
 
-        const payload = await response.json();
+        const payload = await readResponsePayload(response);
+        if (!response.ok) {
+          setLockedView(statusErrorMessage(response, payload));
+          return;
+        }
+
         applyTokenUpgrade(payload);
         setAuthenticatedView(payload.viewer_email || "unknown");
         renderAdminFlag(payload);
@@ -887,9 +917,18 @@
           authMessage.textContent = "Enter a token first.";
           return;
         }
+        saveTokenButton.disabled = true;
+        const label = saveTokenButton.textContent;
+        saveTokenButton.textContent = "Unlocking…";
+        authMessage.textContent = "Checking token…";
         currentToken = token;
         setTokenCookie(token);
-        await load();
+        try {
+          await load();
+        } finally {
+          saveTokenButton.disabled = false;
+          saveTokenButton.textContent = label;
+        }
       });
 
       clearTokenButton.addEventListener("click", () => {
