@@ -64,3 +64,12 @@ test("users list reads materialized fetch stats instead of counting the audit lo
   assert.doesNotMatch(users, /COUNT\(\*\) FROM auth_pool_fetch_log/);
   assert.doesNotMatch(users, /MAX\(f\.fetched_at\) FROM auth_pool_fetch_log/);
 });
+
+test("quota ingestion does not scan quota event history to maintain invalidation state", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  const upsertQuota = functionBody(source, "upsertAuthPoolQuota");
+
+  assert.doesNotMatch(source, /continuousHardInvalidationSince/);
+  assert.doesNotMatch(upsertQuota, /FROM auth_pool_quota_events/);
+  assert.doesNotMatch(upsertQuota, /LIMIT 1000/);
+});

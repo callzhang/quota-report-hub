@@ -886,7 +886,7 @@ test("upsertAuthPoolQuota tracks continuous invalidated episodes and clears them
   }
 });
 
-test("upsertAuthPoolQuota records every probe event and derives continuous invalidation from history", async () => {
+test("upsertAuthPoolQuota records every probe event and keeps continuous invalidation state", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
     await mod.upsertAuthPoolQuota({
