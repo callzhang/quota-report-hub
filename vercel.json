@@ -16,10 +16,6 @@
   },
   "crons": [
     {
-      "path": "/api/cron/probe-auth-pool",
-      "schedule": "*/15 * * * *"
-    },
-    {
       "path": "/api/cron/invalidated-auth-notifications",
       "schedule": "0 17 * * *"
     }

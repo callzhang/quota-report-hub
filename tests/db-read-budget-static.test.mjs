@@ -74,16 +74,15 @@ test("quota ingestion does not scan quota event history to maintain invalidation
   assert.doesNotMatch(upsertQuota, /LIMIT 1000/);
 });
 
-test("remote probe has a Vercel stale-snapshot backup trigger", async () => {
+test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
   const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
-  assert.ok(
-    vercelConfig.crons.some(
-      (cron) => cron.path === "/api/cron/probe-auth-pool" && cron.schedule === "*/15 * * * *"
-    )
-  );
+  assert.ok(vercelConfig.crons.every((cron) => cron.path !== "/api/cron/probe-auth-pool"));
 
   const workflow = await readFile(new URL("../.github/workflows/probe-auth-pool.yml", import.meta.url), "utf8");
-  assert.match(workflow, /cron: "7,22,37,52 \* \* \* \*"/);
+  assert.match(workflow, /cron: "7 \* \* \* \*"/);
+  assert.match(workflow, /PROBE_CYCLES: \$\{\{ github\.event_name == 'schedule' && '4'/);
+  assert.match(workflow, /PROBE_INTERVAL_SECONDS: \$\{\{ github\.event_name == 'schedule' && '720'/);
+  assert.match(workflow, /for cycle in \$\(seq 1 "\$\{PROBE_CYCLES\}"\)/);
 
   const cronHandler = await readFile(new URL("../api/cron/probe-auth-pool.js", import.meta.url), "utf8");
   assert.match(cronHandler, /poolHealthSnapshots\(\{ limit: 1 \}\)/);

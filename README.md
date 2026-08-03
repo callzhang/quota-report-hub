@@ -304,14 +304,15 @@ Important:
 
 ## Scheduler
 
-The hosted hub uses GitHub Actions for the Codex and Claude server probe loop, because the worker needs CLI tooling that does not belong in a Vercel function. Vercel cron provides a lightweight backup trigger: every 15 minutes it checks the latest `pool_health_snapshots` row and dispatches the GitHub workflow only when the last worker snapshot is older than 20 minutes.
+The hosted hub uses GitHub Actions for the Codex and Claude server probe loop, because the worker needs CLI tooling that does not belong in a Vercel function. Vercel Hobby projects cannot run 15-minute cron jobs, so the scheduled GitHub workflow starts once per hour and runs four probe cycles in the same runner, with a 12-minute wait between cycles. That keeps dashboard rows fresh without relying on high-frequency platform cron.
 
 - workflow file: `.github/workflows/probe-auth-pool.yml`
+- scheduled behavior: hourly trigger at minute `7`, `PROBE_CYCLES=4`, `PROBE_INTERVAL_SECONDS=720`
 - required GitHub secrets:
   - `TURSO_DATABASE_URL`
   - `TURSO_AUTH_TOKEN`
   - `AUTH_POOL_ENCRYPTION_KEY`
-- Vercel backup trigger:
+- Vercel manual/external backup trigger:
   - path: `/api/cron/probe-auth-pool`
   - auth: `CRON_SECRET`
   - required env: `GITHUB_WORKFLOW_DISPATCH_TOKEN`

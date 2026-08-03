@@ -168,11 +168,11 @@ All handlers are Vercel functions; most require a Bearer token via `authenticate
 | `/api/auth/issue-token` | POST | **none** (company-email gate) | Email a one-time access token |
 | `/api/admin/flags` | GET/POST | Bearer (POST: admin) | Read flags / flip `disabled_refresh_token` |
 | `/api/cron/invalidated-auth-notifications` | GET/POST | **`CRON_SECRET`** | Daily email to owners of 24h-dead auths |
-| `/api/cron/probe-auth-pool` | GET/POST | **`CRON_SECRET`** | Lightweight Vercel trigger that dispatches the GitHub probe workflow when health snapshots are stale |
+| `/api/cron/probe-auth-pool` | GET/POST | **`CRON_SECRET`** | Lightweight manual/external trigger that dispatches the GitHub probe workflow when health snapshots are stale |
 | `/api/status` | any | Bearer | Dashboard dataset |
 | `/api/users` | any | Bearer | Users + fetch-log audit |
 
-`vercel.json`: platform cron calls `/api/cron/probe-auth-pool` every 15 minutes and `/api/cron/invalidated-auth-notifications` daily at `0 17 * * *` UTC. The *probe* worker itself is still GitHub Actions, because it needs the Codex and Claude CLIs; Vercel only checks the latest `pool_health_snapshots` row and sends `workflow_dispatch` when the latest worker snapshot is older than `AUTH_POOL_PROBE_MIN_INTERVAL_SECONDS` (default 20 minutes).
+`vercel.json`: platform cron only calls `/api/cron/invalidated-auth-notifications` daily at `0 17 * * *` UTC. Vercel Hobby does not support 15-minute cron jobs, so the *probe* worker stays in GitHub Actions. `/api/cron/probe-auth-pool` remains available for manual or external stale-snapshot dispatch when called with `CRON_SECRET`.
 
 ### 6.1 fetch-best (the borrow path) — `api/auth/fetch-best.js`
 Three branches, in order:
@@ -194,9 +194,9 @@ In branches 2–3, when `disabled_refresh_token` is ON, the served blob is run t
 
 ## 7. Component: Worker
 
-Code: `scripts/probe_auth_pool_worker.mjs`, spawning `scripts/probe_{codex,claude}_auth_blob.py`. Runs on GitHub Actions cron `7,22,37,52 * * * *`, manual dispatch (`.github/workflows/probe-auth-pool.yml`), and Vercel's stale-snapshot backup trigger (`/api/cron/probe-auth-pool`). The job installs node 24, the Codex CLI, the Claude CLI, and `pexpect`, then runs the worker with Turso + encryption + Tigris secrets.
+Code: `scripts/probe_auth_pool_worker.mjs`, spawning `scripts/probe_{codex,claude}_auth_blob.py`. Runs on GitHub Actions cron `7 * * * *`, manual dispatch (`.github/workflows/probe-auth-pool.yml`), and the stale-snapshot dispatch endpoint (`/api/cron/probe-auth-pool`). The scheduled workflow installs node 24, the Codex CLI, the Claude CLI, and `pexpect` once, then runs four probe cycles in the same runner with `PROBE_INTERVAL_SECONDS=720`.
 
-> The GitHub schedule is **best-effort**: the backup trigger exists because scheduled workflow events can be delayed or skipped. The Vercel trigger does not run the heavy worker; it only dispatches GitHub when the latest health snapshot is stale.
+> The GitHub schedule is **best-effort**: high-frequency cron events can be delayed or skipped, so the production schedule uses one hourly runner and performs the 15-minute loop inside that runner. Manual `workflow_dispatch` defaults to one cycle so a human-triggered repair does not wait for the full hourly loop.
 
 ### 7.1 Run loop (`main`)
 1. `authPoolEntries()` → `dedupeEntriesByAccount(allEntries)` → `{canonical, stale}`. Canonical = freshest `uploaded_at` per `(source, account_id)`; rest are stale.

@@ -2,9 +2,19 @@ name: Probe Auth Pool
 
 on:
   schedule:
-    # Avoid common 0/15/30/45 minute buckets, where scheduled workflows are more often delayed.
-    - cron: "7,22,37,52 * * * *"
+    # GitHub scheduled workflows can drop high-frequency cron events. Start one hourly
+    # runner off the busy top-of-hour bucket and let it perform the 15-minute loop itself.
+    - cron: "7 * * * *"
   workflow_dispatch:
+    inputs:
+      cycles:
+        description: "Number of probe cycles to run"
+        required: false
+        default: "1"
+      interval_seconds:
+        description: "Seconds to wait between probe cycles"
+        required: false
+        default: "720"
 
 # Never let two probe runs overlap: each run snapshots the pool at start and centrally
 # refreshes tokens, so two concurrent runs can replay an already-rotated refresh token and
@@ -39,4 +49,14 @@ jobs:
           TIGRIS_STORAGE_ACCESS_KEY_ID: ${{ secrets.TIGRIS_STORAGE_ACCESS_KEY_ID }}
           TIGRIS_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.TIGRIS_STORAGE_SECRET_ACCESS_KEY }}
           TIGRIS_STORAGE_BUCKET: ${{ secrets.TIGRIS_STORAGE_BUCKET }}
-        run: node scripts/probe_auth_pool_worker.mjs
+          PROBE_CYCLES: ${{ github.event_name == 'schedule' && '4' || inputs.cycles || '1' }}
+          PROBE_INTERVAL_SECONDS: ${{ github.event_name == 'schedule' && '720' || inputs.interval_seconds || '720' }}
+        run: |
+          set -euo pipefail
+          for cycle in $(seq 1 "${PROBE_CYCLES}"); do
+            echo "probe cycle ${cycle}/${PROBE_CYCLES}"
+            node scripts/probe_auth_pool_worker.mjs
+            if [ "${cycle}" != "${PROBE_CYCLES}" ]; then
+              sleep "${PROBE_INTERVAL_SECONDS}"
+            fi
+          done
