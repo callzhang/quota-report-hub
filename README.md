@@ -207,6 +207,7 @@ The installer also performs a post-install verification by default:
 - `MAILGUN_DOMAIN`
 - `MAILGUN_FROM`
 - `CRON_SECRET`
+- `GITHUB_WORKFLOW_DISPATCH_TOKEN`
 - `TURSO_DATABASE_URL`
 - `TURSO_AUTH_TOKEN`
 - `TIGRIS_STORAGE_ACCESS_KEY_ID`
@@ -303,13 +304,18 @@ Important:
 
 ## Scheduler
 
-The hosted hub uses GitHub Actions, not Vercel cron, for the 15-minute Codex server probe loop.
+The hosted hub uses GitHub Actions for the Codex and Claude server probe loop, because the worker needs CLI tooling that does not belong in a Vercel function. Vercel cron provides a lightweight backup trigger: every 15 minutes it checks the latest `pool_health_snapshots` row and dispatches the GitHub workflow only when the last worker snapshot is older than 20 minutes.
 
 - workflow file: `.github/workflows/probe-auth-pool.yml`
 - required GitHub secrets:
   - `TURSO_DATABASE_URL`
   - `TURSO_AUTH_TOKEN`
   - `AUTH_POOL_ENCRYPTION_KEY`
+- Vercel backup trigger:
+  - path: `/api/cron/probe-auth-pool`
+  - auth: `CRON_SECRET`
+  - required env: `GITHUB_WORKFLOW_DISPATCH_TOKEN`
+  - optional env: `GITHUB_WORKFLOW_DISPATCH_REPO`, `GITHUB_WORKFLOW_DISPATCH_WORKFLOW`, `GITHUB_WORKFLOW_DISPATCH_REF`, `AUTH_POOL_PROBE_MIN_INTERVAL_SECONDS`
 
 ## Auth Pool Workflow
 

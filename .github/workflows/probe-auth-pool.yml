@@ -2,7 +2,8 @@ name: Probe Auth Pool
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    # Avoid common 0/15/30/45 minute buckets, where scheduled workflows are more often delayed.
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
 # Never let two probe runs overlap: each run snapshots the pool at start and centrally

@@ -73,3 +73,20 @@ test("quota ingestion does not scan quota event history to maintain invalidation
   assert.doesNotMatch(upsertQuota, /FROM auth_pool_quota_events/);
   assert.doesNotMatch(upsertQuota, /LIMIT 1000/);
 });
+
+test("remote probe has a Vercel stale-snapshot backup trigger", async () => {
+  const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
+  assert.ok(
+    vercelConfig.crons.some(
+      (cron) => cron.path === "/api/cron/probe-auth-pool" && cron.schedule === "*/15 * * * *"
+    )
+  );
+
+  const workflow = await readFile(new URL("../.github/workflows/probe-auth-pool.yml", import.meta.url), "utf8");
+  assert.match(workflow, /cron: "7,22,37,52 \* \* \* \*"/);
+
+  const cronHandler = await readFile(new URL("../api/cron/probe-auth-pool.js", import.meta.url), "utf8");
+  assert.match(cronHandler, /poolHealthSnapshots\(\{ limit: 1 \}\)/);
+  assert.match(cronHandler, /GITHUB_WORKFLOW_DISPATCH_TOKEN/);
+  assert.match(cronHandler, /recent_probe_snapshot/);
+});

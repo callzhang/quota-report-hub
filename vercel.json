@@ -9,9 +9,16 @@
     },
     "api/cron/invalidated-auth-notifications.js": {
       "maxDuration": 30
+    },
+    "api/cron/probe-auth-pool.js": {
+      "maxDuration": 30
     }
   },
   "crons": [
+    {
+      "path": "/api/cron/probe-auth-pool",
+      "schedule": "*/15 * * * *"
+    },
     {
       "path": "/api/cron/invalidated-auth-notifications",
       "schedule": "0 17 * * *"
