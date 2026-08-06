@@ -50,11 +50,11 @@ async function refreshEntryIfNeeded(
   authJsonText,
   entry,
   source,
-  { refreshTokenImpl, upsertAuthPoolEntryImpl, nowImpl },
+  { refreshTokenImpl, upsertAuthPoolEntryImpl, nowImpl, force = false },
 ) {
   const now = nowImpl().getTime();
   const msLeft = accessTokenMsUntilExpiry(authJsonText, source, now);
-  if (msLeft !== null && msLeft > REFRESH_THRESHOLD_MS) {
+  if (!force && msLeft !== null && msLeft > REFRESH_THRESHOLD_MS) {
     return { authJsonText, result: { attempted: false } };
   }
   const refreshToken = refreshTokenFromBlob(authJsonText, source);
@@ -75,7 +75,7 @@ async function refreshEntryIfNeeded(
     reporter_name: entry.reporter_name || "actions@github-actions",
     hostname: entry.hostname || "github-actions",
   });
-  return { authJsonText: refreshedAuthJson, result: { attempted: true, ok: true } };
+  return { authJsonText: refreshedAuthJson, result: { attempted: true, ok: true, forced: Boolean(force) } };
 }
 
 function probeCodexAuthJson(authJsonText) {
@@ -288,6 +288,16 @@ function skippedProbeItem(entry, previousReport, skipReason, centralRefreshResul
   };
 }
 
+function shouldForceRefreshAfterAuthInvalid(entry, report, centralRefreshResult, atOnlyMode) {
+  return (
+    atOnlyMode &&
+    (entry.source === "claude" || entry.source === "codex") &&
+    report?.status === "error" &&
+    isHardAuthError(report.error) &&
+    !centralRefreshResult?.attempted
+  );
+}
+
 export async function processAuthPoolEntry(
   entry,
   {
@@ -317,8 +327,9 @@ export async function processAuthPoolEntry(
 
   let report = null;
   let centralRefreshResult = null;
+  let authJsonText = null;
   try {
-    let authJsonText = await decryptAuthJsonImpl(entry);
+    authJsonText = await decryptAuthJsonImpl(entry);
     if (atOnlyMode && (entry.source === "claude" || entry.source === "codex")) {
       const refreshTokenImpl = entry.source === "claude" ? refreshClaudeTokenImpl : refreshCodexTokenImpl;
       const refreshed = await refreshEntryIfNeeded(authJsonText, entry, entry.source, {
@@ -361,6 +372,44 @@ export async function processAuthPoolEntry(
       return skippedProbeItem(entry, previousReport, skipReason, centralRefreshResult);
     }
     report = failureReport(entry, error);
+  }
+  if (shouldForceRefreshAfterAuthInvalid(entry, report, centralRefreshResult, atOnlyMode) && authJsonText) {
+    const refreshTokenImpl = entry.source === "claude" ? refreshClaudeTokenImpl : refreshCodexTokenImpl;
+    const refreshed = await refreshEntryIfNeeded(authJsonText, entry, entry.source, {
+      refreshTokenImpl,
+      upsertAuthPoolEntryImpl,
+      nowImpl,
+      force: true,
+    });
+    authJsonText = refreshed.authJsonText;
+    centralRefreshResult = refreshed.result;
+    if (centralRefreshResult?.auth_rejected) {
+      report = refreshTokenRejectedReport(entry, centralRefreshResult);
+      await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
+      return {
+        source: entry.source,
+        account_id: entry.account_id,
+        status: report.status,
+        error: report.error,
+        refreshed_auth_written: false,
+        refreshed_auth_result: null,
+        central_refresh: centralRefreshResult,
+      };
+    }
+    if (centralRefreshResult?.ok) {
+      try {
+        report =
+          entry.source === "codex"
+            ? probeCodexAuthJsonImpl(authJsonText)
+            : probeClaudeAuthJsonImpl(authJsonText);
+        report = {
+          ...report,
+          report_origin: "worker",
+        };
+      } catch (error) {
+        report = failureReport(entry, error);
+      }
+    }
   }
   if (shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport)) {
     await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
@@ -457,8 +506,8 @@ export function dedupeEntriesByAccount(entries) {
   for (const entry of entries) {
     const accountId = entry?.account_id ? String(entry.account_id) : "";
     const key = accountId
-      ? `${entry.source} ${accountId}`
-      : `${entry.source} __anon__ ${anonymousSeq++}`;
+      ? `${entry.source}\0${accountId}`
+      : `${entry.source}\0__anon__\0${anonymousSeq++}`;
     const bucket = groups.get(key);
     if (bucket) bucket.push(entry);
     else groups.set(key, [entry]);

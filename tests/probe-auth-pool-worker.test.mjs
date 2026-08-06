@@ -156,6 +156,95 @@ test("processAuthPoolEntry centrally refreshes a near-expiry claude auth in disa
   assert.equal(persisted.refreshToken, "NEW_RT");
 });
 
+test("processAuthPoolEntry force-refreshes claude after auth-invalid probe even when expiry is far away", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const authWrites = [];
+  const quotaReports = [];
+  const now = new Date("2026-06-12T00:00:00Z");
+  const farFutureBlob = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "STALE_AT", refreshToken: "REAL_RT", expiresAt: now.getTime() + 10 * 24 * 60 * 60 * 1000 } },
+  });
+  let probeCount = 0;
+
+  const result = await processAuthPoolEntry(
+    { source: "claude", account_id: "acct-claude", uploader_email: "derek@stardust.ai" },
+    {
+      atOnlyMode: true,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => farFutureBlob,
+      refreshClaudeTokenImpl: async (rt) => {
+        assert.equal(rt, "REAL_RT");
+        return { ok: true, access_token: "NEW_AT", refresh_token: "NEW_RT", expires_in: 28800 };
+      },
+      probeClaudeAuthJsonImpl: (authJsonText) => {
+        probeCount++;
+        const oauth = JSON.parse(authJsonText).credentials.claudeAiOauth;
+        if (probeCount === 1) {
+          assert.equal(oauth.accessToken, "STALE_AT");
+          return { source: "claude", account_id: "acct-claude", status: "error", error: "claude auth invalid (authentication_error)", windows: { "5h": null, "1week": null } };
+        }
+        assert.equal(oauth.accessToken, "NEW_AT");
+        return { source: "claude", account_id: "acct-claude", status: "ok", error: null, windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 100 } } };
+      },
+      upsertAuthPoolQuotaImpl: async (report) => {
+        quotaReports.push(report);
+      },
+      upsertAuthPoolEntryImpl: async (entry) => {
+        authWrites.push(entry);
+        return { deduplicated: false };
+      },
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+
+  assert.equal(probeCount, 2);
+  assert.equal(result.status, "ok");
+  assert.equal(result.central_refresh.ok, true);
+  assert.equal(result.central_refresh.forced, true);
+  assert.equal(authWrites.length, 1);
+  assert.equal(quotaReports.length, 1);
+  const persisted = JSON.parse(authWrites[0].auth_json).credentials.claudeAiOauth;
+  assert.equal(persisted.accessToken, "NEW_AT");
+  assert.equal(persisted.refreshToken, "NEW_RT");
+});
+
+test("processAuthPoolEntry records rejected RT when auth-invalid fallback refresh is rejected", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const quotaReports = [];
+  const now = new Date("2026-06-12T00:00:00Z");
+  const farFutureBlob = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "STALE_AT", refreshToken: "DEAD_RT", expiresAt: now.getTime() + 10 * 24 * 60 * 60 * 1000 } },
+  });
+
+  const result = await processAuthPoolEntry(
+    { source: "claude", account_id: "acct-claude", uploader_email: "derek@stardust.ai" },
+    {
+      atOnlyMode: true,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => farFutureBlob,
+      refreshClaudeTokenImpl: async (rt) => {
+        assert.equal(rt, "DEAD_RT");
+        return { ok: false, auth_rejected: true, status: 400, error: "refresh http 400" };
+      },
+      probeClaudeAuthJsonImpl: () => ({ source: "claude", account_id: "acct-claude", status: "error", error: "claude auth invalid (authentication_error)", windows: { "5h": null, "1week": null } }),
+      upsertAuthPoolQuotaImpl: async (report) => {
+        quotaReports.push(report);
+      },
+      upsertAuthPoolEntryImpl: async () => {
+        throw new Error("must not write rejected auth");
+      },
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+
+  assert.equal(result.status, "error");
+  assert.equal(result.error, "refresh_token_rejected");
+  assert.equal(result.central_refresh.auth_rejected, true);
+  assert.equal(result.central_refresh.status, 400);
+  assert.equal(quotaReports.length, 1);
+  assert.equal(quotaReports[0].error, "refresh_token_rejected");
+});
+
 test("processAuthPoolEntry records refresh_token_rejected when central refresh rejects RT", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const quotaReports = [];
