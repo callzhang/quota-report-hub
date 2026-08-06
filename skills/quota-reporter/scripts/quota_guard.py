@@ -10,7 +10,6 @@ import os
 import platform
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import tarfile
@@ -726,12 +725,7 @@ def is_current_home_codex_app_server(args: str) -> bool:
     current_home = current_home.rstrip(os.sep)
     if not current_home:
         return False
-    if f"{current_home}{os.sep}" in args:
-        return True
-    return (
-        platform.system().lower() == "darwin"
-        and "/Applications/ChatGPT.app/Contents/Resources/codex" in args
-    )
+    return f"{current_home}{os.sep}" in args
 
 
 def is_current_home_codex_app_server_listener(args: str) -> bool:
@@ -826,52 +820,6 @@ def stale_codex_app_server_for_auth(codex_auth_path: Path) -> dict:
     }
 
 
-def stop_unmanaged_codex_app_server() -> dict:
-    pids = unmanaged_codex_app_server_pids()
-    if not pids:
-        return {"ok": False, "stopped": False, "reason": "unmanaged_app_server_not_found"}
-
-    terminated = []
-    failed = []
-    for pid in pids:
-        try:
-            os.kill(pid, signal.SIGTERM)
-            terminated.append(pid)
-        except ProcessLookupError:
-            terminated.append(pid)
-        except Exception as error:
-            failed.append({"pid": pid, "error": str(error)})
-
-    time.sleep(0.5)
-    still_running = []
-    for pid in terminated:
-        try:
-            os.kill(pid, 0)
-            still_running.append(pid)
-        except ProcessLookupError:
-            pass
-        except Exception:
-            pass
-
-    killed = []
-    for pid in still_running:
-        try:
-            os.kill(pid, signal.SIGKILL)
-            killed.append(pid)
-        except ProcessLookupError:
-            pass
-        except Exception as error:
-            failed.append({"pid": pid, "error": str(error)})
-
-    return {
-        "ok": not failed,
-        "stopped": True,
-        "terminated_pids": terminated,
-        "killed_pids": killed,
-        "failed": failed,
-    }
-
-
 def restart_codex_app_server() -> dict:
     codex_bin = codex_binary_for_app_server_restart()
     if not codex_bin:
@@ -909,17 +857,15 @@ def restart_codex_app_server() -> dict:
             "not managed by codex app-server daemon" in combined_output
             or "managed standalone Codex install not found" in combined_output
         ):
-            stopped = stop_unmanaged_codex_app_server()
             return {
-                "ok": stopped.get("ok", False),
-                "restarted": bool(stopped.get("stopped")),
-                "reason": "unmanaged_app_server_stopped",
+                "ok": False,
+                "restarted": False,
+                "reason": "unmanaged_app_server_not_restarted",
                 "daemon_restart": {
                     "returncode": result.returncode,
                     "stdout": result.stdout.strip()[-1000:],
                     "stderr": result.stderr.strip()[-1000:],
                 },
-                "fallback": stopped,
                 "command": command,
             }
         return {

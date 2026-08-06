@@ -3173,7 +3173,7 @@ Reading additional input from stdin...
         self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
         self.assertEqual(result["notifications"], {})
 
-    def test_restart_codex_app_server_stops_unmanaged_ephemeral_server(self):
+    def test_restart_codex_app_server_does_not_stop_unmanaged_ephemeral_server(self):
         daemon_result = mock.Mock(
             returncode=1,
             stdout="",
@@ -3182,23 +3182,16 @@ Reading additional input from stdin...
 
         with mock.patch.object(quota_guard, "codex_binary_for_app_server_restart", return_value="/bin/codex"):
             with mock.patch.object(quota_guard.subprocess, "run", return_value=daemon_result) as run:
-                with mock.patch.object(quota_guard, "stop_unmanaged_codex_app_server", return_value={
-                    "ok": True,
-                    "stopped": True,
-                    "terminated_pids": [123],
-                    "killed_pids": [],
-                    "failed": [],
-                }) as stop:
+                with mock.patch.object(quota_guard.os, "kill") as kill:
                     result = quota_guard.restart_codex_app_server()
 
         run.assert_called_once()
-        stop.assert_called_once()
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["restarted"])
-        self.assertEqual(result["reason"], "unmanaged_app_server_stopped")
-        self.assertEqual(result["fallback"]["terminated_pids"], [123])
+        kill.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["restarted"])
+        self.assertEqual(result["reason"], "unmanaged_app_server_not_restarted")
 
-    def test_restart_codex_app_server_stops_unmanaged_server_when_standalone_install_missing(self):
+    def test_restart_codex_app_server_does_not_stop_server_when_standalone_install_missing(self):
         daemon_result = mock.Mock(
             returncode=1,
             stdout="",
@@ -3207,20 +3200,13 @@ Reading additional input from stdin...
 
         with mock.patch.object(quota_guard, "codex_binary_for_app_server_restart", return_value="/bin/codex"):
             with mock.patch.object(quota_guard.subprocess, "run", return_value=daemon_result):
-                with mock.patch.object(quota_guard, "stop_unmanaged_codex_app_server", return_value={
-                    "ok": True,
-                    "stopped": True,
-                    "terminated_pids": [456],
-                    "killed_pids": [],
-                    "failed": [],
-                }) as stop:
+                with mock.patch.object(quota_guard.os, "kill") as kill:
                     result = quota_guard.restart_codex_app_server()
 
-        stop.assert_called_once()
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["restarted"])
-        self.assertEqual(result["reason"], "unmanaged_app_server_stopped")
-        self.assertEqual(result["fallback"]["terminated_pids"], [456])
+        kill.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["restarted"])
+        self.assertEqual(result["reason"], "unmanaged_app_server_not_restarted")
 
     def test_unmanaged_codex_app_server_pids_only_matches_listener_processes(self):
         ps_result = mock.Mock(
@@ -3275,7 +3261,7 @@ Reading additional input from stdin...
                     with mock.patch.object(quota_guard.Path, "home", return_value=Path("/home/derek")):
                         self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101])
 
-    def test_unmanaged_codex_app_server_pids_matches_current_user_chatgpt_app_server(self):
+    def test_unmanaged_codex_app_server_pids_excludes_chatgpt_managed_app_server(self):
         ps_result = mock.Mock(
             returncode=0,
             stdout=(
@@ -3293,9 +3279,9 @@ Reading additional input from stdin...
                 with mock.patch.object(quota_guard.os, "getpid", return_value=999):
                     with mock.patch.object(quota_guard.os, "getuid", return_value=501):
                         with mock.patch.object(quota_guard.Path, "home", return_value=Path("/Users/derek")):
-                            self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101, 102])
+                            self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [])
 
-    def test_stale_codex_app_server_detects_chatgpt_app_server_after_manual_login(self):
+    def test_stale_codex_app_server_excludes_chatgpt_app_server_after_manual_login(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text("{}", encoding="utf-8")
@@ -3317,9 +3303,8 @@ Reading additional input from stdin...
                                 with mock.patch.object(quota_guard.Path, "home", return_value=Path("/Users/derek")):
                                     stale = quota_guard.stale_codex_app_server_for_auth(auth_path)
 
-        self.assertTrue(stale["stale"])
-        self.assertEqual(stale["reason"], "app_server_started_before_auth")
-        self.assertEqual(stale["processes"][0]["pid"], 101)
+        self.assertFalse(stale["stale"])
+        self.assertEqual(stale["reason"], "no_stale_app_server")
 
     def test_stale_codex_app_server_detects_running_server_when_auth_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:

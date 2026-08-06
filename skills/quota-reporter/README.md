@@ -12,7 +12,7 @@ The skill installs a local 15-minute quota guard that:
 - checks whether the current local source is low on quota
 - can push stable local Codex and Claude quota snapshots to the hub when available
 - fetches and installs a strictly better auth from the same source when needed
-- restarts or stops the local Codex app-server after writing a new Codex `auth.json`, so new Codex sessions do not keep using the old cached account
+- asks the managed Codex app-server daemon to restart after writing a new Codex `auth.json`; desktop-managed and other unmanaged app-server processes are never terminated by the guard
 - shows a desktop notification after a successful local auth replacement so the user knows to quit the current Codex or Claude Code session and start a new one
 - opens one persistent system dialog when any auth uploaded by the current token user is hard-invalidated and needs a fresh login; each guard run checks for an existing dialog before opening another one
 - keeps older uploaded auths in the cloud pool when the local machine switches to a different current auth
@@ -41,7 +41,8 @@ The guard is source-aware:
   - reuploads current auths
   - probes current local quota in an isolated temporary Codex home, with provider/auth override environment variables stripped so API-key or custom-provider shells cannot be mislabeled as the copied ChatGPT auth
   - fetches and installs a better auth if the current source is below threshold
-  - restarts managed Codex app-server after a Codex auth write, or stops unmanaged ephemeral app-server so the next Codex launch starts cleanly
+  - restarts a daemon-managed Codex app-server after a Codex auth write
+  - never sends termination signals to desktop-managed or unmanaged app-server processes; when no managed daemon exists, it reports `unmanaged_app_server_not_restarted` and lets the owning application recreate its own backend
 - `scripts/trigger_remote_probe.py`
   - triggers the GitHub Actions cloud probe worker
   - optionally watches the run
