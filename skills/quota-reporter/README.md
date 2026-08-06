@@ -23,6 +23,7 @@ The guard is source-aware:
 
 - Codex auths only compete with other Codex auths
 - Claude auths only compete with other Claude auths
+- Codex live quota is weekly only; any old 5H value is legacy metadata and should not drive rotation or dashboard freshness
 - Codex cloud identities are normalized to the lowercased email when available, so Team users do not collide on a shared provider-side UUID
 
 ## Main Scripts

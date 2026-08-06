@@ -10,12 +10,13 @@ const { codexClientPayloadAccepted, ingestClientQuota } = await import("../lib/q
 
 const completeWindow = { remaining_percent: 80, reset_at: "2026-06-14T13:00:00Z" };
 
-test("codexClientPayloadAccepted: complete windows accepted, partial rejected", () => {
+test("codexClientPayloadAccepted accepts complete weekly quota without codex 5H", () => {
   assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "ok", windows: { "5h": completeWindow, "1week": completeWindow } }), true);
+  assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "ok", windows: { "5h": null, "1week": completeWindow } }), true);
   // missing 1week window -> rejected
   assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "ok", windows: { "5h": completeWindow } }), false);
   // window without reset_at -> rejected
-  assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "ok", windows: { "5h": { remaining_percent: 50 }, "1week": completeWindow } }), false);
+  assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "ok", windows: { "5h": completeWindow, "1week": { remaining_percent: 50 } } }), false);
   // hard invalidation is accepted even without windows
   assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "error", error: "auth invalidated (token_invalidated)" }), true);
   assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "error", error: "auth failed (401 unauthorized)" }), true);
@@ -49,11 +50,11 @@ test("ingestClientQuota ignores an incomplete codex payload (no write)", async (
   assert.equal(calls, 0);
 });
 
-test("ingestClientQuota persists a complete codex payload with client origin + defaults", async () => {
+test("ingestClientQuota persists codex weekly quota with client origin + defaults", async () => {
   const written = [];
   const res = await ingestClientQuota({
     source: "codex",
-    quotaPayload: { account_id: "acct", status: "ok", windows: { "5h": completeWindow, "1week": completeWindow } },
+    quotaPayload: { account_id: "acct", status: "ok", windows: { "5h": null, "1week": completeWindow } },
     reporterEmail: "derek@stardust.ai",
     upsertImpl: async (p) => { written.push(p); },
   });

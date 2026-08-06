@@ -4,7 +4,7 @@ Minimal Vercel app that stores encrypted Codex and Claude auth snapshots, issues
 
 ![Quota Report Hub dashboard](docs/hub-dashboard.png)
 
-*The dashboard: every cloud auth entry with its latest 5H / 1week quota, who fetched it, and the cloud probe status — plus archived auths that have stayed invalidated. (Accounts shown are anonymized demo data.)*
+*The dashboard: every cloud auth entry with its latest source-specific quota, who fetched it, and the cloud probe status — plus archived auths that have stayed invalidated. Codex uses the weekly quota window; Claude still reports 5H when available. (Accounts shown are anonymized demo data.)*
 
 ## Use Case
 
@@ -96,7 +96,7 @@ The intended end-to-end flow inside Codex is:
    - updates local `~/.agents/auth/known_auth.json`
    - reuploads the current auth to keep the cloud auth pool entry present even when the local digest has not changed
    - checks the current local Codex quota and Claude quota
-   - reports stable local quota snapshots back to the hub when available; Codex client reports are accepted only when both windows are complete or the local auth is hard-invalidated
+   - reports stable local quota snapshots back to the hub when available; Codex client reports are accepted when the weekly window is complete or the local auth is hard-invalidated
    - if a local source is below threshold, sends `source + current account + current quota` to `/api/auth/fetch-best`
    - installs a better auth only when the server returns one for that same source
    - opens a persistent system dialog when any auth uploaded by that user is hard-invalidated, even if that auth is not the currently installed local auth
@@ -107,12 +107,12 @@ Important runtime notes:
 - each run self-updates the installed skill from `https://github.com/callzhang/quota-report-hub` before probing, unless `--skip-self-update` is passed for debugging
 - each machine stores only one local state file: `~/.agents/auth/known_auth.json`
 - the local guard probes the current local Codex auth and Claude auth
-- if Codex has less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Codex auth; Codex `5H` is kept for display and old reports, but no longer drives rotation
+- if Codex has less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Codex auth; Codex `5H` is legacy metadata only and is not shown as live quota
 - if Claude has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Claude auth
 - the request to `/api/auth/fetch-best` includes:
   - `source`
   - the current local `account_id`
-  - the current local `5H remaining percent`
+  - the current local `5H remaining percent` when the source still reports one
   - the current local `1week remaining percent`
   - a local `requester_id` such as `user@hostname`, so machines sharing the same hub token are still spread across different replacement auths
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
@@ -149,7 +149,7 @@ The dashboard now reflects the cloud auth pool, not arbitrary client report rows
 - soft probe failures with old quota windows are shown as unavailable after the last known reset time passes, instead of `ready now`
 - successful but stale quota snapshots whose reset time has already passed are shown as expired snapshots, not as ready quota
 - a newer partial worker quota report is allowed to replace an old complete client snapshot after the client's known reset windows have passed
-- Codex rows can be refreshed by either the cloud worker or a stable local client report; a complete local client report is allowed to replace stale worker-preserved windows. After a stable local client report is accepted, the cloud worker skips probing that same auth for 1 hour when the report matches the auth refresh time. A newer worker soft failure does not overwrite an existing good local Codex quota snapshot
+- Codex rows can be refreshed by either the cloud worker or a stable local client report; a complete Codex client report means a fresh weekly window, because Codex no longer has a live 5H window. After a stable local client report is accepted, the cloud worker skips probing that same auth for 1 hour when the report matches the auth refresh time. A newer worker soft failure does not overwrite an existing good local Codex quota snapshot
 - Claude rows can be refreshed by the cloud worker for direct Claude subscriptions, or by stable local client reports when Claude is running in an environment that the worker cannot replay reliably. Local Claude reporting reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time. Claude Code only sends `rate_limits` after the first successful API response in a session, so the statusline capture preserves any previous unexpired `5H` or `7d` window instead of overwriting it with a startup snapshot that has no quota.
 
 Auth pool support:
@@ -160,7 +160,7 @@ Auth pool support:
 - Machines upload only their current auth to `/api/auth/upload` with an explicit `source`.
 - Codex uploads are keyed by normalized email when available, not by the raw provider account UUID, so different Team users do not collide in the pool.
 - GitHub Actions refreshes the cloud auth pool every 15 minutes by running `scripts/probe_auth_pool_worker.mjs`.
-- Local machines may also post stable quota snapshots to `/api/auth/quota`. For Codex, the server accepts only complete windows or hard invalidations so partial client probes cannot poison the hub. A complete client report can replace stale effective windows that were previously preserved from worker data.
+- Local machines may also post stable quota snapshots to `/api/auth/quota`. For Codex, the server accepts a complete weekly window or a hard invalidation so missing legacy 5H data cannot poison the hub or block fresh quota. A complete client report can replace stale effective windows that were previously preserved from worker data.
 - A fresh accepted client quota report backs off the GitHub Actions cloud probe for that same auth for 1 hour, as long as the report's `auth_last_refresh` still matches the auth pool entry.
 - Turso stores auth-pool metadata, quota snapshots, and audit events. `/api/status` and `/api/auth/fetch-best` candidate selection read metadata only; they do not read encrypted auth JSON for every account.
 - `fetch-best` keeps read volume bounded by reading only the requested source and by using compact current-state assignment tables. It does not scan the full fetch log or quota event history to calculate active machine/account load.

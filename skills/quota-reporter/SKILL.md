@@ -145,10 +145,10 @@ The guard then:
 - probes the current live Codex auth and Claude auth
 - Codex probes run in an isolated temporary `CODEX_HOME` and strip provider/auth override environment variables such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `CODEX_ACCESS_TOKEN`; otherwise a teammate's shell config can produce quota for a different provider while labeling it as the copied `auth.json` account
 - may push stable local quota snapshots back to the hub when available
-- for Codex, only complete windows or hard invalidations are uploaded, so partial local probes do not overwrite good hub data
+- for Codex, only a complete weekly window or a hard invalidation is uploaded, so missing legacy 5H data does not block good hub data
 - for Claude, the local probe reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time
 - Claude Code only sends statusline `rate_limits` after the first successful API response in a session. The statusline capture preserves previous unexpired `5H` or `7d` windows when a startup or failed-response statusline payload has no quota fields.
-- if Codex is below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`; Codex `5H` is display/legacy metadata and does not trigger or rank rotation
+- if Codex is below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`; Codex `5H` is legacy metadata and does not trigger, rank, or display as live quota
 - if Claude is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - only accepts a server response when it contains a strictly better replacement from that same source
 - for Codex, the server only shares candidate auths with at least `5%` remaining in `1week` and ranks candidates by weekly quota plus load balancing

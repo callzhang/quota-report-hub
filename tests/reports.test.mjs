@@ -527,10 +527,32 @@ test("mergeLatestReport accepts partial worker quota after old client windows ex
 
   assert.equal(merged.report_origin, "worker");
   assert.equal(merged.reported_at, "2026-08-06T15:39:51Z");
-  assert.equal(merged.windows_stale, true);
+  assert.equal(merged.windows_stale, false);
   assert.equal(merged.windows["5h"].remaining_percent, 0);
   assert.equal(merged.windows["1week"].remaining_percent, 56);
   assert.equal(merged.windows["1week"].reset_at, "2026-08-08T14:01:34Z");
+});
+
+test("statusPayload hides codex legacy 5H while showing fresh weekly quota", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "ok",
+      error: null,
+      windows_stale: true,
+      account_id: "leizhang0121@gmail.com",
+      reported_at: "2026-08-06T15:55:05Z",
+      windows: {
+        "5h": { used_percent: 100, remaining_percent: 0, reset_at: "2026-07-28T17:02:00Z" },
+        "1week": { used_percent: 46, remaining_percent: 54, reset_at: "2026-08-08T14:01:34Z" },
+      },
+    },
+  ], "2026-08-06T15:59:15Z");
+
+  assert.equal(payload.items[0].windows_stale, true);
+  assert.equal(payload.items[0].display_windows["5h"], null);
+  assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 54);
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, null);
 });
 
 test("statusPayload keeps last invalidated quota window before reset and marks it stale", () => {
@@ -549,9 +571,7 @@ test("statusPayload keeps last invalidated quota window before reset and marks i
     },
   ], "2026-04-21T05:00:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 75);
-  assert.equal(payload.items[0].display_windows["5h"].invalidated_stale, true);
-  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
+  assert.equal(payload.items[0].display_windows["5h"], null);
   assert.equal(payload.items[0].display_windows["1week"].invalidated_stale, true);
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
 });
@@ -572,16 +592,15 @@ test("statusPayload marks preserved invalidated windows gray even when windows_s
     },
   ], "2026-04-21T06:00:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"].invalidated_stale, true);
+  assert.equal(payload.items[0].display_windows["5h"], null);
   assert.equal(payload.items[0].display_windows["1week"].invalidated_stale, true);
-  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
 });
 
 test("statusPayload does not infer ready quota after reset for invalidated auth", () => {
   const payload = statusPayload([
     {
-      source: "codex",
+      source: "claude",
       status: "error",
       error: "auth invalidated (token_invalidated)",
       windows_stale: true,
@@ -616,8 +635,7 @@ test("statusPayload does not infer weekly ready quota after reset for invalidate
     },
   ], "2026-04-28T10:30:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 80);
-  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
+  assert.equal(payload.items[0].display_windows["5h"], null);
   assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 0);
   assert.equal(payload.items[0].display_windows["1week"].used_percent, 100);
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
@@ -639,14 +657,14 @@ test("statusPayload classifies missing reset time on invalidated stale windows",
     },
   ], "2026-04-21T10:30:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "auth_invalidated");
+  assert.equal(payload.items[0].display_windows["5h"], null);
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "auth_invalidated");
 });
 
 test("statusPayload classifies missing reset time as probe failure for non-invalidated windows", () => {
   const payload = statusPayload([
     {
-      source: "codex",
+      source: "claude",
       status: "ok",
       account_id: "acct-1",
       reported_at: "2026-04-21T10:15:00Z",
@@ -743,9 +761,7 @@ test("statusPayload marks past reset windows expired for stale ok snapshots", ()
     },
   ], "2026-08-06T15:30:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 0);
-  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
-  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "quota_window_expired");
+  assert.equal(payload.items[0].display_windows["5h"], null);
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "quota_window_expired");
 });
 
@@ -800,7 +816,8 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   assert.equal(entryItem.reporter_name, "derek@gpu4");
   assert.equal(entryItem.report_origin, "client");
   assert.equal(entryItem.windows["5h"].remaining_percent, 80);
-  assert.equal(entryItem.display_windows["5h"].remaining_percent, 80);
+  assert.equal(entryItem.display_windows["5h"], null);
+  assert.equal(entryItem.display_windows["1week"].remaining_percent, 60);
   assert.equal(entryItem.digest, "digest-1");
   // Orphaned reports do not represent stored auth entries and stay out of both active and archived tables.
   assert.equal(payload.archived_invalidated_count, 0);
