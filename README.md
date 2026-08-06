@@ -304,10 +304,10 @@ Important:
 
 ## Scheduler
 
-The hosted hub uses GitHub Actions for the Codex and Claude server probe loop, because the worker needs CLI tooling that does not belong in a Vercel function. Vercel Hobby projects cannot run 15-minute cron jobs, so the scheduled GitHub workflow starts once per hour and runs four probe cycles in the same runner, with a 12-minute wait between cycles. That keeps dashboard rows fresh without relying on high-frequency platform cron.
+The hosted hub uses GitHub Actions for the Codex and Claude server probe loop, because the worker needs CLI tooling that does not belong in a Vercel function. Vercel Hobby projects cannot run 15-minute cron jobs, and GitHub scheduled workflows can start hours late, so the scheduled GitHub workflow starts once per hour and runs twelve probe cycles in the same runner, with a 12-minute wait between cycles. That keeps dashboard rows fresh without relying on high-frequency platform cron.
 
 - workflow file: `.github/workflows/probe-auth-pool.yml`
-- scheduled behavior: hourly trigger at minute `7`, `PROBE_CYCLES=4`, `PROBE_INTERVAL_SECONDS=720`
+- scheduled behavior: hourly trigger at minute `7`, `PROBE_CYCLES=12`, `PROBE_INTERVAL_SECONDS=720`
 - required GitHub secrets:
   - `TURSO_DATABASE_URL`
   - `TURSO_AUTH_TOKEN`

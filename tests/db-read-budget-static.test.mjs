@@ -80,7 +80,7 @@ test("remote probe avoids high-frequency platform cron and uses a GitHub runner 
 
   const workflow = await readFile(new URL("../.github/workflows/probe-auth-pool.yml", import.meta.url), "utf8");
   assert.match(workflow, /cron: "7 \* \* \* \*"/);
-  assert.match(workflow, /PROBE_CYCLES: \$\{\{ github\.event_name == 'schedule' && '4'/);
+  assert.match(workflow, /PROBE_CYCLES: \$\{\{ github\.event_name == 'schedule' && '12'/);
   assert.match(workflow, /PROBE_INTERVAL_SECONDS: \$\{\{ github\.event_name == 'schedule' && '720'/);
   assert.match(workflow, /for cycle in \$\(seq 1 "\$\{PROBE_CYCLES\}"\)/);
 

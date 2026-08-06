@@ -194,9 +194,9 @@ In branches 2–3, when `disabled_refresh_token` is ON, the served blob is run t
 
 ## 7. Component: Worker
 
-Code: `scripts/probe_auth_pool_worker.mjs`, spawning `scripts/probe_{codex,claude}_auth_blob.py`. Runs on GitHub Actions cron `7 * * * *`, manual dispatch (`.github/workflows/probe-auth-pool.yml`), and the stale-snapshot dispatch endpoint (`/api/cron/probe-auth-pool`). The scheduled workflow installs node 24, the Codex CLI, the Claude CLI, and `pexpect` once, then runs four probe cycles in the same runner with `PROBE_INTERVAL_SECONDS=720`.
+Code: `scripts/probe_auth_pool_worker.mjs`, spawning `scripts/probe_{codex,claude}_auth_blob.py`. Runs on GitHub Actions cron `7 * * * *`, manual dispatch (`.github/workflows/probe-auth-pool.yml`), and the stale-snapshot dispatch endpoint (`/api/cron/probe-auth-pool`). The scheduled workflow installs node 24, the Codex CLI, the Claude CLI, and `pexpect` once, then runs twelve probe cycles in the same runner with `PROBE_INTERVAL_SECONDS=720`.
 
-> The GitHub schedule is **best-effort**: high-frequency cron events can be delayed or skipped, so the production schedule uses one hourly runner and performs the 15-minute loop inside that runner. Manual `workflow_dispatch` defaults to one cycle so a human-triggered repair does not wait for the full hourly loop.
+> The GitHub schedule is **best-effort**: high-frequency cron events can be delayed or skipped, so the production schedule uses one hourly runner and performs the probe loop inside that runner long enough to cover observed 2-3 hour gaps. Manual `workflow_dispatch` defaults to one cycle so a human-triggered repair does not wait for the full scheduled loop.
 
 ### 7.1 Run loop (`main`)
 1. `authPoolEntries()` → `dedupeEntriesByAccount(allEntries)` → `{canonical, stale}`. Canonical = freshest `uploaded_at` per `(source, account_id)`; rest are stale.

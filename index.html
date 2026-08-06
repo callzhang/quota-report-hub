@@ -516,6 +516,14 @@
           ?.slice(prefix.length) || "";
       }
 
+      function safeDecodeCookieValue(value) {
+        try {
+          return decodeURIComponent(value);
+        } catch {
+          return "";
+        }
+      }
+
       function setTokenCookie(token) {
         const secure = location.protocol === "https:" ? "; Secure" : "";
         document.cookie = `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax${secure}`;
@@ -526,7 +534,7 @@
       }
 
       function getStoredToken() {
-        return decodeURIComponent(getCookie(COOKIE_NAME));
+        return safeDecodeCookieValue(getCookie(COOKIE_NAME));
       }
 
       function applyTokenUpgrade(payload) {

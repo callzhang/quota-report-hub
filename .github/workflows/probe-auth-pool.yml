@@ -3,7 +3,7 @@ name: Probe Auth Pool
 on:
   schedule:
     # GitHub scheduled workflows can drop high-frequency cron events. Start one hourly
-    # runner off the busy top-of-hour bucket and let it perform the 15-minute loop itself.
+    # runner off the busy top-of-hour bucket and let it cover the observed 2-3h gaps itself.
     - cron: "7 * * * *"
   workflow_dispatch:
     inputs:
@@ -49,7 +49,7 @@ jobs:
           TIGRIS_STORAGE_ACCESS_KEY_ID: ${{ secrets.TIGRIS_STORAGE_ACCESS_KEY_ID }}
           TIGRIS_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.TIGRIS_STORAGE_SECRET_ACCESS_KEY }}
           TIGRIS_STORAGE_BUCKET: ${{ secrets.TIGRIS_STORAGE_BUCKET }}
-          PROBE_CYCLES: ${{ github.event_name == 'schedule' && '4' || inputs.cycles || '1' }}
+          PROBE_CYCLES: ${{ github.event_name == 'schedule' && '12' || inputs.cycles || '1' }}
           PROBE_INTERVAL_SECONDS: ${{ github.event_name == 'schedule' && '720' || inputs.interval_seconds || '720' }}
         run: |
           set -euo pipefail
