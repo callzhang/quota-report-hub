@@ -550,6 +550,7 @@ test("statusPayload hides codex legacy 5H while showing fresh weekly quota", () 
   ], "2026-08-06T15:59:15Z");
 
   assert.equal(payload.items[0].windows_stale, true);
+  assert.equal(payload.items[0].display_windows_stale, false);
   assert.equal(payload.items[0].display_windows["5h"], null);
   assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 54);
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, null);
@@ -572,6 +573,7 @@ test("statusPayload keeps last invalidated quota window before reset and marks i
   ], "2026-04-21T05:00:00Z");
 
   assert.equal(payload.items[0].display_windows["5h"], null);
+  assert.equal(payload.items[0].display_windows_stale, true);
   assert.equal(payload.items[0].display_windows["1week"].invalidated_stale, true);
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
 });

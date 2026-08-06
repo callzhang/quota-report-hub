@@ -851,8 +851,8 @@
               <div class="meta wrap">${escapeHtml(item.plan_name || "-")}</div>
               <div class="meta wrap">uploaded by ${escapeHtml(item.uploader_email || item.reporter_name || "-")}${item.hostname ? ` / ${escapeHtml(item.hostname)}` : ""}</div>
             </td>
-            <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.windows_stale) : quotaWindowFallback(item)}</td>
-            <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.windows_stale) : quotaWindowFallback(item)}</td>
+            <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.display_windows_stale ?? item.windows_stale) : quotaWindowFallback(item)}</td>
+            <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.display_windows_stale ?? item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${(() => {
                 const flList = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
                 if (!flList || !flList.length) return `<div class="meta">-</div>`;

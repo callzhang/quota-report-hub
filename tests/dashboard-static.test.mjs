@@ -14,6 +14,7 @@ test("dashboard unlock shows non-auth status failures instead of failing silentl
   assert.match(html, /function safeDecodeCookieValue\(value\)/);
   assert.match(html, /return safeDecodeCookieValue\(getCookie\(COOKIE_NAME\)\)/);
   assert.match(html, /quota snapshot expired/);
+  assert.match(html, /item\.display_windows_stale \?\? item\.windows_stale/);
   assert.doesNotMatch(html, /ready now/);
 });
 
