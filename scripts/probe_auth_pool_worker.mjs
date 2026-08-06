@@ -16,6 +16,7 @@ import {
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
 import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
+import { REFRESH_TOKEN_REJECTED_ERROR, isHardAuthError } from "../lib/auth-status.js";
 
 // Proactively refresh an access token (claude OR codex) once it is within this window of expiry.
 // The cron nominally fires every ~15 min, but GitHub Actions can delay it; a 1-hour window keeps the
@@ -140,6 +141,23 @@ function failureReport(entry, error) {
     windows: { "5h": null, "1week": null },
     usage_summary: {
       probe_source: "github_actions_worker",
+    },
+  };
+}
+
+function refreshTokenRejectedReport(entry, centralRefreshResult) {
+  const report = failureReport(entry, REFRESH_TOKEN_REJECTED_ERROR);
+  return {
+    ...report,
+    usage_summary: {
+      ...report.usage_summary,
+      refresh_validity: "rejected",
+      central_refresh: {
+        attempted: true,
+        ok: false,
+        auth_rejected: true,
+        status: centralRefreshResult?.status ?? null,
+      },
     },
   };
 }
@@ -310,6 +328,19 @@ export async function processAuthPoolEntry(
       });
       authJsonText = refreshed.authJsonText;
       centralRefreshResult = refreshed.result;
+      if (centralRefreshResult?.auth_rejected) {
+        report = refreshTokenRejectedReport(entry, centralRefreshResult);
+        await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
+        return {
+          source: entry.source,
+          account_id: entry.account_id,
+          status: report.status,
+          error: report.error,
+          refreshed_auth_written: false,
+          refreshed_auth_result: null,
+          central_refresh: centralRefreshResult,
+        };
+      }
     }
     if (!probeNeeded) {
       // Central refresh was evaluated above; the probe is the only part we defer for a fresh entry.
@@ -371,13 +402,6 @@ export async function processAuthPoolEntry(
   };
 }
 
-const POOL_HEALTH_HARD_ERRORS = new Set([
-  "auth invalidated (token_invalidated)",
-  "auth failed (401 unauthorized)",
-  "claude auth invalid (authentication_error)",
-  "claude auth email unavailable",
-]);
-
 // Aggregate a worker run's per-entry results into one health row per source: how many auths are
 // ok vs hard-dead (RT gone, needs owner re-login) vs other errors, plus central-refresh outcomes.
 // Deleted entries are excluded (they're no longer in the pool).
@@ -401,7 +425,7 @@ export function summarizePoolHealth(items) {
     h.total++;
     if (item.status === "ok") {
       h.ok_count++;
-    } else if (POOL_HEALTH_HARD_ERRORS.has(item.error)) {
+    } else if (isHardAuthError(item.error, { includeNonRefresh: true })) {
       h.hard_dead_count++;
     } else {
       h.other_err_count++;

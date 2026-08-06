@@ -4489,6 +4489,31 @@ Reading additional input from stdin...
         self.assertEqual(outcome["status"], "transient_error")
         persist.assert_not_called()
 
+    def test_probe_claude_reports_refresh_token_rejected_when_oauth_refresh_is_rejected(self):
+        auth_json = json.dumps({"loggedIn": True, "authMethod": "oauth_token", "apiProvider": "firstParty"})
+        auth_text = "Login method: Claude Max account\nOrganization: org-1\nEmail: a@example.com\n"
+        auth_status = mock.Mock(returncode=0, stdout=auth_json, stderr="")
+        auth_status_text = mock.Mock(returncode=0, stdout=auth_text, stderr="")
+        oauth_probe = {
+            "available": False,
+            "status_code": 401,
+            "windows": quota_reporters.empty_windows(),
+            "token_refresh": {"status": "auth_rejected", "error": "refresh http 400"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            with mock.patch.object(quota_reporters, "discover_claude_executable", return_value="claude"):
+                with mock.patch.object(quota_reporters.subprocess, "run", side_effect=[auth_status, auth_status_text]):
+                    with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}}, "keychain")):
+                        with mock.patch.object(quota_reporters, "read_claude_stats", return_value=None):
+                            with mock.patch.object(quota_reporters, "read_claude_statusline_snapshot", return_value=None):
+                                with mock.patch.object(quota_reporters, "probe_claude_rate_limits", return_value=oauth_probe):
+                                    payload = quota_reporters.probe_claude(home, now=1_777_000_000, usage_backoff_path=home / "backoff.json")
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], "refresh_token_rejected")
+        self.assertEqual(payload["usage_summary"]["token_refresh"]["status"], "auth_rejected")
+
     def test_parse_claude_oauth_usage_body_reads_percent_and_iso(self):
         payload = {
             "five_hour": {"utilization": 2.0, "resets_at": "2026-06-11T03:39:59.941224+00:00"},

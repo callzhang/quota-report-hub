@@ -156,6 +156,48 @@ test("processAuthPoolEntry centrally refreshes a near-expiry claude auth in disa
   assert.equal(persisted.refreshToken, "NEW_RT");
 });
 
+test("processAuthPoolEntry records refresh_token_rejected when central refresh rejects RT", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const quotaReports = [];
+  let probeCalled = false;
+  const now = new Date("2026-06-12T00:00:00Z");
+  const expiringBlob = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "OLD_AT", refreshToken: "DEAD_RT", expiresAt: now.getTime() + 5 * 60 * 1000 } },
+  });
+
+  const result = await processAuthPoolEntry(
+    { source: "claude", account_id: "acct-claude", uploader_email: "derek@stardust.ai" },
+    {
+      atOnlyMode: true,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => expiringBlob,
+      refreshClaudeTokenImpl: async (rt) => {
+        assert.equal(rt, "DEAD_RT");
+        return { ok: false, auth_rejected: true, status: 400, error: "refresh http 400" };
+      },
+      probeClaudeAuthJsonImpl: () => {
+        probeCalled = true;
+        return { source: "claude", account_id: "acct-claude", status: "ok", error: null, windows: { "5h": null, "1week": null } };
+      },
+      upsertAuthPoolQuotaImpl: async (report) => {
+        quotaReports.push(report);
+      },
+      upsertAuthPoolEntryImpl: async () => {
+        throw new Error("must not write rejected auth");
+      },
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+
+  assert.equal(probeCalled, false);
+  assert.equal(result.status, "error");
+  assert.equal(result.error, "refresh_token_rejected");
+  assert.equal(result.central_refresh.auth_rejected, true);
+  assert.equal(quotaReports.length, 1);
+  assert.equal(quotaReports[0].error, "refresh_token_rejected");
+  assert.equal(quotaReports[0].usage_summary.refresh_validity, "rejected");
+});
+
 test("processAuthPoolEntry leaves a claude auth untouched when disabled_refresh_token is off", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   let refreshCalled = false;
@@ -765,7 +807,7 @@ test("summarizePoolHealth aggregates per-source health and central-refresh outco
     { source: "codex", status: "error", error: "something transient" },
     { source: "codex", status: "ok", deleted_from_auth_pool: true }, // excluded from the snapshot
     { source: "claude", status: "ok", central_refresh: { attempted: true, ok: true } },
-    { source: "claude", status: "error", error: "claude auth invalid (authentication_error)", central_refresh: { attempted: true, ok: false, auth_rejected: true } },
+    { source: "claude", status: "error", error: "refresh_token_rejected", central_refresh: { attempted: true, ok: false, auth_rejected: true } },
   ];
   const health = summarizePoolHealth(items);
   assert.equal(health.codex.total, 3);

@@ -140,6 +140,44 @@ test("statusPayload marks live claude 429 probes as rate_limited", () => {
   assert.equal(payload.items[0].effective_status, "rate_limited");
 });
 
+test("statusPayload separates quota snapshot from refresh validity", () => {
+  const payload = statusPayload([
+    {
+      source: "claude",
+      status: "error",
+      error: "refresh_token_rejected",
+      account_id: "claude-a@example.com",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: { "5h": null, "1week": null },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].quota_snapshot_state.status, "unavailable");
+  assert.equal(payload.items[0].quota_snapshot_state.label, "quota unavailable");
+  assert.equal(payload.items[0].refresh_validity.status, "rejected");
+  assert.equal(payload.items[0].refresh_validity.label, "refresh rejected");
+});
+
+test("statusPayload marks refresh validity confirmed after a real token refresh", () => {
+  const payload = statusPayload([
+    {
+      source: "claude",
+      status: "ok",
+      account_id: "claude-a@example.com",
+      reported_at: "2026-04-21T10:15:00Z",
+      usage_summary: { token_refresh: { status: "refreshed" } },
+      windows: {
+        "5h": { remaining_percent: 90, reset_at: "2026-04-21T15:00:00Z" },
+        "1week": { remaining_percent: 80, reset_at: "2026-04-28T10:00:00Z" },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].quota_snapshot_state.status, "fresh");
+  assert.equal(payload.items[0].refresh_validity.status, "confirmed");
+  assert.equal(payload.items[0].refresh_validity.label, "refresh verified");
+});
+
 test("statusPayload keeps codex rows without quota windows visible", () => {
   const payload = statusPayload([
     {
@@ -824,6 +862,43 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   // Orphaned reports do not represent stored auth entries and stay out of both active and archived tables.
   assert.equal(payload.archived_invalidated_count, 0);
   assert.equal(payload.archived_invalidated_items.length, 0);
+});
+
+test("authPoolStatusPayload exposes token, quota, and refresh state independently", () => {
+  const payload = authPoolStatusPayload(
+    [
+      {
+        source: "claude",
+        account_id: "claude-a@example.com",
+        email: "a@example.com",
+        plan_name: "Max",
+        digest: "digest-1",
+        auth_last_refresh: "1776668828033",
+        auth_expires_at: "2026-04-21T18:00:00Z",
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "derek@mac",
+        hostname: "mac",
+        uploaded_at: "2026-04-21T09:00:00Z",
+      },
+    ],
+    [
+      sanitizeReport({
+        source: "claude",
+        account_id: "claude-a@example.com",
+        status: "error",
+        error: "refresh_token_rejected",
+        reported_at: "2026-04-21T10:00:00Z",
+        windows: { "5h": null, "1week": null },
+      }),
+    ],
+    "2026-04-21T10:30:00Z"
+  );
+
+  assert.equal(payload.items.length, 1);
+  assert.equal(payload.items[0].token_state.status, "uploaded");
+  assert.equal(payload.items[0].token_state.uploaded_at, "2026-04-21T09:00:00Z");
+  assert.equal(payload.items[0].quota_snapshot_state.status, "unavailable");
+  assert.equal(payload.items[0].refresh_validity.status, "rejected");
 });
 
 test("authPoolStatusPayload hides legacy empty session when account has session entries", () => {

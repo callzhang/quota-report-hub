@@ -314,6 +314,33 @@
         min-width: 0;
       }
 
+      .state-line {
+        display: grid;
+        grid-template-columns: 58px 1fr;
+        gap: 8px;
+        align-items: start;
+      }
+
+      .state-line .label {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .state-line.bad .value {
+        color: var(--bad);
+        font-weight: 650;
+      }
+
+      .state-line.warn .value {
+        color: var(--warn);
+        font-weight: 650;
+      }
+
+      .state-line.good .value {
+        color: var(--accent);
+        font-weight: 650;
+      }
+
       .source-tag {
         display: inline-flex;
         align-items: center;
@@ -636,7 +663,7 @@
           return `<div class="meta">auth invalidated</div>`;
         }
         if (window.reset_unavailable_reason === "auth_token_expired") {
-          return `<div class="meta">token expired</div><div class="meta">quota unavailable</div>`;
+          return `<div class="meta">access token expired</div><div class="meta">quota unavailable</div>`;
         }
         if (window.reset_unavailable_reason === "probe_missing_reset") {
           return `<div class="meta">quota not available</div><div class="meta">quota reset time not found</div>`;
@@ -711,26 +738,55 @@
       function authExpiryLine(item) {
         if (!item.auth_expires_at) return "";
         if (item.auth_expiry_metadata_stale) {
-          return `<div class="meta wrap">token expiry metadata stale</div>`;
+          return `<div class="meta wrap">access token expiry metadata stale</div>`;
         }
         if (item.auth_expired) {
-          return `<div class="meta wrap" style="color:var(--bad)">token expired ${formatDuration(item.auth_expires_in_seconds)} ago</div>`;
+          return `<div class="meta wrap" style="color:var(--bad)">access token expired ${formatDuration(item.auth_expires_in_seconds)} ago</div>`;
         }
-        return `<div class="meta wrap">token expires in ${formatDuration(item.auth_expires_in_seconds)}</div>`;
+        return `<div class="meta wrap">access token expires in ${formatDuration(item.auth_expires_in_seconds)}</div>`;
+      }
+
+      function stateLine(label, value, tone = "") {
+        const toneClass = tone ? ` ${tone}` : "";
+        return `<div class="state-line${toneClass}"><span class="label">${escapeHtml(label)}</span><span class="value wrap">${value}</span></div>`;
+      }
+
+      function tokenStateLine(item) {
+        const tokenState = item.token_state || {};
+        if (tokenState.status !== "uploaded") {
+          return stateLine("Token", "not uploaded", "bad");
+        }
+        const uploadedAt = tokenState.uploaded_at || item.uploaded_at;
+        const age = uploadedAt
+          ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(uploadedAt)) / 1000)))
+          : "unknown age";
+        return stateLine("Token", `uploaded ${age}`, "good");
+      }
+
+      function quotaSnapshotLine(item) {
+        const quotaState = item.quota_snapshot_state || {};
+        const label = escapeHtml(quotaState.label || "quota unavailable");
+        const tone = quotaState.status === "fresh" ? "good" : quotaState.status === "partial" || quotaState.status === "stale" ? "warn" : "bad";
+        return stateLine("Quota", label, tone);
+      }
+
+      function refreshValidityLine(item) {
+        const refresh = item.refresh_validity || {};
+        const status = refresh.status || "unverified";
+        const tone = status === "confirmed" ? "good" : status === "rejected" ? "bad" : "warn";
+        return stateLine("Refresh", escapeHtml(refresh.label || "refresh not verified"), tone);
       }
 
       function usageCell(item) {
         const probeAge = formatAge(item.age_seconds);
-        const refreshAge = item.uploaded_at
-          ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(item.uploaded_at)) / 1000)))
-          : "n/a";
         const error = item.error ? `<div class="meta wrap" style="color:var(--bad)">${escapeHtml(item.error)}</div>` : "";
         const stale = item.is_stale ? `<div class="meta wrap">probe snapshot stale</div>` : "";
         return `
           <div class="usage-block">
-            <div>${statusChip(item)}</div>
-            <div class="wrap">probe ${probeAge}</div>
-            <div class="meta wrap">last updated ${refreshAge}</div>
+            ${stateLine("Probe", `${statusChip(item)} <span class="meta">${escapeHtml(probeAge)}</span>`)}
+            ${tokenStateLine(item)}
+            ${quotaSnapshotLine(item)}
+            ${refreshValidityLine(item)}
             ${authExpiryLine(item)}
             ${stale}
             ${error}

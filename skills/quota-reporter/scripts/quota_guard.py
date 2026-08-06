@@ -182,6 +182,7 @@ def is_hard_invalidated(payload: dict) -> bool:
     return payload.get("status") == "error" and payload.get("error") in {
         "auth invalidated (token_invalidated)",
         "auth failed (401 unauthorized)",
+        "refresh_token_rejected",
         "claude auth invalid (authentication_error)",
         "claude auth email unavailable",
     }

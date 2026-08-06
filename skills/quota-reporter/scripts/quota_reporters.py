@@ -1359,6 +1359,13 @@ def compact_claude_usage_summary(
             )
             if oauth_usage_probe.get(key) is not None
         }
+        token_refresh = oauth_usage_probe.get("token_refresh")
+        if isinstance(token_refresh, dict):
+            summary["token_refresh"] = {
+                key: token_refresh.get(key)
+                for key in ("status", "error")
+                if token_refresh.get(key) is not None
+            }
     if auth_status.get("authMethod"):
         summary["auth_method"] = auth_status.get("authMethod")
     if auth_status.get("apiProvider"):
@@ -1805,7 +1812,9 @@ def probe_claude(
         # token was rejected outright. A transient refresh failure (network/5xx) is not
         # proof the account died, so don't hard-invalidate it then.
         refresh_status = (oauth_usage_probe.get("token_refresh") or {}).get("status")
-        if refresh_status != "transient_error":
+        if refresh_status == "auth_rejected":
+            auth_error = "refresh_token_rejected"
+        elif refresh_status != "transient_error":
             auth_error = "claude auth invalid (authentication_error)"
     summary = summarize_claude_stats(stats)
     return {

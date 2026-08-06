@@ -20,6 +20,7 @@ test("codexClientPayloadAccepted accepts complete weekly quota without codex 5H"
   // hard invalidation is accepted even without windows
   assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "error", error: "auth invalidated (token_invalidated)" }), true);
   assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "error", error: "auth failed (401 unauthorized)" }), true);
+  assert.equal(codexClientPayloadAccepted({ account_id: "a", status: "error", error: "refresh_token_rejected" }), true);
   // no account_id -> rejected
   assert.equal(codexClientPayloadAccepted({ status: "ok", windows: { "5h": completeWindow, "1week": completeWindow } }), false);
 });
