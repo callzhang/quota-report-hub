@@ -494,6 +494,45 @@ test("mergeLatestReport keeps good client codex quota when a newer worker soft-f
   assert.equal(merged.windows["1week"].remaining_percent, 65);
 });
 
+test("mergeLatestReport accepts partial worker quota after old client windows expire", () => {
+  const previous = sanitizeReport({
+    source: "codex",
+    report_origin: "client",
+    hostname: "MacBook-Air-10.local",
+    reporter_name: "derek@MacBook-Air-10.local",
+    reported_at: "2026-07-27T17:08:19Z",
+    account_id: "leizhang0121@gmail.com",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 100, remaining_percent: 0, reset_at: "2026-07-28T17:02:00Z" },
+      "1week": { used_percent: 100, remaining_percent: 0, reset_at: "2026-07-28T17:02:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    report_origin: "worker",
+    hostname: "github-actions",
+    reporter_name: "actions@runner",
+    reported_at: "2026-08-06T15:39:51Z",
+    account_id: "leizhang0121@gmail.com",
+    status: "ok",
+    auth_last_refresh: "2026-08-06T13:20:08.771142Z",
+    windows: {
+      "5h": null,
+      "1week": { used_percent: 44, remaining_percent: 56, reset_at: "2026-08-08T14:01:34Z" },
+    },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.report_origin, "worker");
+  assert.equal(merged.reported_at, "2026-08-06T15:39:51Z");
+  assert.equal(merged.windows_stale, true);
+  assert.equal(merged.windows["5h"].remaining_percent, 0);
+  assert.equal(merged.windows["1week"].remaining_percent, 56);
+  assert.equal(merged.windows["1week"].reset_at, "2026-08-08T14:01:34Z");
+});
+
 test("statusPayload keeps last invalidated quota window before reset and marks it stale", () => {
   const payload = statusPayload([
     {
