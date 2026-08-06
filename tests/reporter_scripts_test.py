@@ -4782,12 +4782,31 @@ class Phase4StripLocalRtTests(unittest.TestCase):
     def test_strip_local_claude_refresh_token(self):
         creds = {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "REAL"}}
         with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "keychain")):
-            with mock.patch.object(quota_reporters, "persist_claude_credentials", return_value={"keychain": True, "file": False}) as persist:
+            with mock.patch.object(quota_reporters, "strip_claude_refresh_token_from_all_stores", return_value={"keychain": True, "file": False, "token_cache": False}) as persist:
                 result = quota_reporters.strip_local_claude_refresh_token(Path("/x"))
         self.assertTrue(result["stripped"])
-        persisted = persist.call_args.args[0]
-        self.assertEqual(persisted["claudeAiOauth"]["refreshToken"], quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN)
-        self.assertEqual(persisted["claudeAiOauth"]["accessToken"], "AT")
+        self.assertEqual(persist.call_args.args[0]["claudeAiOauth"]["refreshToken"], "REAL")
+
+    def test_strip_local_claude_refresh_token_strips_all_macos_stores(self):
+        creds = {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "REAL"}}
+        with tempfile.TemporaryDirectory() as d:
+            claude_home = Path(d) / ".claude"
+            claude_home.mkdir()
+            (claude_home / ".credentials.json").write_text(json.dumps(creds), encoding="utf-8")
+            with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+                 mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "token_cache_v2")), \
+                 mock.patch.object(quota_reporters, "write_claude_token_cache_credentials", return_value=True) as write_cache, \
+                 mock.patch.object(quota_reporters, "write_claude_keychain_credentials", return_value=True) as write_keychain, \
+                 mock.patch.object(quota_reporters, "write_claude_credentials_file", return_value=True) as write_file:
+                result = quota_reporters.strip_local_claude_refresh_token(claude_home)
+        self.assertTrue(result["stripped"])
+        cache_sources = [call.args[2] for call in write_cache.call_args_list]
+        self.assertEqual(cache_sources, ["token_cache_v2", "token_cache"])
+        for call in write_cache.call_args_list:
+            self.assertEqual(call.args[0]["claudeAiOauth"]["refreshToken"], quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN)
+            self.assertEqual(call.args[0]["claudeAiOauth"]["accessToken"], "AT")
+        self.assertEqual(write_keychain.call_args.args[0]["claudeAiOauth"]["refreshToken"], quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN)
+        self.assertEqual(write_file.call_args.args[0]["claudeAiOauth"]["refreshToken"], quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN)
 
     def test_sync_codex_strips_rt_after_upload_when_flag_on(self):
         with tempfile.TemporaryDirectory() as d:
@@ -4816,6 +4835,46 @@ class Phase4StripLocalRtTests(unittest.TestCase):
                         "https://hub", "tok", auth_path=auth, known_auth_path=known)
             self.assertNotIn("local_refresh_token_stripped", result)
             self.assertEqual(json.loads(auth.read_text(encoding="utf-8"))["tokens"]["refresh_token"], "rt.1.REAL")
+
+    def test_sync_claude_strips_rt_after_upload_when_flag_on(self):
+        blob = json.dumps({
+            "schema": "claude_credentials_v1",
+            "account_id": "claude-x@stardust.ai",
+            "session_id": "s",
+            "email": "x@stardust.ai",
+            "credentials": {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "REAL", "expiresAt": 1780000000000}},
+        })
+        with tempfile.TemporaryDirectory() as d:
+            known = Path(d) / "known.json"
+            known.write_text(json.dumps({"sources": {"claude": {"state_source": "owner_local", "account_id": "claude-x@stardust.ai"}}}), encoding="utf-8")
+            with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})), \
+                 mock.patch.object(quota_reporters, "sync_current_auth_pool_entry",
+                                   return_value={"ok": True, "uploaded": True, "disabled_refresh_token": True}), \
+                 mock.patch.object(quota_reporters, "strip_local_claude_refresh_token", return_value={"stripped": True}) as strip:
+                result = quota_reporters.sync_current_claude_auth_pool(
+                    "https://hub", "tok", claude_home=Path(d) / ".claude", known_auth_path=known)
+            self.assertTrue(result["local_refresh_token_stripped"]["stripped"])
+            strip.assert_called_once()
+            self.assertEqual(json.loads(known.read_text(encoding="utf-8"))["sources"]["claude"]["state_source"], "fetched_from_auth_pool")
+
+    def test_sync_claude_at_only_still_strips_backup_stores(self):
+        blob = json.dumps({
+            "schema": "claude_credentials_v1",
+            "account_id": "claude-x@stardust.ai",
+            "session_id": "s",
+            "email": "x@stardust.ai",
+            "credentials": {"claudeAiOauth": {"accessToken": "AT", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}},
+        })
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})), \
+                 mock.patch.object(quota_reporters, "sync_current_auth_pool_entry") as upload, \
+                 mock.patch.object(quota_reporters, "strip_local_claude_refresh_token", return_value={"stripped": True}) as strip:
+                result = quota_reporters.sync_current_claude_auth_pool(
+                    "https://hub", "tok", claude_home=Path(d) / ".claude", known_auth_path=Path(d) / "known.json")
+        self.assertEqual(result["reason"], "local_auth_is_at_only")
+        self.assertTrue(result["local_refresh_token_stripped"]["stripped"])
+        upload.assert_not_called()
+        strip.assert_called_once()
 
 
 class ClaudeCredentialSourceOrderTests(unittest.TestCase):

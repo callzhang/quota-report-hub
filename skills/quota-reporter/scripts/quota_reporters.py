@@ -1241,6 +1241,29 @@ def persist_claude_credentials(credentials: dict, claude_home: Path, source: str
     return written
 
 
+def strip_claude_refresh_token_from_all_stores(credentials: dict, claude_home: Path) -> dict:
+    """Write an AT-only Claude credential to every local store that can shadow the hub RT."""
+    stripped = json.loads(json.dumps(credentials))
+    oauth = stripped.get("claudeAiOauth") or {}
+    if not oauth.get("accessToken"):
+        return {"keychain": False, "token_cache": False, "token_cache_v2": False, "file": False}
+    oauth["refreshToken"] = STRIPPED_CLAUDE_REFRESH_TOKEN
+    stripped["claudeAiOauth"] = oauth
+
+    written = {"keychain": False, "token_cache": False, "token_cache_v2": False, "file": False}
+    if sys.platform == "darwin":
+        written["token_cache_v2"] = write_claude_token_cache_credentials(stripped, claude_home, "token_cache_v2")
+        written["token_cache"] = write_claude_token_cache_credentials(stripped, claude_home, "token_cache")
+        written["keychain"] = write_claude_keychain_credentials(stripped)
+        if (claude_home / ".credentials.json").exists():
+            written["file"] = write_claude_credentials_file(stripped, claude_home)
+    else:
+        written["file"] = write_claude_credentials_file(stripped, claude_home)
+        written["keychain"] = write_claude_keychain_credentials(stripped)
+    written["token_cache"] = bool(written["token_cache"] or written["token_cache_v2"])
+    return written
+
+
 def ensure_fresh_claude_access_token(claude_home: Path = CLAUDE_HOME) -> tuple[dict | None, str, dict]:
     """Read Claude credentials; if the access token is expired, refresh it from the
     stored refresh token and persist the rotated credentials. Returns
@@ -2448,19 +2471,23 @@ def strip_local_codex_refresh_token(auth_path: Path = SOURCE_AUTH_PATH) -> dict:
 
 
 def strip_local_claude_refresh_token(claude_home: Path = CLAUDE_HOME) -> dict:
-    """Replace the local claude refresh token with the hub placeholder (AT-only). Reuses the
-    hardened keychain/file writer so the keychain entry can't be corrupted; on any write
-    failure the original credentials are left untouched (returns stripped=False)."""
+    """Replace local Claude refresh tokens with the hub placeholder (AT-only).
+
+    Claude Code can have a modern encrypted token cache, an older keychain item, and a
+    .credentials.json fallback on disk. Strip every reachable store so a stale backup RT cannot
+    later reappear and rotate the hub-owned token family.
+    """
     credentials, source = read_claude_oauth_credentials(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     if not oauth.get("accessToken"):
         return {"stripped": False, "reason": "no_credentials"}
-    if oauth.get("refreshToken") == STRIPPED_CLAUDE_REFRESH_TOKEN:
-        return {"stripped": False, "reason": "already_stripped"}
-    oauth["refreshToken"] = STRIPPED_CLAUDE_REFRESH_TOKEN
-    credentials["claudeAiOauth"] = oauth
-    written = persist_claude_credentials(credentials, claude_home, source)
-    return {"stripped": bool(written.get("keychain") or written.get("token_cache") or written.get("file")), "persisted": written}
+    already_stripped = oauth.get("refreshToken") == STRIPPED_CLAUDE_REFRESH_TOKEN
+    written = strip_claude_refresh_token_from_all_stores(credentials, claude_home)
+    stripped = bool(written.get("keychain") or written.get("token_cache") or written.get("file"))
+    result = {"stripped": stripped, "persisted": written, "source": source}
+    if already_stripped:
+        result["reason"] = "already_stripped" if stripped else "already_stripped_not_persisted"
+    return result
 
 
 def set_known_auth_state_source(source: str, known_auth_path: Path, state_source: str) -> bool:
@@ -2543,7 +2570,12 @@ def sync_current_claude_auth_pool(
         }
 
     if auth_json_is_stripped("claude", blob_text):
-        return {"ok": True, "uploaded": False, "reason": "local_auth_is_at_only"}
+        return {
+            "ok": True,
+            "uploaded": False,
+            "reason": "local_auth_is_at_only",
+            "local_refresh_token_stripped": strip_local_claude_refresh_token(claude_home),
+        }
 
     metadata = claude_auth_blob_metadata(blob_text)
     result = sync_current_auth_pool_entry(

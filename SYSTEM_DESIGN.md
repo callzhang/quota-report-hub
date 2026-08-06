@@ -96,6 +96,7 @@ Replace when the source is hard-invalidated or status≠ok. For Codex, quota-bas
 - Placeholder RTs: codex `"rt.1."+"A"*32`, claude `"disabled-by-hub-refresh-token"` (`quota_reporters.py:43-47`).
 - `auth_json_is_stripped` short-circuits `sync_current_*` so AT-only auths are **never re-uploaded** (`:2000-2012, 2134-2174`).
 - After a successful upload whose response says `disabled_refresh_token:true`, the client calls `strip_local_{codex,claude}_refresh_token` to overwrite its own local RT with the placeholder and records state `fetched_from_auth_pool` (`:2146-2192`). From then on it behaves like a borrower: it relies on the hub for fresh ATs.
+- Claude strip writes the placeholder to every local store that can later shadow the hub (macOS tokenCacheV2/tokenCache, keychain, and an existing `.credentials.json`; file/keychain on non-macOS). If the active Claude auth is already AT-only, the guard still runs this backup-store cleanup while continuing to skip uploads.
 - **Proactive same-account refresh**: `fetched_auth_near_expiry` returns true when state is `fetched_from_auth_pool` and the local AT is within `AT_NEAR_EXPIRY_SKEW_SECONDS = 20 min` of expiry; the guard then calls `fetch-best` with `refresh_current=True` to mint a fresh AT for the *same* account before the dead placeholder RT is ever needed (`:2017-2060`).
 
 ### 3.6 Token handling
