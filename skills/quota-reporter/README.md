@@ -14,7 +14,7 @@ The skill installs a local 15-minute quota guard that:
 - fetches and installs a strictly better auth from the same source when needed
 - asks the managed Codex app-server daemon to restart after writing a new Codex `auth.json`; desktop-managed and other unmanaged app-server processes are never terminated by the guard
 - shows a desktop notification after a successful local auth replacement so the user knows to quit the current Codex or Claude Code session and start a new one
-- opens one persistent system dialog when any auth uploaded by the current token user is hard-invalidated and needs a fresh login; each guard run checks for an existing dialog before opening another one
+- shows a system notification when any auth uploaded by the current token user is hard-invalidated and needs a fresh login; the guard never opens a CLI login window automatically
 - keeps older uploaded auths in the cloud pool when the local machine switches to a different current auth
 - preserves the first uploader as the owner for each shared account, so using a fetched auth does not transfer re-login responsibility
 - can trigger a remote cloud-worker probe on demand
