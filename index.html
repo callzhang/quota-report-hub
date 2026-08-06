@@ -608,7 +608,7 @@
         if (!value) return "reset unavailable";
         const deltaMs = Date.parse(value) - Date.now();
         if (!Number.isFinite(deltaMs)) return "reset unavailable";
-        if (deltaMs <= 0) return "ready now";
+        if (deltaMs <= 0) return "reset time passed";
 
         const totalMinutes = Math.ceil(deltaMs / 60000);
         const days = Math.floor(totalMinutes / (24 * 60));
@@ -644,19 +644,20 @@
         if (window.reset_unavailable_reason === "stale_error_probe") {
           return `<div class="meta">quota unavailable</div><div class="meta">last probe failed after reset</div>`;
         }
+        if (window.reset_unavailable_reason === "quota_window_expired") {
+          return `<div class="meta">quota snapshot expired</div><div class="meta">waiting for fresh quota</div>`;
+        }
         if (window.remaining_percent === null || window.remaining_percent === undefined) {
           return `<div class="meta">n/a</div>`;
         }
         const remaining = Number(window.remaining_percent);
         const isInvalidatedStale = Boolean(window.invalidated_stale);
         const isInferredReady = Boolean(window.inferred_ready);
-        const isReady = !isInvalidatedStale && !isInferredReady && window.reset_at && Date.parse(window.reset_at) <= Date.now();
         let level = "";
         if (isInvalidatedStale) level = "inferred";
-        else if (isReady) level = "ready";
         else if (remaining <= 10) level = "critical";
         else if (remaining <= 30) level = "low";
-        const label = isReady ? "ready now" : formatPercent(remaining);
+        const label = formatPercent(remaining);
         const staleTag = isInvalidatedStale && !isInferredReady ? " · stale" : "";
         const resetLabel = isInferredReady
           ? "likely reset after last known window"
@@ -673,7 +674,7 @@
         return `
           <div class="progress ${isInvalidatedStale ? "inferred" : ""}" title="${hoverTitle}">
             <div class="progress-row">
-              <div class="track"><div class="fill ${level}" style="width: ${isReady ? 100 : remaining}%"></div></div>
+              <div class="track"><div class="fill ${level}" style="width: ${remaining}%"></div></div>
               <strong>${label}${staleTag}</strong>
             </div>
             <div class="meta">${resetLabel}</div>

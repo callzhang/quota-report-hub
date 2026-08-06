@@ -13,6 +13,8 @@ test("dashboard unlock shows non-auth status failures instead of failing silentl
   assert.match(html, /authMessage\.textContent = "Checking token…"/);
   assert.match(html, /function safeDecodeCookieValue\(value\)/);
   assert.match(html, /return safeDecodeCookieValue\(getCookie\(COOKIE_NAME\)\)/);
+  assert.match(html, /quota snapshot expired/);
+  assert.doesNotMatch(html, /ready now/);
 });
 
 test("dashboard does not poll full status every minute while hidden", async () => {

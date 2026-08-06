@@ -688,6 +688,28 @@ test("statusPayload marks past reset windows unavailable for non-auth error prob
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, null);
 });
 
+test("statusPayload marks past reset windows expired for stale ok snapshots", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "ok",
+      error: null,
+      windows_stale: true,
+      account_id: "leizhang0121@gmail.com",
+      reported_at: "2026-07-27T17:08:19Z",
+      windows: {
+        "5h": { used_percent: 100, remaining_percent: 0, reset_at: "2026-07-28T17:02:00Z" },
+        "1week": { used_percent: 100, remaining_percent: 0, reset_at: "2026-07-28T17:02:00Z" },
+      },
+    },
+  ], "2026-08-06T15:30:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 0);
+  assert.equal(payload.items[0].display_windows["5h"].inferred_ready, false);
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "quota_window_expired");
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "quota_window_expired");
+});
+
 test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   const payload = authPoolStatusPayload(
     [
