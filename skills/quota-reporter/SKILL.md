@@ -17,7 +17,7 @@ This skill installs and runs the local quota guard for Codex and Claude.
 6. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
 7. Restarts the local Codex app-server after writing a new Codex `auth.json`, so new Codex sessions read the replaced account instead of a stale cached account
 8. Installs a reboot-safe scheduler that runs every 15 minutes
-9. Notifies the local user when any auth uploaded by that same token user is hard-invalidated, even if that auth is not the currently installed local auth
+9. Notifies the local user when any auth uploaded by that same token user has a refresh token rejected by the cloud worker, even if that auth is not the currently installed local auth
 10. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
 
 ## Files
@@ -157,7 +157,7 @@ The guard then:
 - only replaces local source credentials when the fetched auth is different from what is already installed
 - after Codex `auth.json` is replaced or refreshed, restarts the local Codex app-server; if the app-server is an unmanaged ephemeral process, the guard stops it so the next Codex launch starts a fresh one
 - shows a desktop notification after a successful local replacement so the user knows to quit the current Codex or Claude Code session and start a new one
-- opens one persistent system dialog when any auth uploaded by the current token user is hard-invalidated in the hub; each guard run checks for an existing login-required dialog before opening another one
+- opens local CLI login only when an auth uploaded by the current token user has a cloud-confirmed `refresh_token_rejected` result and `auto_relogin_owner_auth` is enabled; ordinary `authentication_error`, stale quota snapshots, and local probe timeouts do not launch login
 - does nothing when the cloud cannot provide a better auth than the current one
 - relies on the cloud auth pool to deduplicate repeated uploads for the same `account_id`, even when raw files differ
 - preserves the first uploader as the owner for each `source + account_id`, so a fetched shared auth does not become owned by the machine that happened to reupload it

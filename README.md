@@ -99,7 +99,7 @@ The intended end-to-end flow inside Codex is:
    - reports stable local quota snapshots back to the hub when available; Codex client reports are accepted when the weekly window is complete or the local auth is hard-invalidated
    - if a local source is below threshold, sends `source + current account + current quota` to `/api/auth/fetch-best`
    - installs a better auth only when the server returns one for that same source
-   - opens a persistent system dialog when any auth uploaded by that user is hard-invalidated, even if that auth is not the currently installed local auth
+   - notifies the user only when an uploaded auth has a cloud-confirmed rejected refresh token; if local auto relogin is enabled, the guard opens the matching CLI login for that confirmed RT-rejected source
 
 Important runtime notes:
 
@@ -172,7 +172,7 @@ Auth pool support:
 - Codex `missing quota details` probe failures are recorded as quota errors but do not delete the auth entry, because the saved refresh token may still be valid and should be available for later central refresh or a successful probe.
 - Codex auths are removed from the active pool after consecutive `auth failed (401 unauthorized)` worker probes, because repeated 401 means the saved token cannot be reused by the pool.
 - A Vercel cron endpoint checks the cloud probe results daily. If a cloud auth stays hard-invalidated for more than 24 hours, Vercel emails the uploader and asks them to log in again. It sends at most one reminder per account per 24 hours until the auth recovers.
-- The local guard also checks `/api/status` every run and opens one persistent system dialog for hard-invalidated auths uploaded by the current token user, including auths that are not currently installed on this machine. Before opening it, the guard checks whether the same login-required dialog is already visible so the 15-minute scheduler does not create duplicates.
+- The local guard also checks `/api/status` every run and warns about auths uploaded by the current token user only after the cloud worker confirms `refresh_token_rejected`. If `auto_relogin_owner_auth` is enabled, it opens the matching local CLI login for that confirmed RT-rejected source; ordinary auth probe errors and stale quota snapshots do not launch login.
 - Claude quota is probed in the worker by launching Claude CLI headlessly, restoring the saved CLI state, and reading the statusline snapshot after a minimal real request.
 - Claude auth snapshots are uploaded to the cloud pool only when the local machine is using a direct Claude subscription. Machines that inject `ANTHROPIC_*` credentials through `~/.claude/settings.json` are skipped because their active provider is not the worker's official Claude login path.
 - The Claude worker uses a short statusline refresh interval during probing so the snapshot is emitted before the worker timeout expires.

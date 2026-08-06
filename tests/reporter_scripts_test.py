@@ -2391,7 +2391,7 @@ Reading additional input from stdin...
         self.assertEqual(replacement["to_account_id"], "junjie.zhou@stardust.ai")
         self.assertEqual(installed_account_id, "junjie.zhou@stardust.ai")
 
-    def test_uploaded_invalidated_auths_filters_by_current_viewer_uploads(self):
+    def test_uploaded_invalidated_auths_filters_by_current_viewer_rejected_refresh_tokens(self):
         status_payload = {
             "viewer_email": "derek@stardust.ai",
             "items": [
@@ -2415,14 +2415,14 @@ Reading additional input from stdin...
                     "reporter_name": "sirui@macbook",
                     "hostname": "macbook",
                     "status": "error",
-                    "error": "auth invalidated (token_invalidated)",
+                    "error": "refresh_token_rejected",
                 },
                 {
                     "source": "codex",
                     "account_id": "someone@stardust.ai",
                     "uploader_email": "someone@stardust.ai",
                     "status": "error",
-                    "error": "auth invalidated (token_invalidated)",
+                    "error": "refresh_token_rejected",
                 },
                 {
                     "source": "codex",
@@ -2443,6 +2443,17 @@ Reading additional input from stdin...
                     "hostname": "gpu4",
                     "status": "error",
                     "error": "claude auth invalid (authentication_error)",
+                },
+                {
+                    "source": "claude",
+                    "account_id": "claude-dead@example.com",
+                    "email": "dead@example.com",
+                    "plan_name": "Max",
+                    "uploader_email": "derek@stardust.ai",
+                    "reporter_name": "derek@gpu4",
+                    "hostname": "gpu4",
+                    "status": "error",
+                    "error": "refresh_token_rejected",
                 }
             ],
         }
@@ -2450,9 +2461,8 @@ Reading additional input from stdin...
         rows = quota_guard.uploaded_invalidated_auths(status_payload)
 
         self.assertEqual([row["account_id"] for row in rows], [
-            "pre-sales@stardust.ai",
             "sirui.chen@stardust.ai",
-            "claude-leizhang0121@gmail.com",
+            "claude-dead@example.com",
         ])
 
     def test_notify_uploaded_invalidated_auths_posts_system_notification(self):
@@ -2471,7 +2481,7 @@ Reading additional input from stdin...
                     "plan_name": "Team",
                     "uploader_email": "derek@stardust.ai",
                     "status": "error",
-                    "error": "auth invalidated (token_invalidated)",
+                    "error": "refresh_token_rejected",
                 }
             ],
         }
@@ -2479,17 +2489,50 @@ Reading additional input from stdin...
             state = Path(tmp) / "state.json"
             with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
                 with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
-                    with mock.patch.object(quota_guard.subprocess, "run") as run:
-                        result = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0, state_path=state)
+                    with mock.patch.object(quota_guard, "gui_session_active", return_value=True):
+                        with mock.patch.object(quota_guard, "launch_owner_relogin", return_value={"launched": True}) as relogin:
+                            result = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0, state_path=state)
 
+        relogin.assert_called_once_with("codex")
         notify.assert_called_once()
-        run.assert_not_called()
         self.assertEqual(notify.call_args.args[0], "额度守护：需要重新登录")
         self.assertTrue(result["shown"])
         self.assertEqual(result["reason"], "shown")
         self.assertEqual(result["count"], 1)
         self.assertIn("pre-sales@stardust.ai", result["message"])
         self.assertIn("你上传的 auth 已失效", result["message"])
+
+    def test_notify_uploaded_invalidated_auths_ignores_auth_invalid_without_rt_rejection(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+            "auto_relogin_owner_auth": True,
+        }
+        status_payload = {
+            "viewer_email": "derek@stardust.ai",
+            "items": [
+                {
+                    "source": "claude",
+                    "account_id": "claude-leizhang0121@gmail.com",
+                    "email": "leizhang0121@gmail.com",
+                    "plan_name": "Max",
+                    "uploader_email": "derek@stardust.ai",
+                    "status": "error",
+                    "error": "claude auth invalid (authentication_error)",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
+                with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
+                    with mock.patch.object(quota_guard, "launch_owner_relogin") as relogin:
+                        result = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0, state_path=state)
+
+        self.assertFalse(result["shown"])
+        self.assertEqual(result["reason"], "no_uploaded_invalidated_auths")
+        notify.assert_not_called()
+        relogin.assert_not_called()
 
     def test_notify_uploaded_invalidated_auths_rate_limits_then_renotifies(self):
         config = {
@@ -2506,7 +2549,7 @@ Reading additional input from stdin...
                     "plan_name": "Team",
                     "uploader_email": "derek@stardust.ai",
                     "status": "error",
-                    "error": "auth invalidated (token_invalidated)",
+                    "error": "refresh_token_rejected",
                 }
             ],
         }
@@ -2543,7 +2586,7 @@ Reading additional input from stdin...
                         "plan_name": "Team",
                         "uploader_email": "derek@stardust.ai",
                         "status": "error",
-                        "error": "auth invalidated (token_invalidated)",
+                        "error": "refresh_token_rejected",
                     }
                     for account_id in account_ids
                 ],

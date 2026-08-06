@@ -188,6 +188,13 @@ def is_hard_invalidated(payload: dict) -> bool:
     }
 
 
+def refresh_token_rejected(payload: dict) -> bool:
+    if payload.get("error") == "refresh_token_rejected":
+        return True
+    token_refresh = (payload.get("usage_summary") or {}).get("token_refresh") or {}
+    return token_refresh.get("status") == "auth_rejected"
+
+
 def source_needs_replacement(payload: dict, threshold_percent: float, weekly_threshold_percent: float) -> bool:
     if not payload:
         return False
@@ -898,7 +905,7 @@ def uploaded_invalidated_auths(status_payload: dict) -> list[dict]:
     for row in rows:
         if row.get("uploader_email") != viewer_email:
             continue
-        if not is_hard_invalidated(row):
+        if not refresh_token_rejected(row):
             continue
         key = (row.get("source"), row.get("account_id"))
         if key in seen:
@@ -925,6 +932,8 @@ def invalidated_auths_message(rows: list[dict]) -> str:
 
 INVALIDATED_NOTIFY_STATE_PATH = Path.home() / ".agents" / "auth" / "invalidated-notify-state.json"
 INVALIDATED_NOTIFY_REPEAT_SECONDS = 24 * 60 * 60
+RELOGIN_COMMANDS = {"claude": "claude auth login", "codex": "codex login"}
+RELOGIN_REPEAT_SECONDS = 24 * 60 * 60
 
 
 def read_invalidated_notify_state(path: Path = INVALIDATED_NOTIFY_STATE_PATH) -> dict:
@@ -940,6 +949,66 @@ def write_invalidated_notify_state(state: dict, path: Path = INVALIDATED_NOTIFY_
         path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
     except Exception:
         pass
+
+
+def gui_session_active() -> bool:
+    if platform.system().lower() != "darwin":
+        return False
+    try:
+        owner = subprocess.run(["stat", "-f", "%Su", "/dev/console"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except Exception:
+        return False
+    return bool(owner) and owner not in ("root", "_windowserver", "loginwindow")
+
+
+def launch_owner_relogin(source: str) -> dict:
+    command = RELOGIN_COMMANDS.get(source)
+    if not command:
+        return {"launched": False, "reason": "unknown_source"}
+    if platform.system().lower() != "darwin":
+        return {"launched": False, "reason": "unsupported_platform"}
+    safe = command.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'tell application "Terminal"\ndo script "{safe}"\nactivate\nend tell'
+    try:
+        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=15, check=False)
+    except Exception as error:
+        return {"launched": False, "reason": "launch_failed", "error": str(error)}
+    if result.returncode != 0:
+        return {"launched": False, "reason": "osascript_failed", "error": (result.stderr or "").strip()[:200]}
+    return {"launched": True, "command": command}
+
+
+def maybe_auto_relogin_owner_auths(
+    config: dict,
+    accounts: list[dict],
+    now_ts: float,
+    state_path: Path = INVALIDATED_NOTIFY_STATE_PATH,
+) -> dict:
+    if not config.get("auto_relogin_owner_auth"):
+        return {"enabled": False}
+    sources = sorted({a.get("source") for a in accounts if a.get("source") in RELOGIN_COMMANDS})
+    if not sources:
+        return {"enabled": True, "reason": "no_relogin_sources"}
+    if not gui_session_active():
+        return {"enabled": True, "reason": "no_gui_session", "sources": sources}
+    state = read_invalidated_notify_state(state_path)
+    relogin_at = dict(state.get("relogin_at") or {})
+    results = {}
+    changed = False
+    for source in sources:
+        if (now_ts - float(relogin_at.get(source) or 0)) < RELOGIN_REPEAT_SECONDS:
+            results[source] = {"launched": False, "reason": "recently_relaunched"}
+            continue
+        res = launch_owner_relogin(source)
+        results[source] = res
+        if res.get("launched"):
+            relogin_at[source] = now_ts
+            changed = True
+    if changed:
+        state = read_invalidated_notify_state(state_path)
+        state["relogin_at"] = relogin_at
+        write_invalidated_notify_state(state, state_path)
+    return {"enabled": True, "results": results}
 
 
 def notify_uploaded_invalidated_auths(
@@ -970,6 +1039,7 @@ def notify_uploaded_invalidated_auths(
     ]
     message = invalidated_auths_message(rows)
     now_ts = time.time() if now is None else now
+    relogin = maybe_auto_relogin_owner_auths(config, accounts, now_ts, state_path)
 
     # Non-intrusive system notification (not a modal dialog), at most once per 24h
     # REGARDLESS of which auths are invalidated. The cloud-side invalidated set can
@@ -983,6 +1053,7 @@ def notify_uploaded_invalidated_auths(
             "count": len(rows),
             "accounts": accounts,
             "message": message,
+            "relogin": relogin,
         }
 
     shown = show_desktop_notification("额度守护：需要重新登录", message)
@@ -995,6 +1066,7 @@ def notify_uploaded_invalidated_auths(
         "count": len(rows),
         "accounts": accounts,
         "message": message,
+        "relogin": relogin,
     }
 
 
