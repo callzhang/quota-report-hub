@@ -31,8 +31,10 @@ This repo also publishes the reusable `quota-reporter` skill.
 Install it with:
 
 ```bash
-npx skills add https://github.com/callzhang/quota-report-hub --skill quota-reporter -g -y
+npx skills add https://github.com/callzhang/quota-report-hub --skill quota-reporter --agent codex -g -y
 ```
+
+Keep `--agent codex` in the command. The generic global install target includes PromptScript, and PromptScript does not support global skill installation.
 
 Skill files live under:
 
