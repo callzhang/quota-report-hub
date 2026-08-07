@@ -94,7 +94,7 @@
     </style>
   </head>
   <body>
-    <main class="card">
+    <main class="card" id="login-card" hidden>
       <div class="header">
         <div class="eyebrow">Quota Report Hub</div>
         <h1>Log in</h1>
@@ -135,7 +135,9 @@
       const params = new URLSearchParams(location.search);
       const callback = params.get("callback") || "";
       const state = params.get("state") || "";
+      const COOKIE_NAME = "quota_report_hub_token";
 
+      const loginCard = document.getElementById("login-card");
       const emailInput = document.getElementById("email");
       const sendButton = document.getElementById("send");
       const step2 = document.getElementById("step2");
@@ -148,6 +150,32 @@
       function show(text, kind) {
         msg.textContent = text;
         msg.className = "msg" + (kind ? " " + kind : "");
+      }
+
+      function getCookie(name) {
+        const prefix = name + "=";
+        return document.cookie
+          .split(";")
+          .map((part) => part.trim())
+          .find((part) => part.startsWith(prefix))
+          ?.slice(prefix.length) || "";
+      }
+
+      function getStoredToken() {
+        try {
+          return decodeURIComponent(getCookie(COOKIE_NAME));
+        } catch {
+          return "";
+        }
+      }
+
+      function setTokenCookie(token) {
+        const secure = location.protocol === "https:" ? "; Secure" : "";
+        document.cookie = `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax${secure}`;
+      }
+
+      function clearTokenCookie() {
+        document.cookie = `${COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax`;
       }
 
       // Only ever hand the token back to a loopback address — never an arbitrary host.
@@ -166,6 +194,51 @@
       const hasValidCallback = Boolean(callback) && isLoopbackCallback(callback);
       if (callback && !hasValidCallback) {
         show("Invalid callback target — only localhost is allowed. Your token will be shown for manual copy instead.", "warn");
+      }
+
+      function completeLogin(token, viewer) {
+        setTokenCookie(token);
+        if (hasValidCallback) {
+          show("Success — returning to the installer. You can close this tab.", "ok");
+          const target = new URL(callback);
+          target.searchParams.set("token", token);
+          if (state) target.searchParams.set("state", state);
+          if (viewer) target.searchParams.set("email", viewer);
+          location.href = target.toString();
+          return;
+        }
+        if (!callback) {
+          location.replace("/");
+          return;
+        }
+        loginCard.hidden = false;
+        manual.hidden = false;
+        tokenOut.textContent = token;
+        show("Logged in. Copy your token below into the installer.", "ok");
+      }
+
+      async function restoreExistingSession() {
+        const token = getStoredToken();
+        if (!token) {
+          loginCard.hidden = false;
+          return;
+        }
+        try {
+          const response = await fetch("/api/status", {
+            cache: "no-store",
+            headers: { Authorization: "Bearer " + token },
+          });
+          if (!response.ok) {
+            if (response.status === 401) clearTokenCookie();
+            loginCard.hidden = false;
+            return;
+          }
+          const payload = await response.json().catch(() => ({}));
+          completeLogin(payload.auth_pool_user_token || token, payload.viewer_email || "");
+        } catch {
+          loginCard.hidden = false;
+          show("Could not verify your existing session. Check the network or log in again.", "warn");
+        }
       }
 
       sendButton.addEventListener("click", async () => {
@@ -213,24 +286,14 @@
             return;
           }
           const payload = await response.json().catch(() => ({}));
-          const viewer = payload.viewer_email || emailInput.value.trim();
-          if (hasValidCallback) {
-            show("Success — returning to the installer. You can close this tab.", "ok");
-            const target = new URL(callback);
-            target.searchParams.set("token", token);
-            if (state) target.searchParams.set("state", state);
-            if (viewer) target.searchParams.set("email", viewer);
-            location.href = target.toString();
-          } else {
-            manual.hidden = false;
-            tokenOut.textContent = token;
-            show("Logged in. Copy your token below into the installer.", "ok");
-          }
+          completeLogin(payload.auth_pool_user_token || token, payload.viewer_email || emailInput.value.trim());
         } catch (error) {
           show("Network error: " + error.message, "error");
           loginButton.disabled = false;
         }
       });
+
+      restoreExistingSession();
     </script>
   </body>
 </html>

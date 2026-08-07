@@ -23,10 +23,28 @@ test("dashboard unlock shows non-auth status failures instead of failing silentl
   assert.doesNotMatch(html, />token expired</);
 });
 
-test("dashboard does not poll full status every minute while hidden", async () => {
+test("dashboard refreshes visible data promptly and immediately after returning to the tab", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 
-  assert.match(html, /const DASHBOARD_REFRESH_MS = 15 \* 60 \* 1000/);
+  assert.match(html, /const DASHBOARD_REFRESH_MS = 60 \* 1000/);
   assert.match(html, /document\.visibilityState === "visible"/);
-  assert.doesNotMatch(html, /setInterval\(load, 60000\)/);
+  assert.match(html, /document\.addEventListener\("visibilitychange", refreshWhenVisible\)/);
+  assert.match(html, /function refreshWhenVisible\(\)/);
+  assert.match(html, /if \(document\.visibilityState === "visible"\) \{\s*load\(\);\s*\}/);
+});
+
+test("dashboard keeps the login panel hidden while restoring a saved session", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  assert.match(html, /<section class="panel section auth-panel" id="auth-panel" hidden>/);
+});
+
+test("login page automatically reuses an existing valid hub session", async () => {
+  const html = await readFile(new URL("../login.html", import.meta.url), "utf8");
+
+  assert.match(html, /const COOKIE_NAME = "quota_report_hub_token"/);
+  assert.match(html, /async function restoreExistingSession\(\)/);
+  assert.match(html, /fetch\("\/api\/status", \{[\s\S]*Authorization: "Bearer " \+ token/);
+  assert.match(html, /completeLogin\(payload\.auth_pool_user_token \|\| token, payload\.viewer_email \|\| ""\)/);
+  assert.match(html, /restoreExistingSession\(\)/);
 });

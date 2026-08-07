@@ -441,7 +441,7 @@
         </div>
       </section>
 
-      <section class="panel section auth-panel" id="auth-panel">
+      <section class="panel section auth-panel" id="auth-panel" hidden>
         <h2>Access Token</h2>
         <div class="meta"><strong>Step 1</strong> — get a token: enter your company email and the hub will email you one. Only the latest token for your email stays valid.</div>
         <div class="auth-actions">
@@ -531,7 +531,7 @@
       const healthSection = document.getElementById("health-section");
       const healthRows = document.getElementById("health-rows");
       const COOKIE_NAME = "quota_report_hub_token";
-      const DASHBOARD_REFRESH_MS = 15 * 60 * 1000;
+      const DASHBOARD_REFRESH_MS = 60 * 1000;
       let currentToken = "";
 
       function getCookie(name) {
@@ -1085,11 +1085,13 @@
       });
 
       load();
-      setInterval(() => {
+      function refreshWhenVisible() {
         if (document.visibilityState === "visible") {
           load();
         }
-      }, DASHBOARD_REFRESH_MS);
+      }
+      setInterval(refreshWhenVisible, DASHBOARD_REFRESH_MS);
+      document.addEventListener("visibilitychange", refreshWhenVisible);
     </script>
   </body>
 </html>
