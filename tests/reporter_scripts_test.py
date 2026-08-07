@@ -299,6 +299,80 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertNotIn("/tmp/", seen["code_home"])
         self.assertTrue(seen["workdir"].endswith("/workspace"))
 
+    def test_probe_codex_uses_common_cli_candidate_when_path_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            fake_codex = base / "bin" / "codex"
+            fake_codex.parent.mkdir(parents=True)
+            fake_codex.write_text("#!/bin/sh\n", encoding="utf-8")
+            fake_codex.chmod(0o755)
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt({"email": "a@example.com"}),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            seen = {}
+
+            def fake_run(args, env=None, capture_output=None, text=None, check=None):
+                seen["args"] = args
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch("quota_reporters.common_cli_binary_candidates", return_value=[fake_codex]):
+                with mock.patch("quota_reporters.shutil.which", return_value=None):
+                    with mock.patch("quota_reporters.codex_probe_temp_root", return_value=base):
+                        with mock.patch("quota_reporters.subprocess.run", side_effect=fake_run):
+                            with mock.patch(
+                                "quota_reporters.latest_token_count_event",
+                                return_value={
+                                    "payload": {
+                                        "info": {"model_context_window": 272000},
+                                        "rate_limits": {
+                                            "plan_type": "prolite",
+                                            "primary": {"used_percent": 5, "window_minutes": 300},
+                                            "secondary": {"used_percent": 10, "window_minutes": 10080},
+                                        },
+                                    }
+                                },
+                            ):
+                                probe_codex(auth_path)
+
+        self.assertEqual(seen["args"][0], str(fake_codex))
+
+    def test_probe_codex_reports_missing_binary_cleanly(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-04-22T00:00:00Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "access",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt({"email": "a@example.com"}),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = probe_codex(auth_path, codex_bin="/definitely/missing/codex")
+
+        self.assertEqual(payload["account_id"], "codex-missing-binary")
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], "codex command not found")
+        self.assertIsNone(payload["windows"]["5h"])
+        self.assertIsNone(payload["windows"]["1week"])
+
     def test_codex_probe_env_strips_provider_auth_overrides(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             codex_home = Path(temp_dir) / "codex-home"
@@ -315,7 +389,9 @@ class ReporterScriptsTest(unittest.TestCase):
             ):
                 env = codex_probe_env(codex_home)
 
-        self.assertEqual(env["PATH"], "/usr/bin")
+        self.assertTrue(env["PATH"].startswith("/usr/bin"))
+        self.assertIn("/opt/homebrew/bin", env["PATH"])
+        self.assertIn("/usr/local/bin", env["PATH"])
         self.assertEqual(env["CODEX_HOME"], str(codex_home))
         self.assertNotIn("OPENAI_API_KEY", env)
         self.assertNotIn("OPENAI_BASE_URL", env)
@@ -1615,7 +1691,7 @@ Reading additional input from stdin...
 
         self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
 
-    def test_source_needs_replacement_when_known_account_quota_is_unavailable(self):
+    def test_source_does_not_need_replacement_when_known_account_quota_is_unavailable(self):
         codex_payload = {
             "source": "codex",
             "account_id": "sirui.chen@stardust.ai",
@@ -1624,7 +1700,7 @@ Reading additional input from stdin...
             "windows": {"5h": None, "1week": None},
         }
 
-        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+        self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
 
     def test_quota_payload_should_report_valid_windows_and_hard_invalidations_only(self):
         self.assertTrue(
@@ -1826,6 +1902,22 @@ Reading additional input from stdin...
         self.assertEqual(result["reason"], "quota_unavailable")
         post_auth_pool_quota.assert_not_called()
 
+    def test_guard_summary_mentions_installer_when_auth_pool_config_missing(self):
+        self.assertEqual(
+            quota_guard.format_quota_report({"ok": True, "reported": False, "reason": "missing_auth_pool_config"}),
+            "auth pool not configured (run install_quota_guard.py)",
+        )
+        self.assertEqual(
+            quota_guard.format_auth_pool_sync(
+                {
+                    "codex": {"ok": True, "uploaded": False, "reason": "missing_auth_pool_config"},
+                    "claude": {"ok": True, "uploaded": False, "reason": "missing_auth_pool_config"},
+                }
+            ),
+            "codex auth pool not configured (run install_quota_guard.py); "
+            "claude auth pool not configured (run install_quota_guard.py)",
+        )
+
     def test_current_codex_payload_persists_same_account_refresh_and_strips_secret(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
@@ -1942,7 +2034,7 @@ Reading additional input from stdin...
                 refresh_current=False,
             )
 
-    def test_maybe_replace_codex_auth_fetches_when_known_account_quota_is_unavailable(self):
+    def test_maybe_replace_codex_auth_skips_when_known_account_quota_is_unavailable(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
             "auth_pool_user_token": "qrp_token",
@@ -1955,10 +2047,7 @@ Reading additional input from stdin...
             "windows": {"5h": None, "1week": None},
         }
 
-        with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
-            "replacement": None,
-            "repair_auth": None,
-        }) as fetch_best_auth:
+        with mock.patch.object(quota_guard, "fetch_best_auth") as fetch_best_auth:
             replacement = quota_guard.maybe_replace_codex_auth(
                 config,
                 codex_payload,
@@ -1968,21 +2057,9 @@ Reading additional input from stdin...
                 weekly_threshold_percent=5.0,
             )
 
-        fetch_best_auth.assert_called_once_with(
-            "https://quota-report-hub.vercel.app",
-            "qrp_token",
-            source="codex",
-            current_account_id="sirui.chen@stardust.ai",
-            current_quota={
-                "five_h_remaining_percent": -1.0,
-                "one_week_remaining_percent": -1.0,
-            },
-            exclude_account_ids=[],
-            requester_id="derek@mac",
-            refresh_current=False,
-        )
+        fetch_best_auth.assert_not_called()
         self.assertFalse(replacement["replaced"])
-        self.assertEqual(replacement["reason"], "no_better_auth_available")
+        self.assertEqual(replacement["reason"], "healthy")
 
     def test_maybe_replace_codex_auth_skips_when_current_quota_is_healthy(self):
         config = {
@@ -3204,6 +3281,21 @@ Reading additional input from stdin...
         self.assertFalse(result["ok"])
         self.assertFalse(result["restarted"])
         self.assertEqual(result["reason"], "unmanaged_app_server_not_restarted")
+
+    def test_restart_codex_app_server_augments_path_for_node_wrappers(self):
+        daemon_result = mock.Mock(returncode=0, stdout="restarted", stderr="")
+
+        with mock.patch.object(quota_guard, "codex_binary_for_app_server_restart", return_value="/opt/homebrew/bin/codex"):
+            with mock.patch.dict("quota_guard.os.environ", {"PATH": "/usr/bin"}, clear=True):
+                with mock.patch.object(quota_guard.subprocess, "run", return_value=daemon_result) as run:
+                    result = quota_guard.restart_codex_app_server()
+
+        run.assert_called_once()
+        env = run.call_args.kwargs["env"]
+        self.assertTrue(env["PATH"].startswith("/usr/bin"))
+        self.assertIn("/opt/homebrew/bin", env["PATH"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["restarted"])
 
     def test_unmanaged_codex_app_server_pids_only_matches_listener_processes(self):
         ps_result = mock.Mock(

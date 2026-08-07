@@ -39,6 +39,7 @@ from quota_reporters import (
     cli_auth_seed_state,
     claude_auth_blob_metadata,
     detect_claude_custom_provider_env,
+    discover_codex_executable,
     fetch_auth_pool_status,
     seed_guidance_lines,
     fetch_best_auth,
@@ -47,6 +48,7 @@ from quota_reporters import (
     post_auth_pool_quota,
     probe_claude,
     probe_codex,
+    runtime_cli_path,
     sync_current_claude_auth_pool,
     sync_current_codex_auth_pool,
     write_claude_keychain_credentials,
@@ -57,6 +59,7 @@ DEFAULT_SELF_UPDATE_REPO = "callzhang/quota-report-hub"
 DEFAULT_SELF_UPDATE_REF = "main"
 SELF_UPDATE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-self-update.json"
 SKILL_ROOT = Path(__file__).resolve().parents[1]
+AUTH_POOL_MISSING_CONFIG_TEXT = "auth pool not configured (run install_quota_guard.py)"
 
 
 def auth_json_digest(auth_json: str | None) -> str | None:
@@ -201,7 +204,7 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
     if is_hard_invalidated(payload):
         return True
     if payload.get("status") != "ok":
-        return bool(payload.get("account_id"))
+        return False
     five_hour_remaining = remaining_percent(payload, "5h")
     weekly_remaining = remaining_percent(payload, "1week")
     if payload.get("source") == "codex":
@@ -601,10 +604,7 @@ def notify_scheduler_warning(warning: dict) -> dict:
 
 
 def codex_binary_for_app_server_restart() -> str | None:
-    local_codex = Path.home() / ".local" / "bin" / "codex"
-    if local_codex.exists() and os.access(local_codex, os.X_OK):
-        return str(local_codex)
-    return shutil.which("codex")
+    return discover_codex_executable()
 
 
 def unmanaged_codex_app_server_pids() -> list[int]:
@@ -834,6 +834,8 @@ def restart_codex_app_server() -> dict:
         return {"ok": False, "restarted": False, "reason": "codex_binary_not_found"}
 
     command = [codex_bin, "app-server", "daemon", "restart"]
+    env = dict(os.environ)
+    env["PATH"] = runtime_cli_path(env.get("PATH"))
     try:
         result = subprocess.run(
             command,
@@ -842,6 +844,7 @@ def restart_codex_app_server() -> dict:
             text=True,
             timeout=30,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return {
@@ -1401,10 +1404,12 @@ def format_quota_window(payload: dict | None, window_key: str) -> str:
 
 def format_quota_report(result: dict | None) -> str:
     if not result:
-        return "quota not configured"
+        return AUTH_POOL_MISSING_CONFIG_TEXT
     if result.get("reported"):
         return "quota reported"
     reason = result.get("reason")
+    if reason == "missing_auth_pool_config":
+        return AUTH_POOL_MISSING_CONFIG_TEXT
     if result.get("ok") is False:
         return f"quota report failed ({reason or 'error'})"
     return f"quota not reported ({reason})" if reason else "quota not reported"
@@ -1447,12 +1452,14 @@ def format_auth_pool_sync(sync_result: dict | None) -> str:
     for source in ("codex", "claude"):
         result = sync_result.get(source)
         if not result:
-            parts.append(f"{source} not configured")
+            parts.append(f"{source} {AUTH_POOL_MISSING_CONFIG_TEXT}")
             continue
         if result.get("uploaded"):
             parts.append(f"{source} uploaded")
         elif result.get("ok") is False:
             parts.append(f"{source} failed")
+        elif result.get("reason") == "missing_auth_pool_config":
+            parts.append(f"{source} {AUTH_POOL_MISSING_CONFIG_TEXT}")
         else:
             parts.append(f"{source} {result.get('reason') or 'ok'}")
     return "; ".join(parts)

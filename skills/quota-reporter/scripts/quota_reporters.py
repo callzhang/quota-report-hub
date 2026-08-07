@@ -62,6 +62,53 @@ CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_BASE_URL",
     "CLAUDE_CODE_OAUTH_TOKEN",
 }
+COMMON_CLI_DIRS = (
+    Path.home() / ".local" / "bin",
+    Path("/opt/homebrew/bin"),
+    Path("/usr/local/bin"),
+)
+
+
+def common_cli_binary_candidates(binary_name: str) -> list[Path]:
+    return [directory / binary_name for directory in COMMON_CLI_DIRS]
+
+
+def discover_cli_executable(
+    binary_name: str,
+    explicit_binary: str | None = None,
+    *,
+    fallback_to_name: bool = False,
+) -> str | None:
+    if explicit_binary:
+        resolved = shutil.which(explicit_binary)
+        if resolved is not None:
+            return resolved
+        explicit_path = Path(explicit_binary).expanduser()
+        if explicit_path.exists():
+            return str(explicit_path)
+        return None
+
+    for candidate in common_cli_binary_candidates(binary_name):
+        if candidate.exists():
+            return str(candidate)
+
+    resolved = shutil.which(binary_name)
+    if resolved is not None:
+        return resolved
+    return binary_name if fallback_to_name else None
+
+
+def discover_codex_executable(codex_bin: str | None = None, *, fallback_to_name: bool = False) -> str | None:
+    return discover_cli_executable("codex", codex_bin, fallback_to_name=fallback_to_name)
+
+
+def runtime_cli_path(current_path: str | None = None) -> str:
+    parts = [part for part in (current_path or "").split(os.pathsep) if part]
+    for directory in COMMON_CLI_DIRS:
+        text = str(directory)
+        if text not in parts:
+            parts.append(text)
+    return os.pathsep.join(parts)
 
 
 def _scutil_proxy_settings() -> dict:
@@ -156,6 +203,7 @@ def clean_claude_env() -> dict:
     env = dict(os.environ)
     for key in CLAUDE_ENV_DROP_KEYS:
         env.pop(key, None)
+    env["PATH"] = runtime_cli_path(env.get("PATH"))
     return env
 
 
@@ -451,6 +499,7 @@ def codex_probe_env(codex_home: Path) -> dict:
         if key not in CODEX_PROBE_ENV_BLOCKLIST
     }
     env["CODEX_HOME"] = str(codex_home)
+    env["PATH"] = runtime_cli_path(env.get("PATH"))
     return env
 
 
@@ -646,9 +695,37 @@ def zero_remaining_window(window_minutes: int, reset_at: str | None = None, rese
     }
 
 
-def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dict:
+def codex_missing_binary_payload(base: dict) -> dict:
+    return {
+        **base,
+        "account_id": "codex-missing-binary",
+        "status": "error",
+        "error": "codex command not found",
+        "windows": empty_windows(),
+    }
+
+
+def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_bin: str | None = None) -> dict:
     metadata = auth_metadata(auth_path)
     checked_at = datetime.now(timezone.utc)
+    base = {
+        "source": "codex",
+        "hostname": socket.gethostname(),
+        "reporter_name": reporter_name(),
+        "reported_at": checked_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "account_id": metadata["account_id"],
+        "provider_account_id": metadata["provider_account_id"],
+        "email": metadata["email"],
+        "name": metadata["name"],
+        "plan_name": metadata["plan_name"],
+        "auth_last_refresh": metadata["auth_last_refresh"],
+        "auth_path": metadata["auth_path"],
+        "usage_summary": None,
+    }
+    codex_command = discover_codex_executable(codex_bin, fallback_to_name=True)
+    if codex_command is None:
+        return codex_missing_binary_payload(base)
+
     temp_dir = tempfile.mkdtemp(prefix="quota-report-", dir=str(codex_probe_temp_root()))
     refreshed_metadata = None
     refreshed_auth_text = None
@@ -661,7 +738,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
         env = codex_probe_env(codex_home)
         result = subprocess.run(
             [
-                "codex",
+                codex_command,
                 "exec",
                 "--ignore-user-config",
                 "--ignore-rules",
@@ -679,23 +756,10 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False) -> dic
         if capture_refreshed_auth and temp_auth_path.exists():
             refreshed_auth_text = temp_auth_path.read_text(encoding="utf-8")
             refreshed_metadata = auth_metadata(temp_auth_path)
+    except FileNotFoundError:
+        return codex_missing_binary_payload(base)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
-
-    base = {
-        "source": "codex",
-        "hostname": socket.gethostname(),
-        "reporter_name": reporter_name(),
-        "reported_at": checked_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "account_id": metadata["account_id"],
-        "provider_account_id": metadata["provider_account_id"],
-        "email": metadata["email"],
-        "name": metadata["name"],
-        "plan_name": metadata["plan_name"],
-        "auth_last_refresh": metadata["auth_last_refresh"],
-        "auth_path": metadata["auth_path"],
-        "usage_summary": None,
-    }
 
     refresh_capture = None
     if capture_refreshed_auth and refreshed_metadata is not None and refreshed_auth_text is not None:
@@ -835,16 +899,7 @@ def current_codex_payload(source_auth_path: Path = SOURCE_AUTH_PATH) -> dict | N
 
 
 def discover_claude_executable(claude_bin: str | None = None) -> str | None:
-    if claude_bin:
-        if shutil.which(claude_bin) is not None or Path(claude_bin).exists():
-            return claude_bin
-        return None
-
-    bundled = Path.home() / ".local" / "bin" / "claude"
-    if bundled.exists():
-        return str(bundled)
-
-    return shutil.which("claude")
+    return discover_cli_executable("claude", claude_bin)
 
 
 def read_claude_credentials(claude_home: Path) -> dict | None:

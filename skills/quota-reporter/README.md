@@ -25,6 +25,7 @@ The guard is source-aware:
 - Claude auths only compete with other Claude auths
 - Codex live quota is weekly only; any old 5H value is legacy metadata and should not drive rotation or dashboard freshness
 - Codex cloud identities are normalized to the lowercased email when available, so Team users do not collide on a shared provider-side UUID
+- CLI/probe startup errors and quota-unavailable snapshots do not drive replacement; the guard rotates only on confirmed low quota or hard auth invalidation
 
 ## Main Scripts
 
@@ -41,6 +42,7 @@ The guard is source-aware:
   - checks GitHub `main` and updates the installed skill before probing
   - reuploads current auths
   - probes current local quota in an isolated temporary Codex home, with provider/auth override environment variables stripped so API-key or custom-provider shells cannot be mislabeled as the copied ChatGPT auth
+  - resolves Codex and Claude CLI binaries from common non-interactive install locations (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) before falling back to `PATH`
   - fetches and installs a better auth if the current source is below threshold
   - restarts a daemon-managed Codex app-server after a Codex auth write
   - never sends termination signals to desktop-managed or unmanaged app-server processes; when no managed daemon exists, it reports `unmanaged_app_server_not_restarted` and lets the owning application recreate its own backend

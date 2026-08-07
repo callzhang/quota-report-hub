@@ -144,18 +144,20 @@ The guard then:
 - reuploads the current auth to the auth pool so a missing cloud entry can recover automatically
 - probes the current live Codex auth and Claude auth
 - Codex probes run in an isolated temporary `CODEX_HOME` and strip provider/auth override environment variables such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `CODEX_ACCESS_TOKEN`; otherwise a teammate's shell config can produce quota for a different provider while labeling it as the copied `auth.json` account
+- Codex and Claude probes resolve CLI binaries from common non-interactive locations such as `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin` before relying on `PATH`, so launchd and other minimal shells do not need login-shell path initialization
 - may push stable local quota snapshots back to the hub when available
 - for Codex, only a complete weekly window or a hard invalidation is uploaded, so missing legacy 5H data does not block good hub data
 - for Claude, the local probe reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time
 - Claude Code only sends statusline `rate_limits` after the first successful API response in a session. The statusline capture preserves previous unexpired `5H` or `7d` windows when a startup or failed-response statusline payload has no quota fields.
 - if Codex is below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`; Codex `5H` is legacy metadata and does not trigger, rank, or display as live quota
 - if Claude is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
+- ordinary probe errors and unavailable quota snapshots do not trigger auth replacement; replacement requires a real low-quota window or a hard auth invalidation
 - only accepts a server response when it contains a strictly better replacement from that same source
 - for Codex, the server only shares candidate auths with at least `5%` remaining in `1week` and ranks candidates by weekly quota plus load balancing
 - for Claude, the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
 - if the server returns `repair_auth`, the guard installs that auth instead of a shared replacement so the uploader can re-login and refresh their own invalidated auth
 - only replaces local source credentials when the fetched auth is different from what is already installed
-- after Codex `auth.json` is replaced or refreshed, restarts the local Codex app-server; if the app-server is an unmanaged ephemeral process, the guard stops it so the next Codex launch starts a fresh one
+- after Codex `auth.json` is replaced or refreshed, asks the managed local Codex app-server daemon to restart; desktop-managed and other unmanaged app-server processes are never terminated by the guard
 - shows a desktop notification after a successful local replacement so the user knows to quit the current Codex or Claude Code session and start a new one
 - opens local CLI login only when an auth uploaded by the current token user has a cloud-confirmed `refresh_token_rejected` result and `auto_relogin_owner_auth` is enabled; ordinary `authentication_error`, stale quota snapshots, and local probe timeouts do not launch login
 - does nothing when the cloud cannot provide a better auth than the current one
