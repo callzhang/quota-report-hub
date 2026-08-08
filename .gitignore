@@ -2,6 +2,7 @@
 .env
 .env.local
 node_modules
+.worktrees/
 .env*.local
 *.db
 *.db-shm
