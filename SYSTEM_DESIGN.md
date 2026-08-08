@@ -124,6 +124,7 @@ Single module-load client (`lib/db.js:15-18`); schema created lazily + memoized 
 | `auth_pool_invalidated_notifications` | PK `(source, account_id)` | Since-when an account is hard-dead + last email sent. (`:459-468`) |
 | `feature_flags` | PK `key` | `disabled_refresh_token` (stored as `"true"`/`"false"`). (`:469-476`) |
 | `pool_health_snapshots` | PK autoinc | Observability time series: ok/hard-dead/other + central-refresh outcomes per source per worker run. (`:477-494`) |
+| `dashboard_revision` | Singleton row (`singleton = 1`) | Monotonic change marker for dashboard-visible writes. The browser reads this one row instead of rebuilding full status every minute. |
 
 **PK evolution** (`migrateAuthPoolEntriesTableShape` `:23-81`): older deployments are rebuilt to the canonical `(source, account_id, session_id)` PK with **nullable** encryption columns + `auth_blob_key`. The active PK column list lives in a mutable global `authPoolPkColumns` used to build `ON CONFLICT(...)` (`:21, 80, 734`).
 
@@ -172,6 +173,7 @@ All handlers are Vercel functions; most require a Bearer token via `authenticate
 | `/api/cron/probe-auth-pool` | GET/POST | **`CRON_SECRET`** | Lightweight manual/external trigger that dispatches the GitHub probe workflow when health snapshots are stale |
 | `/api/status` | any | Bearer | Dashboard dataset |
 | `/api/status-revision` | any | Scoped `qrr.` ticket | Singleton dashboard revision only |
+| `/api/quota-history` | GET | Bearer | Exact-account quota history, bounded to the preceding 24 hours and 96 chronological safe points |
 | `/api/users` | any | Bearer | Users + fetch-log audit |
 
 `vercel.json`: platform cron only calls `/api/cron/invalidated-auth-notifications` daily at `0 17 * * *` UTC. Vercel Hobby does not support 15-minute cron jobs, so the *probe* worker stays in GitHub Actions. `/api/cron/probe-auth-pool` remains available for manual or external stale-snapshot dispatch when called with `CRON_SECRET`.
@@ -191,11 +193,28 @@ In branches 2–3, when `disabled_refresh_token` is ON, the served blob is run t
 - Company-email gate: token issuance requires `@<AUTH_ALLOWED_EMAIL_DOMAIN>` (default `stardust.ai`) (`lib/company-auth.js:13-16`); admin gate via `ADMIN_EMAIL` comma-list (`:18-28`).
 - HMAC tokens: `qrp.<base64url(payload)>.<hmac>` signed with `TOKEN_ISSUE_KEY`, verified with `timingSafeEqual`; DB presence still required so tokens are revocable (`:54-117`).
 - Revision tickets: a successful `/api/status` authentication also returns a 12-hour HMAC-signed `qrr.` ticket scoped to `/api/status-revision`. Its routine verification is stateless, so the one-minute change check performs only the singleton revision read and does not update `auth_api_tokens.last_used_at`. The ticket exposes only revision metadata and cannot authorize a full-status or auth-pool request; full data reloads still require the revocable `qrp.` token.
+- This stateless ticket is deliberately less revocable than a DB-backed personal token during its 12-hour life. The tradeoff is bounded: it reveals only `revision` and `updated_at`, cannot read account or quota data, and removes the API-token-row read/write from every routine browser poll. Revoking the personal token still blocks full status and history immediately.
 - Mailgun for token delivery + 24h-stale-auth alerts (`:127-275`).
 
 `/api/status` reads the revision before and after assembling current state. If a dashboard-visible write occurs between those reads, it retries the assembly once; if state keeps changing, it returns the normal service-unavailable response instead of labeling stale data with the new revision.
 
 The browser keys in-flight full-status requests by the exact session token and a request generation. Pasting or clearing a token invalidates older generations, so a delayed response from the previous session cannot clear or overwrite the current session. Revision responses also recheck tab visibility immediately before requesting full status.
+
+### 6.4 Availability read model and lazy history
+
+`lib/account-availability.js` derives one presentation-neutral state after report freshness and effective windows have been assembled. Precedence is `unavailable` → `waiting_for_new_quota` → `quota_unknown` → `low_quota` → `available`:
+
+- `unavailable`: refresh rejection, auth invalidation, ineligible plan, or an unrecoverable access-token expiry overrides quota history.
+- `waiting_for_new_quota`: a required window reset has passed and no post-reset quota exists.
+- `quota_unknown`: required evidence is missing, partial, failed, older than the one-hour report-freshness boundary, or has no future reset boundary.
+- `low_quota`: all required evidence is current, but Codex weekly quota is below 5%, or Claude 5-hour/weekly quota is below 20%/5% respectively.
+- `available`: all required windows are current and meet the same thresholds used by auth selection.
+
+The collapsed table renders only this state and its summary. Pointer hover, keyboard focus, and touch/click open an accessible dialog containing the component evidence: probe outcome, token upload, access expiry, refresh verification, and quota. A quota window's `captured_at` is preserved independently through merge and storage; it is not replaced by a newer row-level `reported_at`. `reset_at` remains the provider's window boundary. When evidence is no longer current, the snapshot remains available in gray as historical evidence and never contributes to current usability.
+
+`GET /api/quota-history` requires exactly one non-empty `source` and `account_id`. It queries the existing indexed event table for `[generated_at - 24h, generated_at]`, returns at most 96 chronological points, and projects only report time/status/error plus 5-hour and weekly quota/reset fields. It never returns auth blobs, access/refresh tokens, token hashes, uploader identity, or unrelated accounts. Missing/failed points and reset boundaries split chart paths rather than being interpolated.
+
+History is excluded from `/api/status`. The browser requests it only when an account dialog opens, caches the result for five minutes within the current authentication-session generation, and deduplicates concurrent requests for the same account. Changing or clearing the session invalidates the cache key.
 
 ---
 
@@ -305,6 +324,7 @@ For a borrow request, candidates are filtered then ranked:
 ## 12. Observability
 
 - **`pool_health_snapshots`** — one row per source per worker run: `total, ok_count, hard_dead_count, other_err_count, central_refresh_{attempted,ok,rejected}`.
+- **Account availability** (`index.html`): one primary lifecycle state per account. Detailed probe/token/refresh evidence and the lazy 24-hour quota chart are secondary diagnostics, not peer status lines.
 - **Dashboard trend** (`index.html` `renderHealthTrend`): per-source healthy ratio, hard-dead count + trend badge, an SVG sparkline of the hard-dead series, and central-refresh outcomes. The framing: *the death spiral is closed when hard-dead stops climbing*.
 - **`assess_health.mjs`** — CLI verdict + abuse scan ([§8.1](#81-assess_healthmjs)).
 - **`auth_pool_fetch_log`** — full borrow audit surfaced on `users.html`.
@@ -339,12 +359,15 @@ Facts surfaced during the read that future maintainers should know:
 5. **`fetch-best.js` is misleadingly named** — it holds RT-stripping/repair helpers, *not* the borrower selection logic. Selection is `pickBestAuthPoolCandidate` in `lib/auth-pool.js` (reached via `lib/db.js bestAuthPoolEntry`).
 6. **Two refreshers exist** — the worker (central, server-side, under the flag) and the client's own Claude AT refresh (`ensure_fresh_claude_access_token`). They don't conflict because under the flag the client strips its RT and stops self-refreshing the shared credential.
 7. **Probe schedule is unreliable** — never assume 15 min. Thresholds (`REFRESH_THRESHOLD_MS`, `PROBE_STALE_MS`) are tuned against the real worst-case gap, and the named constants make them a one-line tune.
+8. **Probe success is not current quota evidence** — an `ok` request may omit a required window, may be older than the one-hour freshness boundary, or may describe a window whose reset has passed. Diagnose `QUOTA UNKNOWN` or `WAITING FOR NEW QUOTA` by comparing probe time, per-window `captured_at`, and `reset_at`; request owner login only for an explicit unavailable authentication reason.
 
 ---
 
 ## 15. End-to-end flow recap
 
 **Onboard:** `login.html` → `/api/auth/issue-token` → emailed `qrp.` token → installer writes config + schedules the guard.
+
+**Dashboard:** authenticated `/api/status` → render one availability state per account and save its revision + scoped `qrr.` ticket → while visible, check the singleton revision once per minute and on visibility regain → reload full status only after a change → fetch one account's bounded history only when its details open, with a five-minute browser cache. Only a missing token or explicit `401` returns the UI to login; transient failures retain the last data and retry.
 
 **Steady state (per machine, every 15 min):** probe local quota → if local auth changed, upload to pool (digest-gated) → publish quota snapshot → if quota low or dead, `fetch-best` → install replacement/refresh, or get own dead auth handed back for re-login.
 

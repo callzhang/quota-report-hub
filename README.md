@@ -4,7 +4,9 @@ Minimal Vercel app that stores encrypted Codex and Claude auth snapshots, issues
 
 ![Quota Report Hub dashboard](docs/hub-dashboard.png)
 
-*The dashboard: every cloud auth entry with its latest source-specific quota, who fetched it, and the cloud probe status — plus archived auths that have stayed invalidated. Codex uses the weekly quota window; Claude still reports 5H when available. (Accounts shown are anonymized demo data.)*
+*The dashboard: one primary availability state per cloud auth entry, with quota and authentication evidence available on demand. Codex uses the weekly quota window; Claude requires both the 5-hour and weekly windows. (Accounts shown are anonymized demo data.)*
+
+Chinese operations guidance: [README.zh-CN.md](README.zh-CN.md).
 
 ## Use Case
 
@@ -141,8 +143,14 @@ Important runtime notes:
 
 The dashboard now reflects the cloud auth pool, not arbitrary client report rows:
 
+- each account has one primary state: `AVAILABLE`, `LOW QUOTA`, `WAITING FOR NEW QUOTA`, `QUOTA UNKNOWN`, or `UNAVAILABLE`; this is the answer to "can the pool use this account now?", not a restatement of the last probe result
+- `AVAILABLE` means the required source-specific quota windows are current and above the rotation thresholds; `LOW QUOTA` means current evidence exists but is below a threshold
+- `WAITING FOR NEW QUOTA` means the prior window reset and no post-reset snapshot has arrived; `QUOTA UNKNOWN` means current quota evidence is missing, stale, partial, or from a failed probe; `UNAVAILABLE` means the credential itself is rejected, invalidated, expired without recovery, or ineligible
+- hover the state with a pointer, focus it with the keyboard, or tap it to open account details. The popover shows the probe, token upload, access expiry, refresh verification, latest quota snapshot, and a 24-hour chart. Escape, the close button, or an outside press closes it
+- a gray quota value is historical evidence only. `Captured` is when that individual quota window was observed; `Reset` is the provider's reset boundary for that window. A historical value must not be treated as current quota, even when the latest probe says `ok`
 - after the initial full status load, a visible dashboard checks only the singleton revision once per minute and on visibility regain; it reloads full status only when that revision changes
 - revision checks use a 12-hour, HMAC-signed `qrr.` ticket issued by an authenticated full-status response. The ticket is scoped to revision metadata and cannot call the full dashboard or auth-pool APIs, so routine checks do not read or update API-token rows
+- quota history is not part of `/api/status`: it is fetched for one exact `source + account_id` only when that account's details open, is bounded to 24 hours and 96 points, and is cached in that browser login session for five minutes; concurrent opens reuse the same in-flight request
 - a valid dashboard session is restored from the saved browser cookie; opening `login.html` reuses that session instead of asking the user to log in again
 - transient network and service errors keep the last dashboard data visible and retry automatically; only a missing token or an explicit `401` response shows the login panel
 - refresh-token state is shown as `verified`, `rejected`, or `not tested`; uploads carrying a real RT perform an immediate refresh verification and persist the rotated credential, while AT-only uploads remain unverified
@@ -207,7 +215,19 @@ The installer also performs a post-install verification by default:
 
 - `GET /api/status`
   - Requires a personal bearer token
-  - Returns the current dashboard dataset
+  - Returns the current dashboard dataset, derived account availability, `dashboard_revision`, and a scoped revision ticket
+- `GET /api/status-revision`
+  - Requires the scoped `qrr.` revision ticket returned by `/api/status`
+  - Returns only the singleton revision and its update time; it cannot authorize full dashboard or auth-pool reads
+- `GET /api/quota-history?source=<source>&account_id=<account-id>`
+  - Requires a personal bearer token and exactly one non-empty value for each parameter
+  - Returns at most 96 chronological, safe quota points from the preceding 24 hours; it returns no auth blob, access token, refresh token, or token hash
+
+## Dashboard troubleshooting: Probe versus Quota
+
+`Probe` answers whether the most recent attempt to contact the provider succeeded. `Quota` answers whether the hub has a complete, fresh quota snapshot whose reset time is still in the future. They are different evidence.
+
+For example, a probe can be `ok` while availability is `QUOTA UNKNOWN` when the successful response did not include every required quota window, or when the report is older than the one-hour freshness boundary. It can be `WAITING FOR NEW QUOTA` when the last known window has reset but no new snapshot has arrived. Open the availability details and compare the exact probe time, each window's `Captured` time, and its `Reset` time. Do not diagnose this as a login failure unless the primary state is `UNAVAILABLE` and the detail identifies rejected or invalidated authentication.
 
 ## Required environment variables
 
