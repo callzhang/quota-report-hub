@@ -69,6 +69,7 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token") {
     },
   });
   const storage = new Map();
+  const windowListeners = new Map();
   const context = vm.createContext({
     document,
     location: { protocol: "https:", origin: "https://hub.example" },
@@ -80,6 +81,14 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token") {
     setInterval() {},
     setTimeout,
     clearTimeout,
+    window: {
+      innerWidth: 1280,
+      innerHeight: 800,
+      addEventListener(type, listener) { windowListeners.set(type, listener); },
+      removeEventListener(type, listener) {
+        if (windowListeners.get(type) === listener) windowListeners.delete(type);
+      },
+    },
     console,
   });
   vm.runInContext(script, context);
@@ -90,6 +99,7 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token") {
     element,
     getCookie: () => cookieValue,
     evaluate(source) { return vm.runInContext(source, context); },
+    windowListeners,
   };
 }
 
@@ -136,6 +146,55 @@ test("quota history cache and in-flight requests do not cross auth sessions", as
   assert.equal(currentPayload.points[0].reported_at, "new-session");
   assert.equal(cachedPayload.points[0].reported_at, "new-session");
   assert.equal(harness.evaluate(`historyPopoverIsCurrent(null, ${oldGeneration})`), false);
+});
+
+test("a history token upgrade caches under the upgraded session without refetching", async () => {
+  let historyCalls = 0;
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    if (url.startsWith("/api/quota-history")) {
+      historyCalls += 1;
+      return response(200, { auth_pool_user_token: "upgraded-token", points: [{ reported_at: "upgraded" }] });
+    }
+    throw new Error(`unexpected request ${url}`);
+  });
+
+  const first = await harness.evaluate(`loadQuotaHistory("codex", "acct-upgrade")`);
+  const second = await harness.evaluate(`loadQuotaHistory("codex", "acct-upgrade")`);
+
+  assert.equal(first.points[0].reported_at, "upgraded");
+  assert.equal(second.points[0].reported_at, "upgraded");
+  assert.equal(historyCalls, 1);
+});
+
+test("quota chart never connects readings across reset boundaries", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  const now = Date.now();
+  const points = [
+    { reported_at: new Date(now - 1200000).toISOString(), status: "ok", one_week_remaining_percent: 20, one_week_reset_at: new Date(now + 3600000).toISOString() },
+    { reported_at: new Date(now - 600000).toISOString(), status: "ok", one_week_remaining_percent: 90, one_week_reset_at: new Date(now + 7200000).toISOString() },
+  ];
+  const markup = harness.evaluate(`renderQuotaHistoryChart(${JSON.stringify(points)})`);
+
+  assert.equal((markup.match(/<g class="history-current">/g) || []).length, 2);
+  assert.doesNotMatch(markup, /L460\.0/);
+});
+
+test("popover viewport listeners are registered and removed as one lifecycle", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+
+  harness.evaluate(`bindPopoverViewportListeners()`);
+  assert.equal(harness.windowListeners.has("scroll"), true);
+  assert.equal(harness.windowListeners.has("resize"), true);
+  harness.evaluate(`unbindPopoverViewportListeners()`);
+  assert.equal(harness.windowListeners.has("scroll"), false);
+  assert.equal(harness.windowListeners.has("resize"), false);
 });
 
 test("brief pointer sweep cancels hover intent before opening details", async () => {

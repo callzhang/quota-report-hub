@@ -233,10 +233,15 @@
         word-break: break-word;
       }
 
-      th:nth-child(1), td:nth-child(1) { width: 10%; }
-      th:nth-child(2), td:nth-child(2) { width: 30%; }
-      th:nth-child(3), td:nth-child(3) { width: 18%; }
-      th:nth-child(4), td:nth-child(4) { width: 42%; }
+      #active-entries-table th:nth-child(1), #active-entries-table td:nth-child(1) { width: 10%; }
+      #active-entries-table th:nth-child(2), #active-entries-table td:nth-child(2) { width: 30%; }
+      #active-entries-table th:nth-child(3), #active-entries-table td:nth-child(3) { width: 18%; }
+      #active-entries-table th:nth-child(4), #active-entries-table td:nth-child(4) { width: 42%; }
+      #archived-entries-table th:nth-child(1), #archived-entries-table td:nth-child(1) { width: 10%; }
+      #archived-entries-table th:nth-child(2), #archived-entries-table td:nth-child(2) { width: 27%; }
+      #archived-entries-table th:nth-child(3), #archived-entries-table td:nth-child(3) { width: 18%; }
+      #archived-entries-table th:nth-child(4), #archived-entries-table td:nth-child(4) { width: 18%; }
+      #archived-entries-table th:nth-child(5), #archived-entries-table td:nth-child(5) { width: 27%; }
 
       th {
         font-size: 12px;
@@ -429,7 +434,7 @@
       <section class="panel section">
         <h2>Cloud Auth Entries</h2>
         <div class="table-shell">
-          <table>
+          <table id="active-entries-table">
             <thead>
               <tr>
                 <th>Source</th>
@@ -449,7 +454,7 @@
         <h2>Archived Invalidated Auths</h2>
         <div class="meta">Auths that have been continuously hard-invalidated for more than 48 hours are kept here instead of the active rotation table. A successful probe resets the timer.</div>
         <div class="table-shell">
-          <table>
+          <table id="archived-entries-table">
             <thead>
               <tr>
                 <th>Source</th>
@@ -503,6 +508,7 @@
       let openAvailabilityTrigger = null;
       let popoverCloseTimer = null;
       let popoverOpenTimer = null;
+      let popoverViewportListenersBound = false;
 
       function getCookie(name) {
         const prefix = `${name}=`;
@@ -685,7 +691,10 @@
           if (!response.ok) throw new Error(statusErrorMessage(response, payload));
           const tokenWasUpgraded = Boolean(payload.auth_pool_user_token && payload.auth_pool_user_token !== historyToken);
           applyTokenUpgrade(payload);
-          if (tokenWasUpgraded) return payload;
+          if (tokenWasUpgraded) {
+            quotaHistoryCache.set(quotaHistoryKey(source, accountId), { fetchedAt: Date.now(), payload });
+            return payload;
+          }
           if (historySessionGeneration !== authSessionGeneration) throw new Error("session changed");
           quotaHistoryCache.set(key, { fetchedAt: Date.now(), payload });
           return payload;
@@ -711,19 +720,27 @@
         const segments = [];
         let segment = [];
         let segmentTone = null;
+        let segmentResetIdentity = null;
         for (const point of points) {
           const value = point[valueField];
           const capturedAt = Date.parse(point.reported_at);
           const resetAt = Date.parse(point[resetField] || "");
+          const resetIdentity = point[resetField] || null;
           const tone = Number.isFinite(capturedAt) && capturedAt <= nowMs && nowMs - capturedAt <= 60 * 60 * 1000 && Number.isFinite(resetAt) && resetAt > nowMs
             ? "current"
             : "historical";
-          if (point.status !== "ok" || value === null || value === undefined || !Number.isFinite(Number(value)) || (segmentTone && tone !== segmentTone)) {
+          const previousCapture = segment.at(-1)?.time;
+          const crossedReset = segment.length > 0 && (
+            resetIdentity !== segmentResetIdentity ||
+            (Number.isFinite(resetAt) && resetAt > previousCapture && resetAt <= capturedAt)
+          );
+          if (point.status !== "ok" || value === null || value === undefined || !Number.isFinite(Number(value)) || (segmentTone && tone !== segmentTone) || crossedReset) {
             if (segment.length) segments.push({ tone: segmentTone, points: segment });
             segment = [];
           }
           if (point.status === "ok" && value !== null && value !== undefined && Number.isFinite(Number(value))) {
             segmentTone = tone;
+            segmentResetIdentity = resetIdentity;
             segment.push({ time: Date.parse(point.reported_at), value: Number(value), reported_at: point.reported_at });
           }
         }
@@ -785,6 +802,24 @@
         return trigger === openAvailabilityTrigger && sessionGeneration === authSessionGeneration;
       }
 
+      function handlePopoverViewportChange() {
+        closeAvailabilityPopover();
+      }
+
+      function bindPopoverViewportListeners() {
+        if (popoverViewportListenersBound) return;
+        window.addEventListener("scroll", handlePopoverViewportChange, true);
+        window.addEventListener("resize", handlePopoverViewportChange);
+        popoverViewportListenersBound = true;
+      }
+
+      function unbindPopoverViewportListeners() {
+        if (!popoverViewportListenersBound) return;
+        window.removeEventListener("scroll", handlePopoverViewportChange, true);
+        window.removeEventListener("resize", handlePopoverViewportChange);
+        popoverViewportListenersBound = false;
+      }
+
       async function openAvailabilityPopover(trigger) {
         if (popoverOpenTimer !== null) clearTimeout(popoverOpenTimer);
         popoverOpenTimer = null;
@@ -797,6 +832,7 @@
         let popoverSessionGeneration = authSessionGeneration;
         const availability = item.availability || {};
         availabilityPopover.hidden = false;
+        bindPopoverViewportListeners();
         availabilityPopover.innerHTML = `<div class="popover-heading"><div><h3>${escapeHtml(availabilityLabel(availability.state))}</h3><div class="meta">${escapeHtml(availability.summary || "")}</div></div><button type="button" class="popover-close" aria-label="Close details">×</button></div>
           <section class="popover-section"><h4>Latest quota snapshot</h4>${snapshotMarkup(availability)}</section>
           <section class="popover-section"><h4>24-hour quota history</h4><div data-history-content class="meta">Loading quota history…</div></section>
@@ -824,6 +860,7 @@
         if (trigger) trigger.setAttribute("aria-expanded", "false");
         openAvailabilityTrigger = null;
         availabilityPopover.hidden = true;
+        unbindPopoverViewportListeners();
         availabilityPopover.innerHTML = "";
         if (restoreFocus && trigger) trigger.focus();
       }
