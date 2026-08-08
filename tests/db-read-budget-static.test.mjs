@@ -74,6 +74,18 @@ test("quota ingestion does not scan quota event history to maintain invalidation
   assert.doesNotMatch(upsertQuota, /LIMIT 1000/);
 });
 
+test("dashboard revision uses one singleton row without reading dashboard data", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  const revision = functionBody(source, "dashboardRevision");
+
+  assert.match(revision, /FROM dashboard_revision WHERE singleton = 1/);
+  assert.doesNotMatch(revision, /auth_pool_entries/);
+  assert.doesNotMatch(revision, /auth_pool_quota_latest/);
+  assert.doesNotMatch(revision, /auth_pool_quota_events/);
+  assert.doesNotMatch(revision, /auth_pool_fetch_log/);
+  assert.doesNotMatch(revision, /pool_health_snapshots/);
+});
+
 test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
   const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
   assert.ok(vercelConfig.crons.every((cron) => cron.path !== "/api/cron/probe-auth-pool"));

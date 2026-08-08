@@ -81,6 +81,104 @@ async function loadDbWithTempStore() {
   }
 }
 
+test("dashboard revision is singleton, monotonic, and changes only for visible writes", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    assert.deepEqual(await mod.dashboardRevision(), { revision: 0, updated_at: null });
+
+    await mod.bumpDashboardRevision("2026-08-08T08:00:00Z");
+    assert.deepEqual(await mod.dashboardRevision(), {
+      revision: 1,
+      updated_at: "2026-08-08T08:00:00Z",
+    });
+
+    const auth = {
+      source: "codex",
+      auth_json: fakeAuthJson({ accountId: "revision-provider", email: "revision@stardust.ai" }),
+      uploader_email: "owner@stardust.ai",
+      reporter_name: "owner@mac",
+      hostname: "mac",
+    };
+    await mod.upsertAuthPoolEntry(auth);
+    assert.equal((await mod.dashboardRevision()).revision, 2);
+    await mod.upsertAuthPoolEntry(auth);
+    assert.equal((await mod.dashboardRevision()).revision, 2, "deduplicated auth upload is a no-op");
+
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "quota@gpu4",
+      reported_at: "2026-08-08T08:01:00Z",
+      account_id: "revision@stardust.ai",
+      status: "ok",
+      windows: { "5h": null, "1week": { remaining_percent: 80, reset_at: "2026-08-15T00:00:00Z" } },
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 3);
+
+    await mod.setFeatureFlag("disabled_refresh_token", true, "owner@stardust.ai");
+    assert.equal((await mod.dashboardRevision()).revision, 4);
+    await mod.setFeatureFlag("disabled_refresh_token", true, "owner@stardust.ai");
+    assert.equal((await mod.dashboardRevision()).revision, 4, "unchanged flag is a no-op");
+
+    await mod.recordPoolHealthSnapshot({
+      captured_at: "2026-08-08T08:02:00Z",
+      source: "codex",
+      total: 1,
+      ok_count: 1,
+      hard_dead_count: 0,
+      other_err_count: 0,
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 5);
+
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "viewer@stardust.ai",
+      source: "codex",
+      servedEntry: null,
+      reason: "no_better_auth_available",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 6);
+
+    await mod.upsertInvalidatedAuthState({
+      source: "codex",
+      accountId: "revision@stardust.ai",
+      invalidatedAt: "2026-08-08T08:03:00Z",
+      error: "auth invalidated (token_invalidated)",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 7);
+    await mod.upsertInvalidatedAuthState({
+      source: "codex",
+      accountId: "revision@stardust.ai",
+      invalidatedAt: "2026-08-08T08:03:00Z",
+      error: "auth invalidated (token_invalidated)",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 7, "unchanged invalidation is a no-op");
+    await mod.markInvalidatedAuthNotified({
+      source: "codex",
+      accountId: "revision@stardust.ai",
+      notifiedAt: "2026-08-08T08:04:00Z",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 8);
+    await mod.markInvalidatedAuthNotified({
+      source: "codex",
+      accountId: "revision@stardust.ai",
+      notifiedAt: "2026-08-08T08:04:00Z",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 8, "unchanged notification is a no-op");
+    await mod.clearInvalidatedAuthState({ source: "codex", accountId: "revision@stardust.ai" });
+    assert.equal((await mod.dashboardRevision()).revision, 9);
+    await mod.clearInvalidatedAuthState({ source: "codex", accountId: "revision@stardust.ai" });
+    assert.equal((await mod.dashboardRevision()).revision, 9, "clearing absent invalidation is a no-op");
+
+    const deleted = await mod.deleteAuthPoolEntry({ source: "codex", accountId: "revision@stardust.ai" });
+    assert.equal(deleted.deleted, true);
+    assert.equal((await mod.dashboardRevision()).revision, 10);
+    await mod.deleteAuthPoolEntry({ source: "codex", accountId: "revision@stardust.ai" });
+    assert.equal((await mod.dashboardRevision()).revision, 10, "deleting absent auth is a no-op");
+  } finally {
+    cleanup();
+  }
+});
+
 test("authPoolEntrySummaries excludes encrypted auth material for status reads", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
@@ -1070,6 +1168,7 @@ test("upsertAuthPoolEntry rejects a stripped (placeholder-RT) blob so it can't p
     const dummyClaude = JSON.stringify({ credentials: { claudeAiOauth: { refreshToken: "disabled-by-hub-refresh-token", accessToken: "AT" } } });
     const claudeResult = await mod.upsertAuthPoolEntry({ source: "claude", auth_json: dummyClaude, uploader_email: "x@stardust.ai" });
     assert.equal(claudeResult.rejected, true);
+    assert.equal((await mod.dashboardRevision()).revision, 0, "rejected uploads must not change dashboard revision");
   } finally {
     cleanup();
   }
