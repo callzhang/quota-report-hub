@@ -195,6 +195,8 @@ In branches 2–3, when `disabled_refresh_token` is ON, the served blob is run t
 
 `/api/status` reads the revision before and after assembling current state. If a dashboard-visible write occurs between those reads, it retries the assembly once; if state keeps changing, it returns the normal service-unavailable response instead of labeling stale data with the new revision.
 
+The browser keys in-flight full-status requests by the exact session token and a request generation. Pasting or clearing a token invalidates older generations, so a delayed response from the previous session cannot clear or overwrite the current session. Revision responses also recheck tab visibility immediately before requesting full status.
+
 ---
 
 ## 7. Component: Worker

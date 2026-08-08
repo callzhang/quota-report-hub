@@ -850,23 +850,36 @@
       let loadedDashboardRevision = null;
       let dashboardRevisionToken = "";
       let statusRequest = null;
+      let statusRequestToken = "";
+      let statusRequestGeneration = 0;
       let revisionRequest = null;
 
       function load() {
-        if (statusRequest) return statusRequest;
-        statusRequest = loadDashboard().finally(() => {
-          statusRequest = null;
-        });
-        return statusRequest;
-      }
-
-      async function loadDashboard() {
         const token = currentToken || getStoredToken();
         if (!token) {
+          statusRequestGeneration += 1;
           setLockedView("Token required.");
-          return;
+          return Promise.resolve();
         }
+        if (statusRequest && statusRequestToken === token) return statusRequest;
 
+        const requestGeneration = ++statusRequestGeneration;
+        const request = loadDashboard(token, requestGeneration).finally(() => {
+          if (statusRequest === request) {
+            statusRequest = null;
+            statusRequestToken = "";
+          }
+        });
+        statusRequest = request;
+        statusRequestToken = token;
+        return request;
+      }
+
+      function statusRequestIsCurrent(token, requestGeneration) {
+        return requestGeneration === statusRequestGeneration && token === (currentToken || getStoredToken());
+      }
+
+      async function loadDashboard(token, requestGeneration) {
         let response;
         try {
           response = await fetch("/api/status", {
@@ -876,12 +889,15 @@
             },
           });
         } catch {
+          if (!statusRequestIsCurrent(token, requestGeneration)) return;
           setStatusUnavailable("Cannot reach the hub. Keeping the last loaded data; the page will retry automatically.");
           return;
         }
+        if (!statusRequestIsCurrent(token, requestGeneration)) return;
 
         if (response.status === 401) {
           const errorPayload = await readResponsePayload(response);
+          if (!statusRequestIsCurrent(token, requestGeneration)) return;
           currentToken = "";
           clearTokenCookie();
           tokenInput.value = "";
@@ -893,6 +909,7 @@
         }
 
         const payload = await readResponsePayload(response);
+        if (!statusRequestIsCurrent(token, requestGeneration)) return;
         if (!response.ok) {
           setStatusUnavailable(statusErrorMessage(response, payload));
           return;
@@ -1025,6 +1042,7 @@
       });
 
       clearTokenButton.addEventListener("click", () => {
+        statusRequestGeneration += 1;
         currentToken = "";
         clearTokenCookie();
         tokenInput.value = "";
@@ -1130,6 +1148,7 @@
             }
 
             if (response.status === 401) {
+              if (document.visibilityState !== "visible") return;
               await load();
               return;
             }
@@ -1138,6 +1157,7 @@
             if (!response.ok) return;
             applyTokenUpgrade(payload);
             if (payload.revision !== loadedDashboardRevision) {
+              if (document.visibilityState !== "visible") return;
               await load();
             }
           })().finally(() => {

@@ -36,7 +36,7 @@ test("dashboard checks a lightweight revision while visible and reloads only cha
   assert.match(html, /document\.visibilityState === "visible"/);
   assert.match(html, /async function checkDashboardRevision\(\)/);
   assert.match(html, /fetch\("\/api\/status-revision"/);
-  assert.match(html, /if \(payload\.revision !== loadedDashboardRevision\) \{\s*await load\(\);/);
+  assert.match(html, /if \(payload\.revision !== loadedDashboardRevision\) \{\s*if \(document\.visibilityState !== "visible"\) return;\s*await load\(\);/);
   assert.match(html, /setInterval\(checkDashboardRevision, DASHBOARD_REFRESH_MS\)/);
   assert.match(html, /document\.addEventListener\("visibilitychange", checkDashboardRevision\)/);
   assert.doesNotMatch(html, /setInterval\(refreshWhenVisible/);
@@ -50,9 +50,13 @@ test("dashboard tracks loaded revision and deduplicates overlapping status reque
   assert.match(html, /dashboardRevisionToken = payload\.dashboard_revision_token/);
   assert.match(html, /Authorization: `Bearer \$\{dashboardRevisionToken\}`/);
   assert.match(html, /let statusRequest = null/);
-  assert.match(html, /if \(statusRequest\) return statusRequest/);
+  assert.match(html, /let statusRequestToken = ""/);
+  assert.match(html, /let statusRequestGeneration = 0/);
+  assert.match(html, /statusRequest && statusRequestToken === token/);
+  assert.match(html, /statusRequestIsCurrent\(token, requestGeneration\)/);
   assert.match(html, /let revisionRequest = null/);
   assert.match(html, /if \(revisionRequest\) return revisionRequest/);
+  assert.match(html, /document\.visibilityState !== "visible"\) return;\s*await load\(\)/);
 });
 
 test("dashboard keeps the login panel hidden while restoring a saved session", async () => {
