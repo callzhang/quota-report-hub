@@ -102,9 +102,10 @@ test("quota history reads one indexed account range with a finite limit", async 
   assert.match(history, /source = \?/);
   assert.match(history, /account_id = \?/);
   assert.match(history, /reported_at >= \?/);
+  assert.match(history, /reported_at <= \?/);
   assert.match(history, /LIMIT \?/);
   assert.match(history, /Math\.min\([^,]+, 96\)/);
-  assert.doesNotMatch(history, /encrypted_auth_json|refresh_token|access_token/);
+  assert.doesNotMatch(history, /payload_json|auth_path|auth_last_refresh|email|name|hostname|reporter_name|model_context_window|five_h_used_percent|one_week_used_percent|encrypted_auth_json|refresh_token|access_token/);
 });
 
 test("dashboard-visible logical writes batch their data and revision updates atomically", async () => {

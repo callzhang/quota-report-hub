@@ -100,6 +100,7 @@ test("quota history decodes exact account parameters and returns a safe 24-hour 
     source: "claude",
     accountId: "user+chart@example.com",
     since: "2026-08-07T08:00:00.000Z",
+    until: "2026-08-08T08:00:00.000Z",
     limit: 96,
   });
   assert.equal(recorder.res.statusCode, 200);

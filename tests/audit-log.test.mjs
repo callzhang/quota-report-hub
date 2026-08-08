@@ -1073,6 +1073,7 @@ test("upsertAuthPoolQuota records every probe event and keeps continuous invalid
       source: "codex",
       accountId: "acct-history",
       since: "2026-05-05T00:00:00Z",
+      until: "2026-05-07T00:00:00Z",
       limit: 10,
     });
     assert.equal(events.length, 3);
@@ -1095,10 +1096,13 @@ test("authPoolQuotaEvents returns bounded chronological history for one exact ac
   try {
     const reports = [
       ["codex", "acct-history", "2026-08-07T07:59:59Z", 99],
+      ["codex", "acct-history", "2026-08-07T08:00:00Z", 90],
       ["codex", "acct-history", "2026-08-07T09:00:00Z", 80],
       ["codex", "other-account", "2026-08-08T06:00:00Z", 70],
       ["claude", "acct-history", "2026-08-08T06:30:00Z", 60],
       ["codex", "acct-history", "2026-08-08T07:00:00Z", 50],
+      ["codex", "acct-history", "2026-08-08T08:00:00Z", 40],
+      ["codex", "acct-history", "2026-08-08T08:00:01Z", 30],
     ];
     for (const [source, accountId, reportedAt, remaining] of reports) {
       await mod.upsertAuthPoolQuota({
@@ -1116,12 +1120,15 @@ test("authPoolQuotaEvents returns bounded chronological history for one exact ac
       source: "codex",
       accountId: "acct-history",
       since: "2026-08-07T08:00:00Z",
+      until: "2026-08-08T08:00:00Z",
       limit: 96,
     });
 
     assert.deepEqual(events.map((event) => event.reported_at), [
+      "2026-08-07T08:00:00Z",
       "2026-08-07T09:00:00Z",
       "2026-08-08T07:00:00Z",
+      "2026-08-08T08:00:00Z",
     ]);
     assert.ok(events.every((event) => event.source === "codex" && event.account_id === "acct-history"));
   } finally {
@@ -1139,6 +1146,9 @@ test("authPoolQuotaEvents keeps the newest 96 matching points in chronological o
     }));
     const reports = [
       { source: "codex", accountId: "acct-history", reportedAt: "2026-08-07T07:59:59Z", remaining: 1000 },
+      { source: "codex", accountId: "acct-history", reportedAt: "2026-08-07T08:00:00Z", remaining: 1003 },
+      { source: "codex", accountId: "acct-history", reportedAt: "2026-08-08T08:00:00Z", remaining: 1004 },
+      { source: "codex", accountId: "acct-history", reportedAt: "2026-08-08T08:00:01Z", remaining: 1005 },
       { source: "codex", accountId: "other-account", reportedAt: "2026-08-08T07:59:59Z", remaining: 1001 },
       { source: "claude", accountId: "acct-history", reportedAt: "2026-08-08T07:59:58Z", remaining: 1002 },
       ...matchingReports.map((report) => ({ source: "codex", accountId: "acct-history", ...report })),
@@ -1159,17 +1169,18 @@ test("authPoolQuotaEvents keeps the newest 96 matching points in chronological o
       source: "codex",
       accountId: "acct-history",
       since: "2026-08-07T08:00:00Z",
+      until: "2026-08-08T08:00:00Z",
       limit: 999,
     });
 
     assert.equal(events.length, 96);
-    assert.equal(events[0].reported_at, matchingReports[4].reportedAt);
-    assert.equal(events[0].windows["1week"].remaining_percent, matchingReports[4].remaining);
-    assert.equal(events.at(-1).reported_at, matchingReports.at(-1).reportedAt);
-    assert.equal(events.at(-1).windows["1week"].remaining_percent, matchingReports.at(-1).remaining);
+    assert.equal(events[0].reported_at, matchingReports[5].reportedAt);
+    assert.equal(events[0].windows["1week"].remaining_percent, matchingReports[5].remaining);
+    assert.equal(events.at(-1).reported_at, "2026-08-08T08:00:00Z");
+    assert.equal(events.at(-1).windows["1week"].remaining_percent, 1004);
     assert.deepEqual(
       events.map((event) => event.reported_at),
-      matchingReports.slice(4).map((report) => report.reportedAt),
+      [...matchingReports.slice(5).map((report) => report.reportedAt), "2026-08-08T08:00:00Z"],
     );
     assert.ok(events.every((event) => event.source === "codex" && event.account_id === "acct-history"));
   } finally {
@@ -1248,6 +1259,7 @@ test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", a
       source: "codex",
       accountId: "delete@example.com",
       since: "2026-05-05T00:00:00Z",
+      until: "2026-05-07T00:00:00Z",
     })).length, 1);
   } finally {
     cleanup();

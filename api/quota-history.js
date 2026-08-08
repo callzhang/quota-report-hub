@@ -54,18 +54,20 @@ export async function quotaHistoryHandlerImpl(req, res, deps = {
     }
 
     const generatedAt = deps.now();
+    const generatedAtIso = generatedAt.toISOString();
     const from = new Date(generatedAt.getTime() - HISTORY_WINDOW_MS).toISOString();
     const events = await deps.authPoolQuotaEvents({
       source,
       accountId,
       since: from,
+      until: generatedAtIso,
       limit: 96,
     });
     const payload = {
       source,
       account_id: accountId,
       from,
-      generated_at: generatedAt.toISOString(),
+      generated_at: generatedAtIso,
       points: events.slice(0, HISTORY_LIMIT).map((event) => ({
         reported_at: event.reported_at,
         status: event.status,
