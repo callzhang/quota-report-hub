@@ -1129,6 +1129,54 @@ test("authPoolQuotaEvents returns bounded chronological history for one exact ac
   }
 });
 
+test("authPoolQuotaEvents keeps the newest 96 matching points in chronological order", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const startMs = Date.parse("2026-08-07T12:00:00Z");
+    const matchingReports = Array.from({ length: 100 }, (_, index) => ({
+      reportedAt: new Date(startMs + index * 10 * 60 * 1000).toISOString(),
+      remaining: 100 - index,
+    }));
+    const reports = [
+      { source: "codex", accountId: "acct-history", reportedAt: "2026-08-07T07:59:59Z", remaining: 1000 },
+      { source: "codex", accountId: "other-account", reportedAt: "2026-08-08T07:59:59Z", remaining: 1001 },
+      { source: "claude", accountId: "acct-history", reportedAt: "2026-08-08T07:59:58Z", remaining: 1002 },
+      ...matchingReports.map((report) => ({ source: "codex", accountId: "acct-history", ...report })),
+    ];
+    for (const report of reports) {
+      await mod.upsertAuthPoolQuota({
+        source: report.source,
+        hostname: "worker",
+        reporter_name: "worker",
+        reported_at: report.reportedAt,
+        account_id: report.accountId,
+        status: "ok",
+        windows: { "5h": null, "1week": { remaining_percent: report.remaining } },
+      });
+    }
+
+    const events = await mod.authPoolQuotaEvents({
+      source: "codex",
+      accountId: "acct-history",
+      since: "2026-08-07T08:00:00Z",
+      limit: 999,
+    });
+
+    assert.equal(events.length, 96);
+    assert.equal(events[0].reported_at, matchingReports[4].reportedAt);
+    assert.equal(events[0].windows["1week"].remaining_percent, matchingReports[4].remaining);
+    assert.equal(events.at(-1).reported_at, matchingReports.at(-1).reportedAt);
+    assert.equal(events.at(-1).windows["1week"].remaining_percent, matchingReports.at(-1).remaining);
+    assert.deepEqual(
+      events.map((event) => event.reported_at),
+      matchingReports.slice(4).map((report) => report.reportedAt),
+    );
+    assert.ok(events.every((event) => event.source === "codex" && event.account_id === "acct-history"));
+  } finally {
+    cleanup();
+  }
+});
+
 test("upsertAuthPoolQuota treats claude authentication errors as invalidated auth", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
