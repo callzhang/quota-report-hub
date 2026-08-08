@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClient } from "@libsql/client";
-import { statusPayload } from "../lib/reports.js";
+import { authPoolStatusPayload, statusPayload } from "../lib/reports.js";
 
 function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", lastRefresh = "2026-05-06T00:00:00Z", sid = null }) {
   const payload = Buffer.from(
@@ -368,6 +368,9 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
         PRIMARY KEY (source, account_id)
       )
     `);
+    const legacyAuthJson = fakeAuthJson({ accountId: "same-provider-id", email: "same@stardust.ai" });
+    const { encryptAuthJson } = await import(`../lib/auth-pool.js?migration=${Date.now()}`);
+    const encrypted = encryptAuthJson(legacyAuthJson);
     await client.execute({
       sql: `
         INSERT INTO auth_pool_entries (
@@ -387,9 +390,9 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
         "alice@gpu4",
         "gpu4",
         "2026-05-06T00:00:00Z",
-        Buffer.from("{}").toString("base64"),
-        Buffer.from("iv").toString("base64"),
-        Buffer.from("tag").toString("base64"),
+        encrypted.encrypted_auth_json,
+        encrypted.iv,
+        encrypted.auth_tag,
       ],
     });
 
@@ -400,6 +403,16 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
       .sort((left, right) => Number(left.pk) - Number(right.pk))
       .map((row) => row.name);
     assert.deepEqual(pk, ["source", "account_id", "session_id"]);
+    const migratedSummary = (await mod.authPoolEntrySummaries())[0];
+    assert.equal(migratedSummary.has_refresh_token, null);
+    const migratedStatus = authPoolStatusPayload([{
+      ...migratedSummary,
+      auth_expires_at: "2026-05-05T00:00:00Z",
+    }], [{
+      source: "codex", account_id: "same@stardust.ai", reported_at: "2026-05-04T23:30:00Z", status: "ok",
+      windows: { "5h": null, "1week": { remaining_percent: 80, reset_at: "2026-05-13T00:00:00Z" } },
+    }], "2026-05-05T00:30:00Z");
+    assert.equal(migratedStatus.items[0].availability.reason, "refresh_recovery_unknown");
 
     await mod.upsertAuthPoolEntry({
       source: "codex",
@@ -438,6 +451,30 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
       process.env.TOKEN_ISSUE_KEY = previousTokenIssueKey;
     }
     rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("identical re-upload repairs an unknown refresh capability marker exactly once", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const authJson = fakeAuthJson({ accountId: "repair-provider", email: "repair@stardust.ai" });
+    await mod.upsertAuthPoolEntry({ source: "codex", auth_json: authJson, uploader_email: "owner@stardust.ai" });
+    await client.execute(`UPDATE auth_pool_entries SET has_refresh_token = NULL`);
+    const before = await mod.dashboardRevision();
+
+    const repaired = await mod.upsertAuthPoolEntry({ source: "codex", auth_json: authJson, uploader_email: "owner@stardust.ai" });
+    const afterRepair = await mod.dashboardRevision();
+    const duplicate = await mod.upsertAuthPoolEntry({ source: "codex", auth_json: authJson, uploader_email: "owner@stardust.ai" });
+    const afterDuplicate = await mod.dashboardRevision();
+
+    assert.equal(repaired.deduplicated, true);
+    assert.equal(repaired.has_refresh_token, true);
+    assert.equal((await mod.authPoolEntrySummaries())[0].has_refresh_token, true);
+    assert.equal(afterRepair.revision, before.revision + 1);
+    assert.equal(duplicate.has_refresh_token, true);
+    assert.equal(afterDuplicate.revision, afterRepair.revision);
+  } finally {
+    cleanup();
   }
 });
 

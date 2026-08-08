@@ -73,6 +73,7 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       item: {
         source: "codex",
         auth_expired: true,
+        has_refresh_token: false,
         display_windows: { "1week": window(99, "2026-08-15T00:00:00Z") },
       },
       expected: { state: "unavailable", currently_usable: false, reason: "access_token_expired" },
@@ -111,6 +112,17 @@ test("deriveAccountAvailability applies account-state precedence", () => {
         display_windows: { "1week": window(99, "2026-08-15T00:00:00Z") },
       },
       expected: { state: "unavailable", currently_usable: false, reason: "access_token_expired" },
+    },
+    {
+      name: "expired legacy access with unknown refresh capability does not demand login",
+      item: {
+        source: "codex",
+        auth_expired: true,
+        has_refresh_token: null,
+        refresh_validity: { status: "unverified" },
+        display_windows: { "1week": window(99, "2026-08-15T00:00:00Z") },
+      },
+      expected: { state: "quota_unknown", currently_usable: false, reason: "refresh_recovery_unknown" },
     },
     {
       name: "a successful probe without complete quota is unknown",

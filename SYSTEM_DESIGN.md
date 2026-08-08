@@ -206,7 +206,7 @@ The browser keys in-flight full-status requests by the exact session token and a
 
 - `unavailable`: refresh rejection, auth invalidation, ineligible plan, or an unrecoverable access-token expiry overrides quota history.
 - `waiting_for_new_quota`: a required window reset has passed and no post-reset quota exists.
-- `quota_unknown`: required evidence is missing, partial, failed, older than the one-hour report-freshness boundary, or has no future reset boundary. An expired access token is also unknown—not unavailable—when the auth entry's safe `has_refresh_token` marker shows that a confirmed or not-yet-tested refresh token can recover it without owner login. AT-only entries are unavailable after access expiry.
+- `quota_unknown`: required evidence is missing, partial, failed, older than the one-hour report-freshness boundary, or has no future reset boundary. An expired access token is also unknown—not unavailable—when the auth entry's safe `has_refresh_token` marker is true, or when a migrated legacy row still has a null/unknown marker. New AT-only entries explicitly store false and are unavailable after access expiry. An identical re-upload repairs a null marker and bumps the dashboard revision only when that visible capability changes.
 - `low_quota`: all required evidence is current, but Codex weekly quota is below 5%, or Claude 5-hour/weekly quota is below 20%/5% respectively.
 - `available`: all required windows are current and meet the same thresholds used by auth selection.
 
