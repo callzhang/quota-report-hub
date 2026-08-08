@@ -770,11 +770,17 @@
         return stateLine("Quota", label, tone);
       }
 
+      function refreshStateLabel(status) {
+        if (status === "confirmed") return "verified";
+        if (status === "rejected") return "rejected";
+        return "not tested";
+      }
+
       function refreshValidityLine(item) {
         const refresh = item.refresh_validity || {};
         const status = refresh.status || "unverified";
         const tone = status === "confirmed" ? "good" : status === "rejected" ? "bad" : "warn";
-        return stateLine("Refresh", escapeHtml(refresh.label || "refresh not verified"), tone);
+        return stateLine("Refresh", escapeHtml(refreshStateLabel(status)), tone);
       }
 
       function usageCell(item) {

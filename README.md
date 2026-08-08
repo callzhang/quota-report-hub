@@ -143,6 +143,7 @@ The dashboard now reflects the cloud auth pool, not arbitrary client report rows
 
 - while the dashboard tab is visible it reloads status every minute, and switching back to the tab refreshes it immediately
 - a valid dashboard session is restored from the saved browser cookie; opening `login.html` reuses that session instead of asking the user to log in again
+- refresh-token state is shown as `verified`, `rejected`, or `not tested`; a successful access-token quota probe alone does not claim that refresh was verified
 - each visible row should correspond to one cloud-stored auth entry
 - quota metadata is shown as the latest effective quota associated with that cloud auth entry
 - hard-invalidated auths should not remain selectable

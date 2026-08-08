@@ -16,6 +16,9 @@ test("dashboard unlock shows non-auth status failures instead of failing silentl
   assert.match(html, /quota snapshot expired/);
   assert.match(html, /item\.quota_snapshot_state/);
   assert.match(html, /item\.refresh_validity/);
+  assert.match(html, /function refreshStateLabel\(status\)/);
+  assert.match(html, /return stateLine\("Refresh", escapeHtml\(refreshStateLabel\(status\)\), tone\)/);
+  assert.doesNotMatch(html, /escapeHtml\(refresh\.label \|\| "refresh not verified"\)/);
   assert.match(html, /item\.token_state/);
   assert.match(html, /access token expired/);
   assert.match(html, /item\.display_windows_stale \?\? item\.windows_stale/);
