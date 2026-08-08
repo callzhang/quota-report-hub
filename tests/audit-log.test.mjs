@@ -179,6 +179,21 @@ test("dashboard revision is singleton, monotonic, and changes only for visible w
   }
 });
 
+test("concurrent identical feature flag writes increment dashboard revision once", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    assert.equal((await mod.dashboardRevision()).revision, 0);
+    await Promise.all([
+      mod.setFeatureFlag("disabled_refresh_token", true, "first@stardust.ai"),
+      mod.setFeatureFlag("disabled_refresh_token", true, "second@stardust.ai"),
+    ]);
+    assert.equal(await mod.getFeatureFlag("disabled_refresh_token"), true);
+    assert.equal((await mod.dashboardRevision()).revision, 1);
+  } finally {
+    cleanup();
+  }
+});
+
 test("authPoolEntrySummaries excludes encrypted auth material for status reads", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {

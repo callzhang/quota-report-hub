@@ -120,6 +120,12 @@ test("dashboard-visible logical writes batch their data and revision updates ato
   assert.match(authBatch, /\.\.\.cleanupStatements/);
   assert.match(authBatch, /INSERT INTO auth_pool_entries/);
   assert.match(authBatch, /dashboardRevisionUpdate/);
+
+  const flag = functionBody(source, "setFeatureFlag");
+  assert.doesNotMatch(flag, /SELECT value FROM feature_flags/);
+  assert.match(flag, /feature_flags\.value IS NOT excluded\.value/);
+  assert.match(flag, /client\.batch/);
+  assert.match(flag, /changes\(\) > 0/);
 });
 
 test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
