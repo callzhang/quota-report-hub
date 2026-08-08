@@ -102,8 +102,8 @@ test("quota history decodes exact account parameters and returns a safe 24-hour 
   assert.deepEqual(query, {
     source: "claude",
     accountId: "user+chart@example.com",
-    since: "2026-08-07T08:00:00Z",
-    until: "2026-08-08T08:00:00Z",
+    since: "2026-08-07T08:00:00.000Z",
+    until: "2026-08-08T08:00:00.000Z",
     limit: 96,
   });
   assert.equal(recorder.res.statusCode, 200);
@@ -111,7 +111,7 @@ test("quota history decodes exact account parameters and returns a safe 24-hour 
   assert.deepEqual(JSON.parse(recorder.result().body), {
     source: "claude",
     account_id: "user+chart@example.com",
-    from: "2026-08-07T08:00:00Z",
+    from: "2026-08-07T08:00:00.000Z",
     generated_at: "2026-08-08T08:00:00.000Z",
     points: [{
       reported_at: "2026-08-08T07:00:00Z",
@@ -134,7 +134,7 @@ test("quota history includes second-resolution 24-hour boundaries when now has m
     const db = await import(`../lib/db.js?history-integration=${Date.now()}`);
     for (const reportedAt of [
       "2026-08-07T08:00:00Z",
-      "2026-08-08T08:00:00Z",
+      "2026-08-08T08:00:00.000Z",
       "2026-08-08T08:00:01Z",
     ]) {
       await db.upsertAuthPoolQuota({
@@ -159,12 +159,42 @@ test("quota history includes second-resolution 24-hour boundaries when now has m
 
     const payload = JSON.parse(recorder.result().body);
     assert.equal(recorder.res.statusCode, 200);
-    assert.equal(payload.from, "2026-08-07T08:00:00Z");
+    assert.equal(payload.from, "2026-08-07T08:00:00.123Z");
     assert.equal(payload.generated_at, "2026-08-08T08:00:00.123Z");
     assert.deepEqual(payload.points.map((point) => point.reported_at), [
-      "2026-08-07T08:00:00Z",
-      "2026-08-08T08:00:00Z",
+      "2026-08-08T08:00:00.000Z",
     ]);
+  } finally {
+    if (previousUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = previousUrl;
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("quota history normalizes offset timestamps before indexed storage and rejects malformed timestamps", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "qrh-history-normalize-test-"));
+  const previousUrl = process.env.TURSO_DATABASE_URL;
+  process.env.TURSO_DATABASE_URL = `file:${join(tempDir, "history.db")}`;
+  try {
+    const db = await import(`../lib/db.js?history-normalize=${Date.now()}`);
+    await db.upsertAuthPoolQuota({
+      source: "codex", hostname: "worker", reporter_name: "worker",
+      reported_at: "2026-08-08T16:00:00.250+08:00", account_id: "acct-offset",
+      status: "ok", windows: { "5h": null, "1week": { remaining_percent: 50 } },
+    });
+    await assert.rejects(() => db.upsertAuthPoolQuota({
+      source: "codex", hostname: "worker", reporter_name: "worker",
+      reported_at: "not-a-time", account_id: "acct-offset", status: "ok", windows: {},
+    }), /reported_at must be a valid timestamp/);
+
+    const { quotaHistoryHandlerImpl } = await import("../api/quota-history.js");
+    const recorder = responseRecorder();
+    await quotaHistoryHandlerImpl({ url: "/api/quota-history?source=codex&account_id=acct-offset" }, recorder.res, dependencies({
+      authPoolQuotaEvents: db.authPoolQuotaEvents,
+      now: () => new Date("2026-08-08T08:00:00.500Z"),
+    }));
+    const payload = JSON.parse(recorder.result().body);
+    assert.deepEqual(payload.points.map((point) => point.reported_at), ["2026-08-08T08:00:00.250Z"]);
   } finally {
     if (previousUrl === undefined) delete process.env.TURSO_DATABASE_URL;
     else process.env.TURSO_DATABASE_URL = previousUrl;

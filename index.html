@@ -498,6 +498,8 @@
       const availabilityPopover = document.getElementById("availability-popover");
       const COOKIE_NAME = "quota_report_hub_token";
       const DASHBOARD_REFRESH_MS = 60 * 1000;
+      const MAX_DASHBOARD_TRANSITION_DELAY_MS = 24 * 24 * 60 * 60 * 1000;
+      const MAX_HISTORY_GAP_MS = 20 * 60 * 1000;
       const HISTORY_CACHE_MS = 5 * 60 * 1000;
       const HOVER_OPEN_DELAY_MS = 140;
       const quotaHistoryCache = new Map();
@@ -639,6 +641,42 @@
         return String(state || "quota_unknown").replaceAll("_", " ").toUpperCase();
       }
 
+      function formatDuration(ms) {
+        const seconds = Math.max(0, Math.ceil(ms / 1000));
+        if (seconds < 60) return `${seconds}s`;
+        const minutes = Math.ceil(seconds / 60);
+        if (minutes < 60) return `${minutes}m`;
+        const hours = Math.floor(minutes / 60);
+        const remainingMinutes = minutes % 60;
+        if (hours < 24) return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+        const days = Math.floor(hours / 24);
+        return `${days}d ${hours % 24}h`;
+      }
+
+      function quotaSummary(snapshot) {
+        return Object.entries(snapshot?.windows || {}).map(([name, window]) =>
+          `${formatPercent(window.remaining_percent)} ${name} remaining quota`
+        ).join(" · ");
+      }
+
+      function formatAvailabilitySummary(availability) {
+        const nowMs = Date.now();
+        if (availability.current_quota) {
+          const resetTimes = Object.values(availability.current_quota.windows || {})
+            .map((window) => Date.parse(window.reset_at || "")).filter(Number.isFinite);
+          const resetText = resetTimes.length ? ` · resets in ${formatDuration(Math.min(...resetTimes) - nowMs)}` : "";
+          const eligibility = availability.state === "low_quota" ? " · not eligible for rotation" : "";
+          return `${quotaSummary(availability.current_quota)}${resetText}${eligibility}`;
+        }
+        if (availability.state === "waiting_for_new_quota") {
+          const resets = Object.values(availability.historical_snapshot?.windows || {})
+            .map((window) => Date.parse(window.reset_at || "")).filter(Number.isFinite);
+          const age = resets.length ? formatDuration(nowMs - Math.max(...resets)) : "unknown time";
+          return `Previous quota window reset ${age} ago · Next automatic check in 1m`;
+        }
+        return availability.summary || "Current availability is unknown.";
+      }
+
       function accountItemKey(source, accountId) {
         return JSON.stringify([source, accountId]);
       }
@@ -650,7 +688,7 @@
         return `<button class="availability-trigger ${escapeHtml(availability.tone || "muted")}" type="button"
           data-account-key="${escapeHtml(key)}" aria-haspopup="dialog" aria-expanded="false">
           <span class="availability-state">${escapeHtml(availabilityLabel(availability.state))}</span>
-          <span class="availability-summary">${escapeHtml(availability.summary || "Current availability is unknown.")}</span>
+          <span class="availability-summary">${escapeHtml(formatAvailabilitySummary(availability))}</span>
         </button>`;
       }
 
@@ -734,7 +772,8 @@
             resetIdentity !== segmentResetIdentity ||
             (Number.isFinite(resetAt) && resetAt > previousCapture && resetAt <= capturedAt)
           );
-          if (point.status !== "ok" || value === null || value === undefined || !Number.isFinite(Number(value)) || (segmentTone && tone !== segmentTone) || crossedReset) {
+          const observationGap = Number.isFinite(previousCapture) && Number.isFinite(capturedAt) && capturedAt - previousCapture > MAX_HISTORY_GAP_MS;
+          if (point.status !== "ok" || value === null || value === undefined || !Number.isFinite(Number(value)) || (segmentTone && tone !== segmentTone) || crossedReset || observationGap) {
             if (segment.length) segments.push({ tone: segmentTone, points: segment });
             segment = [];
           }
@@ -820,7 +859,7 @@
         popoverViewportListenersBound = false;
       }
 
-      async function openAvailabilityPopover(trigger) {
+      async function openAvailabilityPopover(trigger, { focusDetails = false } = {}) {
         if (popoverOpenTimer !== null) clearTimeout(popoverOpenTimer);
         popoverOpenTimer = null;
         if (popoverCloseTimer !== null) clearTimeout(popoverCloseTimer);
@@ -837,7 +876,9 @@
           <section class="popover-section"><h4>Latest quota snapshot</h4>${snapshotMarkup(availability)}</section>
           <section class="popover-section"><h4>24-hour quota history</h4><div data-history-content class="meta">Loading quota history…</div></section>
           <section class="popover-section"><h4>Diagnostics</h4>${diagnosticsMarkup(item)}</section>`;
-        availabilityPopover.querySelector(".popover-close").addEventListener("click", () => closeAvailabilityPopover({ restoreFocus: true }));
+        const closeButton = availabilityPopover.querySelector(".popover-close");
+        closeButton.addEventListener("click", () => closeAvailabilityPopover({ restoreFocus: true }));
+        if (focusDetails) closeButton.focus();
         positionAvailabilityPopover(trigger);
         const historyContent = availabilityPopover.querySelector("[data-history-content]");
         try {
@@ -872,6 +913,11 @@
         });
         trigger.addEventListener("focus", () => openAvailabilityPopover(trigger));
         trigger.addEventListener("click", () => openAvailabilityPopover(trigger));
+        trigger.addEventListener("keydown", (event) => {
+          if (!["Enter", " ", "ArrowDown"].includes(event.key)) return;
+          event.preventDefault();
+          openAvailabilityPopover(trigger, { focusDetails: true });
+        });
         trigger.addEventListener("mouseleave", () => {
           if (popoverOpenTimer !== null) clearTimeout(popoverOpenTimer);
           popoverOpenTimer = null;
@@ -930,6 +976,21 @@
       let statusRequestToken = "";
       let statusRequestGeneration = 0;
       let revisionRequest = null;
+      let dashboardTransitionTimer = null;
+      let nextDashboardTransitionAt = null;
+
+      function scheduleDashboardTransition(items) {
+        if (dashboardTransitionTimer !== null) clearTimeout(dashboardTransitionTimer);
+        dashboardTransitionTimer = null;
+        nextDashboardTransitionAt = null;
+        if (document.visibilityState !== "visible") return;
+        const deadlines = (items || []).map((item) => Date.parse(item.availability?.next_transition_at || "")).filter(Number.isFinite);
+        if (!deadlines.length) return;
+        nextDashboardTransitionAt = Math.min(...deadlines);
+        const delay = Math.max(0, nextDashboardTransitionAt - Date.now() + 25);
+        const boundedDelay = Math.min(delay, MAX_DASHBOARD_TRANSITION_DELAY_MS);
+        dashboardTransitionTimer = setTimeout(load, boundedDelay);
+      }
 
       function load() {
         const token = currentToken || getStoredToken();
@@ -999,6 +1060,7 @@
         renderAdminFlag(payload);
         renderHealthTrend(payload.health_history);
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
+        scheduleDashboardTransition(items);
         const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
         const fetchLogByAccount = new Map();
         for (const log of (payload.fetch_log || [])) {
@@ -1222,7 +1284,15 @@
       });
       load();
       async function checkDashboardRevision() {
+        if (document.visibilityState !== "visible") {
+          if (dashboardTransitionTimer !== null) clearTimeout(dashboardTransitionTimer);
+          dashboardTransitionTimer = null;
+          return;
+        }
         if (document.visibilityState === "visible") {
+          if (nextDashboardTransitionAt !== null && Date.now() >= nextDashboardTransitionAt) {
+            return load();
+          }
           if (revisionRequest) return revisionRequest;
           const token = currentToken || getStoredToken();
           if (!token || !dashboardRevisionToken) return;

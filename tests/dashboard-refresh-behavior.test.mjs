@@ -183,6 +183,42 @@ test("quota chart never connects readings across reset boundaries", async () => 
   assert.doesNotMatch(markup, /L460\.0/);
 });
 
+test("quota chart never connects successful readings across a long observation gap", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  const now = Date.now();
+  const resetAt = new Date(now + 7200000).toISOString();
+  const points = [
+    { reported_at: new Date(now - 3600000).toISOString(), status: "ok", one_week_remaining_percent: 70, one_week_reset_at: resetAt },
+    { reported_at: new Date(now - 600000).toISOString(), status: "ok", one_week_remaining_percent: 65, one_week_reset_at: resetAt },
+  ];
+  const markup = harness.evaluate(`renderQuotaHistoryChart(${JSON.stringify(points)})`);
+
+  assert.equal((markup.match(/<g class="history-/g) || []).length, 2);
+  assert.doesNotMatch(markup, /L460\.0/);
+});
+
+test("visibility regain reloads once after a time-derived availability deadline", async () => {
+  let statusCalls = 0;
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") {
+      statusCalls += 1;
+      return response(200, statusPayload(statusCalls, "revision-ticket"));
+    }
+    if (url === "/api/status-revision") throw new Error("deadline should bypass revision read");
+    throw new Error(`unexpected request ${url}`);
+  });
+  harness.evaluate(`nextDashboardTransitionAt = Date.now() - 1`);
+  harness.document.visibilityState = "hidden";
+  await harness.documentListeners.visibilitychange();
+  harness.document.visibilityState = "visible";
+  await harness.documentListeners.visibilitychange();
+
+  assert.equal(statusCalls, 2);
+});
+
 test("popover viewport listeners are registered and removed as one lifecycle", async () => {
   const harness = await dashboardHarness(async (url) => {
     if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));

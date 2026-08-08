@@ -29,6 +29,9 @@ test("dashboard presents one availability status and moves technical evidence in
   assert.doesNotMatch(html, /<th>5H \(Claude\)<\/th>|<th>1week<\/th>|<th>Cloud Status<\/th>/);
   assert.match(html, /function availabilityCell\(item\)/);
   assert.match(html, /availability\.summary/);
+  assert.match(html, /formatAvailabilitySummary\(availability\)/);
+  assert.match(html, /remaining quota/);
+  assert.match(html, /Next automatic check/);
   assert.match(html, /aria-haspopup="dialog"/);
   assert.match(html, /role="dialog"/);
   assert.match(html, /aria-modal="false"/);
@@ -50,11 +53,15 @@ test("active and archived account tables keep independent column layouts", async
 test("availability details are keyboard, pointer, and touch accessible", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 
-  assert.match(html, /function openAvailabilityPopover\(trigger\)/);
+  assert.match(html, /function openAvailabilityPopover\(trigger, \{ focusDetails = false \} = \{\}\)/);
   assert.match(html, /function closeAvailabilityPopover\(\{ restoreFocus = false \} = \{\}\)/);
   assert.match(html, /trigger\.addEventListener\("mouseenter"/);
   assert.match(html, /trigger\.addEventListener\("focus"/);
   assert.match(html, /trigger\.addEventListener\("click"/);
+  assert.match(html, /trigger\.addEventListener\("keydown"/);
+  assert.match(html, /\["Enter", " ", "ArrowDown"\]\.includes\(event\.key\)/);
+  assert.match(html, /openAvailabilityPopover\(trigger, \{ focusDetails: true \}\)/);
+  assert.match(html, /if \(focusDetails\) closeButton\.focus\(\)/);
   assert.match(html, /event\.key === "Escape"/);
   assert.match(html, /closeAvailabilityPopover\(\{ restoreFocus: true \}\)/);
   assert.match(html, /document\.addEventListener\("pointerdown"/);
@@ -88,6 +95,8 @@ test("quota details mark historical snapshots and render chart gaps without inte
   assert.match(html, /Reset:/);
   assert.match(html, /function renderQuotaHistoryChart\(points\)/);
   assert.match(html, /splitQuotaSeries/);
+  assert.match(html, /MAX_HISTORY_GAP_MS/);
+  assert.match(html, /capturedAt - previousCapture > MAX_HISTORY_GAP_MS/);
   assert.match(html, /<svg[^`]*role="img"/);
   assert.match(html, /No quota history in the last 24 hours/);
   assert.match(html, /History temporarily unavailable/);
@@ -106,6 +115,12 @@ test("dashboard checks a lightweight revision while visible and reloads only cha
   assert.match(html, /setInterval\(checkDashboardRevision, DASHBOARD_REFRESH_MS\)/);
   assert.match(html, /document\.addEventListener\("visibilitychange", checkDashboardRevision\)/);
   assert.doesNotMatch(html, /setInterval\(refreshWhenVisible/);
+  assert.match(html, /function scheduleDashboardTransition\(items\)/);
+  assert.match(html, /availability\?\.next_transition_at/);
+  assert.match(html, /setTimeout\(load, boundedDelay\)/);
+  assert.match(html, /clearTimeout\(dashboardTransitionTimer\)/);
+  assert.match(html, /Date\.now\(\) >= nextDashboardTransitionAt/);
+  assert.match(html, /return load\(\)/);
 });
 
 test("dashboard tracks loaded revision and deduplicates overlapping status requests", async () => {

@@ -211,7 +211,8 @@ test("statusPayload attaches a derived account availability state", () => {
         },
       },
     },
-    historical_snapshot: null,
+      historical_snapshot: null,
+      next_transition_at: "2026-04-21T11:15:00.001Z",
   });
 });
 

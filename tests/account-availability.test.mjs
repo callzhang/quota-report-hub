@@ -69,13 +69,35 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       expected: { state: "unavailable", currently_usable: false, reason: "account_ineligible" },
     },
     {
-      name: "unrecoverably expired access is unavailable",
+      name: "expired access without refresh recovery evidence is unavailable",
       item: {
         source: "codex",
         auth_expired: true,
         display_windows: { "1week": window(99, "2026-08-15T00:00:00Z") },
       },
       expected: { state: "unavailable", currently_usable: false, reason: "access_token_expired" },
+    },
+    {
+      name: "expired access with an untested refresh token is recoverable but unknown",
+      item: {
+        source: "codex",
+        auth_expired: true,
+        refresh_validity: { status: "unverified" },
+        reported_at: "2026-08-08T07:24:12Z",
+        display_windows: { "1week": window(99, "2026-08-15T00:00:00Z") },
+      },
+      expected: { state: "quota_unknown", currently_usable: false, reason: "access_expired_recoverable" },
+    },
+    {
+      name: "expired access with a confirmed refresh token is recoverable but unknown",
+      item: {
+        source: "codex",
+        auth_expired: true,
+        refresh_validity: { status: "confirmed" },
+        reported_at: "2026-08-08T07:24:12Z",
+        display_windows: { "1week": window(99, "2026-08-15T00:00:00Z") },
+      },
+      expected: { state: "quota_unknown", currently_usable: false, reason: "access_expired_recoverable" },
     },
     {
       name: "a successful probe without complete quota is unknown",

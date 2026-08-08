@@ -9,10 +9,6 @@ import { authPoolQuotaEvents } from "../lib/db.js";
 const HISTORY_LIMIT = 96;
 const HISTORY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-function secondResolutionTimestamp(date) {
-  return `${date.toISOString().slice(0, 19)}Z`;
-}
-
 export default async function handler(req, res) {
   return quotaHistoryHandlerImpl(req, res);
 }
@@ -59,9 +55,8 @@ export async function quotaHistoryHandlerImpl(req, res, deps = {
 
     const generatedAt = deps.now();
     const generatedAtIso = generatedAt.toISOString();
-    const queryUntil = new Date(Math.floor(generatedAt.getTime() / 1000) * 1000);
-    const until = secondResolutionTimestamp(queryUntil);
-    const from = secondResolutionTimestamp(new Date(queryUntil.getTime() - HISTORY_WINDOW_MS));
+    const until = generatedAt.toISOString();
+    const from = new Date(generatedAt.getTime() - HISTORY_WINDOW_MS).toISOString();
     const events = await deps.authPoolQuotaEvents({
       source,
       accountId,

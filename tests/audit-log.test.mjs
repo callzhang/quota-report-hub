@@ -1079,7 +1079,7 @@ test("upsertAuthPoolQuota records every probe event and keeps continuous invalid
     assert.equal(events.length, 3);
     assert.deepEqual(
       events.map((event) => event.reported_at),
-      ["2026-05-06T00:00:00Z", "2026-05-06T01:00:00Z", "2026-05-06T02:00:00Z"]
+      ["2026-05-06T00:00:00.000Z", "2026-05-06T01:00:00.000Z", "2026-05-06T02:00:00.000Z"]
     );
 
     const states = await mod.authPoolInvalidatedNotifications();
@@ -1125,10 +1125,10 @@ test("authPoolQuotaEvents returns bounded chronological history for one exact ac
     });
 
     assert.deepEqual(events.map((event) => event.reported_at), [
-      "2026-08-07T08:00:00Z",
-      "2026-08-07T09:00:00Z",
-      "2026-08-08T07:00:00Z",
-      "2026-08-08T08:00:00Z",
+      "2026-08-07T08:00:00.000Z",
+      "2026-08-07T09:00:00.000Z",
+      "2026-08-08T07:00:00.000Z",
+      "2026-08-08T08:00:00.000Z",
     ]);
     assert.ok(events.every((event) => event.source === "codex" && event.account_id === "acct-history"));
   } finally {
@@ -1174,13 +1174,13 @@ test("authPoolQuotaEvents keeps the newest 96 matching points in chronological o
     });
 
     assert.equal(events.length, 96);
-    assert.equal(events[0].reported_at, matchingReports[5].reportedAt);
+    assert.equal(events[0].reported_at, new Date(matchingReports[5].reportedAt).toISOString());
     assert.equal(events[0].windows["1week"].remaining_percent, matchingReports[5].remaining);
-    assert.equal(events.at(-1).reported_at, "2026-08-08T08:00:00Z");
+    assert.equal(events.at(-1).reported_at, "2026-08-08T08:00:00.000Z");
     assert.equal(events.at(-1).windows["1week"].remaining_percent, 1004);
     assert.deepEqual(
       events.map((event) => event.reported_at),
-      [...matchingReports.slice(5).map((report) => report.reportedAt), "2026-08-08T08:00:00Z"],
+      [...matchingReports.slice(5).map((report) => new Date(report.reportedAt).toISOString()), "2026-08-08T08:00:00.000Z"],
     );
     assert.ok(events.every((event) => event.source === "codex" && event.account_id === "acct-history"));
   } finally {
