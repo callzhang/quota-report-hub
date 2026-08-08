@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 process.env.TURSO_DATABASE_URL ||= "file:quota-report-hub-quota-history-test.db";
 process.env.TURSO_AUTH_TOKEN ||= "test-token";
@@ -99,8 +102,8 @@ test("quota history decodes exact account parameters and returns a safe 24-hour 
   assert.deepEqual(query, {
     source: "claude",
     accountId: "user+chart@example.com",
-    since: "2026-08-07T08:00:00.000Z",
-    until: "2026-08-08T08:00:00.000Z",
+    since: "2026-08-07T08:00:00Z",
+    until: "2026-08-08T08:00:00Z",
     limit: 96,
   });
   assert.equal(recorder.res.statusCode, 200);
@@ -108,7 +111,7 @@ test("quota history decodes exact account parameters and returns a safe 24-hour 
   assert.deepEqual(JSON.parse(recorder.result().body), {
     source: "claude",
     account_id: "user+chart@example.com",
-    from: "2026-08-07T08:00:00.000Z",
+    from: "2026-08-07T08:00:00Z",
     generated_at: "2026-08-08T08:00:00.000Z",
     points: [{
       reported_at: "2026-08-08T07:00:00Z",
@@ -121,6 +124,52 @@ test("quota history decodes exact account parameters and returns a safe 24-hour 
     }],
     auth_pool_user_token: "new-token",
   });
+});
+
+test("quota history includes second-resolution 24-hour boundaries when now has milliseconds", async () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "qrh-history-api-test-"));
+  const previousUrl = process.env.TURSO_DATABASE_URL;
+  process.env.TURSO_DATABASE_URL = `file:${join(tempDir, "history.db")}`;
+  try {
+    const db = await import(`../lib/db.js?history-integration=${Date.now()}`);
+    for (const reportedAt of [
+      "2026-08-07T08:00:00Z",
+      "2026-08-08T08:00:00Z",
+      "2026-08-08T08:00:01Z",
+    ]) {
+      await db.upsertAuthPoolQuota({
+        source: "codex",
+        hostname: "worker",
+        reporter_name: "worker",
+        reported_at: reportedAt,
+        account_id: "acct-boundary",
+        status: "ok",
+        windows: { "5h": null, "1week": { remaining_percent: 50 } },
+      });
+    }
+
+    const { quotaHistoryHandlerImpl } = await import("../api/quota-history.js");
+    const recorder = responseRecorder();
+    await quotaHistoryHandlerImpl({
+      url: "/api/quota-history?source=codex&account_id=acct-boundary",
+    }, recorder.res, dependencies({
+      authPoolQuotaEvents: db.authPoolQuotaEvents,
+      now: () => new Date("2026-08-08T08:00:00.123Z"),
+    }));
+
+    const payload = JSON.parse(recorder.result().body);
+    assert.equal(recorder.res.statusCode, 200);
+    assert.equal(payload.from, "2026-08-07T08:00:00Z");
+    assert.equal(payload.generated_at, "2026-08-08T08:00:00.123Z");
+    assert.deepEqual(payload.points.map((point) => point.reported_at), [
+      "2026-08-07T08:00:00Z",
+      "2026-08-08T08:00:00Z",
+    ]);
+  } finally {
+    if (previousUrl === undefined) delete process.env.TURSO_DATABASE_URL;
+    else process.env.TURSO_DATABASE_URL = previousUrl;
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
 
 test("quota history follows the service-unavailable contract", async () => {
