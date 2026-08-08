@@ -847,7 +847,19 @@
           : `Hub request failed (${response.status}). Try again after the service recovers.`;
       }
 
-      async function load() {
+      let loadedDashboardRevision = null;
+      let statusRequest = null;
+      let revisionRequest = null;
+
+      function load() {
+        if (statusRequest) return statusRequest;
+        statusRequest = loadDashboard().finally(() => {
+          statusRequest = null;
+        });
+        return statusRequest;
+      }
+
+      async function loadDashboard() {
         const token = currentToken || getStoredToken();
         if (!token) {
           setLockedView("Token required.");
@@ -886,6 +898,7 @@
         }
 
         applyTokenUpgrade(payload);
+        loadedDashboardRevision = payload.dashboard_revision;
         setAuthenticatedView(payload.viewer_email || "unknown");
         renderAdminFlag(payload);
         renderHealthTrend(payload.health_history);
@@ -1097,13 +1110,42 @@
       });
 
       load();
-      function refreshWhenVisible() {
+      async function checkDashboardRevision() {
         if (document.visibilityState === "visible") {
-          load();
+          if (revisionRequest) return revisionRequest;
+          const token = currentToken || getStoredToken();
+          if (!token) return;
+
+          revisionRequest = (async () => {
+            let response;
+            try {
+              response = await fetch("/api/status-revision", {
+                cache: "no-store",
+                headers: { Authorization: `Bearer ${token}` },
+              });
+            } catch {
+              return;
+            }
+
+            if (response.status === 401) {
+              await load();
+              return;
+            }
+
+            const payload = await readResponsePayload(response);
+            if (!response.ok) return;
+            applyTokenUpgrade(payload);
+            if (payload.revision !== loadedDashboardRevision) {
+              await load();
+            }
+          })().finally(() => {
+            revisionRequest = null;
+          });
+          return revisionRequest;
         }
       }
-      setInterval(refreshWhenVisible, DASHBOARD_REFRESH_MS);
-      document.addEventListener("visibilitychange", refreshWhenVisible);
+      setInterval(checkDashboardRevision, DASHBOARD_REFRESH_MS);
+      document.addEventListener("visibilitychange", checkDashboardRevision);
     </script>
   </body>
 </html>

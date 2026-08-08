@@ -29,14 +29,28 @@ test("dashboard unlock shows non-auth status failures instead of failing silentl
   assert.doesNotMatch(html, />token expired</);
 });
 
-test("dashboard refreshes visible data promptly and immediately after returning to the tab", async () => {
+test("dashboard checks a lightweight revision while visible and reloads only changed data", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 
   assert.match(html, /const DASHBOARD_REFRESH_MS = 60 \* 1000/);
   assert.match(html, /document\.visibilityState === "visible"/);
-  assert.match(html, /document\.addEventListener\("visibilitychange", refreshWhenVisible\)/);
-  assert.match(html, /function refreshWhenVisible\(\)/);
-  assert.match(html, /if \(document\.visibilityState === "visible"\) \{\s*load\(\);\s*\}/);
+  assert.match(html, /async function checkDashboardRevision\(\)/);
+  assert.match(html, /fetch\("\/api\/status-revision"/);
+  assert.match(html, /if \(payload\.revision !== loadedDashboardRevision\) \{\s*await load\(\);/);
+  assert.match(html, /setInterval\(checkDashboardRevision, DASHBOARD_REFRESH_MS\)/);
+  assert.match(html, /document\.addEventListener\("visibilitychange", checkDashboardRevision\)/);
+  assert.doesNotMatch(html, /setInterval\(refreshWhenVisible/);
+});
+
+test("dashboard tracks loaded revision and deduplicates overlapping status requests", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  assert.match(html, /let loadedDashboardRevision = null/);
+  assert.match(html, /loadedDashboardRevision = payload\.dashboard_revision/);
+  assert.match(html, /let statusRequest = null/);
+  assert.match(html, /if \(statusRequest\) return statusRequest/);
+  assert.match(html, /let revisionRequest = null/);
+  assert.match(html, /if \(revisionRequest\) return revisionRequest/);
 });
 
 test("dashboard keeps the login panel hidden while restoring a saved session", async () => {

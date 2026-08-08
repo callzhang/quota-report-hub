@@ -4,6 +4,7 @@ import {
   authPoolFetchLog,
   authPoolInvalidatedNotifications,
   authPoolQuotaLatest,
+  dashboardRevision,
   dbConfigured,
   getFeatureFlag,
   poolHealthSnapshots,
@@ -23,6 +24,7 @@ export async function statusHandlerImpl(req, res, deps = {
   dbConfigured,
   authPoolEntrySummaries,
   authPoolQuotaLatest,
+  dashboardRevision,
   authPoolInvalidatedNotifications,
   authPoolFetchLog,
   poolHealthSnapshots,
@@ -38,21 +40,27 @@ export async function statusHandlerImpl(req, res, deps = {
     }
 
     if (!deps.dbConfigured()) {
+      const dataset = deps.authPoolStatusPayload([], []);
+      dataset.dashboard_revision = 0;
+      dataset.dashboard_updated_at = null;
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.end(JSON.stringify(deps.withTokenUpgrade(deps.authPoolStatusPayload([], []), authContext)));
+      res.end(JSON.stringify(deps.withTokenUpgrade(dataset, authContext)));
       return;
     }
-    const [entries, reports, invalidatedStates, fetchLog, healthHistory] = await Promise.all([
+    const [entries, reports, invalidatedStates, fetchLog, healthHistory, revision] = await Promise.all([
       deps.authPoolEntrySummaries(),
       deps.authPoolQuotaLatest(),
       deps.authPoolInvalidatedNotifications(),
       deps.authPoolFetchLog({ limit: 50 }),
       deps.poolHealthSnapshots({ limit: 96 }),
+      deps.dashboardRevision(),
     ]);
     const dataset = deps.authPoolStatusPayload(entries, reports, new Date().toISOString(), invalidatedStates);
     dataset.fetch_log = fetchLog;
     dataset.health_history = healthHistory;
+    dataset.dashboard_revision = revision.revision;
+    dataset.dashboard_updated_at = revision.updated_at;
     dataset.viewer_email = authContext.email;
     dataset.disabled_refresh_token = await deps.getFeatureFlag("disabled_refresh_token", false);
     dataset.is_admin = deps.isAdminEmail(authContext.email);

@@ -52,3 +52,37 @@ test("status returns JSON service-unavailable when database reads are blocked", 
     }
   }
 });
+
+test("status returns the dashboard revision loaded with current state", async () => {
+  const { statusHandlerImpl } = await import(`../api/status.js?revision=${Date.now()}`);
+  let body = "";
+  const res = {
+    setHeader() {},
+    end(value) { body = value; },
+  };
+  const emptyDataset = {
+    items: [],
+    archived_invalidated_items: [],
+  };
+
+  await statusHandlerImpl({}, res, {
+    authenticateApiRequest: async () => ({ email: "member@stardust.ai" }),
+    sendServiceUnavailable() { assert.fail("unexpected service error"); },
+    sendUnauthorized() { assert.fail("unexpected unauthorized response"); },
+    withTokenUpgrade: (payload) => payload,
+    dbConfigured: () => true,
+    authPoolEntrySummaries: async () => [],
+    authPoolQuotaLatest: async () => [],
+    authPoolInvalidatedNotifications: async () => [],
+    authPoolFetchLog: async () => [],
+    poolHealthSnapshots: async () => [],
+    dashboardRevision: async () => ({ revision: 17, updated_at: "2026-08-08T08:00:00Z" }),
+    authPoolStatusPayload: () => emptyDataset,
+    getFeatureFlag: async () => false,
+    isAdminEmail: () => false,
+  });
+
+  const payload = JSON.parse(body);
+  assert.equal(payload.dashboard_revision, 17);
+  assert.equal(payload.dashboard_updated_at, "2026-08-08T08:00:00Z");
+});
