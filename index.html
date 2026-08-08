@@ -623,6 +623,12 @@
         healthSection.hidden = true;
       }
 
+      function setStatusUnavailable(message) {
+        authPanel.hidden = true;
+        tokenCommand.hidden = true;
+        summary.textContent = message;
+      }
+
       function formatPercent(value) {
         return `${Number(value).toFixed(1)}%`;
       }
@@ -857,7 +863,7 @@
             },
           });
         } catch {
-          setLockedView("Cannot reach the hub. Your token was not rejected; check the network or try again later.");
+          setStatusUnavailable("Cannot reach the hub. Keeping the last loaded data; the page will retry automatically.");
           return;
         }
 
@@ -875,7 +881,7 @@
 
         const payload = await readResponsePayload(response);
         if (!response.ok) {
-          setLockedView(statusErrorMessage(response, payload));
+          setStatusUnavailable(statusErrorMessage(response, payload));
           return;
         }
 

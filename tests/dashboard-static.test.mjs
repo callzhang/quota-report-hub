@@ -7,8 +7,11 @@ test("dashboard unlock shows non-auth status failures instead of failing silentl
 
   assert.match(html, /async function readResponsePayload\(response\)/);
   assert.match(html, /function statusErrorMessage\(response, payload\)/);
+  assert.match(html, /function setStatusUnavailable\(message\)/);
+  assert.match(html, /setStatusUnavailable\("Cannot reach the hub\. Keeping the last loaded data; the page will retry automatically\."\)/);
+  assert.match(html, /setStatusUnavailable\(statusErrorMessage\(response, payload\)\)/);
   assert.match(html, /if \(!response\.ok\) \{/);
-  assert.match(html, /setLockedView\(statusErrorMessage\(response, payload\)\)/);
+  assert.doesNotMatch(html, /setLockedView\(statusErrorMessage\(response, payload\)\)/);
   assert.match(html, /saveTokenButton\.disabled = true/);
   assert.match(html, /authMessage\.textContent = "Checking token…"/);
   assert.match(html, /function safeDecodeCookieValue\(value\)/);
