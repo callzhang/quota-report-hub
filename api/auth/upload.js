@@ -1,7 +1,8 @@
 import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
-import { dbConfigured, getFeatureFlag, upsertAuthPoolEntry } from "../../lib/db.js";
+import { dbConfigured, getFeatureFlag, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../../lib/db.js";
 import { ingestClientQuota } from "../../lib/quota-ingest.js";
+import { verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
 
 export default async function handler(req, res) {
@@ -41,9 +42,27 @@ export default async function handler(req, res) {
   }
 
   const source = String(body.source);
+  const refreshVerification = ["claude", "codex"].includes(source)
+    ? await verifyAndRefreshAuthBlob(body.auth_json, source)
+    : { ok: false, attempted: false, reason: "unsupported_source" };
+
+  if (refreshVerification.attempted && !refreshVerification.ok) {
+    res.statusCode = refreshVerification.auth_rejected ? 422 : 503;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({
+      ok: false,
+      error: refreshVerification.auth_rejected ? "refresh_token_rejected" : "refresh_verification_failed",
+      reason: refreshVerification.error || refreshVerification.reason,
+      status: refreshVerification.status ?? null,
+    }));
+    return;
+  }
+
+  const authJson = refreshVerification.ok ? refreshVerification.auth_json : body.auth_json;
   const entry = await upsertAuthPoolEntry({
     ...body,
     source,
+    auth_json: authJson,
     uploader_email: authContext.email,
   });
 
@@ -62,10 +81,36 @@ export default async function handler(req, res) {
     }
   }
 
+  if (refreshVerification.ok) {
+    await upsertAuthPoolQuota({
+      source,
+      account_id: entry.account_id,
+      email: entry.email,
+      name: entry.name,
+      plan_name: entry.plan_name,
+      auth_last_refresh: entry.auth_last_refresh,
+      status: "ok",
+      windows: body.quota_payload?.windows || { "5h": null, "1week": null },
+      usage_summary: {
+        ...(body.quota_payload?.usage_summary || {}),
+        token_refresh: { status: "refreshed", source: "upload" },
+      },
+      report_origin: "client",
+      reporter_name: body.quota_payload?.reporter_name || authContext.email,
+      hostname: body.quota_payload?.hostname || "upload",
+    });
+  }
+
   // Surface the flag so a client that just uploaded its real RT knows to go AT-only locally
   // (Phase 4): strip its own refresh token once the hub holds it.
   const disabledRefreshToken = await getFeatureFlag("disabled_refresh_token", false);
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(withTokenUpgrade({ ok: true, entry, disabled_refresh_token: disabledRefreshToken, quota_ingested: quotaIngested }, authContext)));
+  res.end(JSON.stringify(withTokenUpgrade({
+    ok: true,
+    entry,
+    disabled_refresh_token: disabledRefreshToken,
+    quota_ingested: quotaIngested,
+    refresh_validity: refreshVerification.ok ? "confirmed" : "unverified",
+  }, authContext)));
 }

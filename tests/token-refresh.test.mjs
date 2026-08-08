@@ -5,6 +5,7 @@ import {
   refreshCodexToken,
   applyRefreshToBlob,
   accessTokenMsUntilExpiry,
+  verifyAndRefreshAuthBlob,
 } from "../lib/token-refresh.js";
 import { deriveAuthPoolEntry, shouldReplaceAuthPoolEntry } from "../lib/auth-pool.js";
 
@@ -59,6 +60,39 @@ test("refresh treats a thrown fetch as transient (not auth_rejected)", async () 
   const result = await refreshCodexToken("RT", fetchImpl);
   assert.equal(result.ok, false);
   assert.equal(result.auth_rejected, false);
+});
+
+test("verifyAndRefreshAuthBlob refreshes and returns the rotated Claude blob", async () => {
+  const authJson = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "OLD_AT", refreshToken: "OLD_RT", expiresAt: 1 } },
+  });
+  const result = await verifyAndRefreshAuthBlob(
+    authJson,
+    "claude",
+    mockFetch([jsonResponse(200, { access_token: "NEW_AT", refresh_token: "NEW_RT", expires_in: 3600 })]),
+  );
+  const oauth = JSON.parse(result.auth_json).credentials.claudeAiOauth;
+  assert.equal(result.ok, true);
+  assert.equal(result.attempted, true);
+  assert.equal(oauth.accessToken, "NEW_AT");
+  assert.equal(oauth.refreshToken, "NEW_RT");
+});
+
+test("verifyAndRefreshAuthBlob leaves AT-only uploads unverified", async () => {
+  const authJson = JSON.stringify({ credentials: { claudeAiOauth: { accessToken: "AT" } } });
+  const result = await verifyAndRefreshAuthBlob(authJson, "claude", mockFetch([]));
+  assert.equal(result.ok, false);
+  assert.equal(result.attempted, false);
+  assert.equal(result.reason, "no_refresh_token");
+  assert.equal(result.auth_json, authJson);
+});
+
+test("verifyAndRefreshAuthBlob distinguishes rejected RT from transient failure", async () => {
+  const authJson = JSON.stringify({ tokens: { refresh_token: "RT" } });
+  const rejected = await verifyAndRefreshAuthBlob(authJson, "codex", mockFetch([jsonResponse(400, {})]));
+  assert.equal(rejected.auth_rejected, true);
+  const transient = await verifyAndRefreshAuthBlob(authJson, "codex", mockFetch([jsonResponse(500, {})]));
+  assert.equal(transient.auth_rejected, false);
 });
 
 test("applyRefreshToBlob updates claude tokens + expiry and preserves siblings", () => {
