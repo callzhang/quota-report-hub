@@ -88,6 +88,22 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       expected: { state: "quota_unknown", currently_usable: false, reason: "quota_evidence_incomplete" },
     },
     {
+      name: "an expired Codex window without a remaining value waits for a new snapshot",
+      item: {
+        source: "codex",
+        reported_at: "2026-08-08T07:24:12Z",
+        display_windows: {
+          "1week": window(null, "2026-08-08T07:30:26Z", "quota_window_expired"),
+        },
+      },
+      expected: { state: "waiting_for_new_quota", currently_usable: false, reason: "quota_window_expired" },
+      historical: {
+        remaining_percent: null,
+        captured_at: "2026-08-08T07:24:12Z",
+        reset_at: "2026-08-08T07:30:26Z",
+      },
+    },
+    {
       name: "Codex weekly quota below the share threshold is low",
       item: {
         source: "codex",
@@ -134,6 +150,17 @@ test("deriveAccountAvailability applies account-state precedence", () => {
         display_windows: {
           "5h": window(19, "2026-08-08T09:00:00Z"),
           "1week": window(5, "2026-08-15T00:00:00Z"),
+        },
+      },
+      expected: { state: "low_quota", currently_usable: false, reason: "below_rotation_threshold" },
+    },
+    {
+      name: "Claude weekly quota below its sharing threshold is low",
+      item: {
+        source: "claude",
+        display_windows: {
+          "5h": window(20, "2026-08-08T09:00:00Z"),
+          "1week": window(4, "2026-08-15T00:00:00Z"),
         },
       },
       expected: { state: "low_quota", currently_usable: false, reason: "below_rotation_threshold" },

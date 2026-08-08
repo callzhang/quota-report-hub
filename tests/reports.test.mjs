@@ -215,6 +215,27 @@ test("statusPayload attaches a derived account availability state", () => {
   });
 });
 
+test("statusPayload keeps auth invalidation distinct from refresh token rejection", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "error",
+      error: "auth failed (401 unauthorized)",
+      first_invalidated_at: "2026-04-21T10:00:00Z",
+      account_id: "codex-a@example.com",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 99, reset_at: "2026-04-28T10:00:00Z" },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].refresh_validity.status, "rejected");
+  assert.equal(payload.items[0].availability.state, "unavailable");
+  assert.equal(payload.items[0].availability.reason, "auth_invalidated");
+});
+
 test("statusPayload keeps codex rows without quota windows visible", () => {
   const payload = statusPayload([
     {
@@ -936,6 +957,7 @@ test("authPoolStatusPayload exposes token, quota, and refresh state independentl
   assert.equal(payload.items[0].token_state.uploaded_at, "2026-04-21T09:00:00Z");
   assert.equal(payload.items[0].quota_snapshot_state.status, "unavailable");
   assert.equal(payload.items[0].refresh_validity.status, "rejected");
+  assert.equal(payload.items[0].availability.reason, "refresh_token_rejected");
 });
 
 test("authPoolStatusPayload hides legacy empty session when account has session entries", () => {
