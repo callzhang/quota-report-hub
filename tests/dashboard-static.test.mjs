@@ -65,7 +65,7 @@ test("quota history is lazy, cached for five minutes, and deduplicated", async (
   assert.match(html, /fetch\(`\/api\/quota-history\?source=\$\{encodeURIComponent\(source\)\}&account_id=\$\{encodeURIComponent\(accountId\)\}`/);
   assert.doesNotMatch(html, /loadDashboard[\s\S]{0,500}quota-history/);
   assert.match(html, /const historyToken = currentToken \|\| getStoredToken\(\)/);
-  assert.match(html, /if \(historyToken !== \(currentToken \|\| getStoredToken\(\)\)\) throw new Error\("session changed"\)/);
+  assert.match(html, /historySessionGeneration !== authSessionGeneration \|\| historyToken !== \(currentToken \|\| getStoredToken\(\)\)/);
   assert.match(html, /if \(response\.status === 401\) \{\s*handleUnauthorizedHistory\(historyToken, payload\)/);
   assert.match(html, /function handleUnauthorizedHistory\(token, payload\)/);
 });
@@ -76,7 +76,7 @@ test("quota details mark historical snapshots and render chart gaps without inte
   assert.match(html, /Historical - not current quota/);
   assert.match(html, /Captured:/);
   assert.match(html, /Reset:/);
-  assert.match(html, /function renderQuotaHistoryChart\(points, availability\)/);
+  assert.match(html, /function renderQuotaHistoryChart\(points\)/);
   assert.match(html, /splitQuotaSeries/);
   assert.match(html, /<svg[^`]*role="img"/);
   assert.match(html, /No quota history in the last 24 hours/);

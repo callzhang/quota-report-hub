@@ -78,12 +78,83 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token") {
     },
     fetch: fetchImpl,
     setInterval() {},
+    setTimeout,
+    clearTimeout,
     console,
   });
   vm.runInContext(script, context);
   await new Promise((resolve) => setImmediate(resolve));
-  return { document, documentListeners, element, getCookie: () => cookieValue };
+  return {
+    document,
+    documentListeners,
+    element,
+    getCookie: () => cookieValue,
+    evaluate(source) { return vm.runInContext(source, context); },
+  };
 }
+
+test("mixed quota history colors expired evidence gray without graying current evidence", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  const now = Date.now();
+  const points = [
+    { reported_at: new Date(now - 7200000).toISOString(), status: "ok", one_week_remaining_percent: 10, one_week_reset_at: new Date(now - 3600000).toISOString() },
+    { reported_at: new Date(now - 1800000).toISOString(), status: "ok", one_week_remaining_percent: 80, one_week_reset_at: new Date(now + 7200000).toISOString() },
+  ];
+  const markup = harness.evaluate(`renderQuotaHistoryChart(${JSON.stringify(points)})`);
+
+  assert.match(markup, /history-historical/);
+  assert.match(markup, /history-current/);
+  assert.equal((markup.match(/history-historical/g) || []).length, 1);
+  assert.equal((markup.match(/history-current/g) || []).length, 1);
+});
+
+test("quota history cache and in-flight requests do not cross auth sessions", async () => {
+  const oldHistory = deferred();
+  let historyCalls = 0;
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    if (url.startsWith("/api/quota-history")) {
+      historyCalls += 1;
+      if (historyCalls === 1) return oldHistory.promise;
+      return response(200, { points: [{ reported_at: "new-session" }] });
+    }
+    throw new Error(`unexpected request ${url}`);
+  });
+
+  const staleRequest = harness.evaluate(`loadQuotaHistory("codex", "acct")`);
+  const oldGeneration = harness.evaluate(`authSessionGeneration`);
+  harness.evaluate(`setCurrentToken("new-token")`);
+  const currentPayload = await harness.evaluate(`loadQuotaHistory("codex", "acct")`);
+  oldHistory.resolve(response(200, { points: [{ reported_at: "old-session" }] }));
+  await assert.rejects(staleRequest, /session changed/);
+  const cachedPayload = await harness.evaluate(`loadQuotaHistory("codex", "acct")`);
+
+  assert.equal(historyCalls, 2);
+  assert.equal(currentPayload.points[0].reported_at, "new-session");
+  assert.equal(cachedPayload.points[0].reported_at, "new-session");
+  assert.equal(harness.evaluate(`historyPopoverIsCurrent(null, ${oldGeneration})`), false);
+});
+
+test("brief pointer sweep cancels hover intent before opening details", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  harness.evaluate(`
+    globalThis.hoverTestListeners = {};
+    bindAvailabilityTrigger({
+      addEventListener(type, listener) { globalThis.hoverTestListeners[type] = listener; }
+    });
+    globalThis.hoverTestListeners.mouseenter();
+    globalThis.hoverTestListeners.mouseleave();
+  `);
+  await new Promise((resolve) => setTimeout(resolve, 220));
+
+  assert.equal(harness.evaluate(`openAvailabilityTrigger`), null);
+});
 
 test("a new unlock starts its own status request and ignores the old token response", async () => {
   const oldStatus = deferred();
