@@ -208,7 +208,7 @@
 
       .table-shell {
         width: 100%;
-        overflow-x: hidden;
+        overflow-x: auto;
         border-radius: 18px;
       }
 
@@ -233,10 +233,13 @@
         word-break: break-word;
       }
 
-      #active-entries-table th:nth-child(1), #active-entries-table td:nth-child(1) { width: 10%; }
-      #active-entries-table th:nth-child(2), #active-entries-table td:nth-child(2) { width: 30%; }
-      #active-entries-table th:nth-child(3), #active-entries-table td:nth-child(3) { width: 18%; }
-      #active-entries-table th:nth-child(4), #active-entries-table td:nth-child(4) { width: 42%; }
+      #active-entries-table { min-width: 1080px; }
+      #active-entries-table th:nth-child(1), #active-entries-table td:nth-child(1) { width: 8%; }
+      #active-entries-table th:nth-child(2), #active-entries-table td:nth-child(2) { width: 22%; }
+      #active-entries-table th:nth-child(3), #active-entries-table td:nth-child(3) { width: 15%; }
+      #active-entries-table th:nth-child(4), #active-entries-table td:nth-child(4) { width: 15%; }
+      #active-entries-table th:nth-child(5), #active-entries-table td:nth-child(5) { width: 15%; }
+      #active-entries-table th:nth-child(6), #active-entries-table td:nth-child(6) { width: 25%; }
       #archived-entries-table th:nth-child(1), #archived-entries-table td:nth-child(1) { width: 10%; }
       #archived-entries-table th:nth-child(2), #archived-entries-table td:nth-child(2) { width: 27%; }
       #archived-entries-table th:nth-child(3), #archived-entries-table td:nth-child(3) { width: 18%; }
@@ -268,6 +271,19 @@
       .empty {
         color: var(--muted);
       }
+
+      .progress { width: 100%; min-width: 0; }
+      .progress.inferred, .progress.inferred strong, .progress.inferred .meta { color: var(--muted); }
+      .track {
+        width: min(140px, 100%); min-width: 64px; flex: 1 1 96px; height: 10px;
+        overflow: hidden; border-radius: 999px; background: rgba(31, 109, 104, 0.12);
+      }
+      .fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), #90d3af); }
+      .fill.low { background: linear-gradient(90deg, var(--warn), #f0b35f); }
+      .fill.critical { background: linear-gradient(90deg, var(--bad), #e96d61); }
+      .fill.ready { background: linear-gradient(90deg, #2f8f4e, #89d37f); }
+      .fill.inferred { background: linear-gradient(90deg, #8b867f, #cbc6bd); }
+      .progress-row { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
 
       .availability-trigger {
         width: 100%; text-align: left; border: 1px solid var(--line); border-radius: 14px;
@@ -439,6 +455,8 @@
               <tr>
                 <th>Source</th>
                 <th>Account &amp; Uploader</th>
+                <th>5H (Claude)</th>
+                <th>1week</th>
                 <th>Fetched By</th>
                 <th>Availability</th>
               </tr>
@@ -622,6 +640,54 @@
 
       function formatDate(value) {
         return value ? new Date(value).toLocaleString() : "unknown";
+      }
+
+      function formatResetCountdown(value) {
+        const resetAt = Date.parse(value || "");
+        if (!Number.isFinite(resetAt)) return "reset time unknown";
+        const remainingMs = resetAt - Date.now();
+        if (remainingMs <= 0) return "reset passed";
+        return `reset in ${formatDuration(remainingMs)}`;
+      }
+
+      function quotaWindowFallback() {
+        return `<div class="meta">n/a</div>`;
+      }
+
+      function progressCell(window, isStale = false) {
+        if (!window) return quotaWindowFallback();
+        const unavailableLabels = {
+          auth_invalidated: ["auth invalidated"],
+          auth_token_expired: ["access token expired", "quota unavailable"],
+          probe_missing_reset: ["quota not available", "quota reset time not found"],
+          stale_error_probe: ["quota unavailable", "last probe failed after reset"],
+          quota_window_expired: ["quota snapshot expired", "waiting for fresh quota"],
+        };
+        const unavailable = unavailableLabels[window.reset_unavailable_reason];
+        if (unavailable) return unavailable.map((label) => `<div class="meta">${label}</div>`).join("");
+        if (window.remaining_percent === null || window.remaining_percent === undefined) return quotaWindowFallback();
+
+        const remaining = Math.max(0, Math.min(100, Number(window.remaining_percent)));
+        const historical = Boolean(isStale || window.invalidated_stale);
+        const inferredReady = Boolean(window.inferred_ready);
+        let level = remaining <= 5 ? "critical" : remaining <= 20 ? "low" : "";
+        if (inferredReady) level = "ready";
+        if (historical && !inferredReady) level = "inferred";
+        const label = inferredReady ? "likely reset" : `${remaining.toFixed(1)}%`;
+        const resetLabel = inferredReady
+          ? "likely reset after last known window"
+          : historical
+            ? "stale data from before invalidation"
+            : formatResetCountdown(window.reset_at);
+        return `
+          <div class="progress ${historical ? "inferred" : ""}">
+            <div class="progress-row">
+              <div class="track"><div class="fill ${level}" style="width: ${remaining}%"></div></div>
+              <strong>${label}${historical && !inferredReady ? " · stale" : ""}</strong>
+            </div>
+            <div class="meta">${resetLabel}</div>
+            ${isStale ? `<div class="meta">stale quota snapshot</div>` : ""}
+          </div>`;
       }
 
       function statusChip(item) {
@@ -1109,6 +1175,8 @@
               <div class="meta wrap">${escapeHtml(item.plan_name || "-")}</div>
               <div class="meta wrap">uploaded by ${escapeHtml(item.uploader_email || item.reporter_name || "-")}${item.hostname ? ` / ${escapeHtml(item.hostname)}` : ""}</div>
             </td>
+            <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.display_windows_stale ?? item.windows_stale) : quotaWindowFallback()}</td>
+            <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.display_windows_stale ?? item.windows_stale) : quotaWindowFallback()}</td>
             <td>${(() => {
                 const flList = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
                 if (!flList || !flList.length) return `<div class="meta">-</div>`;

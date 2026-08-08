@@ -22,11 +22,20 @@ test("dashboard unlock shows non-auth status failures instead of failing silentl
   assert.doesNotMatch(html, />token expired</);
 });
 
-test("dashboard presents one availability status and moves technical evidence into details", async () => {
+test("dashboard restores quota progress columns while keeping availability details", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 
+  assert.match(html, /<th>5H \(Claude\)<\/th>[\s\S]*<th>1week<\/th>[\s\S]*<th>Fetched By<\/th>[\s\S]*<th>Availability<\/th>/);
   assert.match(html, /<th>Availability<\/th>/);
-  assert.doesNotMatch(html, /<th>5H \(Claude\)<\/th>|<th>1week<\/th>|<th>Cloud Status<\/th>/);
+  assert.doesNotMatch(html, /<th>Cloud Status<\/th>/);
+  assert.match(html, /function progressCell\(window, isStale = false\)/);
+  assert.match(html, /class="progress/);
+  assert.match(html, /class="track"><div class="fill \$\{level\}" style="width: \$\{remaining\}%"/);
+  assert.match(html, /formatResetCountdown\(window\.reset_at\)/);
+  assert.match(html, /item\.display_windows\?\.\["5h"\]/);
+  assert.match(html, /item\.display_windows\?\.\["1week"\]/);
+  assert.match(html, /quotaWindowFallback\(\)/);
+  assert.match(html, /\.progress\.inferred/);
   assert.match(html, /function availabilityCell\(item\)/);
   assert.match(html, /availability\.summary/);
   assert.match(html, /formatAvailabilitySummary\(availability\)/);
@@ -45,7 +54,7 @@ test("active and archived account tables keep independent column layouts", async
 
   assert.match(html, /<table id="active-entries-table">/);
   assert.match(html, /<table id="archived-entries-table">/);
-  assert.match(html, /#active-entries-table th:nth-child\(4\)/);
+  assert.match(html, /#active-entries-table th:nth-child\(6\)/);
   assert.match(html, /#archived-entries-table th:nth-child\(5\)/);
   assert.doesNotMatch(html, /^\s*th:nth-child/m);
 });
