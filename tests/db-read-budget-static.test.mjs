@@ -94,6 +94,19 @@ test("routine status revision authentication is stateless and does not touch tok
   assert.doesNotMatch(handler, /auth_api_tokens|last_used_at|client\.execute|client\.batch/);
 });
 
+test("quota history reads one indexed account range with a finite limit", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  const history = functionBody(source, "authPoolQuotaEvents");
+
+  assert.match(source, /ON auth_pool_quota_events \(source, account_id, reported_at DESC\)/);
+  assert.match(history, /source = \?/);
+  assert.match(history, /account_id = \?/);
+  assert.match(history, /reported_at >= \?/);
+  assert.match(history, /LIMIT \?/);
+  assert.match(history, /Math\.min\([^,]+, 96\)/);
+  assert.doesNotMatch(history, /encrypted_auth_json|refresh_token|access_token/);
+});
+
 test("dashboard-visible logical writes batch their data and revision updates atomically", async () => {
   const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
 

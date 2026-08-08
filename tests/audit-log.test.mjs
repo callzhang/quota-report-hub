@@ -1069,17 +1069,61 @@ test("upsertAuthPoolQuota records every probe event and keeps continuous invalid
       windows: { "5h": null, "1week": null },
     });
 
-    const events = await mod.authPoolQuotaEvents({ source: "codex", accountId: "acct-history", limit: 10 });
+    const events = await mod.authPoolQuotaEvents({
+      source: "codex",
+      accountId: "acct-history",
+      since: "2026-05-05T00:00:00Z",
+      limit: 10,
+    });
     assert.equal(events.length, 3);
     assert.deepEqual(
       events.map((event) => event.reported_at),
-      ["2026-05-06T02:00:00Z", "2026-05-06T01:00:00Z", "2026-05-06T00:00:00Z"]
+      ["2026-05-06T00:00:00Z", "2026-05-06T01:00:00Z", "2026-05-06T02:00:00Z"]
     );
 
     const states = await mod.authPoolInvalidatedNotifications();
     assert.equal(states.length, 1);
     assert.equal(states[0].first_invalidated_at, "2026-05-06T01:00:00Z");
     assert.equal(states[0].last_error, "auth invalidated (token_invalidated)");
+  } finally {
+    cleanup();
+  }
+});
+
+test("authPoolQuotaEvents returns bounded chronological history for one exact account", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const reports = [
+      ["codex", "acct-history", "2026-08-07T07:59:59Z", 99],
+      ["codex", "acct-history", "2026-08-07T09:00:00Z", 80],
+      ["codex", "other-account", "2026-08-08T06:00:00Z", 70],
+      ["claude", "acct-history", "2026-08-08T06:30:00Z", 60],
+      ["codex", "acct-history", "2026-08-08T07:00:00Z", 50],
+    ];
+    for (const [source, accountId, reportedAt, remaining] of reports) {
+      await mod.upsertAuthPoolQuota({
+        source,
+        hostname: "worker",
+        reporter_name: "worker",
+        reported_at: reportedAt,
+        account_id: accountId,
+        status: "ok",
+        windows: { "5h": null, "1week": { remaining_percent: remaining } },
+      });
+    }
+
+    const events = await mod.authPoolQuotaEvents({
+      source: "codex",
+      accountId: "acct-history",
+      since: "2026-08-07T08:00:00Z",
+      limit: 96,
+    });
+
+    assert.deepEqual(events.map((event) => event.reported_at), [
+      "2026-08-07T09:00:00Z",
+      "2026-08-08T07:00:00Z",
+    ]);
+    assert.ok(events.every((event) => event.source === "codex" && event.account_id === "acct-history"));
   } finally {
     cleanup();
   }
@@ -1152,7 +1196,11 @@ test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", a
     assert.equal(await mod.authPoolEntry("codex", "delete@example.com"), null);
     assert.equal((await mod.authPoolQuotaLatest()).filter((row) => row.account_id === "delete@example.com").length, 0);
     assert.equal((await mod.authPoolInvalidatedNotifications()).filter((row) => row.account_id === "delete@example.com").length, 0);
-    assert.equal((await mod.authPoolQuotaEvents({ source: "codex", accountId: "delete@example.com" })).length, 1);
+    assert.equal((await mod.authPoolQuotaEvents({
+      source: "codex",
+      accountId: "delete@example.com",
+      since: "2026-05-05T00:00:00Z",
+    })).length, 1);
   } finally {
     cleanup();
   }
