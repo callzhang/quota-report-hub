@@ -16,17 +16,73 @@ test("dashboard unlock shows non-auth status failures instead of failing silentl
   assert.match(html, /authMessage\.textContent = "Checking token…"/);
   assert.match(html, /function safeDecodeCookieValue\(value\)/);
   assert.match(html, /return safeDecodeCookieValue\(getCookie\(COOKIE_NAME\)\)/);
-  assert.match(html, /quota snapshot expired/);
-  assert.match(html, /item\.quota_snapshot_state/);
-  assert.match(html, /item\.refresh_validity/);
-  assert.match(html, /function refreshStateLabel\(status\)/);
-  assert.match(html, /return stateLine\("Refresh", escapeHtml\(refreshStateLabel\(status\)\), tone\)/);
-  assert.doesNotMatch(html, /escapeHtml\(refresh\.label \|\| "refresh not verified"\)/);
-  assert.match(html, /item\.token_state/);
-  assert.match(html, /access token expired/);
-  assert.match(html, /item\.display_windows_stale \?\? item\.windows_stale/);
+  assert.match(html, /item\.availability/);
+  assert.match(html, /Access token expiry/);
   assert.doesNotMatch(html, /ready now/);
   assert.doesNotMatch(html, />token expired</);
+});
+
+test("dashboard presents one availability status and moves technical evidence into details", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  assert.match(html, /<th>Availability<\/th>/);
+  assert.doesNotMatch(html, /<th>5H \(Claude\)<\/th>|<th>1week<\/th>|<th>Cloud Status<\/th>/);
+  assert.match(html, /function availabilityCell\(item\)/);
+  assert.match(html, /availability\.summary/);
+  assert.match(html, /aria-haspopup="dialog"/);
+  assert.match(html, /role="dialog"/);
+  assert.match(html, /aria-modal="false"/);
+  assert.match(html, /Latest quota snapshot/);
+  assert.match(html, /Diagnostics/);
+  assert.doesNotMatch(html, /function tokenStateLine|function quotaSnapshotLine|function refreshValidityLine|function usageCell/);
+});
+
+test("availability details are keyboard, pointer, and touch accessible", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  assert.match(html, /function openAvailabilityPopover\(trigger\)/);
+  assert.match(html, /function closeAvailabilityPopover\(\{ restoreFocus = false \} = \{\}\)/);
+  assert.match(html, /trigger\.addEventListener\("mouseenter"/);
+  assert.match(html, /trigger\.addEventListener\("focus"/);
+  assert.match(html, /trigger\.addEventListener\("click"/);
+  assert.match(html, /event\.key === "Escape"/);
+  assert.match(html, /closeAvailabilityPopover\(\{ restoreFocus: true \}\)/);
+  assert.match(html, /document\.addEventListener\("pointerdown"/);
+  assert.match(html, /aria-expanded/);
+});
+
+test("quota history is lazy, cached for five minutes, and deduplicated", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  assert.match(html, /const HISTORY_CACHE_MS = 5 \* 60 \* 1000/);
+  assert.match(html, /const quotaHistoryCache = new Map\(\)/);
+  assert.match(html, /const quotaHistoryRequests = new Map\(\)/);
+  assert.match(html, /function quotaHistoryKey\(source, accountId\)/);
+  assert.match(html, /async function loadQuotaHistory\(source, accountId\)/);
+  assert.match(html, /quotaHistoryCache\.get\(key\)/);
+  assert.match(html, /Date\.now\(\) - cached\.fetchedAt < HISTORY_CACHE_MS/);
+  assert.match(html, /if \(quotaHistoryRequests\.has\(key\)\) return quotaHistoryRequests\.get\(key\)/);
+  assert.match(html, /fetch\(`\/api\/quota-history\?source=\$\{encodeURIComponent\(source\)\}&account_id=\$\{encodeURIComponent\(accountId\)\}`/);
+  assert.doesNotMatch(html, /loadDashboard[\s\S]{0,500}quota-history/);
+  assert.match(html, /const historyToken = currentToken \|\| getStoredToken\(\)/);
+  assert.match(html, /if \(historyToken !== \(currentToken \|\| getStoredToken\(\)\)\) throw new Error\("session changed"\)/);
+  assert.match(html, /if \(response\.status === 401\) \{\s*handleUnauthorizedHistory\(historyToken, payload\)/);
+  assert.match(html, /function handleUnauthorizedHistory\(token, payload\)/);
+});
+
+test("quota details mark historical snapshots and render chart gaps without interpolation", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  assert.match(html, /Historical - not current quota/);
+  assert.match(html, /Captured:/);
+  assert.match(html, /Reset:/);
+  assert.match(html, /function renderQuotaHistoryChart\(points, availability\)/);
+  assert.match(html, /splitQuotaSeries/);
+  assert.match(html, /<svg[^`]*role="img"/);
+  assert.match(html, /No quota history in the last 24 hours/);
+  assert.match(html, /History temporarily unavailable/);
+  assert.match(html, /history-reset-marker/);
+  assert.match(html, /history-historical/);
 });
 
 test("dashboard checks a lightweight revision while visible and reloads only changed data", async () => {

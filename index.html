@@ -233,12 +233,10 @@
         word-break: break-word;
       }
 
-      th:nth-child(1), td:nth-child(1) { width: 8%; }
-      th:nth-child(2), td:nth-child(2) { width: 22%; }
-      th:nth-child(3), td:nth-child(3) { width: 13%; }
-      th:nth-child(4), td:nth-child(4) { width: 13%; }
-      th:nth-child(5), td:nth-child(5) { width: 12%; }
-      th:nth-child(6), td:nth-child(6) { width: 32%; }
+      th:nth-child(1), td:nth-child(1) { width: 10%; }
+      th:nth-child(2), td:nth-child(2) { width: 30%; }
+      th:nth-child(3), td:nth-child(3) { width: 18%; }
+      th:nth-child(4), td:nth-child(4) { width: 42%; }
 
       th {
         font-size: 12px;
@@ -262,84 +260,45 @@
         text-overflow: ellipsis;
       }
 
-      .progress {
-        width: 100%;
-        min-width: 0;
-      }
-
-      .progress.inferred {
-        color: var(--muted);
-      }
-
-      .progress.inferred strong,
-      .progress.inferred .meta {
-        color: var(--muted);
-      }
-
-      .track {
-        width: min(140px, 100%);
-        min-width: 64px;
-        flex: 1 1 96px;
-        height: 10px;
-        border-radius: 999px;
-        overflow: hidden;
-        background: rgba(29, 25, 21, 0.08);
-      }
-
-      .fill {
-        height: 100%;
-        background: linear-gradient(90deg, var(--accent), #90d3af);
-      }
-
-      .fill.low { background: linear-gradient(90deg, var(--warn), #f0b35f); }
-      .fill.critical { background: linear-gradient(90deg, var(--bad), #e96d61); }
-      .fill.ready { background: linear-gradient(90deg, #2f8f4e, #89d37f); }
-      .fill.inferred { background: linear-gradient(90deg, #8b867f, #cbc6bd); }
-
-      .progress-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        min-width: 0;
-        flex-wrap: wrap;
-      }
-
       .empty {
         color: var(--muted);
       }
 
-      .usage-block {
-        display: grid;
-        gap: 4px;
-        min-width: 0;
+      .availability-trigger {
+        width: 100%; text-align: left; border: 1px solid var(--line); border-radius: 14px;
+        padding: 10px 12px; background: rgba(255,255,255,.7); color: var(--ink); cursor: pointer;
       }
-
-      .state-line {
-        display: grid;
-        grid-template-columns: 58px 1fr;
-        gap: 8px;
-        align-items: start;
+      .availability-trigger:focus-visible { outline: 3px solid rgba(31,109,104,.28); outline-offset: 2px; }
+      .availability-state { display: flex; align-items: center; gap: 8px; font-weight: 750; letter-spacing: .035em; }
+      .availability-state::before { content: "●"; }
+      .availability-trigger.success .availability-state { color: var(--accent); }
+      .availability-trigger.warning .availability-state { color: var(--warn); }
+      .availability-trigger.danger .availability-state { color: var(--bad); }
+      .availability-trigger.muted .availability-state { color: var(--muted); }
+      .availability-summary { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+      .availability-popover {
+        position: fixed; z-index: 20; width: min(520px, calc(100vw - 24px)); max-height: min(680px, calc(100vh - 24px));
+        overflow: auto; padding: 18px; border: 1px solid var(--line); border-radius: 18px;
+        background: #fffaf3; box-shadow: 0 24px 70px rgba(29,25,21,.24);
       }
-
-      .state-line .label {
-        color: var(--muted);
-        font-size: 12px;
-      }
-
-      .state-line.bad .value {
-        color: var(--bad);
-        font-weight: 650;
-      }
-
-      .state-line.warn .value {
-        color: var(--warn);
-        font-weight: 650;
-      }
-
-      .state-line.good .value {
-        color: var(--accent);
-        font-weight: 650;
-      }
+      .availability-popover[hidden] { display: none; }
+      .popover-heading { display:flex; justify-content:space-between; gap:12px; align-items:start; }
+      .popover-heading h3, .popover-section h4 { margin: 0; }
+      .popover-close { border:0; background:transparent; color:var(--muted); font-size:22px; cursor:pointer; }
+      .popover-section { border-top: 1px solid var(--line); margin-top: 14px; padding-top: 14px; }
+      .quota-snapshot-grid, .diagnostic-grid { display:grid; gap:8px; margin-top:10px; }
+      .quota-snapshot { padding:10px; border-radius:12px; background:rgba(31,109,104,.06); }
+      .quota-snapshot.historical { color:var(--muted); background:rgba(29,25,21,.055); }
+      .historical-label { display:block; font-weight:700; color:var(--muted); margin-bottom:5px; }
+      .history-chart { margin-top:10px; }
+      .history-chart svg { display:block; width:100%; height:auto; overflow:visible; }
+      .history-grid { stroke:rgba(29,25,21,.12); stroke-width:1; }
+      .history-series { fill:none; stroke:var(--accent); stroke-width:2.4; }
+      .history-series.week { stroke:var(--accent-2); }
+      .history-historical { stroke:#918b82; }
+      .history-reset-marker { stroke:#aaa39a; stroke-width:1; stroke-dasharray:3 3; }
+      .history-point { fill:#fffaf3; stroke:currentColor; stroke-width:2; }
+      .history-legend { display:flex; gap:14px; flex-wrap:wrap; font-size:12px; color:var(--muted); }
 
       .source-tag {
         display: inline-flex;
@@ -473,10 +432,8 @@
               <tr>
                 <th>Source</th>
                 <th>Account &amp; Uploader</th>
-                <th>5H (Claude)</th>
-                <th>1week</th>
                 <th>Fetched By</th>
-                <th>Cloud Status</th>
+                <th>Availability</th>
               </tr>
             </thead>
             <tbody id="rows"></tbody>
@@ -484,6 +441,7 @@
         </div>
         <div id="empty" class="empty" hidden>No reports yet.</div>
       </section>
+      <div id="availability-popover" class="availability-popover" role="dialog" aria-modal="false" aria-label="Account availability details" hidden></div>
 
       <section class="panel section">
         <h2>Archived Invalidated Auths</h2>
@@ -530,9 +488,16 @@
       const flagMessage = document.getElementById("flag-message");
       const healthSection = document.getElementById("health-section");
       const healthRows = document.getElementById("health-rows");
+      const availabilityPopover = document.getElementById("availability-popover");
       const COOKIE_NAME = "quota_report_hub_token";
       const DASHBOARD_REFRESH_MS = 60 * 1000;
+      const HISTORY_CACHE_MS = 5 * 60 * 1000;
+      const quotaHistoryCache = new Map();
+      const quotaHistoryRequests = new Map();
+      const accountItems = new Map();
       let currentToken = "";
+      let openAvailabilityTrigger = null;
+      let popoverCloseTimer = null;
 
       function getCookie(name) {
         const prefix = `${name}=`;
@@ -599,6 +564,7 @@
       }
 
       function setLockedView(message, options = {}) {
+        closeAvailabilityPopover();
         authPanel.hidden = false;
         viewerChip.hidden = true;
         viewerChip.textContent = "";
@@ -637,143 +603,11 @@
         return value ? new Date(value).toLocaleString() : "unknown";
       }
 
-      function formatResetCountdown(value) {
-        if (!value) return "reset unavailable";
-        const deltaMs = Date.parse(value) - Date.now();
-        if (!Number.isFinite(deltaMs)) return "reset unavailable";
-        if (deltaMs <= 0) return "reset time passed";
-
-        const totalMinutes = Math.ceil(deltaMs / 60000);
-        const days = Math.floor(totalMinutes / (24 * 60));
-        const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
-        const minutes = totalMinutes % 60;
-
-        if (days > 0) {
-          return minutes > 0
-            ? `reset in ${days}d ${hours}h ${minutes}m`
-            : `reset in ${days}d ${hours}h`;
-        }
-        if (hours > 0) {
-          return minutes > 0
-            ? `reset in ${hours}h ${minutes}m`
-            : `reset in ${hours}h`;
-        }
-        return `reset in ${minutes}m`;
-      }
-
-      function progressCell(window, isStale = false) {
-        if (!window) {
-          return `<div class="meta">n/a</div>`;
-        }
-        if (window.reset_unavailable_reason === "auth_invalidated") {
-          return `<div class="meta">auth invalidated</div>`;
-        }
-        if (window.reset_unavailable_reason === "auth_token_expired") {
-          return `<div class="meta">access token expired</div><div class="meta">quota unavailable</div>`;
-        }
-        if (window.reset_unavailable_reason === "probe_missing_reset") {
-          return `<div class="meta">quota not available</div><div class="meta">quota reset time not found</div>`;
-        }
-        if (window.reset_unavailable_reason === "stale_error_probe") {
-          return `<div class="meta">quota unavailable</div><div class="meta">last probe failed after reset</div>`;
-        }
-        if (window.reset_unavailable_reason === "quota_window_expired") {
-          return `<div class="meta">quota snapshot expired</div><div class="meta">waiting for fresh quota</div>`;
-        }
-        if (window.remaining_percent === null || window.remaining_percent === undefined) {
-          return `<div class="meta">n/a</div>`;
-        }
-        const remaining = Number(window.remaining_percent);
-        const isInvalidatedStale = Boolean(window.invalidated_stale);
-        const isInferredReady = Boolean(window.inferred_ready);
-        let level = "";
-        if (isInvalidatedStale) level = "inferred";
-        else if (remaining <= 10) level = "critical";
-        else if (remaining <= 30) level = "low";
-        const label = formatPercent(remaining);
-        const staleTag = isInvalidatedStale && !isInferredReady ? " · stale" : "";
-        const resetLabel = isInferredReady
-          ? "likely reset after last known window"
-          : isInvalidatedStale
-            ? "stale data from before invalidation"
-            : window.reset_unavailable_reason === "auth_invalidated"
-              ? "auth invalidated"
-              : window.reset_unavailable_reason === "probe_missing_reset"
-                ? "quota reset time not found"
-                : formatResetCountdown(window.reset_at);
-        const hoverTitle = isInvalidatedStale
-          ? "Likely reset after the last known window. This value is inferred from a stale invalidated auth, not a fresh probe."
-          : "";
-        return `
-          <div class="progress ${isInvalidatedStale ? "inferred" : ""}" title="${hoverTitle}">
-            <div class="progress-row">
-              <div class="track"><div class="fill ${level}" style="width: ${remaining}%"></div></div>
-              <strong>${label}${staleTag}</strong>
-            </div>
-            <div class="meta">${resetLabel}</div>
-            ${isStale ? `<div class="meta">stale quota snapshot</div>` : ""}
-          </div>
-        `;
-      }
-
-      function formatCompactNumber(value) {
-        if (value === null || value === undefined) return "n/a";
-        return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value));
-      }
-
-      function quotaWindowFallback() {
-        return `<div class="meta">n/a</div>`;
-      }
-
-      function formatDuration(seconds) {
-        if (seconds === null || seconds === undefined) return "unknown";
-        const absSeconds = Math.max(0, Math.abs(Number(seconds)));
-        if (absSeconds < 60) return `${Math.floor(absSeconds)}s`;
-        if (absSeconds < 3600) return `${Math.ceil(absSeconds / 60)}m`;
-        if (absSeconds < 86400) return `${(absSeconds / 3600).toFixed(1)}h`;
-        return `${(absSeconds / 86400).toFixed(1)}d`;
-      }
-
       function statusChip(item) {
         const rawStatus = item.auth_expired ? "auth_expired" : (item.effective_status || item.status || "unknown");
         const cssStatus = String(rawStatus).replaceAll("_", "-");
         const label = String(rawStatus).replaceAll("_", " ");
         return `<span class="status-chip ${escapeHtml(cssStatus)}">${escapeHtml(label)}</span>`;
-      }
-
-      function authExpiryLine(item) {
-        if (!item.auth_expires_at) return "";
-        if (item.auth_expiry_metadata_stale) {
-          return `<div class="meta wrap">access token expiry metadata stale</div>`;
-        }
-        if (item.auth_expired) {
-          return `<div class="meta wrap" style="color:var(--bad)">access token expired ${formatDuration(item.auth_expires_in_seconds)} ago</div>`;
-        }
-        return `<div class="meta wrap">access token expires in ${formatDuration(item.auth_expires_in_seconds)}</div>`;
-      }
-
-      function stateLine(label, value, tone = "") {
-        const toneClass = tone ? ` ${tone}` : "";
-        return `<div class="state-line${toneClass}"><span class="label">${escapeHtml(label)}</span><span class="value wrap">${value}</span></div>`;
-      }
-
-      function tokenStateLine(item) {
-        const tokenState = item.token_state || {};
-        if (tokenState.status !== "uploaded") {
-          return stateLine("Token", "not uploaded", "bad");
-        }
-        const uploadedAt = tokenState.uploaded_at || item.uploaded_at;
-        const age = uploadedAt
-          ? formatAge(Math.max(0, Math.floor((Date.now() - Date.parse(uploadedAt)) / 1000)))
-          : "unknown age";
-        return stateLine("Token", `uploaded ${age}`, "good");
-      }
-
-      function quotaSnapshotLine(item) {
-        const quotaState = item.quota_snapshot_state || {};
-        const label = escapeHtml(quotaState.label || "quota unavailable");
-        const tone = quotaState.status === "fresh" ? "good" : quotaState.status === "partial" || quotaState.status === "stale" ? "warn" : "bad";
-        return stateLine("Quota", label, tone);
       }
 
       function refreshStateLabel(status) {
@@ -782,28 +616,189 @@
         return "not tested";
       }
 
-      function refreshValidityLine(item) {
-        const refresh = item.refresh_validity || {};
-        const status = refresh.status || "unverified";
-        const tone = status === "confirmed" ? "good" : status === "rejected" ? "bad" : "warn";
-        return stateLine("Refresh", escapeHtml(refreshStateLabel(status)), tone);
+      function availabilityLabel(state) {
+        return String(state || "quota_unknown").replaceAll("_", " ").toUpperCase();
       }
 
-      function usageCell(item) {
-        const probeAge = formatAge(item.age_seconds);
-        const error = item.error ? `<div class="meta wrap" style="color:var(--bad)">${escapeHtml(item.error)}</div>` : "";
-        const stale = item.is_stale ? `<div class="meta wrap">probe snapshot stale</div>` : "";
-        return `
-          <div class="usage-block">
-            ${stateLine("Probe", `${statusChip(item)} <span class="meta">${escapeHtml(probeAge)}</span>`)}
-            ${tokenStateLine(item)}
-            ${quotaSnapshotLine(item)}
-            ${refreshValidityLine(item)}
-            ${authExpiryLine(item)}
-            ${stale}
-            ${error}
-          </div>
-        `;
+      function accountItemKey(source, accountId) {
+        return JSON.stringify([source, accountId]);
+      }
+
+      function availabilityCell(item) {
+        const availability = item.availability || {};
+        const key = accountItemKey(item.source, item.account_id);
+        accountItems.set(key, item);
+        return `<button class="availability-trigger ${escapeHtml(availability.tone || "muted")}" type="button"
+          data-account-key="${escapeHtml(key)}" aria-haspopup="dialog" aria-expanded="false">
+          <span class="availability-state">${escapeHtml(availabilityLabel(availability.state))}</span>
+          <span class="availability-summary">${escapeHtml(availability.summary || "Current availability is unknown.")}</span>
+        </button>`;
+      }
+
+      function quotaHistoryKey(source, accountId) {
+        return accountItemKey(source, accountId);
+      }
+
+      function handleUnauthorizedHistory(token, payload) {
+        if (token !== (currentToken || getStoredToken())) return;
+        statusRequestGeneration += 1;
+        currentToken = "";
+        clearTokenCookie();
+        tokenInput.value = "";
+        setLockedView("Token invalid or expired. Run this command to request a new token by email, then paste the latest token here.", {
+          showTokenCommand: true,
+          allowedDomain: payload.allowed_domain,
+        });
+      }
+
+      async function loadQuotaHistory(source, accountId) {
+        const key = quotaHistoryKey(source, accountId);
+        const cached = quotaHistoryCache.get(key);
+        if (cached && Date.now() - cached.fetchedAt < HISTORY_CACHE_MS) return cached.payload;
+        if (quotaHistoryRequests.has(key)) return quotaHistoryRequests.get(key);
+        const historyToken = currentToken || getStoredToken();
+        const request = (async () => {
+          const response = await fetch(`/api/quota-history?source=${encodeURIComponent(source)}&account_id=${encodeURIComponent(accountId)}`, {
+            cache: "no-store",
+            headers: { Authorization: `Bearer ${historyToken}` },
+          });
+          const payload = await readResponsePayload(response);
+          if (historyToken !== (currentToken || getStoredToken())) throw new Error("session changed");
+          if (response.status === 401) {
+            handleUnauthorizedHistory(historyToken, payload);
+            throw new Error("unauthorized");
+          }
+          if (!response.ok) throw new Error(statusErrorMessage(response, payload));
+          applyTokenUpgrade(payload);
+          quotaHistoryCache.set(key, { fetchedAt: Date.now(), payload });
+          return payload;
+        })().finally(() => quotaHistoryRequests.delete(key));
+        quotaHistoryRequests.set(key, request);
+        return request;
+      }
+
+      function snapshotMarkup(availability) {
+        const snapshot = availability.current_quota || availability.historical_snapshot;
+        if (!snapshot) return `<div class="meta">No quota snapshot available.</div>`;
+        const historical = !availability.current_quota;
+        return `<div class="quota-snapshot-grid">${Object.entries(snapshot.windows || {}).map(([name, window]) => `
+          <div class="quota-snapshot${historical ? " historical" : ""}">
+            ${historical ? `<span class="historical-label">Historical - not current quota</span>` : ""}
+            <strong>${escapeHtml(name)} · ${window.remaining_percent == null ? "unknown" : formatPercent(window.remaining_percent)}</strong>
+            <div class="meta">Captured: ${escapeHtml(formatDate(window.captured_at))}</div>
+            <div class="meta">Reset: ${escapeHtml(formatDate(window.reset_at))}</div>
+          </div>`).join("")}</div>`;
+      }
+
+      function splitQuotaSeries(points, valueField) {
+        const segments = [];
+        let segment = [];
+        for (const point of points) {
+          const value = point[valueField];
+          if (point.status !== "ok" || value === null || value === undefined || !Number.isFinite(Number(value))) {
+            if (segment.length) segments.push(segment);
+            segment = [];
+          } else {
+            segment.push({ time: Date.parse(point.reported_at), value: Number(value), reported_at: point.reported_at });
+          }
+        }
+        if (segment.length) segments.push(segment);
+        return segments;
+      }
+
+      function renderQuotaHistoryChart(points, availability) {
+        if (!points?.length) return `<div class="meta">No quota history in the last 24 hours</div>`;
+        const validTimes = points.map((point) => Date.parse(point.reported_at)).filter(Number.isFinite);
+        if (!validTimes.length) return `<div class="meta">No quota history in the last 24 hours</div>`;
+        const minTime = Math.min(...validTimes), maxTime = Math.max(...validTimes);
+        const span = Math.max(1, maxTime - minTime);
+        const x = (time) => 34 + ((time - minTime) / span) * 426;
+        const y = (value) => 112 - (Math.max(0, Math.min(100, value)) / 100) * 94;
+        const historicalClass = availability.current_quota ? "" : " history-historical";
+        const definitions = [
+          ["five_h_remaining_percent", "5h", ""],
+          ["one_week_remaining_percent", "1week", " week"],
+        ];
+        const paths = definitions.flatMap(([field, label, css]) => splitQuotaSeries(points, field).map((segment) => {
+          const path = segment.map((point, index) => `${index ? "L" : "M"}${x(point.time).toFixed(1)},${y(point.value).toFixed(1)}`).join(" ");
+          const accessiblePoints = segment.map((point) => `<circle class="history-point" tabindex="0" cx="${x(point.time).toFixed(1)}" cy="${y(point.value).toFixed(1)}" r="3"><title>${escapeHtml(label)} ${formatPercent(point.value)} at ${escapeHtml(formatDate(point.reported_at))}</title></circle>`).join("");
+          return `<g class="${historicalClass.trim()}"><path class="history-series${css}${historicalClass}" d="${path}"/>${accessiblePoints}</g>`;
+        })).join("");
+        const resets = [...new Set(points.flatMap((point) => [point.five_h_reset_at, point.one_week_reset_at]).filter(Boolean))]
+          .map((reset) => Date.parse(reset)).filter((time) => time >= minTime && time <= maxTime)
+          .map((time) => `<line class="history-reset-marker" x1="${x(time).toFixed(1)}" x2="${x(time).toFixed(1)}" y1="16" y2="116"><title>Reset ${escapeHtml(formatDate(new Date(time).toISOString()))}</title></line>`).join("");
+        return `<div class="history-chart"><div class="history-legend"><span>● 5h</span><span>● 1week</span><span>┊ reset</span></div>
+          <svg viewBox="0 0 480 130" role="img" aria-label="Quota remaining during the last 24 hours; missing readings are shown as gaps">
+            <line class="history-grid" x1="34" x2="460" y1="18" y2="18"/><line class="history-grid" x1="34" x2="460" y1="112" y2="112"/>
+            <text x="2" y="22" font-size="10">100%</text><text x="16" y="116" font-size="10">0%</text>${resets}${paths}
+          </svg></div>`;
+      }
+
+      function diagnosticsMarkup(item) {
+        const refresh = item.refresh_validity || {};
+        const token = item.token_state || {};
+        return `<div class="diagnostic-grid meta">
+          <div>Probe: ${statusChip(item)} · ${escapeHtml(formatDate(item.reported_at))}</div>
+          <div>Token uploaded: ${escapeHtml(formatDate(token.uploaded_at || item.uploaded_at))}</div>
+          <div>Access token expiry: ${escapeHtml(formatDate(item.auth_expires_at))}</div>
+          <div>Refresh: ${escapeHtml(refreshStateLabel(refresh.status))} · checked ${escapeHtml(formatDate(refresh.checked_at || refresh.last_checked_at))}</div>
+          ${item.error ? `<div style="color:var(--bad)">${escapeHtml(item.error)}</div>` : ""}
+        </div>`;
+      }
+
+      function positionAvailabilityPopover(trigger) {
+        const rect = trigger.getBoundingClientRect();
+        const width = Math.min(520, window.innerWidth - 24);
+        const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.right - width));
+        availabilityPopover.style.left = `${left}px`;
+        const top = Math.max(12, Math.min(window.innerHeight - availabilityPopover.offsetHeight - 12, rect.bottom + 8));
+        availabilityPopover.style.top = `${top}px`;
+      }
+
+      async function openAvailabilityPopover(trigger) {
+        if (popoverCloseTimer !== null) clearTimeout(popoverCloseTimer);
+        if (openAvailabilityTrigger && openAvailabilityTrigger !== trigger) openAvailabilityTrigger.setAttribute("aria-expanded", "false");
+        openAvailabilityTrigger = trigger;
+        trigger.setAttribute("aria-expanded", "true");
+        const item = accountItems.get(trigger.dataset.accountKey);
+        if (!item) return;
+        const availability = item.availability || {};
+        availabilityPopover.hidden = false;
+        availabilityPopover.innerHTML = `<div class="popover-heading"><div><h3>${escapeHtml(availabilityLabel(availability.state))}</h3><div class="meta">${escapeHtml(availability.summary || "")}</div></div><button type="button" class="popover-close" aria-label="Close details">×</button></div>
+          <section class="popover-section"><h4>Latest quota snapshot</h4>${snapshotMarkup(availability)}</section>
+          <section class="popover-section"><h4>24-hour quota history</h4><div data-history-content class="meta">Loading quota history…</div></section>
+          <section class="popover-section"><h4>Diagnostics</h4>${diagnosticsMarkup(item)}</section>`;
+        availabilityPopover.querySelector(".popover-close").addEventListener("click", () => closeAvailabilityPopover({ restoreFocus: true }));
+        positionAvailabilityPopover(trigger);
+        const historyContent = availabilityPopover.querySelector("[data-history-content]");
+        try {
+          const payload = await loadQuotaHistory(item.source, item.account_id);
+          if (trigger !== openAvailabilityTrigger) return;
+          historyContent.outerHTML = renderQuotaHistoryChart(payload.points || [], availability);
+          positionAvailabilityPopover(trigger);
+        } catch {
+          if (trigger === openAvailabilityTrigger) historyContent.textContent = "History temporarily unavailable";
+        }
+      }
+
+      function closeAvailabilityPopover({ restoreFocus = false } = {}) {
+        if (popoverCloseTimer !== null) clearTimeout(popoverCloseTimer);
+        popoverCloseTimer = null;
+        const trigger = openAvailabilityTrigger;
+        if (trigger) trigger.setAttribute("aria-expanded", "false");
+        openAvailabilityTrigger = null;
+        availabilityPopover.hidden = true;
+        availabilityPopover.innerHTML = "";
+        if (restoreFocus && trigger) trigger.focus();
+      }
+
+      function bindAvailabilityTriggers() {
+        for (const trigger of rows.querySelectorAll(".availability-trigger")) {
+          trigger.addEventListener("mouseenter", () => openAvailabilityPopover(trigger));
+          trigger.addEventListener("focus", () => openAvailabilityPopover(trigger));
+          trigger.addEventListener("click", () => openAvailabilityPopover(trigger));
+          trigger.addEventListener("mouseleave", () => { popoverCloseTimer = setTimeout(closeAvailabilityPopover, 180); });
+        }
       }
 
       function emailColor(email) {
@@ -943,6 +938,8 @@
           `<article class="card"><div class="meta">Latest upload</div><strong class="text">${escapeHtml(items[0]?.email || items[0]?.uploader_email || "n/a")}</strong><div class="meta wrap">${formatDate(items[0]?.uploaded_at)}</div></article>`
         ].join("");
 
+        closeAvailabilityPopover();
+        accountItems.clear();
         rows.innerHTML = items.map((item) => `
           <tr>
             <td>${sourceTag(item.source)}</td>
@@ -951,8 +948,6 @@
               <div class="meta wrap">${escapeHtml(item.plan_name || "-")}</div>
               <div class="meta wrap">uploaded by ${escapeHtml(item.uploader_email || item.reporter_name || "-")}${item.hostname ? ` / ${escapeHtml(item.hostname)}` : ""}</div>
             </td>
-            <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.display_windows_stale ?? item.windows_stale) : quotaWindowFallback(item)}</td>
-            <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.display_windows_stale ?? item.windows_stale) : quotaWindowFallback(item)}</td>
             <td>${(() => {
                 const flList = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
                 if (!flList || !flList.length) return `<div class="meta">-</div>`;
@@ -965,9 +960,10 @@
                   return `<div class="wrap"><span class="email-tag"${title} style="background:${emailColor(fl.requester_email)}">${label}</span></div>`;
                 }).join("") + `<div class="meta wrap">${formatAge(age)}</div>`;
               })()}</td>
-            <td>${usageCell(item)}</td>
+            <td>${availabilityCell(item)}</td>
           </tr>
         `).join("");
+        bindAvailabilityTriggers();
 
         empty.hidden = items.length !== 0;
         archivedRows.innerHTML = archivedItems.map((item) => `
@@ -1129,6 +1125,19 @@
         }
       });
 
+      availabilityPopover.addEventListener("mouseenter", () => {
+        if (popoverCloseTimer !== null) clearTimeout(popoverCloseTimer);
+        popoverCloseTimer = null;
+      });
+      availabilityPopover.addEventListener("mouseleave", () => { popoverCloseTimer = setTimeout(closeAvailabilityPopover, 180); });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && openAvailabilityTrigger) closeAvailabilityPopover({ restoreFocus: true });
+      });
+      document.addEventListener("pointerdown", (event) => {
+        if (!openAvailabilityTrigger) return;
+        if (availabilityPopover.contains(event.target) || openAvailabilityTrigger.contains(event.target)) return;
+        closeAvailabilityPopover();
+      });
       load();
       async function checkDashboardRevision() {
         if (document.visibilityState === "visible") {

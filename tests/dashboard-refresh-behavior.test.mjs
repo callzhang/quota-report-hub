@@ -48,6 +48,7 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token") {
         checked: false,
         disabled: false,
         placeholder: "",
+        querySelectorAll() { return []; },
         addEventListener(type, listener) { listeners[type] = listener; },
         listeners,
       });
