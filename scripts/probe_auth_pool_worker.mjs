@@ -16,7 +16,7 @@ import {
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
 import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
-import { REFRESH_TOKEN_REJECTED_ERROR, isHardAuthError } from "../lib/auth-status.js";
+import { REFRESH_TOKEN_REJECTED_ERROR, isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
 
 // Proactively refresh an access token (claude OR codex) once it is within this window of expiry.
 // The cron nominally fires every ~15 min, but GitHub Actions can delay it; a 1-hour window keeps the
@@ -312,6 +312,7 @@ export async function processAuthPoolEntry(
     refreshClaudeTokenImpl = refreshClaudeToken,
     refreshCodexTokenImpl = refreshCodexToken,
     atOnlyMode = false,
+    forceRefreshUnverified = false,
     nowImpl = () => new Date(),
   } = {}
 ) {
@@ -319,9 +320,10 @@ export async function processAuthPoolEntry(
   const previousReport = await authPoolQuotaLatestForEntryImpl({ source: entry.source, accountId: entry.account_id });
   const skipReason = probeSkipReason(entry, previousReport, now);
   const probeNeeded = skipReason === null;
+  const verifyUnverified = forceRefreshUnverified && refreshValidityFromReport(previousReport) === "unverified";
 
   // Nothing to do this cycle: not probing and not in central-refresh mode. Skip before decrypt.
-  if (!probeNeeded && !atOnlyMode) {
+  if (!probeNeeded && !atOnlyMode && !verifyUnverified) {
     return skippedProbeItem(entry, previousReport, skipReason, null);
   }
 
@@ -330,12 +332,13 @@ export async function processAuthPoolEntry(
   let authJsonText = null;
   try {
     authJsonText = await decryptAuthJsonImpl(entry);
-    if (atOnlyMode && (entry.source === "claude" || entry.source === "codex")) {
+    if ((atOnlyMode || verifyUnverified) && (entry.source === "claude" || entry.source === "codex")) {
       const refreshTokenImpl = entry.source === "claude" ? refreshClaudeTokenImpl : refreshCodexTokenImpl;
       const refreshed = await refreshEntryIfNeeded(authJsonText, entry, entry.source, {
         refreshTokenImpl,
         upsertAuthPoolEntryImpl,
         nowImpl,
+        force: verifyUnverified,
       });
       authJsonText = refreshed.authJsonText;
       centralRefreshResult = refreshed.result;
@@ -542,6 +545,7 @@ export async function main() {
   const allEntries = await authPoolEntries();
   const { canonical: entries, stale } = dedupeEntriesByAccount(allEntries);
   const atOnlyMode = await getFeatureFlag("disabled_refresh_token", false);
+  const forceRefreshUnverified = process.env.FORCE_REFRESH_UNVERIFIED === "true";
 
   // Prune stale duplicate sessions before any refresh runs, so the worker never replays a
   // superseded refresh token of an account whose canonical session it is about to refresh.
@@ -563,7 +567,7 @@ export async function main() {
 
   const items = [];
   for (const entry of entries) {
-    items.push(await processAuthPoolEntry(entry, { atOnlyMode }));
+    items.push(await processAuthPoolEntry(entry, { atOnlyMode, forceRefreshUnverified }));
   }
 
   const health = summarizePoolHealth(items);
@@ -578,7 +582,7 @@ export async function main() {
 
   console.log(
     JSON.stringify(
-      { ok: true, count: items.length, pruned_duplicates: prunedDuplicates.length, atOnlyMode, health, pruned: prunedDuplicates, items },
+      { ok: true, count: items.length, pruned_duplicates: prunedDuplicates.length, atOnlyMode, forceRefreshUnverified, health, pruned: prunedDuplicates, items },
       null,
       2
     )

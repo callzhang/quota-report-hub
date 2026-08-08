@@ -156,6 +156,31 @@ test("processAuthPoolEntry centrally refreshes a near-expiry claude auth in disa
   assert.equal(persisted.refreshToken, "NEW_RT");
 });
 
+test("processAuthPoolEntry force-refreshes an unverified auth even when its access token is fresh", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const now = new Date("2026-06-12T00:00:00Z");
+  const authWrites = [];
+  const farFutureBlob = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "OLD_AT", refreshToken: "REAL_RT", expiresAt: now.getTime() + 10 * 24 * 60 * 60 * 1000 } },
+  });
+  const result = await processAuthPoolEntry(
+    { source: "claude", account_id: "acct-claude", uploader_email: "derek@stardust.ai" },
+    {
+      forceRefreshUnverified: true,
+      nowImpl: () => now,
+      decryptAuthJsonImpl: () => farFutureBlob,
+      authPoolQuotaLatestForEntryImpl: async () => ({ source: "claude", status: "ok", usage_summary: {}, windows: { "5h": null, "1week": null } }),
+      refreshClaudeTokenImpl: async () => ({ ok: true, access_token: "NEW_AT", refresh_token: "NEW_RT", expires_in: 28800 }),
+      probeClaudeAuthJsonImpl: () => ({ source: "claude", account_id: "acct-claude", status: "ok", windows: { "5h": null, "1week": null } }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async (entry) => { authWrites.push(entry); return { deduplicated: false }; },
+    },
+  );
+  assert.equal(result.central_refresh.ok, true);
+  assert.equal(authWrites.length, 1);
+  assert.equal(JSON.parse(authWrites[0].auth_json).credentials.claudeAiOauth.refreshToken, "NEW_RT");
+});
+
 test("processAuthPoolEntry force-refreshes claude after auth-invalid probe even when expiry is far away", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const authWrites = [];

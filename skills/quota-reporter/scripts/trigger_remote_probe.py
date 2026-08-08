@@ -40,9 +40,12 @@ def run_json_command(args: list[str]) -> object:
     return json.loads(completed.stdout or "null")
 
 
-def trigger_workflow(repo: str, workflow: str, ref: str) -> None:
+def trigger_workflow(repo: str, workflow: str, ref: str, force_refresh_unverified: bool) -> None:
+    args = ["gh", "workflow", "run", workflow, "--repo", repo, "--ref", ref]
+    if force_refresh_unverified:
+        args.extend(["-f", "force_refresh_unverified=true"])
     subprocess.run(
-        ["gh", "workflow", "run", workflow, "--repo", repo, "--ref", ref],
+        args,
         check=True,
     )
 
@@ -174,13 +177,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not query the hub for compact per-auth results after the workflow is triggered or watched.",
     )
+    parser.add_argument(
+        "--force-refresh-unverified",
+        action="store_true",
+        help="Ask the worker to refresh every auth whose RT has not been verified yet.",
+    )
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
     started_after = utc_now()
-    trigger_workflow(args.repo, args.workflow, args.ref)
+    trigger_workflow(args.repo, args.workflow, args.ref, args.force_refresh_unverified)
     run = wait_for_triggered_run(
         repo=args.repo,
         workflow=args.workflow,
