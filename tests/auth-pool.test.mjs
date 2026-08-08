@@ -83,6 +83,20 @@ test("deriveAuthPoolEntry extracts codex auth metadata", () => {
   assert.equal(entry.hostname, "gpu4");
 });
 
+test("deriveAuthPoolEntry records refresh recovery capability without exposing the token", () => {
+  const idToken = fakeJwt({ email: "member@stardust.ai", sid: "session" });
+  const withRefresh = deriveAuthPoolEntry("codex", JSON.stringify({
+    tokens: { account_id: "acct", id_token: idToken, access_token: fakeJwt({ exp: 1 }), refresh_token: "rt-secret" },
+  }));
+  const atOnly = deriveAuthPoolEntry("codex", JSON.stringify({
+    tokens: { account_id: "acct", id_token: idToken, access_token: fakeJwt({ exp: 1 }) },
+  }));
+
+  assert.equal(withRefresh.has_refresh_token, true);
+  assert.equal(atOnly.has_refresh_token, false);
+  assert.equal("refresh_token" in withRefresh, false);
+});
+
 test("deriveAuthPoolEntry uses codex access token expiry before stale id token expiry", () => {
   const entry = deriveAuthPoolEntry(
     "codex",

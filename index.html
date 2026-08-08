@@ -659,6 +659,16 @@
         ).join(" · ");
       }
 
+      function formatElapsedDuration(ms) {
+        const seconds = Math.max(0, Math.floor(ms / 1000));
+        if (seconds < 60) return `${seconds}s`;
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return `${minutes}m`;
+        const hours = Math.floor(minutes / 60);
+        if (hours < 24) return `${hours}h ${minutes % 60}m`;
+        return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+      }
+
       function formatAvailabilitySummary(availability) {
         const nowMs = Date.now();
         if (availability.current_quota) {
@@ -670,8 +680,8 @@
         }
         if (availability.state === "waiting_for_new_quota") {
           const resets = Object.values(availability.historical_snapshot?.windows || {})
-            .map((window) => Date.parse(window.reset_at || "")).filter(Number.isFinite);
-          const age = resets.length ? formatDuration(nowMs - Math.max(...resets)) : "unknown time";
+            .map((window) => Date.parse(window.reset_at || "")).filter((resetAt) => Number.isFinite(resetAt) && resetAt <= nowMs);
+          const age = resets.length ? formatElapsedDuration(nowMs - Math.max(...resets)) : "unknown time";
           return `Previous quota window reset ${age} ago · Next automatic check in 1m`;
         }
         return availability.summary || "Current availability is unknown.";
@@ -979,6 +989,15 @@
       let dashboardTransitionTimer = null;
       let nextDashboardTransitionAt = null;
 
+      function scheduleDashboardTransitionAt(deadline) {
+        if (dashboardTransitionTimer !== null) clearTimeout(dashboardTransitionTimer);
+        dashboardTransitionTimer = null;
+        if (document.visibilityState !== "visible" || !Number.isFinite(deadline)) return;
+        const delay = Math.max(0, deadline - Date.now() + 25);
+        const boundedDelay = Math.min(delay, MAX_DASHBOARD_TRANSITION_DELAY_MS);
+        dashboardTransitionTimer = setTimeout(load, boundedDelay);
+      }
+
       function scheduleDashboardTransition(items) {
         if (dashboardTransitionTimer !== null) clearTimeout(dashboardTransitionTimer);
         dashboardTransitionTimer = null;
@@ -987,9 +1006,7 @@
         const deadlines = (items || []).map((item) => Date.parse(item.availability?.next_transition_at || "")).filter(Number.isFinite);
         if (!deadlines.length) return;
         nextDashboardTransitionAt = Math.min(...deadlines);
-        const delay = Math.max(0, nextDashboardTransitionAt - Date.now() + 25);
-        const boundedDelay = Math.min(delay, MAX_DASHBOARD_TRANSITION_DELAY_MS);
-        dashboardTransitionTimer = setTimeout(load, boundedDelay);
+        scheduleDashboardTransitionAt(nextDashboardTransitionAt);
       }
 
       function load() {
@@ -1292,6 +1309,9 @@
         if (document.visibilityState === "visible") {
           if (nextDashboardTransitionAt !== null && Date.now() >= nextDashboardTransitionAt) {
             return load();
+          }
+          if (nextDashboardTransitionAt !== null && dashboardTransitionTimer === null) {
+            scheduleDashboardTransitionAt(nextDashboardTransitionAt);
           }
           if (revisionRequest) return revisionRequest;
           const token = currentToken || getStoredToken();

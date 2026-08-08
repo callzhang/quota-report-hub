@@ -219,6 +219,41 @@ test("visibility regain reloads once after a time-derived availability deadline"
   assert.equal(statusCalls, 2);
 });
 
+test("waiting summary uses the most recent passed reset and ignores future Claude resets", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  const now = Date.now();
+  const markup = harness.evaluate(`formatAvailabilitySummary({
+    state: "waiting_for_new_quota",
+    historical_snapshot: { windows: {
+      "5h": { reset_at: ${JSON.stringify(new Date(now - 8 * 60 * 1000).toISOString())} },
+      "1week": { reset_at: ${JSON.stringify(new Date(now + 6 * 24 * 60 * 60 * 1000).toISOString())} }
+    }}
+  })`);
+
+  assert.match(markup, /reset 8m ago/);
+  assert.doesNotMatch(markup, /reset 0s ago/);
+});
+
+test("visibility regain before a future deadline reschedules its full-refresh timer", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    if (url === "/api/status-revision") return response(200, { revision: 1 });
+    throw new Error(`unexpected request ${url}`);
+  });
+  harness.evaluate(`nextDashboardTransitionAt = Date.now() + 10 * 60 * 1000`);
+  harness.document.visibilityState = "hidden";
+  await harness.documentListeners.visibilitychange();
+  assert.equal(harness.evaluate(`dashboardTransitionTimer`), null);
+  harness.document.visibilityState = "visible";
+  await harness.documentListeners.visibilitychange();
+
+  assert.notEqual(harness.evaluate(`dashboardTransitionTimer`), null);
+  harness.evaluate(`clearTimeout(dashboardTransitionTimer); dashboardTransitionTimer = null`);
+});
+
 test("popover viewport listeners are registered and removed as one lifecycle", async () => {
   const harness = await dashboardHarness(async (url) => {
     if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));

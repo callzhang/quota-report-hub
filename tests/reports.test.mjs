@@ -964,6 +964,25 @@ test("authPoolStatusPayload exposes token, quota, and refresh state independentl
   assert.equal(payload.items[0].availability.reason, "refresh_token_rejected");
 });
 
+test("authPoolStatusPayload carries only the safe refresh-token capability marker into availability", () => {
+  const generatedAt = "2026-08-08T08:00:00Z";
+  const baseEntry = {
+    source: "codex", account_id: "acct", email: "member@stardust.ai", plan_name: "Plus",
+    uploaded_at: "2026-08-08T07:00:00Z", auth_expires_at: "2026-08-08T07:30:00Z",
+  };
+  const baseReport = {
+    source: "codex", account_id: "acct", reported_at: "2026-08-08T07:20:00Z", status: "ok",
+    windows: { "5h": null, "1week": { remaining_percent: 80, reset_at: "2026-08-15T00:00:00Z" } },
+  };
+  const atOnly = authPoolStatusPayload([{ ...baseEntry, has_refresh_token: false }], [baseReport], generatedAt);
+  const recoverable = authPoolStatusPayload([{ ...baseEntry, has_refresh_token: true }], [baseReport], generatedAt);
+
+  assert.equal(atOnly.items[0].availability.state, "unavailable");
+  assert.equal(recoverable.items[0].availability.state, "quota_unknown");
+  assert.equal(recoverable.items[0].has_refresh_token, true);
+  assert.equal("refresh_token" in recoverable.items[0], false);
+});
+
 test("authPoolStatusPayload hides legacy empty session when account has session entries", () => {
   const payload = authPoolStatusPayload(
     [

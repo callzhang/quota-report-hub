@@ -82,6 +82,7 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       item: {
         source: "codex",
         auth_expired: true,
+        has_refresh_token: true,
         refresh_validity: { status: "unverified" },
         reported_at: "2026-08-08T07:24:12Z",
         display_windows: { "1week": window(99, "2026-08-15T00:00:00Z") },
@@ -93,11 +94,23 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       item: {
         source: "codex",
         auth_expired: true,
+        has_refresh_token: true,
         refresh_validity: { status: "confirmed" },
         reported_at: "2026-08-08T07:24:12Z",
         display_windows: { "1week": window(99, "2026-08-15T00:00:00Z") },
       },
       expected: { state: "quota_unknown", currently_usable: false, reason: "access_expired_recoverable" },
+    },
+    {
+      name: "expired AT-only access is unavailable even when refresh has not been tested",
+      item: {
+        source: "codex",
+        auth_expired: true,
+        has_refresh_token: false,
+        refresh_validity: { status: "unverified" },
+        display_windows: { "1week": window(99, "2026-08-15T00:00:00Z") },
+      },
+      expected: { state: "unavailable", currently_usable: false, reason: "access_token_expired" },
     },
     {
       name: "a successful probe without complete quota is unknown",
