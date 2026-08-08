@@ -74,6 +74,82 @@ test("quota ingestion does not scan quota event history to maintain invalidation
   assert.doesNotMatch(upsertQuota, /LIMIT 1000/);
 });
 
+test("dashboard revision uses one singleton row without reading dashboard data", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  const revision = functionBody(source, "dashboardRevision");
+
+  assert.match(revision, /FROM dashboard_revision WHERE singleton = 1/);
+  assert.doesNotMatch(revision, /auth_pool_entries/);
+  assert.doesNotMatch(revision, /auth_pool_quota_latest/);
+  assert.doesNotMatch(revision, /auth_pool_quota_events/);
+  assert.doesNotMatch(revision, /auth_pool_fetch_log/);
+  assert.doesNotMatch(revision, /pool_health_snapshots/);
+});
+
+test("routine status revision authentication is stateless and does not touch token usage rows", async () => {
+  const handler = await readFile(new URL("../api/status-revision.js", import.meta.url), "utf8");
+  assert.match(handler, /verifyDashboardRevisionToken/);
+  assert.match(handler, /dashboardRevision/);
+  assert.doesNotMatch(handler, /authenticateApiRequest|authenticateApiToken|authenticateOrUpgradeApiToken/);
+  assert.doesNotMatch(handler, /auth_api_tokens|last_used_at|client\.execute|client\.batch/);
+});
+
+test("quota history reads one indexed account range with a finite limit", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  const history = functionBody(source, "authPoolQuotaEvents");
+
+  assert.match(source, /ON auth_pool_quota_events \(source, account_id, reported_at DESC\)/);
+  assert.match(history, /source = \?/);
+  assert.match(history, /account_id = \?/);
+  assert.match(history, /reported_at >= \?/);
+  assert.match(history, /reported_at <= \?/);
+  assert.match(history, /LIMIT \?/);
+  assert.match(history, /Math\.min\([^,]+, 96\)/);
+  assert.doesNotMatch(history, /payload_json|auth_path|auth_last_refresh|email|name|hostname|reporter_name|model_context_window|five_h_used_percent|one_week_used_percent|encrypted_auth_json|refresh_token|access_token/);
+});
+
+test("dashboard-visible logical writes batch their data and revision updates atomically", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+
+  const collapse = functionBody(source, "collapseAuthPoolSessions");
+  assert.match(collapse, /client\.batch/);
+  assert.match(collapse, /dashboardRevisionUpdate/);
+
+  const fetch = functionBody(source, "recordAuthPoolFetch");
+  assert.match(fetch, /client\.batch/);
+  assert.doesNotMatch(fetch, /client\.execute/);
+  assert.match(fetch, /dashboardRevisionUpdate/);
+
+  for (const name of ["upsertInvalidatedAuthState", "markInvalidatedAuthNotified", "clearInvalidatedAuthState"]) {
+    const mutation = functionBody(source, name);
+    assert.match(mutation, /client\.batch/);
+    assert.match(mutation, /dashboardRevisionUpdate/);
+    assert.match(mutation, /changes\(\) > 0/);
+  }
+
+  const quota = functionBody(source, "upsertAuthPoolQuota");
+  const quotaBatch = quota.slice(quota.indexOf("client.batch"));
+  assert.match(quotaBatch, /insertAuthPoolQuotaEventStatement/);
+  assert.match(quotaBatch, /reporterAssignment/);
+  assert.match(quotaBatch, /auth_pool_quota_latest/);
+  assert.match(quotaBatch, /invalidationStatement/);
+  assert.match(quotaBatch, /dashboardRevisionUpdate/);
+
+  const auth = functionBody(source, "upsertAuthPoolEntry");
+  const authBatch = auth.slice(auth.lastIndexOf("client.batch"));
+  assert.match(auth, /cleanupStatements = \[\{[\s\S]*DELETE FROM auth_pool_entries/);
+  assert.match(auth, /cleanupStatements\.push\(\{[\s\S]*DELETE FROM auth_pool_quota_latest/);
+  assert.match(authBatch, /\.\.\.cleanupStatements/);
+  assert.match(authBatch, /INSERT INTO auth_pool_entries/);
+  assert.match(authBatch, /dashboardRevisionUpdate/);
+
+  const flag = functionBody(source, "setFeatureFlag");
+  assert.doesNotMatch(flag, /SELECT value FROM feature_flags/);
+  assert.match(flag, /feature_flags\.value IS NOT excluded\.value/);
+  assert.match(flag, /client\.batch/);
+  assert.match(flag, /changes\(\) > 0/);
+});
+
 test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
   const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
   assert.ok(vercelConfig.crons.every((cron) => cron.path !== "/api/cron/probe-auth-pool"));

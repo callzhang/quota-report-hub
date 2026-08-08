@@ -178,6 +178,65 @@ test("statusPayload marks refresh validity confirmed after a real token refresh"
   assert.equal(payload.items[0].refresh_validity.label, "refresh verified");
 });
 
+test("statusPayload attaches a derived account availability state", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "ok",
+      account_id: "codex-a@example.com",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 6, reset_at: "2026-04-28T10:00:00Z" },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.deepEqual(payload.items[0].availability, {
+    state: "available",
+    currently_usable: true,
+    reason: "meets_rotation_threshold",
+    tone: "success",
+    summary: "Current quota meets the rotation threshold.",
+    current_quota: {
+      window: "1week",
+      remaining_percent: 6,
+      reset_at: "2026-04-28T10:00:00Z",
+      captured_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "1week": {
+          remaining_percent: 6,
+          reset_at: "2026-04-28T10:00:00Z",
+          captured_at: "2026-04-21T10:15:00Z",
+        },
+      },
+    },
+      historical_snapshot: null,
+      next_transition_at: "2026-04-21T11:15:00.001Z",
+  });
+});
+
+test("statusPayload keeps auth invalidation distinct from refresh token rejection", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "error",
+      error: "auth failed (401 unauthorized)",
+      first_invalidated_at: "2026-04-21T10:00:00Z",
+      account_id: "codex-a@example.com",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 99, reset_at: "2026-04-28T10:00:00Z" },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].refresh_validity.status, "rejected");
+  assert.equal(payload.items[0].availability.state, "unavailable");
+  assert.equal(payload.items[0].availability.reason, "auth_invalidated");
+});
+
 test("statusPayload keeps codex rows without quota windows visible", () => {
   const payload = statusPayload([
     {
@@ -455,6 +514,9 @@ test("mergeLatestReport preserves old windows as stale on hard auth invalidation
   assert.equal(merged.windows["1week"].remaining_percent, 60);
   assert.equal(merged.error, "auth invalidated (token_invalidated)");
   assert.equal(merged.status, "error");
+
+  const payload = statusPayload([merged], "2026-04-21T04:30:00Z");
+  assert.equal(payload.items[0].availability.historical_snapshot.captured_at, "2026-04-21T04:00:00Z");
 });
 
 test("mergeLatestReport ignores invalidation from older auth refresh than current healthy report", () => {
@@ -899,6 +961,26 @@ test("authPoolStatusPayload exposes token, quota, and refresh state independentl
   assert.equal(payload.items[0].token_state.uploaded_at, "2026-04-21T09:00:00Z");
   assert.equal(payload.items[0].quota_snapshot_state.status, "unavailable");
   assert.equal(payload.items[0].refresh_validity.status, "rejected");
+  assert.equal(payload.items[0].availability.reason, "refresh_token_rejected");
+});
+
+test("authPoolStatusPayload carries only the safe refresh-token capability marker into availability", () => {
+  const generatedAt = "2026-08-08T08:00:00Z";
+  const baseEntry = {
+    source: "codex", account_id: "acct", email: "member@stardust.ai", plan_name: "Plus",
+    uploaded_at: "2026-08-08T07:00:00Z", auth_expires_at: "2026-08-08T07:30:00Z",
+  };
+  const baseReport = {
+    source: "codex", account_id: "acct", reported_at: "2026-08-08T07:20:00Z", status: "ok",
+    windows: { "5h": null, "1week": { remaining_percent: 80, reset_at: "2026-08-15T00:00:00Z" } },
+  };
+  const atOnly = authPoolStatusPayload([{ ...baseEntry, has_refresh_token: false }], [baseReport], generatedAt);
+  const recoverable = authPoolStatusPayload([{ ...baseEntry, has_refresh_token: true }], [baseReport], generatedAt);
+
+  assert.equal(atOnly.items[0].availability.state, "unavailable");
+  assert.equal(recoverable.items[0].availability.state, "quota_unknown");
+  assert.equal(recoverable.items[0].has_refresh_token, true);
+  assert.equal("refresh_token" in recoverable.items[0], false);
 });
 
 test("authPoolStatusPayload hides legacy empty session when account has session entries", () => {

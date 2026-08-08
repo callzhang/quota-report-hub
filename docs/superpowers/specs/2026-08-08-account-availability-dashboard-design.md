@@ -122,7 +122,7 @@ It must never expose encrypted auth material, access tokens, refresh tokens, or 
 
 1. Full status is revision-driven, not timer-driven.
 2. The one-minute timer performs one singleton revision read only while the tab is visible.
-3. Returning to the tab performs the same revision check, not an unconditional full status load.
+3. Returning to the tab performs the same revision check unless a server-supplied time-derived state deadline passed while hidden; in that case it performs one full status load.
 4. History is fetched only when the detail popover is first opened for an account.
 5. Browser history results are cached per `source + account_id` for five minutes.
 6. Only one history request per account may be in flight at a time.
@@ -130,6 +130,8 @@ It must never expose encrypted auth material, access tokens, refresh tokens, or 
 8. Closing and reopening a popover within the cache window performs no database read.
 9. Current-state endpoints remain independent of the append-only history table.
 10. Database-read static tests prevent full status, candidate selection, and routine ingestion from scanning history.
+
+Availability responses expose the earliest time at which the conclusion can change without a database write (report freshness, quota reset, or access expiry). The visible browser schedules one bounded full refresh for that deadline, preserving cheap revision polling at all other times.
 
 ## Error behavior
 

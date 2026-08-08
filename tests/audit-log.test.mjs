@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClient } from "@libsql/client";
+import { authPoolStatusPayload, statusPayload } from "../lib/reports.js";
 
 function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", lastRefresh = "2026-05-06T00:00:00Z", sid = null }) {
   const payload = Buffer.from(
@@ -80,6 +81,119 @@ async function loadDbWithTempStore() {
   }
 }
 
+test("dashboard revision is singleton, monotonic, and changes only for visible writes", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    assert.deepEqual(await mod.dashboardRevision(), { revision: 0, updated_at: null });
+
+    await mod.bumpDashboardRevision("2026-08-08T08:00:00Z");
+    assert.deepEqual(await mod.dashboardRevision(), {
+      revision: 1,
+      updated_at: "2026-08-08T08:00:00Z",
+    });
+
+    const auth = {
+      source: "codex",
+      auth_json: fakeAuthJson({ accountId: "revision-provider", email: "revision@stardust.ai" }),
+      uploader_email: "owner@stardust.ai",
+      reporter_name: "owner@mac",
+      hostname: "mac",
+    };
+    await mod.upsertAuthPoolEntry(auth);
+    assert.equal((await mod.dashboardRevision()).revision, 2);
+    await mod.upsertAuthPoolEntry(auth);
+    assert.equal((await mod.dashboardRevision()).revision, 2, "deduplicated auth upload is a no-op");
+
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "quota@gpu4",
+      reported_at: "2026-08-08T08:01:00Z",
+      account_id: "revision@stardust.ai",
+      status: "ok",
+      windows: { "5h": null, "1week": { remaining_percent: 80, reset_at: "2026-08-15T00:00:00Z" } },
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 3);
+
+    await mod.setFeatureFlag("disabled_refresh_token", true, "owner@stardust.ai");
+    assert.equal((await mod.dashboardRevision()).revision, 4);
+    await mod.setFeatureFlag("disabled_refresh_token", true, "owner@stardust.ai");
+    assert.equal((await mod.dashboardRevision()).revision, 4, "unchanged flag is a no-op");
+
+    await mod.recordPoolHealthSnapshot({
+      captured_at: "2026-08-08T08:02:00Z",
+      source: "codex",
+      total: 1,
+      ok_count: 1,
+      hard_dead_count: 0,
+      other_err_count: 0,
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 5);
+
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "viewer@stardust.ai",
+      source: "codex",
+      servedEntry: null,
+      reason: "no_better_auth_available",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 6);
+
+    await mod.upsertInvalidatedAuthState({
+      source: "codex",
+      accountId: "revision@stardust.ai",
+      invalidatedAt: "2026-08-08T08:03:00Z",
+      error: "auth invalidated (token_invalidated)",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 7);
+    await mod.upsertInvalidatedAuthState({
+      source: "codex",
+      accountId: "revision@stardust.ai",
+      invalidatedAt: "2026-08-08T08:03:00Z",
+      error: "auth invalidated (token_invalidated)",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 7, "unchanged invalidation is a no-op");
+    await mod.markInvalidatedAuthNotified({
+      source: "codex",
+      accountId: "revision@stardust.ai",
+      notifiedAt: "2026-08-08T08:04:00Z",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 8);
+    await mod.markInvalidatedAuthNotified({
+      source: "codex",
+      accountId: "revision@stardust.ai",
+      notifiedAt: "2026-08-08T08:04:00Z",
+    });
+    assert.equal((await mod.dashboardRevision()).revision, 8, "unchanged notification is a no-op");
+    await mod.clearInvalidatedAuthState({ source: "codex", accountId: "revision@stardust.ai" });
+    assert.equal((await mod.dashboardRevision()).revision, 9);
+    await mod.clearInvalidatedAuthState({ source: "codex", accountId: "revision@stardust.ai" });
+    assert.equal((await mod.dashboardRevision()).revision, 9, "clearing absent invalidation is a no-op");
+
+    const deleted = await mod.deleteAuthPoolEntry({ source: "codex", accountId: "revision@stardust.ai" });
+    assert.equal(deleted.deleted, true);
+    assert.equal((await mod.dashboardRevision()).revision, 10);
+    await mod.deleteAuthPoolEntry({ source: "codex", accountId: "revision@stardust.ai" });
+    assert.equal((await mod.dashboardRevision()).revision, 10, "deleting absent auth is a no-op");
+  } finally {
+    cleanup();
+  }
+});
+
+test("concurrent identical feature flag writes increment dashboard revision once", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    assert.equal((await mod.dashboardRevision()).revision, 0);
+    await Promise.all([
+      mod.setFeatureFlag("disabled_refresh_token", true, "first@stardust.ai"),
+      mod.setFeatureFlag("disabled_refresh_token", true, "second@stardust.ai"),
+    ]);
+    assert.equal(await mod.getFeatureFlag("disabled_refresh_token"), true);
+    assert.equal((await mod.dashboardRevision()).revision, 1);
+  } finally {
+    cleanup();
+  }
+});
+
 test("authPoolEntrySummaries excludes encrypted auth material for status reads", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
@@ -101,6 +215,42 @@ test("authPoolEntrySummaries excludes encrypted auth material for status reads",
     assert.equal(Object.hasOwn(summaries[0], "iv"), false);
     assert.equal(Object.hasOwn(summaries[0], "auth_tag"), false);
     assert.equal(Object.hasOwn(summaries[0], "auth_blob_key"), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("latest quota preserves its window capture time after a later invalidation", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "quota@gpu4",
+      reported_at: "2026-04-21T04:00:00Z",
+      account_id: "acct-1",
+      status: "ok",
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 60, reset_at: "2026-04-27T09:00:00Z" },
+      },
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "quota@gpu4",
+      reported_at: "2026-04-21T04:15:00Z",
+      account_id: "acct-1",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+
+    const latest = await mod.authPoolQuotaLatestForEntry({ source: "codex", accountId: "acct-1" });
+    assert.equal(latest.windows["1week"].captured_at, "2026-04-21T04:00:00Z");
+
+    const payload = statusPayload([latest], "2026-04-21T04:30:00Z");
+    assert.equal(payload.items[0].availability.historical_snapshot.captured_at, "2026-04-21T04:00:00Z");
   } finally {
     cleanup();
   }
@@ -218,6 +368,9 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
         PRIMARY KEY (source, account_id)
       )
     `);
+    const legacyAuthJson = fakeAuthJson({ accountId: "same-provider-id", email: "same@stardust.ai" });
+    const { encryptAuthJson } = await import(`../lib/auth-pool.js?migration=${Date.now()}`);
+    const encrypted = encryptAuthJson(legacyAuthJson);
     await client.execute({
       sql: `
         INSERT INTO auth_pool_entries (
@@ -237,9 +390,9 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
         "alice@gpu4",
         "gpu4",
         "2026-05-06T00:00:00Z",
-        Buffer.from("{}").toString("base64"),
-        Buffer.from("iv").toString("base64"),
-        Buffer.from("tag").toString("base64"),
+        encrypted.encrypted_auth_json,
+        encrypted.iv,
+        encrypted.auth_tag,
       ],
     });
 
@@ -250,6 +403,16 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
       .sort((left, right) => Number(left.pk) - Number(right.pk))
       .map((row) => row.name);
     assert.deepEqual(pk, ["source", "account_id", "session_id"]);
+    const migratedSummary = (await mod.authPoolEntrySummaries())[0];
+    assert.equal(migratedSummary.has_refresh_token, null);
+    const migratedStatus = authPoolStatusPayload([{
+      ...migratedSummary,
+      auth_expires_at: "2026-05-05T00:00:00Z",
+    }], [{
+      source: "codex", account_id: "same@stardust.ai", reported_at: "2026-05-04T23:30:00Z", status: "ok",
+      windows: { "5h": null, "1week": { remaining_percent: 80, reset_at: "2026-05-13T00:00:00Z" } },
+    }], "2026-05-05T00:30:00Z");
+    assert.equal(migratedStatus.items[0].availability.reason, "refresh_recovery_unknown");
 
     await mod.upsertAuthPoolEntry({
       source: "codex",
@@ -288,6 +451,30 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
       process.env.TOKEN_ISSUE_KEY = previousTokenIssueKey;
     }
     rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("identical re-upload repairs an unknown refresh capability marker exactly once", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const authJson = fakeAuthJson({ accountId: "repair-provider", email: "repair@stardust.ai" });
+    await mod.upsertAuthPoolEntry({ source: "codex", auth_json: authJson, uploader_email: "owner@stardust.ai" });
+    await client.execute(`UPDATE auth_pool_entries SET has_refresh_token = NULL`);
+    const before = await mod.dashboardRevision();
+
+    const repaired = await mod.upsertAuthPoolEntry({ source: "codex", auth_json: authJson, uploader_email: "owner@stardust.ai" });
+    const afterRepair = await mod.dashboardRevision();
+    const duplicate = await mod.upsertAuthPoolEntry({ source: "codex", auth_json: authJson, uploader_email: "owner@stardust.ai" });
+    const afterDuplicate = await mod.dashboardRevision();
+
+    assert.equal(repaired.deduplicated, true);
+    assert.equal(repaired.has_refresh_token, true);
+    assert.equal((await mod.authPoolEntrySummaries())[0].has_refresh_token, true);
+    assert.equal(afterRepair.revision, before.revision + 1);
+    assert.equal(duplicate.has_refresh_token, true);
+    assert.equal(afterDuplicate.revision, afterRepair.revision);
+  } finally {
+    cleanup();
   }
 });
 
@@ -919,17 +1106,120 @@ test("upsertAuthPoolQuota records every probe event and keeps continuous invalid
       windows: { "5h": null, "1week": null },
     });
 
-    const events = await mod.authPoolQuotaEvents({ source: "codex", accountId: "acct-history", limit: 10 });
+    const events = await mod.authPoolQuotaEvents({
+      source: "codex",
+      accountId: "acct-history",
+      since: "2026-05-05T00:00:00Z",
+      until: "2026-05-07T00:00:00Z",
+      limit: 10,
+    });
     assert.equal(events.length, 3);
     assert.deepEqual(
       events.map((event) => event.reported_at),
-      ["2026-05-06T02:00:00Z", "2026-05-06T01:00:00Z", "2026-05-06T00:00:00Z"]
+      ["2026-05-06T00:00:00.000Z", "2026-05-06T01:00:00.000Z", "2026-05-06T02:00:00.000Z"]
     );
 
     const states = await mod.authPoolInvalidatedNotifications();
     assert.equal(states.length, 1);
     assert.equal(states[0].first_invalidated_at, "2026-05-06T01:00:00Z");
     assert.equal(states[0].last_error, "auth invalidated (token_invalidated)");
+  } finally {
+    cleanup();
+  }
+});
+
+test("authPoolQuotaEvents returns bounded chronological history for one exact account", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const reports = [
+      ["codex", "acct-history", "2026-08-07T07:59:59Z", 99],
+      ["codex", "acct-history", "2026-08-07T08:00:00Z", 90],
+      ["codex", "acct-history", "2026-08-07T09:00:00Z", 80],
+      ["codex", "other-account", "2026-08-08T06:00:00Z", 70],
+      ["claude", "acct-history", "2026-08-08T06:30:00Z", 60],
+      ["codex", "acct-history", "2026-08-08T07:00:00Z", 50],
+      ["codex", "acct-history", "2026-08-08T08:00:00Z", 40],
+      ["codex", "acct-history", "2026-08-08T08:00:01Z", 30],
+    ];
+    for (const [source, accountId, reportedAt, remaining] of reports) {
+      await mod.upsertAuthPoolQuota({
+        source,
+        hostname: "worker",
+        reporter_name: "worker",
+        reported_at: reportedAt,
+        account_id: accountId,
+        status: "ok",
+        windows: { "5h": null, "1week": { remaining_percent: remaining } },
+      });
+    }
+
+    const events = await mod.authPoolQuotaEvents({
+      source: "codex",
+      accountId: "acct-history",
+      since: "2026-08-07T08:00:00Z",
+      until: "2026-08-08T08:00:00Z",
+      limit: 96,
+    });
+
+    assert.deepEqual(events.map((event) => event.reported_at), [
+      "2026-08-07T08:00:00.000Z",
+      "2026-08-07T09:00:00.000Z",
+      "2026-08-08T07:00:00.000Z",
+      "2026-08-08T08:00:00.000Z",
+    ]);
+    assert.ok(events.every((event) => event.source === "codex" && event.account_id === "acct-history"));
+  } finally {
+    cleanup();
+  }
+});
+
+test("authPoolQuotaEvents keeps the newest 96 matching points in chronological order", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const startMs = Date.parse("2026-08-07T12:00:00Z");
+    const matchingReports = Array.from({ length: 100 }, (_, index) => ({
+      reportedAt: new Date(startMs + index * 10 * 60 * 1000).toISOString(),
+      remaining: 100 - index,
+    }));
+    const reports = [
+      { source: "codex", accountId: "acct-history", reportedAt: "2026-08-07T07:59:59Z", remaining: 1000 },
+      { source: "codex", accountId: "acct-history", reportedAt: "2026-08-07T08:00:00Z", remaining: 1003 },
+      { source: "codex", accountId: "acct-history", reportedAt: "2026-08-08T08:00:00Z", remaining: 1004 },
+      { source: "codex", accountId: "acct-history", reportedAt: "2026-08-08T08:00:01Z", remaining: 1005 },
+      { source: "codex", accountId: "other-account", reportedAt: "2026-08-08T07:59:59Z", remaining: 1001 },
+      { source: "claude", accountId: "acct-history", reportedAt: "2026-08-08T07:59:58Z", remaining: 1002 },
+      ...matchingReports.map((report) => ({ source: "codex", accountId: "acct-history", ...report })),
+    ];
+    for (const report of reports) {
+      await mod.upsertAuthPoolQuota({
+        source: report.source,
+        hostname: "worker",
+        reporter_name: "worker",
+        reported_at: report.reportedAt,
+        account_id: report.accountId,
+        status: "ok",
+        windows: { "5h": null, "1week": { remaining_percent: report.remaining } },
+      });
+    }
+
+    const events = await mod.authPoolQuotaEvents({
+      source: "codex",
+      accountId: "acct-history",
+      since: "2026-08-07T08:00:00Z",
+      until: "2026-08-08T08:00:00Z",
+      limit: 999,
+    });
+
+    assert.equal(events.length, 96);
+    assert.equal(events[0].reported_at, new Date(matchingReports[5].reportedAt).toISOString());
+    assert.equal(events[0].windows["1week"].remaining_percent, matchingReports[5].remaining);
+    assert.equal(events.at(-1).reported_at, "2026-08-08T08:00:00.000Z");
+    assert.equal(events.at(-1).windows["1week"].remaining_percent, 1004);
+    assert.deepEqual(
+      events.map((event) => event.reported_at),
+      [...matchingReports.slice(5).map((report) => new Date(report.reportedAt).toISOString()), "2026-08-08T08:00:00.000Z"],
+    );
+    assert.ok(events.every((event) => event.source === "codex" && event.account_id === "acct-history"));
   } finally {
     cleanup();
   }
@@ -1002,7 +1292,12 @@ test("deleteAuthPoolEntry removes entry, latest quota, and invalidated state", a
     assert.equal(await mod.authPoolEntry("codex", "delete@example.com"), null);
     assert.equal((await mod.authPoolQuotaLatest()).filter((row) => row.account_id === "delete@example.com").length, 0);
     assert.equal((await mod.authPoolInvalidatedNotifications()).filter((row) => row.account_id === "delete@example.com").length, 0);
-    assert.equal((await mod.authPoolQuotaEvents({ source: "codex", accountId: "delete@example.com" })).length, 1);
+    assert.equal((await mod.authPoolQuotaEvents({
+      source: "codex",
+      accountId: "delete@example.com",
+      since: "2026-05-05T00:00:00Z",
+      until: "2026-05-07T00:00:00Z",
+    })).length, 1);
   } finally {
     cleanup();
   }
@@ -1033,6 +1328,7 @@ test("upsertAuthPoolEntry rejects a stripped (placeholder-RT) blob so it can't p
     const dummyClaude = JSON.stringify({ credentials: { claudeAiOauth: { refreshToken: "disabled-by-hub-refresh-token", accessToken: "AT" } } });
     const claudeResult = await mod.upsertAuthPoolEntry({ source: "claude", auth_json: dummyClaude, uploader_email: "x@stardust.ai" });
     assert.equal(claudeResult.rejected, true);
+    assert.equal((await mod.dashboardRevision()).revision, 0, "rejected uploads must not change dashboard revision");
   } finally {
     cleanup();
   }
@@ -1123,6 +1419,29 @@ test("collapseAuthPoolSessions keeps only the newest row per account", async () 
     const rows = (await client.execute({ sql: "SELECT session_id FROM auth_pool_entries WHERE account_id='a@x.ai'" })).rows;
     assert.equal(rows.length, 1);
     assert.equal(rows[0].session_id, "s2");
+  } finally {
+    cleanup();
+  }
+});
+
+test("collapseAuthPoolSessions bumps revision only when duplicate rows are removed", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    assert.equal((await mod.dashboardRevision()).revision, 0);
+    await client.execute({
+      sql: `INSERT INTO auth_pool_entries (
+        source, account_id, session_id, digest, uploaded_at
+      ) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)`,
+      args: [
+        "codex", "duplicate@stardust.ai", "old", "old", "2026-08-08T07:00:00Z",
+        "codex", "duplicate@stardust.ai", "new", "new", "2026-08-08T08:00:00Z",
+      ],
+    });
+
+    assert.equal(await mod.collapseAuthPoolSessions(), 1);
+    assert.equal((await mod.dashboardRevision()).revision, 1);
+    assert.equal(await mod.collapseAuthPoolSessions(), 0);
+    assert.equal((await mod.dashboardRevision()).revision, 1, "no removed rows is a no-op");
   } finally {
     cleanup();
   }
