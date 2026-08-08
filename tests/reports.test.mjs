@@ -178,6 +178,43 @@ test("statusPayload marks refresh validity confirmed after a real token refresh"
   assert.equal(payload.items[0].refresh_validity.label, "refresh verified");
 });
 
+test("statusPayload attaches a derived account availability state", () => {
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "ok",
+      account_id: "codex-a@example.com",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 6, reset_at: "2026-04-28T10:00:00Z" },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.deepEqual(payload.items[0].availability, {
+    state: "available",
+    currently_usable: true,
+    reason: "meets_rotation_threshold",
+    tone: "success",
+    summary: "Current quota meets the rotation threshold.",
+    current_quota: {
+      window: "1week",
+      remaining_percent: 6,
+      reset_at: "2026-04-28T10:00:00Z",
+      captured_at: "2026-04-21T10:15:00Z",
+      windows: {
+        "1week": {
+          remaining_percent: 6,
+          reset_at: "2026-04-28T10:00:00Z",
+          captured_at: "2026-04-21T10:15:00Z",
+        },
+      },
+    },
+    historical_snapshot: null,
+  });
+});
+
 test("statusPayload keeps codex rows without quota windows visible", () => {
   const payload = statusPayload([
     {
