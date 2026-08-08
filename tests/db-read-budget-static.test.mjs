@@ -86,6 +86,42 @@ test("dashboard revision uses one singleton row without reading dashboard data",
   assert.doesNotMatch(revision, /pool_health_snapshots/);
 });
 
+test("dashboard-visible logical writes batch their data and revision updates atomically", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+
+  const collapse = functionBody(source, "collapseAuthPoolSessions");
+  assert.match(collapse, /client\.batch/);
+  assert.match(collapse, /dashboardRevisionUpdate/);
+
+  const fetch = functionBody(source, "recordAuthPoolFetch");
+  assert.match(fetch, /client\.batch/);
+  assert.doesNotMatch(fetch, /client\.execute/);
+  assert.match(fetch, /dashboardRevisionUpdate/);
+
+  for (const name of ["upsertInvalidatedAuthState", "markInvalidatedAuthNotified", "clearInvalidatedAuthState"]) {
+    const mutation = functionBody(source, name);
+    assert.match(mutation, /client\.batch/);
+    assert.match(mutation, /dashboardRevisionUpdate/);
+    assert.match(mutation, /changes\(\) > 0/);
+  }
+
+  const quota = functionBody(source, "upsertAuthPoolQuota");
+  const quotaBatch = quota.slice(quota.indexOf("client.batch"));
+  assert.match(quotaBatch, /insertAuthPoolQuotaEventStatement/);
+  assert.match(quotaBatch, /reporterAssignment/);
+  assert.match(quotaBatch, /auth_pool_quota_latest/);
+  assert.match(quotaBatch, /invalidationStatement/);
+  assert.match(quotaBatch, /dashboardRevisionUpdate/);
+
+  const auth = functionBody(source, "upsertAuthPoolEntry");
+  const authBatch = auth.slice(auth.lastIndexOf("client.batch"));
+  assert.match(auth, /cleanupStatements = \[\{[\s\S]*DELETE FROM auth_pool_entries/);
+  assert.match(auth, /cleanupStatements\.push\(\{[\s\S]*DELETE FROM auth_pool_quota_latest/);
+  assert.match(authBatch, /\.\.\.cleanupStatements/);
+  assert.match(authBatch, /INSERT INTO auth_pool_entries/);
+  assert.match(authBatch, /dashboardRevisionUpdate/);
+});
+
 test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
   const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
   assert.ok(vercelConfig.crons.every((cron) => cron.path !== "/api/cron/probe-auth-pool"));

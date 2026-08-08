@@ -1263,3 +1263,26 @@ test("collapseAuthPoolSessions keeps only the newest row per account", async () 
     cleanup();
   }
 });
+
+test("collapseAuthPoolSessions bumps revision only when duplicate rows are removed", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    assert.equal((await mod.dashboardRevision()).revision, 0);
+    await client.execute({
+      sql: `INSERT INTO auth_pool_entries (
+        source, account_id, session_id, digest, uploaded_at
+      ) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)`,
+      args: [
+        "codex", "duplicate@stardust.ai", "old", "old", "2026-08-08T07:00:00Z",
+        "codex", "duplicate@stardust.ai", "new", "new", "2026-08-08T08:00:00Z",
+      ],
+    });
+
+    assert.equal(await mod.collapseAuthPoolSessions(), 1);
+    assert.equal((await mod.dashboardRevision()).revision, 1);
+    assert.equal(await mod.collapseAuthPoolSessions(), 0);
+    assert.equal((await mod.dashboardRevision()).revision, 1, "no removed rows is a no-op");
+  } finally {
+    cleanup();
+  }
+});
