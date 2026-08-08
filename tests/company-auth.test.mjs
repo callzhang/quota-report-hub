@@ -5,8 +5,10 @@ import {
   companyEmailAllowed,
   isAdminEmail,
   normalizeEmail,
+  signDashboardRevisionToken,
   sendAccessTokenEmail,
   sendAuthInvalidatedEmail,
+  verifyDashboardRevisionToken,
 } from "../lib/company-auth.js";
 
 test("isAdminEmail reads ADMIN_EMAIL (comma-separated, normalized)", () => {
@@ -61,6 +63,25 @@ test("bearerTokenFromHeaders extracts bearer token case-insensitively", () => {
     bearerTokenFromHeaders({}),
     ""
   );
+});
+
+test("dashboard revision tokens are signed, scoped, and expire", () => {
+  const previousKey = process.env.TOKEN_ISSUE_KEY;
+  process.env.TOKEN_ISSUE_KEY = "revision-ticket-test-key";
+  try {
+    const issuedAt = Date.parse("2026-08-08T08:00:00Z");
+    const token = signDashboardRevisionToken("Member@Stardust.ai", issuedAt);
+    assert.match(token, /^qrr\./);
+    assert.deepEqual(
+      verifyDashboardRevisionToken(token, issuedAt + 60_000),
+      { email: "member@stardust.ai" }
+    );
+    assert.equal(verifyDashboardRevisionToken(`${token}tampered`, issuedAt + 60_000), null);
+    assert.equal(verifyDashboardRevisionToken(token, issuedAt + 12 * 60 * 60 * 1000 + 1), null);
+  } finally {
+    if (previousKey === undefined) delete process.env.TOKEN_ISSUE_KEY;
+    else process.env.TOKEN_ISSUE_KEY = previousKey;
+  }
 });
 
 test("sendAuthInvalidatedEmail sends a compact HTML card through Mailgun", async () => {

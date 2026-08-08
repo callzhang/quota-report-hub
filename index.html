@@ -848,6 +848,7 @@
       }
 
       let loadedDashboardRevision = null;
+      let dashboardRevisionToken = "";
       let statusRequest = null;
       let revisionRequest = null;
 
@@ -899,6 +900,7 @@
 
         applyTokenUpgrade(payload);
         loadedDashboardRevision = payload.dashboard_revision;
+        dashboardRevisionToken = payload.dashboard_revision_token;
         setAuthenticatedView(payload.viewer_email || "unknown");
         renderAdminFlag(payload);
         renderHealthTrend(payload.health_history);
@@ -1114,14 +1116,14 @@
         if (document.visibilityState === "visible") {
           if (revisionRequest) return revisionRequest;
           const token = currentToken || getStoredToken();
-          if (!token) return;
+          if (!token || !dashboardRevisionToken) return;
 
           revisionRequest = (async () => {
             let response;
             try {
               response = await fetch("/api/status-revision", {
                 cache: "no-store",
-                headers: { Authorization: `Bearer ${token}` },
+                headers: { Authorization: `Bearer ${dashboardRevisionToken}` },
               });
             } catch {
               return;

@@ -70,6 +70,7 @@ test("status returns the dashboard revision loaded with current state", async ()
     sendServiceUnavailable() { assert.fail("unexpected service error"); },
     sendUnauthorized() { assert.fail("unexpected unauthorized response"); },
     withTokenUpgrade: (payload) => payload,
+    signDashboardRevisionToken: () => "qrr.revision.ticket",
     dbConfigured: () => true,
     authPoolEntrySummaries: async () => [],
     authPoolQuotaLatest: async () => [],
@@ -85,4 +86,53 @@ test("status returns the dashboard revision loaded with current state", async ()
   const payload = JSON.parse(body);
   assert.equal(payload.dashboard_revision, 17);
   assert.equal(payload.dashboard_updated_at, "2026-08-08T08:00:00Z");
+  assert.equal(payload.dashboard_revision_token, "qrr.revision.ticket");
+});
+
+test("status retries when a concurrent write changes revision and never tags stale data as current", async () => {
+  const { statusHandlerImpl } = await import(`../api/status.js?consistent=${Date.now()}`);
+  let body = "";
+  const res = { setHeader() {}, end(value) { body = value; } };
+  let currentRevision = 1;
+  let stateRead = 0;
+  let releaseStaleRead;
+  let markStaleReadStarted;
+  const staleReadStarted = new Promise((resolve) => { markStaleReadStarted = resolve; });
+
+  const handling = statusHandlerImpl({}, res, {
+    authenticateApiRequest: async () => ({ email: "member@stardust.ai" }),
+    sendServiceUnavailable() { assert.fail("unexpected service error"); },
+    sendUnauthorized() { assert.fail("unexpected unauthorized response"); },
+    withTokenUpgrade: (payload) => payload,
+    signDashboardRevisionToken: () => "qrr.revision.ticket",
+    dbConfigured: () => true,
+    dashboardRevision: async () => ({
+      revision: currentRevision,
+      updated_at: currentRevision === 1 ? "2026-08-08T08:00:00Z" : "2026-08-08T08:01:00Z",
+    }),
+    authPoolEntrySummaries: async () => {
+      stateRead += 1;
+      if (stateRead === 1) {
+        markStaleReadStarted();
+        return new Promise((resolve) => { releaseStaleRead = resolve; });
+      }
+      return [{ account_id: "fresh" }];
+    },
+    authPoolQuotaLatest: async () => [],
+    authPoolInvalidatedNotifications: async () => [],
+    authPoolFetchLog: async () => [],
+    poolHealthSnapshots: async () => [],
+    authPoolStatusPayload: (entries) => ({ items: entries, archived_invalidated_items: [] }),
+    getFeatureFlag: async () => false,
+    isAdminEmail: () => false,
+  });
+  await staleReadStarted;
+  currentRevision = 2;
+  releaseStaleRead([{ account_id: "stale" }]);
+  await handling;
+
+  const payload = JSON.parse(body);
+  assert.equal(stateRead, 2);
+  assert.equal(payload.items[0].account_id, "fresh");
+  assert.equal(payload.dashboard_revision, 2);
 });

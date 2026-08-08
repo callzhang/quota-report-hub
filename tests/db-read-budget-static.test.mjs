@@ -86,6 +86,14 @@ test("dashboard revision uses one singleton row without reading dashboard data",
   assert.doesNotMatch(revision, /pool_health_snapshots/);
 });
 
+test("routine status revision authentication is stateless and does not touch token usage rows", async () => {
+  const handler = await readFile(new URL("../api/status-revision.js", import.meta.url), "utf8");
+  assert.match(handler, /verifyDashboardRevisionToken/);
+  assert.match(handler, /dashboardRevision/);
+  assert.doesNotMatch(handler, /authenticateApiRequest|authenticateApiToken|authenticateOrUpgradeApiToken/);
+  assert.doesNotMatch(handler, /auth_api_tokens|last_used_at|client\.execute|client\.batch/);
+});
+
 test("dashboard-visible logical writes batch their data and revision updates atomically", async () => {
   const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
 

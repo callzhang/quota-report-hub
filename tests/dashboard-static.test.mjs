@@ -47,6 +47,8 @@ test("dashboard tracks loaded revision and deduplicates overlapping status reque
 
   assert.match(html, /let loadedDashboardRevision = null/);
   assert.match(html, /loadedDashboardRevision = payload\.dashboard_revision/);
+  assert.match(html, /dashboardRevisionToken = payload\.dashboard_revision_token/);
+  assert.match(html, /Authorization: `Bearer \$\{dashboardRevisionToken\}`/);
   assert.match(html, /let statusRequest = null/);
   assert.match(html, /if \(statusRequest\) return statusRequest/);
   assert.match(html, /let revisionRequest = null/);

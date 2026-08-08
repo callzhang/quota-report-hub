@@ -24,10 +24,9 @@ test("revision endpoint rejects missing authentication without reading revision"
   let revisionReads = 0;
 
   await statusRevisionHandlerImpl({}, recorder.res, {
-    authenticateApiRequest: async () => null,
+    authenticateDashboardRevisionRequest: () => null,
     sendUnauthorized(res) { res.statusCode = 401; res.end("unauthorized"); },
     sendServiceUnavailable() { assert.fail("unexpected service error"); },
-    withTokenUpgrade: (payload) => payload,
     dashboardRevision: async () => { revisionReads += 1; },
   });
 
@@ -41,10 +40,9 @@ test("revision endpoint returns only revision metadata", async () => {
   const recorder = responseRecorder();
 
   await statusRevisionHandlerImpl({}, recorder.res, {
-    authenticateApiRequest: async () => ({ email: "member@stardust.ai" }),
+    authenticateDashboardRevisionRequest: () => ({ email: "member@stardust.ai" }),
     sendUnauthorized() { assert.fail("unexpected unauthorized response"); },
     sendServiceUnavailable() { assert.fail("unexpected service error"); },
-    withTokenUpgrade: (payload) => payload,
     dashboardRevision: async () => ({ revision: 42, updated_at: "2026-08-08T08:00:00Z" }),
   });
 
@@ -56,33 +54,6 @@ test("revision endpoint returns only revision metadata", async () => {
   });
 });
 
-test("revision endpoint includes an upgraded user token when authentication upgrades it", async () => {
-  const { statusRevisionHandlerImpl } = await import("../api/status-revision.js");
-  const { withTokenUpgrade } = await import("../lib/api-auth.js");
-  const recorder = responseRecorder();
-
-  await statusRevisionHandlerImpl({}, recorder.res, {
-    authenticateApiRequest: async () => ({
-      email: "member@stardust.ai",
-      token_upgrade: {
-        auth_pool_user_token: "new-token",
-        email: "member@stardust.ai",
-        created_at: "2026-08-08T08:00:00Z",
-        reason: "legacy_token_upgrade",
-      },
-    }),
-    sendUnauthorized() { assert.fail("unexpected unauthorized response"); },
-    sendServiceUnavailable() { assert.fail("unexpected service error"); },
-    withTokenUpgrade,
-    dashboardRevision: async () => ({ revision: 42, updated_at: "2026-08-08T08:00:00Z" }),
-  });
-
-  const payload = JSON.parse(recorder.result().body);
-  assert.equal(payload.revision, 42);
-  assert.equal(payload.auth_pool_user_token, "new-token");
-  assert.equal(payload.token_upgrade.email, "member@stardust.ai");
-});
-
 test("revision endpoint follows the service-unavailable response contract", async () => {
   const { statusRevisionHandlerImpl } = await import("../api/status-revision.js");
   const { sendServiceUnavailable } = await import("../lib/api-auth.js");
@@ -91,10 +62,9 @@ test("revision endpoint follows the service-unavailable response contract", asyn
   console.error = () => {};
   try {
     await statusRevisionHandlerImpl({}, recorder.res, {
-      authenticateApiRequest: async () => ({ email: "member@stardust.ai" }),
+      authenticateDashboardRevisionRequest: () => ({ email: "member@stardust.ai" }),
       sendUnauthorized() { assert.fail("unexpected unauthorized response"); },
       sendServiceUnavailable,
-      withTokenUpgrade: (payload) => payload,
       dashboardRevision: async () => { throw new Error("reads are blocked"); },
     });
   } finally {
@@ -108,5 +78,7 @@ test("revision endpoint follows the service-unavailable response contract", asyn
 test("revision endpoint depends on the singleton revision reader only", async () => {
   const source = await readFile(new URL("../api/status-revision.js", import.meta.url), "utf8");
   assert.match(source, /dashboardRevision/);
+  assert.match(source, /verifyDashboardRevisionToken/);
+  assert.doesNotMatch(source, /authenticateApiRequest|authenticateApiToken|authenticateOrUpgradeApiToken|withTokenUpgrade|auth_api_tokens|last_used_at/);
   assert.doesNotMatch(source, /authPoolEntrySummaries|authPoolQuotaLatest|authPoolFetchLog|poolHealthSnapshots|authPoolQuotaEvents/);
 });

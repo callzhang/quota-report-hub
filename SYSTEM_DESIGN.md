@@ -171,6 +171,7 @@ All handlers are Vercel functions; most require a Bearer token via `authenticate
 | `/api/cron/invalidated-auth-notifications` | GET/POST | **`CRON_SECRET`** | Daily email to owners of 24h-dead auths |
 | `/api/cron/probe-auth-pool` | GET/POST | **`CRON_SECRET`** | Lightweight manual/external trigger that dispatches the GitHub probe workflow when health snapshots are stale |
 | `/api/status` | any | Bearer | Dashboard dataset |
+| `/api/status-revision` | any | Scoped `qrr.` ticket | Singleton dashboard revision only |
 | `/api/users` | any | Bearer | Users + fetch-log audit |
 
 `vercel.json`: platform cron only calls `/api/cron/invalidated-auth-notifications` daily at `0 17 * * *` UTC. Vercel Hobby does not support 15-minute cron jobs, so the *probe* worker stays in GitHub Actions. `/api/cron/probe-auth-pool` remains available for manual or external stale-snapshot dispatch when called with `CRON_SECRET`.
@@ -189,7 +190,10 @@ In branches 2–3, when `disabled_refresh_token` is ON, the served blob is run t
 ### 6.3 Identity & email
 - Company-email gate: token issuance requires `@<AUTH_ALLOWED_EMAIL_DOMAIN>` (default `stardust.ai`) (`lib/company-auth.js:13-16`); admin gate via `ADMIN_EMAIL` comma-list (`:18-28`).
 - HMAC tokens: `qrp.<base64url(payload)>.<hmac>` signed with `TOKEN_ISSUE_KEY`, verified with `timingSafeEqual`; DB presence still required so tokens are revocable (`:54-117`).
+- Revision tickets: a successful `/api/status` authentication also returns a 12-hour HMAC-signed `qrr.` ticket scoped to `/api/status-revision`. Its routine verification is stateless, so the one-minute change check performs only the singleton revision read and does not update `auth_api_tokens.last_used_at`. The ticket exposes only revision metadata and cannot authorize a full-status or auth-pool request; full data reloads still require the revocable `qrp.` token.
 - Mailgun for token delivery + 24h-stale-auth alerts (`:127-275`).
+
+`/api/status` reads the revision before and after assembling current state. If a dashboard-visible write occurs between those reads, it retries the assembly once; if state keeps changing, it returns the normal service-unavailable response instead of labeling stale data with the new revision.
 
 ---
 

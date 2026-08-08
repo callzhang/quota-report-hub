@@ -141,7 +141,8 @@ Important runtime notes:
 
 The dashboard now reflects the cloud auth pool, not arbitrary client report rows:
 
-- while the dashboard tab is visible it reloads status every minute, and switching back to the tab refreshes it immediately
+- after the initial full status load, a visible dashboard checks only the singleton revision once per minute and on visibility regain; it reloads full status only when that revision changes
+- revision checks use a 12-hour, HMAC-signed `qrr.` ticket issued by an authenticated full-status response. The ticket is scoped to revision metadata and cannot call the full dashboard or auth-pool APIs, so routine checks do not read or update API-token rows
 - a valid dashboard session is restored from the saved browser cookie; opening `login.html` reuses that session instead of asking the user to log in again
 - transient network and service errors keep the last dashboard data visible and retry automatically; only a missing token or an explicit `401` response shows the login panel
 - refresh-token state is shown as `verified`, `rejected`, or `not tested`; uploads carrying a real RT perform an immediate refresh verification and persist the rotated credential, while AT-only uploads remain unverified
@@ -171,7 +172,7 @@ Auth pool support:
 - Turso stores auth-pool metadata, quota snapshots, and audit events. `/api/status` and `/api/auth/fetch-best` candidate selection read metadata only; they do not read encrypted auth JSON for every account.
 - `fetch-best` keeps read volume bounded by reading only the requested source and by using compact current-state assignment tables. It does not scan the full fetch log or quota event history to calculate active machine/account load.
 - The users/audit page reads `auth_pool_user_fetch_stats`, which is updated when fetch events are written, instead of counting the full fetch audit log on each page load.
-- The dashboard refreshes after unlock and then at most every 15 minutes while the tab is visible. Hidden tabs do not keep polling `/api/status`.
+- The dashboard loads `/api/status` after unlock, then polls only `/api/status-revision` once per minute while visible. Hidden tabs do not poll, and unchanged revisions avoid full-status database reads.
 - In production, configure Tigris object storage so encrypted auth JSON is written to object storage and Turso keeps only `auth_blob_key`. Existing inline Turso rows remain readable and are moved to object storage when that auth is refreshed and uploaded again.
 - Every probe result is appended to `auth_pool_quota_events` before the latest row is updated or an unusable auth is removed, so audit views can be reconstructed from Turso instead of GitHub Actions logs. The continuous invalidation window is maintained in `auth_pool_invalidated_notifications` as current state, so quota ingestion does not rescan event history.
 - During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.
