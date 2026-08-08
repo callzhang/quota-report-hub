@@ -128,3 +128,24 @@ test("a revision response received after the page becomes hidden does not load f
 
   assert.equal(statusCalls, 1);
 });
+
+test("a revision 401 received after the page becomes hidden does not retry full status", async () => {
+  const revisionResponse = deferred();
+  let statusCalls = 0;
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") {
+      statusCalls += 1;
+      return response(200, statusPayload(1, "revision-ticket"));
+    }
+    if (url === "/api/status-revision") return revisionResponse.promise;
+    throw new Error(`unexpected request ${url}`);
+  });
+
+  const checking = harness.documentListeners.visibilitychange();
+  harness.document.visibilityState = "hidden";
+  revisionResponse.resolve(response(401, { error: "token_invalidated" }));
+  await checking;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(statusCalls, 1);
+});
