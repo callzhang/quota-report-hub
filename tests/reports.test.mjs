@@ -513,6 +513,9 @@ test("mergeLatestReport preserves old windows as stale on hard auth invalidation
   assert.equal(merged.windows["1week"].remaining_percent, 60);
   assert.equal(merged.error, "auth invalidated (token_invalidated)");
   assert.equal(merged.status, "error");
+
+  const payload = statusPayload([merged], "2026-04-21T04:30:00Z");
+  assert.equal(payload.items[0].availability.historical_snapshot.captured_at, "2026-04-21T04:00:00Z");
 });
 
 test("mergeLatestReport ignores invalidation from older auth refresh than current healthy report", () => {

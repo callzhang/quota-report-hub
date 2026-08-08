@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClient } from "@libsql/client";
+import { statusPayload } from "../lib/reports.js";
 
 function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", lastRefresh = "2026-05-06T00:00:00Z", sid = null }) {
   const payload = Buffer.from(
@@ -101,6 +102,42 @@ test("authPoolEntrySummaries excludes encrypted auth material for status reads",
     assert.equal(Object.hasOwn(summaries[0], "iv"), false);
     assert.equal(Object.hasOwn(summaries[0], "auth_tag"), false);
     assert.equal(Object.hasOwn(summaries[0], "auth_blob_key"), false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("latest quota preserves its window capture time after a later invalidation", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "quota@gpu4",
+      reported_at: "2026-04-21T04:00:00Z",
+      account_id: "acct-1",
+      status: "ok",
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 60, reset_at: "2026-04-27T09:00:00Z" },
+      },
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "quota@gpu4",
+      reported_at: "2026-04-21T04:15:00Z",
+      account_id: "acct-1",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      windows: { "5h": null, "1week": null },
+    });
+
+    const latest = await mod.authPoolQuotaLatestForEntry({ source: "codex", accountId: "acct-1" });
+    assert.equal(latest.windows["1week"].captured_at, "2026-04-21T04:00:00Z");
+
+    const payload = statusPayload([latest], "2026-04-21T04:30:00Z");
+    assert.equal(payload.items[0].availability.historical_snapshot.captured_at, "2026-04-21T04:00:00Z");
   } finally {
     cleanup();
   }

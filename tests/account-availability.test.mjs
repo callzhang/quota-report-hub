@@ -122,9 +122,64 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       expected: { state: "available", currently_usable: true, reason: "meets_rotation_threshold" },
     },
     {
+      name: "a quota report exactly one hour old is still current",
+      item: {
+        source: "codex",
+        effective_status: "ok",
+        reported_at: "2026-08-08T06:37:12Z",
+        display_windows: { "1week": window(6, "2026-08-15T00:00:00Z") },
+      },
+      expected: { state: "available", currently_usable: true, reason: "meets_rotation_threshold" },
+    },
+    {
+      name: "a quota report older than one hour is unknown but remains historical evidence",
+      item: {
+        source: "codex",
+        effective_status: "ok",
+        reported_at: "2026-08-08T06:37:11Z",
+        display_windows: { "1week": window(6, "2026-08-15T00:00:00Z") },
+      },
+      expected: { state: "quota_unknown", currently_usable: false, reason: "quota_evidence_incomplete" },
+      historical: {
+        remaining_percent: 6,
+        captured_at: "2026-08-08T06:37:11Z",
+        reset_at: "2026-08-15T00:00:00Z",
+      },
+    },
+    {
+      name: "a quota report with an invalid timestamp is unknown",
+      item: {
+        source: "codex",
+        effective_status: "ok",
+        reported_at: "not-a-timestamp",
+        display_windows: { "1week": window(6, "2026-08-15T00:00:00Z") },
+      },
+      expected: { state: "quota_unknown", currently_usable: false, reason: "quota_evidence_incomplete" },
+      historical: {
+        remaining_percent: 6,
+        captured_at: "not-a-timestamp",
+        reset_at: "2026-08-15T00:00:00Z",
+      },
+    },
+    {
+      name: "a quota report without a timestamp is unknown",
+      item: {
+        source: "codex",
+        effective_status: "ok",
+        display_windows: { "1week": window(6, "2026-08-15T00:00:00Z") },
+      },
+      expected: { state: "quota_unknown", currently_usable: false, reason: "quota_evidence_incomplete" },
+      historical: {
+        remaining_percent: 6,
+        captured_at: null,
+        reset_at: "2026-08-15T00:00:00Z",
+      },
+    },
+    {
       name: "Codex ignores an expired legacy five-hour window",
       item: {
         source: "codex",
+        reported_at: "2026-08-08T07:24:12Z",
         display_windows: {
           "5h": window(0, "2026-08-08T07:30:26Z", "quota_window_expired"),
           "1week": window(6, "2026-08-15T00:00:00Z"),
@@ -136,17 +191,24 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       name: "Claude needs both live quota windows before it can be available",
       item: {
         source: "claude",
+        reported_at: "2026-08-08T07:24:12Z",
         display_windows: {
           "5h": window(20, "2026-08-08T09:00:00Z"),
           "1week": null,
         },
       },
       expected: { state: "quota_unknown", currently_usable: false, reason: "quota_evidence_incomplete" },
+      historical: {
+        remaining_percent: 20,
+        captured_at: "2026-08-08T07:24:12Z",
+        reset_at: "2026-08-08T09:00:00Z",
+      },
     },
     {
       name: "Claude quota below either sharing threshold is low",
       item: {
         source: "claude",
+        reported_at: "2026-08-08T07:24:12Z",
         display_windows: {
           "5h": window(19, "2026-08-08T09:00:00Z"),
           "1week": window(5, "2026-08-15T00:00:00Z"),
@@ -158,6 +220,7 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       name: "Claude weekly quota below its sharing threshold is low",
       item: {
         source: "claude",
+        reported_at: "2026-08-08T07:24:12Z",
         display_windows: {
           "5h": window(20, "2026-08-08T09:00:00Z"),
           "1week": window(4, "2026-08-15T00:00:00Z"),
@@ -169,12 +232,28 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       name: "Claude quota meeting both sharing thresholds is available",
       item: {
         source: "claude",
+        reported_at: "2026-08-08T07:24:12Z",
         display_windows: {
           "5h": window(20, "2026-08-08T09:00:00Z"),
           "1week": window(5, "2026-08-15T00:00:00Z"),
         },
       },
       expected: { state: "available", currently_usable: true, reason: "meets_rotation_threshold" },
+    },
+    {
+      name: "a failed probe retains its last quota as historical evidence",
+      item: {
+        source: "codex",
+        effective_status: "error",
+        reported_at: "2026-08-08T07:24:12Z",
+        display_windows: { "1week": window(90, "2026-08-15T00:00:00Z") },
+      },
+      expected: { state: "quota_unknown", currently_usable: false, reason: "quota_evidence_incomplete" },
+      historical: {
+        remaining_percent: 90,
+        captured_at: "2026-08-08T07:24:12Z",
+        reset_at: "2026-08-15T00:00:00Z",
+      },
     },
   ];
 
