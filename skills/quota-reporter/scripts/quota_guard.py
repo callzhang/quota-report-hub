@@ -745,13 +745,16 @@ def unmanaged_codex_app_server_processes() -> list[dict]:
         return []
 
     ps_command = ["ps", "-eo", "pid=,etime=,uid=,args="] if platform.system().lower() == "darwin" else ["ps", "-eo", "pid=,etimes=,uid=,args="]
-    result = subprocess.run(
-        ps_command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ps_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
     if result.returncode != 0:
         return []
 
@@ -1097,7 +1100,8 @@ def maybe_replace_codex_auth(
     # Quota-low (or invalidated) triggers a normal replacement; a healthy-but-near-expiry
     # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
     refresh_current = False
-    if not source_needs_replacement(current_codex_payload, threshold_percent, weekly_threshold_percent):
+    auth_missing = current_codex_payload is None and not codex_auth_path.exists()
+    if not auth_missing and not source_needs_replacement(current_codex_payload, threshold_percent, weekly_threshold_percent):
         if fetched_auth_near_expiry("codex", known_auth_path, codex_auth_path=codex_auth_path):
             refresh_current = True
         else:

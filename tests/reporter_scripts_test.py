@@ -2223,6 +2223,50 @@ Reading additional input from stdin...
         self.assertEqual(stored_auth["tokens"]["account_id"], "current")
         self.assertEqual(stored_auth["tokens"]["access_token"], "old")
 
+    def test_maybe_replace_codex_auth_restores_missing_local_auth_from_pool(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            config = {"auth_pool_url": "https://quota-report-hub.vercel.app", "auth_pool_user_token": "qrp_token"}
+            replacement_blob = json.dumps({
+                "tokens": {
+                    "account_id": "restored@example.com",
+                    "access_token": "restored-at",
+                    "refresh_token": "<disabled:hub-refresh-token>",
+                }
+            })
+            with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                "replacement": {
+                    "account_id": "restored@example.com",
+                    "email": "restored@example.com",
+                    "auth_json": replacement_blob,
+                },
+            }) as fetch_best:
+                with mock.patch.object(quota_guard, "auth_metadata", return_value={
+                    "digest": "digest-restored",
+                    "account_id": "restored@example.com",
+                    "auth_last_refresh": "2026-08-11T05:00:00Z",
+                }):
+                    with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "digest-restored"}) as write_known:
+                        replacement = quota_guard.maybe_replace_codex_auth(
+                            config,
+                            None,
+                            live_auth,
+                            known_auth_path,
+                            threshold_percent=20.0,
+                            weekly_threshold_percent=5.0,
+                        )
+            stored_auth = json.loads(live_auth.read_text(encoding="utf-8"))
+
+        self.assertTrue(replacement["replaced"])
+        self.assertIsNone(replacement["from_account_id"])
+        self.assertEqual(replacement["to_account_id"], "restored@example.com")
+        self.assertEqual(stored_auth["tokens"]["account_id"], "restored@example.com")
+        fetch_best.assert_called_once()
+        self.assertFalse(fetch_best.call_args.kwargs["refresh_current"])
+        write_known.assert_called_once()
+
     def test_maybe_replace_claude_auth_writes_replacement_to_keychain_on_darwin(self):
         # On macOS Claude reads the keychain BEFORE the file, so a genuine replacement must be
         # written keychain-first; a file-only write would be shadowed and never take effect.
@@ -3440,6 +3484,11 @@ Reading additional input from stdin...
                     with mock.patch.object(quota_guard.os, "getuid", return_value=501):
                         with mock.patch.object(quota_guard.Path, "home", return_value=Path("/Users/derek")):
                             self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [])
+
+    def test_unmanaged_codex_app_server_processes_ignores_ps_permission_error(self):
+        with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+            with mock.patch.object(quota_guard.subprocess, "run", side_effect=PermissionError("Operation not permitted")):
+                self.assertEqual(quota_guard.unmanaged_codex_app_server_processes(), [])
 
     def test_stale_codex_app_server_excludes_chatgpt_app_server_after_manual_login(self):
         with tempfile.TemporaryDirectory() as temp_dir:
