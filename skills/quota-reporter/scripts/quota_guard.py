@@ -1017,6 +1017,10 @@ def maybe_auto_relogin_owner_auths(
     return {"enabled": True, "results": results}
 
 
+def manages_source_auth(config: dict, source: str) -> bool:
+    return config.get(f"manage_{source}_auth", True) is not False
+
+
 def notify_uploaded_invalidated_auths(
     config: dict,
     now: float | None = None,
@@ -1029,7 +1033,11 @@ def notify_uploaded_invalidated_auths(
     except Exception as error:
         return {"shown": False, "reason": "status_fetch_failed", "error": str(error)}
 
-    rows = uploaded_invalidated_auths(status_payload)
+    rows = [
+        row
+        for row in uploaded_invalidated_auths(status_payload)
+        if manages_source_auth(config, str(row.get("source") or ""))
+    ]
     if not rows:
         return {"shown": False, "reason": "no_uploaded_invalidated_auths", "count": 0}
 
@@ -1688,11 +1696,16 @@ def run_guard(args: argparse.Namespace) -> dict:
     if scheduler_check.get("ok") is False:
         warnings["scheduler"] = scheduler_check
 
-    try:
-        codex_payload = timed_guard_step(timings, "codex_probe", lambda: current_codex_payload(args.codex_auth_path))
-    except Exception as error:
-        codex_payload = source_probe_error_payload("codex", error, args.codex_auth_path)
-        guard_errors["codex_probe"] = guard_exception_result("codex_probe_failed", error)
+    manage_codex_auth = manages_source_auth(config, "codex")
+    if manage_codex_auth:
+        try:
+            codex_payload = timed_guard_step(timings, "codex_probe", lambda: current_codex_payload(args.codex_auth_path))
+        except Exception as error:
+            codex_payload = source_probe_error_payload("codex", error, args.codex_auth_path)
+            guard_errors["codex_probe"] = guard_exception_result("codex_probe_failed", error)
+    else:
+        codex_payload = {"status": "disabled", "reason": "auth_management_disabled"}
+        timings["codex_probe"] = 0.0
 
     claude_custom_provider = detect_claude_custom_provider_env(args.claude_home)
     try:
@@ -1711,24 +1724,30 @@ def run_guard(args: argparse.Namespace) -> dict:
     sync_result = {}
     quota_report_result = {}
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
-        sync_result["codex"] = run_guard_step(
-            "codex_auth_pool_sync_failed",
-            lambda: timed_guard_step(
-                timings,
-                "codex_auth_pool_sync",
-                lambda: sync_current_codex_auth_pool(
-                    config["auth_pool_url"],
-                    config["auth_pool_user_token"],
-                    auth_path=args.codex_auth_path,
-                    known_auth_path=args.known_auth_path,
-                    quota_payload=without_sensitive_refresh_capture(codex_payload),
+        if manage_codex_auth:
+            sync_result["codex"] = run_guard_step(
+                "codex_auth_pool_sync_failed",
+                lambda: timed_guard_step(
+                    timings,
+                    "codex_auth_pool_sync",
+                    lambda: sync_current_codex_auth_pool(
+                        config["auth_pool_url"],
+                        config["auth_pool_user_token"],
+                        auth_path=args.codex_auth_path,
+                        known_auth_path=args.known_auth_path,
+                        quota_payload=without_sensitive_refresh_capture(codex_payload),
+                    ),
                 ),
-            ),
-        )
-        quota_report_result["codex"] = run_guard_step(
-            "codex_quota_report_failed",
-            lambda: timed_guard_step(timings, "codex_quota_report", lambda: report_current_quota_to_auth_pool(config, "codex", codex_payload)),
-        )
+            )
+            quota_report_result["codex"] = run_guard_step(
+                "codex_quota_report_failed",
+                lambda: timed_guard_step(timings, "codex_quota_report", lambda: report_current_quota_to_auth_pool(config, "codex", codex_payload)),
+            )
+        else:
+            sync_result["codex"] = {"ok": True, "uploaded": False, "reason": "auth_management_disabled"}
+            quota_report_result["codex"] = {"ok": True, "reported": False, "reason": "auth_management_disabled"}
+            timings["codex_auth_pool_sync"] = 0.0
+            timings["codex_quota_report"] = 0.0
         quota_report_result["claude"] = run_guard_step(
             "claude_quota_report_failed",
             lambda: timed_guard_step(timings, "claude_quota_report", lambda: report_current_quota_to_auth_pool(config, "claude", claude_payload)),
@@ -1753,21 +1772,25 @@ def run_guard(args: argparse.Namespace) -> dict:
                 ),
             )
 
-    codex_replacement = run_guard_step(
-        "codex_replacement_failed",
-        lambda: timed_guard_step(
-            timings,
-            "codex_replacement",
-            lambda: maybe_replace_codex_auth(
-                config,
-                codex_payload,
-                args.codex_auth_path,
-                args.known_auth_path,
-                threshold_percent,
-                weekly_threshold_percent,
+    if manage_codex_auth:
+        codex_replacement = run_guard_step(
+            "codex_replacement_failed",
+            lambda: timed_guard_step(
+                timings,
+                "codex_replacement",
+                lambda: maybe_replace_codex_auth(
+                    config,
+                    codex_payload,
+                    args.codex_auth_path,
+                    args.known_auth_path,
+                    threshold_percent,
+                    weekly_threshold_percent,
+                ),
             ),
-        ),
-    )
+        )
+    else:
+        codex_replacement = {"replaced": False, "reason": "auth_management_disabled"}
+        timings["codex_replacement"] = 0.0
     claude_replacement = run_guard_step(
         "claude_replacement_failed",
         lambda: timed_guard_step(
@@ -1788,7 +1811,11 @@ def run_guard(args: argparse.Namespace) -> dict:
         or codex_replacement.get("replaced")
         or codex_replacement.get("auth_refreshed")
     )
-    stale_app_server = stale_codex_app_server_for_auth(args.codex_auth_path)
+    stale_app_server = (
+        stale_codex_app_server_for_auth(args.codex_auth_path)
+        if manage_codex_auth
+        else {"stale": False, "reason": "auth_management_disabled"}
+    )
     codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged", "stale_check": stale_app_server}
     if codex_auth_changed or stale_app_server.get("stale"):
         if getattr(args, "no_restart_codex_app_server", False):

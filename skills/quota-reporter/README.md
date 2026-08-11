@@ -86,6 +86,8 @@ Use `quota_guard.py --skip-self-update` only when debugging a local edit and you
 
 Use `quota_guard.py --json` when you need the full structured result for debugging or automation. Manual runs should normally use the default summary output.
 
+To preserve the user's own Codex App/CLI identity, set `"manage_codex_auth": false` in `~/.agents/auth/quota-reporter.json`. The guard will then leave `~/.codex/auth.json` untouched, skip Codex pool/quota operations and app-server restarts, and never launch `codex login`. Claude management continues normally.
+
 ## Help Output
 
 Every user-facing script in `scripts/` supports `-h` and documents:

@@ -139,6 +139,8 @@ python3 scripts/trigger_remote_probe.py --no-watch
 
 The guard then:
 
+- honors `"manage_codex_auth": false` in `~/.agents/auth/quota-reporter.json` as a strict ownership boundary: do not probe, refresh, upload, replace, or restart Codex auth, and do not launch `codex login`; use this when Codex must retain the user's own App/CLI identity
+
 - checks GitHub `main` for a newer `quota-reporter` skill and updates the installed skill unless `--skip-self-update` is passed
 - updates `~/.agents/auth/known_auth.json`
 - reuploads the current auth to the auth pool so a missing cloud entry can recover automatically
