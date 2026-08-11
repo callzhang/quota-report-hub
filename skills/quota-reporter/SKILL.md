@@ -1,21 +1,21 @@
 ---
 name: quota-reporter
-description: Install and run a local quota guard that checks current Codex and Claude quota every 15 minutes, syncs the current auth for each source to the shared encrypted auth pool only when it changes, fetches a better auth from the cloud when local quota is low, and stores the user's personal company-email access token locally. Use this whenever a teammate wants to join the shared auth pool, install the 15-minute guard, set up a company-email auth-pool token, or verify that local auth rotation is working.
+description: Install and run a local quota guard that leaves Codex authentication to the local Codex App/CLI while checking Claude quota every 15 minutes, syncing Claude auth to the shared encrypted auth pool, fetching a better Claude auth when quota is low, and storing the user's personal company-email access token locally.
 ---
 
 # Quota Guard
 
-This skill installs and runs the local quota guard for Codex and Claude.
+This skill installs and runs the local Claude quota guard. Codex uses the existing local Codex App/CLI login without guard intervention.
 
 ## What it does
 
-1. Tracks the current local auth state per source in `~/.agents/auth/known_auth.json`
+1. Treats the local Codex App/CLI as the sole owner of Codex authentication
 2. Self-updates the installed skill from GitHub before each guard cycle
-3. Reuploads the current auth for each source to keep the shared encrypted auth pool entry present even when the local digest has not changed
-4. Probes the current local Codex quota and the current local Claude quota to decide whether the current machine should rotate
-5. Publishes stable local quota snapshots back to the hub when available, with stricter completeness checks for Codex
-6. When local quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
-7. Restarts the local Codex app-server after writing a new Codex `auth.json`, so new Codex sessions read the replaced account instead of a stale cached account
+3. Reuploads the current Claude auth to keep its shared encrypted auth-pool entry present
+4. Probes the current local Claude quota to decide whether Claude should rotate
+5. Publishes stable local Claude quota snapshots back to the hub
+6. When Claude quota is low, asks the cloud auth pool for a strictly better Claude auth and installs it locally
+7. Never reads or writes Codex auth, launches Codex login, or manages Codex app-server processes
 8. Installs a reboot-safe scheduler that runs every 15 minutes
 9. Notifies the local user when any auth uploaded by that same token user has a refresh token rejected by the cloud worker, even if that auth is not the currently installed local auth
 10. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
@@ -139,40 +139,33 @@ python3 scripts/trigger_remote_probe.py --no-watch
 
 The guard then:
 
-- honors `"manage_codex_auth": false` in `~/.agents/auth/quota-reporter.json` as a strict ownership boundary: do not probe, refresh, upload, replace, or restart Codex auth, and do not launch `codex login`; use this when Codex must retain the user's own App/CLI identity
+- always treats the local Codex App/CLI as the owner of Codex authentication: do not probe, refresh, upload, replace, or restart Codex auth, and do not launch `codex login`; no configuration switch is required
 
 - checks GitHub `main` for a newer `quota-reporter` skill and updates the installed skill unless `--skip-self-update` is passed
-- updates `~/.agents/auth/known_auth.json`
-- reuploads the current auth to the auth pool so a missing cloud entry can recover automatically
-- probes the current live Codex auth and Claude auth
-- Codex probes run in an isolated temporary `CODEX_HOME` and strip provider/auth override environment variables such as `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `CODEX_ACCESS_TOKEN`; otherwise a teammate's shell config can produce quota for a different provider while labeling it as the copied `auth.json` account
-- Codex and Claude probes resolve CLI binaries from common non-interactive locations such as `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin` before relying on `PATH`, so launchd and other minimal shells do not need login-shell path initialization
-- may push stable local quota snapshots back to the hub when available
-- for Codex, only a complete weekly window or a hard invalidation is uploaded, so missing legacy 5H data does not block good hub data
+- updates the Claude entry in `~/.agents/auth/known_auth.json`
+- reuploads the current Claude auth to the auth pool so a missing cloud entry can recover automatically
+- probes only the current live Claude auth and quota
+- resolves the Claude CLI binary from common non-interactive locations such as `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin` before relying on `PATH`
+- may push stable local Claude quota snapshots back to the hub when available
 - for Claude, the local probe reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time
 - Claude Code only sends statusline `rate_limits` after the first successful API response in a session. The statusline capture preserves previous unexpired `5H` or `7d` windows when a startup or failed-response statusline payload has no quota fields.
-- if Codex is below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`; Codex `5H` is legacy metadata and does not trigger, rank, or display as live quota
 - if Claude is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - ordinary probe errors and unavailable quota snapshots do not trigger auth replacement; replacement requires a real low-quota window or a hard auth invalidation
 - only accepts a server response when it contains a strictly better replacement from that same source
-- for Codex, the server only shares candidate auths with at least `5%` remaining in `1week` and ranks candidates by weekly quota plus load balancing
 - for Claude, the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
 - if the server returns `repair_auth`, the guard installs that auth instead of a shared replacement so the uploader can re-login and refresh their own invalidated auth
 - only replaces local source credentials when the fetched auth is different from what is already installed
-- after Codex `auth.json` is replaced or refreshed, asks the managed local Codex app-server daemon to restart; desktop-managed and other unmanaged app-server processes are never terminated by the guard
-- shows a desktop notification after a successful local replacement so the user knows to quit the current Codex or Claude Code session and start a new one
-- opens local CLI login only when an auth uploaded by the current token user has a cloud-confirmed `refresh_token_rejected` result and `auto_relogin_owner_auth` is enabled; ordinary `authentication_error`, stale quota snapshots, and local probe timeouts do not launch login
+- shows a desktop notification after a successful local Claude replacement
+- opens Claude CLI login only when a Claude auth uploaded by the current token user has a cloud-confirmed `refresh_token_rejected` result and `auto_relogin_owner_auth` is enabled; Codex login is never launched
 - does nothing when the cloud cannot provide a better auth than the current one
 - relies on the cloud auth pool to deduplicate repeated uploads for the same `account_id`, even when raw files differ
 - preserves the first uploader as the owner for each `source + account_id`, so a fetched shared auth does not become owned by the machine that happened to reupload it
 - if the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload
 - does not delete older auths previously uploaded by the same token user when the local machine switches to a different current auth
-- for Codex, the cloud `account_id` is normalized to the lowercased email when available so Team users do not collide on a shared provider-side UUID
 
 Operational notes:
 
-- replacing `~/.codex/auth.json` does not hot-switch already running Codex TUI sessions
-- the guard restarts or stops the local Codex app-server after a Codex auth write, but any already-open TUI still needs to be reopened to attach to the fresh backend
+- Codex login, refresh, quota probing, and process lifecycle remain entirely local to the Codex App/CLI
 - the local config file contains a personal token and should stay private
 - the cloud dashboard shows the latest effective quota for each auth entry
 - Codex rows may be refreshed by either the cloud worker or a stable local client report; a complete local client report may replace stale worker-preserved windows, and a newer worker soft failure does not replace an existing good local Codex quota snapshot
@@ -181,5 +174,5 @@ Operational notes:
 ## Output expectations
 
 - After installation, show the scheduler type, config path, Claude statusline settings path, and verification result.
-- After a manual guard run, show the compact summary by default. If deeper debugging is needed, rerun with `--json` and include the relevant Codex, Claude, quota report, and replacement sections.
+- After a manual guard run, show the compact summary by default. If deeper debugging is needed, rerun with `--json` and include the Claude quota report and replacement sections. The Codex section should only state that local Codex owns its login.
 - If token request, auth upload, or best-auth fetch fails, include the HTTP status and response body.
