@@ -6,20 +6,20 @@ This directory contains the reusable `quota-reporter` skill published from this 
 
 The skill installs a local 15-minute quota guard that:
 
-- tracks the current local Codex and Claude auth state
+- leaves Codex authentication and login state entirely to the local Codex App/CLI
+- tracks the current local Claude auth state
 - self-updates the installed skill from GitHub before each guard cycle
-- reuploads current auth snapshots to keep shared cloud auth pool entries present
-- checks whether the current local source is low on quota
-- can push stable local Codex and Claude quota snapshots to the hub when available
-- fetches and installs a strictly better auth from the same source when needed
-- asks the managed Codex app-server daemon to restart after writing a new Codex `auth.json`; desktop-managed and other unmanaged app-server processes are never terminated by the guard
-- shows a desktop notification after a successful local auth replacement so the user knows to quit the current Codex or Claude Code session and start a new one
+- reuploads the current Claude auth snapshot to keep its cloud auth-pool entry present
+- checks whether the current local Claude source is low on quota
+- pushes stable local Claude quota snapshots to the hub when available
+- fetches and installs a strictly better Claude auth when needed
+- shows a desktop notification after a successful Claude auth replacement
 - shows a system notification when any auth uploaded by the current token user has a refresh token rejected by the cloud worker; when `auto_relogin_owner_auth` is enabled, opens the matching CLI login only for that confirmed RT-rejected source
 - keeps older uploaded auths in the cloud pool when the local machine switches to a different current auth
 - preserves the first uploader as the owner for each shared account, so using a fetched auth does not transfer re-login responsibility
 - can trigger a remote cloud-worker probe on demand
 
-The guard is source-aware:
+The hub remains source-aware, while the local guard manages Claude only:
 
 - Codex auths only compete with other Codex auths
 - Claude auths only compete with other Claude auths
@@ -40,12 +40,10 @@ The guard is source-aware:
   - runs one full local guard cycle
   - prints a compact human-readable summary by default; use `--json` for the full probe, sync, replacement, notification, and timing payload
   - checks GitHub `main` and updates the installed skill before probing
-  - reuploads current auths
-  - probes current local quota in an isolated temporary Codex home, with provider/auth override environment variables stripped so API-key or custom-provider shells cannot be mislabeled as the copied ChatGPT auth
-  - resolves Codex and Claude CLI binaries from common non-interactive install locations (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) before falling back to `PATH`
-  - fetches and installs a better auth if the current source is below threshold
-  - restarts a daemon-managed Codex app-server after a Codex auth write
-  - never sends termination signals to desktop-managed or unmanaged app-server processes; when no managed daemon exists, it reports `unmanaged_app_server_not_restarted` and lets the owning application recreate its own backend
+  - reuploads and probes only the current Claude auth
+  - resolves the Claude CLI binary from common non-interactive install locations (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) before falling back to `PATH`
+  - fetches and installs a better Claude auth if it is below threshold
+  - never reads or writes `~/.codex/auth.json`, starts `codex login`, or inspects/restarts Codex app-server processes
 - `scripts/trigger_remote_probe.py`
   - triggers the GitHub Actions cloud probe worker
   - optionally watches the run
@@ -86,7 +84,7 @@ Use `quota_guard.py --skip-self-update` only when debugging a local edit and you
 
 Use `quota_guard.py --json` when you need the full structured result for debugging or automation. Manual runs should normally use the default summary output.
 
-To preserve the user's own Codex App/CLI identity, set `"manage_codex_auth": false` in `~/.agents/auth/quota-reporter.json`. The guard will then leave `~/.codex/auth.json` untouched, skip Codex pool/quota operations and app-server restarts, and never launch `codex login`. Claude management continues normally.
+Codex authentication is always owned by the local Codex App/CLI. The guard leaves `~/.codex/auth.json` untouched, skips Codex pool/quota operations and app-server restarts, and never launches `codex login`. No configuration switch is required; Claude management continues normally.
 
 ## Help Output
 
