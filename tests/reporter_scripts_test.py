@@ -2829,7 +2829,13 @@ Reading additional input from stdin...
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_claude_auth:
                                     with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
                                         result = quota_guard.run_guard(args)
-        sync_codex_auth_pool.assert_not_called()
+        sync_codex_auth_pool.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            auth_path=args.codex_auth_path,
+            known_auth_path=args.known_auth_path,
+            quota_payload={"account_id": "current"},
+        )
         sync_claude_auth_pool.assert_called_once()
         self.assertIs(sync_claude_auth_pool.call_args.kwargs["probed_payload"], probe_claude_mock.return_value)
         # the freshly-probed quota is now bundled into the upload so the hub has no stale-quota gap
@@ -2837,18 +2843,18 @@ Reading additional input from stdin...
             sync_claude_auth_pool.call_args.kwargs["quota_payload"],
             {"account_id": "claude-a", "status": "ok"},
         )
-        replace_codex_auth.assert_not_called()
+        replace_codex_auth.assert_called_once()
         replace_claude_auth.assert_called_once()
         probe_claude_mock.assert_called_once_with(args.claude_home)
-        self.assertEqual(result["auth_pool_sync"]["codex"]["reason"], "managed_by_codex_cli")
+        self.assertEqual(result["auth_pool_sync"]["codex"], {"ok": True, "uploaded": True})
         self.assertEqual(result["auth_pool_sync"]["claude"], {"ok": True, "uploaded": True})
-        self.assertEqual(result["replacement"]["codex"]["reason"], "managed_by_codex_cli")
+        self.assertEqual(result["replacement"]["codex"]["reason"], "healthy")
         self.assertEqual(result["replacement"]["claude"]["reason"], "healthy")
         self.assertIn("claude", result)
         self.assertIn("timings", result)
         self.assertIn("claude_probe", result["timings"])
 
-    def test_run_guard_never_reads_or_mutates_codex_auth(self):
+    def test_run_guard_manages_codex_auth(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
@@ -2864,29 +2870,30 @@ Reading additional input from stdin...
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
             "auth_pool_user_token": "qrp_token",
-            "manage_codex_auth": True,
         }
+        codex_payload = {"account_id": "codex-a", "status": "ok"}
+        codex_replacement = {"ok": True, "replaced": False, "reason": "healthy"}
 
         with mock.patch.object(quota_guard, "load_config", return_value=config):
-            with mock.patch.object(quota_guard, "current_codex_payload") as probe_codex:
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value=codex_payload) as probe_codex:
                 with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
-                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool") as sync_codex:
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}) as sync_codex:
                         with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
                             with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}) as report_quota:
-                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth") as replace_codex:
+                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value=codex_replacement) as replace_codex:
                                     with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
                                         with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth") as stale_app_server:
                                             with mock.patch.object(quota_guard, "restart_codex_app_server") as restart_app_server:
                                                 result = quota_guard.run_guard(args)
 
-        probe_codex.assert_not_called()
-        sync_codex.assert_not_called()
-        replace_codex.assert_not_called()
+        probe_codex.assert_called_once_with(args.codex_auth_path)
+        sync_codex.assert_called_once()
+        replace_codex.assert_called_once()
         stale_app_server.assert_not_called()
         restart_app_server.assert_not_called()
-        self.assertNotIn(mock.call(config, "codex", mock.ANY), report_quota.call_args_list)
-        self.assertEqual(result["codex"], {"status": "local", "reason": "managed_by_codex_cli"})
-        self.assertEqual(result["replacement"]["codex"], {"replaced": False, "reason": "managed_by_codex_cli"})
+        self.assertIn(mock.call(config, "codex", codex_payload), report_quota.call_args_list)
+        self.assertEqual(result["codex"], codex_payload)
+        self.assertEqual(result["replacement"]["codex"], codex_replacement)
 
     def test_run_guard_uses_configured_replacement_thresholds(self):
         args = mock.Mock(
@@ -2918,7 +2925,8 @@ Reading additional input from stdin...
                                         with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
                                             result = quota_guard.run_guard(args)
 
-        replace_codex.assert_not_called()
+        self.assertEqual(replace_codex.call_args.args[4], 33.0)
+        self.assertEqual(replace_codex.call_args.args[5], 7.0)
         self.assertEqual(replace_claude.call_args.args[4], 33.0)
         self.assertEqual(replace_claude.call_args.args[5], 7.0)
         self.assertEqual(result["threshold_percent"], 33.0)
@@ -3002,18 +3010,18 @@ Reading additional input from stdin...
                                         with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
                                             result = quota_guard.run_guard(args)
 
-        sync_codex.assert_not_called()
+        sync_codex.assert_called_once()
         sync_claude.assert_called_once()
-        replace_codex.assert_not_called()
+        replace_codex.assert_called_once()
         replace_claude.assert_called_once()
         self.assertTrue(result["ok"])
-        self.assertEqual(result["codex"], {"status": "local", "reason": "managed_by_codex_cli"})
+        self.assertEqual(result["codex"], codex_payload)
         self.assertEqual(result["claude"]["status"], "error")
         self.assertIn("claude probe failed", result["claude"]["error"])
         self.assertEqual(result["errors"]["claude_probe"]["reason"], "claude_probe_failed")
-        self.assertEqual(report_quota.call_count, 1)
+        self.assertEqual(report_quota.call_count, 2)
 
-    def test_run_guard_never_attempts_codex_sync_while_claude_path_runs(self):
+    def test_run_guard_keeps_claude_path_when_codex_sync_crashes(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
@@ -3054,8 +3062,8 @@ Reading additional input from stdin...
         replace_claude.assert_called_once()
         self.assertTrue(result["ok"])
         self.assertEqual(result["claude"], claude_payload)
-        self.assertEqual(result["auth_pool_sync"]["codex"]["reason"], "managed_by_codex_cli")
-        self.assertNotIn("codex_auth_pool_sync", result["errors"])
+        self.assertFalse(result["auth_pool_sync"]["codex"]["ok"])
+        self.assertEqual(result["auth_pool_sync"]["codex"]["reason"], "codex_auth_pool_sync_failed")
 
     def test_run_guard_notifies_after_successful_replacement(self):
         args = mock.Mock(
@@ -3085,7 +3093,7 @@ Reading additional input from stdin...
                 with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
                     with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
                         with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
-                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth") as replace_codex:
+                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}) as replace_codex:
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value=claude_replacement):
                                     with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
                                         with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
@@ -3094,12 +3102,12 @@ Reading additional input from stdin...
                                                     result = quota_guard.run_guard(args)
 
         notify.assert_called_once()
-        replace_codex.assert_not_called()
+        replace_codex.assert_called_once()
         restart.assert_not_called()
         self.assertEqual(notify.call_args.args[0], "额度守护")
         self.assertFalse(result["codex_app_server"]["restarted"])
-        self.assertEqual(result["codex_app_server"]["reason"], "managed_by_codex_cli")
-        self.assertNotIn("codex", result["notifications"])
+        self.assertEqual(result["codex_app_server"]["reason"], "codex_auth_unchanged")
+        self.assertEqual(result["notifications"]["codex"]["reason"], "not_replaced")
         self.assertTrue(result["notifications"]["claude"]["shown"])
         self.assertEqual(result["notifications"]["uploaded_invalidated_auths"]["reason"], "no_uploaded_invalidated_auths")
 
@@ -3215,7 +3223,7 @@ Reading additional input from stdin...
         self.assertEqual(result["initial_check"], missing)
         self.assertIn("boom", result["error"])
 
-    def test_run_guard_ignores_legacy_same_account_codex_refresh(self):
+    def test_run_guard_restarts_but_does_not_notify_after_same_account_codex_refresh(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
@@ -3252,12 +3260,12 @@ Reading additional input from stdin...
                                                     result = quota_guard.run_guard(args)
 
         notify.assert_not_called()
-        restart.assert_not_called()
-        self.assertFalse(result["codex_app_server"]["restarted"])
-        self.assertEqual(result["codex_app_server"]["reason"], "managed_by_codex_cli")
-        self.assertNotIn("codex", result["notifications"])
+        restart.assert_called_once()
+        self.assertTrue(result["codex_app_server"]["restarted"])
+        self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
+        self.assertEqual(result["notifications"]["codex"]["reason"], "not_replaced")
 
-    def test_run_guard_ignores_legacy_local_codex_auth_refresh(self):
+    def test_run_guard_restarts_codex_app_server_after_local_auth_refresh(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
@@ -3290,11 +3298,11 @@ Reading additional input from stdin...
                                             with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
                                                 result = quota_guard.run_guard(args)
 
-        restart.assert_not_called()
-        self.assertFalse(result["codex_app_server"]["restarted"])
-        self.assertEqual(result["codex_app_server"]["reason"], "managed_by_codex_cli")
+        restart.assert_called_once()
+        self.assertTrue(result["codex_app_server"]["restarted"])
+        self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
 
-    def test_run_guard_does_not_inspect_or_restart_codex_after_manual_login(self):
+    def test_run_guard_does_not_restart_codex_after_manual_login_without_guard_write(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
@@ -3330,8 +3338,7 @@ Reading additional input from stdin...
 
         restart.assert_not_called()
         self.assertFalse(result["codex_app_server"]["restarted"])
-        self.assertEqual(result["codex_app_server"]["reason"], "managed_by_codex_cli")
-        self.assertEqual(result["codex_app_server"]["stale_check"]["reason"], "managed_by_codex_cli")
+        self.assertEqual(result["codex_app_server"]["reason"], "codex_auth_unchanged")
 
     def test_run_guard_can_disable_replacement_toasts(self):
         args = mock.Mock(
@@ -3362,9 +3369,9 @@ Reading additional input from stdin...
                                                 result = quota_guard.run_guard(args)
 
         notify.assert_not_called()
-        restart.assert_not_called()
-        self.assertFalse(result["codex_app_server"]["restarted"])
-        self.assertEqual(result["codex_app_server"]["reason"], "managed_by_codex_cli")
+        restart.assert_called_once()
+        self.assertTrue(result["codex_app_server"]["restarted"])
+        self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
         self.assertEqual(result["notifications"], {})
 
     def test_restart_codex_app_server_does_not_stop_unmanaged_ephemeral_server(self):
@@ -3545,15 +3552,14 @@ Reading additional input from stdin...
 
         self.assertTrue(args.skip_self_update)
 
-    def test_quota_guard_parser_does_not_offer_codex_auth_management(self):
+    def test_quota_guard_parser_offers_codex_auth_management(self):
         parser = quota_guard.build_parser()
 
         with self.assertRaises(SystemExit):
             parser.parse_args(["--seed", "codex"])
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["--codex-auth-path", "/tmp/auth.json"])
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["--no-restart-codex-app-server"])
+        args = parser.parse_args(["--codex-auth-path", "/tmp/auth.json", "--no-restart-codex-app-server"])
+        self.assertEqual(args.codex_auth_path, Path("/tmp/auth.json"))
+        self.assertTrue(args.no_restart_codex_app_server)
 
     def test_format_guard_summary_is_compact_and_human_readable(self):
         result = self._sample_guard_result()
@@ -3567,17 +3573,6 @@ Reading additional input from stdin...
         self.assertIn("Codex app-server: not restarted (codex_auth_unchanged)", summary)
         self.assertLessEqual(len(summary.splitlines()), 10)
         self.assertNotIn('"refresh_capture"', summary)
-
-    def test_format_guard_summary_labels_codex_as_locally_managed(self):
-        result = self._sample_guard_result()
-        result["codex"] = {"status": "local", "reason": "managed_by_codex_cli"}
-        result["quota_report"]["codex"] = {"reported": False, "reason": "managed_by_codex_cli"}
-        result["replacement"]["codex"] = {"replaced": False, "reason": "managed_by_codex_cli"}
-
-        summary = quota_guard.format_guard_summary(result)
-
-        self.assertIn("Codex: local App/CLI login", summary)
-        self.assertNotIn("Codex: local App/CLI login |", summary)
 
     def test_quota_guard_main_skips_self_update_when_config_disables_it(self):
         args = quota_guard.build_parser().parse_args([])

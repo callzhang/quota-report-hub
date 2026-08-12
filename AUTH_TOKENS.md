@@ -36,8 +36,8 @@
 ## 1. Codex auth
 
 ### Storage — CLI lane vs desktop-app lane (two lanes, like Claude — see [§7](#7-claude-desktop-vs-the-cli))
-- **CLI lane (Codex-managed):** `~/.codex/auth.json`. Shape: `{ "tokens": { access_token, refresh_token, id_token, account_id }, "last_refresh": <iso> }`. The Codex CLI owns this file and **self-refreshes** during use. The quota guard never reads, writes, uploads, replaces, or repairs it.
-- **Desktop-app lane (`Codex.app`):** the standalone Codex desktop app manages its own local state. The quota guard does not inspect or restart Codex app-server processes and never launches `codex login`.
+- **CLI/pool lane:** `~/.codex/auth.json`. Shape: `{ "tokens": { access_token, refresh_token, id_token, account_id }, "last_refresh": <iso> }`. The Codex CLI can self-refresh during use; the quota guard also probes, uploads, and replaces this file when weekly quota is low or the auth is invalid.
+- **Desktop-app lane (`Codex.app`):** the standalone Codex desktop app manages its own local state. After the guard writes CLI auth, it requests only an official managed-daemon restart. It never signals unmanaged or desktop app-server processes and never launches `codex login`.
 
 ### The two JWTs (critical, easy to get wrong)
 - **`access_token`** — a JWT with `exp` **~10 days**. This is the *real* access-token lifetime and what the API uses.
@@ -222,18 +222,18 @@ rate-limit / suspend / ban / abuse. Watched separately (`lib/abuse-errors.js`, `
 
 ## 7. Claude Desktop vs the CLI
 
-Claude and Codex have separate CLI and desktop-app lanes. The quota guard manages only the Claude
-CLI/pool lane; Codex owns both its login state and process lifecycle.
+Claude and Codex have separate CLI and desktop-app lanes. The quota guard manages both CLI/pool lanes
+while leaving desktop-app state and unmanaged process lifecycle alone.
 
 | Lane | Carrier | Credential type | Managed by |
 |---|---|---|---|
 | **Claude CLI / pool** | keychain `Claude Code-credentials` (+ `~/.claude/.credentials.json` fallback) | **OAuth** (accessToken + rotating refreshToken) | terminal CLI **and the quota guard** |
 | **Claude Desktop** | claude.ai **session cookie** (`sessionKey`) in `~/Library/Application Support/Claude/Cookies`, encrypted by keychain `Claude Safe Storage` | claude.ai **web session** — **not** OAuth | Claude Desktop only |
-| **Codex CLI** | `~/.codex/auth.json` | **OAuth** (access_token + rotating refresh_token) | Codex CLI only |
+| **Codex CLI / pool** | `~/.codex/auth.json` | **OAuth** (access_token + rotating refresh_token) | Codex CLI **and the quota guard** |
 | **Codex.app** | `~/Library/Application Support/Codex/{Cookies, Local/Session Storage}`, encrypted by keychain `Codex Safe Storage` | app web session — separate from `auth.json` | `Codex.app` only |
 
-A running desktop app owns its own state. The guard may manage Claude CLI credentials but does not
-change Codex credentials or Codex processes.
+A running desktop app owns its own state. The guard may change CLI credentials, but it never terminates
+desktop or unmanaged Codex processes. Existing sessions may need to be reopened after replacement.
 
 **The Desktop *UI cookie* is independent of the CLI OAuth** (verified):
 - Moving Desktop's `Local Storage`/leveldb aside and relaunching did **not** log Desktop out → the

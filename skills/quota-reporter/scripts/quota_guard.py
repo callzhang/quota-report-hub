@@ -1443,8 +1443,6 @@ def format_replacement(result: dict | None) -> str:
 
 
 def format_source_summary(source_label: str, payload: dict | None, quota_report: dict | None, replacement: dict | None) -> str:
-    if source_label == "Codex" and (payload or {}).get("reason") == "managed_by_codex_cli":
-        return "Codex: local App/CLI login"
     status = (payload or {}).get("status") or "unknown"
     account = (payload or {}).get("account_id") or (payload or {}).get("email") or "unknown"
     parts = [
@@ -1534,8 +1532,8 @@ def format_guard_summary(result: dict) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run one local quota-guard cycle for Claude quota and auth-pool management. "
-            "Codex authentication remains owned by the local Codex App/CLI."
+            "Run one local quota-guard cycle: probe current Codex and Claude state, upload auths, "
+            "and fetch a better same-source auth when the current quota falls below threshold."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -1546,6 +1544,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--auth-pool-user-token",
         help="Personal auth-pool token. If omitted, falls back to ~/.agents/auth/quota-reporter.json.",
+    )
+    parser.add_argument(
+        "--codex-auth-path",
+        type=Path,
+        default=SOURCE_AUTH_PATH,
+        help="Local Codex auth.json path to probe, upload, and replace when a better Codex auth is fetched.",
     )
     parser.add_argument(
         "--claude-home",
@@ -1595,6 +1599,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-toast",
         action="store_true",
         help="Do not show a desktop notification after a successful auth replacement.",
+    )
+    parser.add_argument(
+        "--no-restart-codex-app-server",
+        action="store_true",
+        help="Do not request a managed Codex app-server daemon restart after writing Codex auth.json.",
     )
     parser.add_argument(
         "--skip-self-update",
@@ -1687,8 +1696,11 @@ def run_guard(args: argparse.Namespace) -> dict:
     if scheduler_check.get("ok") is False:
         warnings["scheduler"] = scheduler_check
 
-    codex_payload = {"status": "local", "reason": "managed_by_codex_cli"}
-    timings["codex_probe"] = 0.0
+    try:
+        codex_payload = timed_guard_step(timings, "codex_probe", lambda: current_codex_payload(args.codex_auth_path))
+    except Exception as error:
+        codex_payload = source_probe_error_payload("codex", error, args.codex_auth_path)
+        guard_errors["codex_probe"] = guard_exception_result("codex_probe_failed", error)
 
     claude_custom_provider = detect_claude_custom_provider_env(args.claude_home)
     try:
@@ -1707,18 +1719,28 @@ def run_guard(args: argparse.Namespace) -> dict:
     sync_result = {}
     quota_report_result = {}
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
-        sync_result["codex"] = {
-            "ok": True,
-            "uploaded": False,
-            "reason": "managed_by_codex_cli",
-        }
-        quota_report_result["codex"] = {
-            "ok": True,
-            "reported": False,
-            "reason": "managed_by_codex_cli",
-        }
-        timings["codex_auth_pool_sync"] = 0.0
-        timings["codex_quota_report"] = 0.0
+        sync_result["codex"] = run_guard_step(
+            "codex_auth_pool_sync_failed",
+            lambda: timed_guard_step(
+                timings,
+                "codex_auth_pool_sync",
+                lambda: sync_current_codex_auth_pool(
+                    config["auth_pool_url"],
+                    config["auth_pool_user_token"],
+                    auth_path=args.codex_auth_path,
+                    known_auth_path=args.known_auth_path,
+                    quota_payload=without_sensitive_refresh_capture(codex_payload),
+                ),
+            ),
+        )
+        quota_report_result["codex"] = run_guard_step(
+            "codex_quota_report_failed",
+            lambda: timed_guard_step(
+                timings,
+                "codex_quota_report",
+                lambda: report_current_quota_to_auth_pool(config, "codex", codex_payload),
+            ),
+        )
         quota_report_result["claude"] = run_guard_step(
             "claude_quota_report_failed",
             lambda: timed_guard_step(timings, "claude_quota_report", lambda: report_current_quota_to_auth_pool(config, "claude", claude_payload)),
@@ -1743,8 +1765,21 @@ def run_guard(args: argparse.Namespace) -> dict:
                 ),
             )
 
-    codex_replacement = {"replaced": False, "reason": "managed_by_codex_cli"}
-    timings["codex_replacement"] = 0.0
+    codex_replacement = run_guard_step(
+        "codex_replacement_failed",
+        lambda: timed_guard_step(
+            timings,
+            "codex_replacement",
+            lambda: maybe_replace_codex_auth(
+                config,
+                codex_payload,
+                args.codex_auth_path,
+                args.known_auth_path,
+                threshold_percent,
+                weekly_threshold_percent,
+            ),
+        ),
+    )
     claude_replacement = run_guard_step(
         "claude_replacement_failed",
         lambda: timed_guard_step(
@@ -1760,18 +1795,32 @@ def run_guard(args: argparse.Namespace) -> dict:
             ),
         ),
     )
-    codex_app_server = {
-        "restarted": False,
-        "reason": "managed_by_codex_cli",
-        "stale_check": {"stale": False, "reason": "managed_by_codex_cli"},
-    }
-    timings["codex_app_server"] = 0.0
+    codex_auth_changed = bool(
+        (codex_payload or {}).get("local_auth_refresh", {}).get("written")
+        or codex_replacement.get("replaced")
+        or codex_replacement.get("auth_refreshed")
+    )
+    codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged"}
+    if codex_auth_changed:
+        if getattr(args, "no_restart_codex_app_server", False):
+            codex_app_server = {
+                "restarted": False,
+                "reason": "disabled",
+                "trigger": "codex_auth_changed",
+            }
+            timings["codex_app_server"] = 0.0
+        else:
+            codex_app_server = timed_guard_step(timings, "codex_app_server", restart_codex_app_server)
+            codex_app_server["trigger"] = "codex_auth_changed"
+    else:
+        timings["codex_app_server"] = 0.0
 
     notifications = {}
     if not getattr(args, "no_toast", False):
         def notify_all():
             if warnings.get("scheduler"):
                 notifications["scheduler"] = notify_scheduler_warning(warnings["scheduler"])
+            notifications["codex"] = notify_replacement_success("codex", codex_replacement)
             notifications["claude"] = notify_replacement_success("claude", claude_replacement)
             notifications["uploaded_invalidated_auths"] = notify_uploaded_invalidated_auths(config)
         timed_guard_step(timings, "notifications", notify_all)

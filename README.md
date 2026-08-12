@@ -96,20 +96,20 @@ The intended end-to-end flow inside Codex is:
 10. Codex verifies the scheduler registration and runs one immediate guard cycle. The install is not complete until this verification succeeds.
 10. Every 15 minutes the guard:
    - checks GitHub for the latest `quota-reporter` skill code and updates the local installed skill when `main` has changed
-   - leaves Codex authentication entirely to the local Codex App/CLI
-   - reads the current local Claude auth and quota state
+   - reads current local Codex and Claude auth and quota state
    - updates local `~/.agents/auth/known_auth.json`
-   - reuploads the current Claude auth to keep its cloud auth-pool entry present
-   - reports stable local Claude quota snapshots to the hub
-   - when Claude is below threshold, asks `/api/auth/fetch-best` for a better Claude auth and installs it
-   - notifies the user only when an uploaded Claude auth has a cloud-confirmed rejected refresh token
+   - reuploads current auths to keep their cloud auth-pool entries present
+   - reports stable local quota snapshots to the hub
+   - when either source is below its threshold, asks `/api/auth/fetch-best` for a strictly better same-source auth and installs it
+   - notifies the user after a successful local replacement
 
 Important runtime notes:
 
-- each run reads the current local Claude auth; it does not inspect Codex auth
+- each run reads current local Codex and Claude auth
 - each run self-updates the installed skill from `https://github.com/callzhang/quota-report-hub` before probing, unless `--skip-self-update` is passed for debugging
 - each machine stores only one local state file: `~/.agents/auth/known_auth.json`
-- the local guard probes only the current local Claude auth and quota
+- the local guard probes current local Codex and Claude auth and quota
+- if Codex has less than `5%` remaining in `1week`, the machine asks the cloud auth pool for a better Codex auth; Codex `5H` is legacy metadata and does not trigger rotation
 - if Claude has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Claude auth
 - the request to `/api/auth/fetch-best` includes:
   - `source`
@@ -122,12 +122,12 @@ Important runtime notes:
 - for Claude, the server still requires candidates to have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
 - replacement selection is weighted by remaining quota: the server uses requester-specific deterministic weighted sampling with a softened quota weight, plus a small active-assignment penalty, so high-quota accounts carry more load without taking nearly every request
 - the server also tracks active assignments by each machine's latest fetch event; an auth already installed on many machines is treated as loaded even if those machines have not fetched again within the last 5 hours
-- local Claude upload is idempotent: even when `known_auth.json` records the same uploaded `account_id`, auth refresh time, and digest, the guard reuploads the current auth so a missing cloud entry can be restored automatically
+- local upload is idempotent: even when `known_auth.json` records the same uploaded `account_id`, auth refresh time, and digest, the guard reuploads the current auth so a missing cloud entry can be restored automatically
 - uploading a new current auth does not delete older auths previously uploaded by the same user; the hub keeps monitoring all of them so invalidated-owner notifications still work
 - if a fetched shared auth is later reuploaded by another machine, the hub preserves the first uploader for that `source + account_id`; using someone else's shared auth does not make that user responsible for re-login notifications
-- if the same Claude account is refreshed locally, the new auth refresh time forces a new upload and overwrites the old cloud copy
+- if the same account is refreshed locally, the new auth refresh time forces a new upload and overwrites the old cloud copy
 - `~/.agents/auth/quota-reporter.json` should stay private because it contains the user's personal auth-pool token.
-- Codex authentication is always owned by the local Codex App/CLI. The quota guard does not read, refresh, upload, replace, or restart anything based on `~/.codex/auth.json`, and it never launches `codex login`. No configuration switch is required; Claude quota management remains unchanged.
+- after the guard writes `~/.codex/auth.json`, it requests only `codex app-server daemon restart`; unmanaged and desktop app-server processes are never terminated. An already-open Codex session may need to be reopened to use the replacement. The guard never launches `codex login`.
 - the hub dashboard also uses the same personal token. Without a valid token, `/api/status` returns `401` and the page stays locked.
 - if `/api/status` cannot read the backing database, it returns `503` with `hub_unavailable`; when the reason is `database_reads_blocked`, the token is not rejected and the Turso plan/quota must be restored before the dashboard can unlock.
 - every time a user requests a new token by email, the old token is revoked. Only the latest token for that email remains valid, even if that latest token is then reused across multiple machines.

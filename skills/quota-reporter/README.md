@@ -6,20 +6,19 @@ This directory contains the reusable `quota-reporter` skill published from this 
 
 The skill installs a local 15-minute quota guard that:
 
-- leaves Codex authentication and login state entirely to the local Codex App/CLI
-- tracks the current local Claude auth state
+- tracks current local Codex and Claude auth state
 - self-updates the installed skill from GitHub before each guard cycle
-- reuploads the current Claude auth snapshot to keep its cloud auth-pool entry present
-- checks whether the current local Claude source is low on quota
-- pushes stable local Claude quota snapshots to the hub when available
-- fetches and installs a strictly better Claude auth when needed
-- shows a desktop notification after a successful Claude auth replacement
+- reuploads current auth snapshots to keep their cloud auth-pool entries present
+- checks whether either current local source is low on quota
+- pushes stable local quota snapshots to the hub when available
+- fetches and installs a strictly better same-source auth when needed
+- shows a desktop notification after a successful auth replacement
 - shows a system notification when any auth uploaded by the current token user has a refresh token rejected by the cloud worker; when `auto_relogin_owner_auth` is enabled, opens the matching CLI login only for that confirmed RT-rejected source
 - keeps older uploaded auths in the cloud pool when the local machine switches to a different current auth
 - preserves the first uploader as the owner for each shared account, so using a fetched auth does not transfer re-login responsibility
 - can trigger a remote cloud-worker probe on demand
 
-The hub remains source-aware, while the local guard manages Claude only:
+The hub and local guard remain source-aware:
 
 - Codex auths only compete with other Codex auths
 - Claude auths only compete with other Claude auths
@@ -40,10 +39,10 @@ The hub remains source-aware, while the local guard manages Claude only:
   - runs one full local guard cycle
   - prints a compact human-readable summary by default; use `--json` for the full probe, sync, replacement, notification, and timing payload
   - checks GitHub `main` and updates the installed skill before probing
-  - reuploads and probes only the current Claude auth
+  - reuploads and probes current Codex and Claude auth
   - resolves the Claude CLI binary from common non-interactive install locations (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) before falling back to `PATH`
-  - fetches and installs a better Claude auth if it is below threshold
-  - never reads or writes `~/.codex/auth.json`, starts `codex login`, or inspects/restarts Codex app-server processes
+  - fetches and installs a better Codex auth below the weekly threshold or a better Claude auth below its source thresholds
+  - after a Codex write, requests only an official managed-daemon restart; it never terminates unmanaged or desktop app-server processes and never starts `codex login`
 - `scripts/trigger_remote_probe.py`
   - triggers the GitHub Actions cloud probe worker
   - optionally watches the run
@@ -84,7 +83,7 @@ Use `quota_guard.py --skip-self-update` only when debugging a local edit and you
 
 Use `quota_guard.py --json` when you need the full structured result for debugging or automation. Manual runs should normally use the default summary output.
 
-Codex authentication is always owned by the local Codex App/CLI. The guard leaves `~/.codex/auth.json` untouched, skips Codex pool/quota operations and app-server restarts, and never launches `codex login`. No configuration switch is required; Claude management continues normally.
+The guard may replace `~/.codex/auth.json` after a confirmed low weekly quota or hard invalidation. It only asks the official managed app-server daemon to restart after its own write; unmanaged app servers are left running, and already-open Codex sessions may need to be reopened.
 
 ## Help Output
 
