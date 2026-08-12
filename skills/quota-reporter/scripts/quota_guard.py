@@ -238,6 +238,13 @@ def quota_payload_has_complete_windows(payload: dict) -> bool:
     return True
 
 
+def quota_payload_has_complete_window(payload: dict, window_key: str) -> bool:
+    if not payload:
+        return False
+    window = (payload.get("windows") or {}).get(window_key) or {}
+    return window.get("remaining_percent") is not None and bool(window.get("reset_at"))
+
+
 def quota_payload_is_confirmed_out_of_credits(payload: dict) -> bool:
     if not payload or payload.get("error") != "codex workspace out of credits":
         return False
@@ -265,7 +272,7 @@ def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict |
             return {"ok": True, "reported": False, "reason": "quota_unavailable"}
         if not (
             is_hard_invalidated(payload)
-            or (payload.get("status") == "ok" and quota_payload_has_complete_windows(payload))
+            or (payload.get("status") == "ok" and quota_payload_has_complete_window(payload, "1week"))
             or (payload.get("status") == "ok" and quota_payload_is_confirmed_out_of_credits(payload))
         ):
             return {"ok": True, "reported": False, "reason": "quota_unavailable"}

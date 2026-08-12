@@ -169,7 +169,7 @@ Operational notes:
 - the guard never sends signals to Codex or app-server processes and never launches `codex login`
 - the local config file contains a personal token and should stay private
 - the cloud dashboard shows the latest effective quota for each auth entry
-- Codex rows may be refreshed by either the cloud worker or a stable local client report; a complete local client report may replace stale worker-preserved windows, and a newer worker soft failure does not replace an existing good local Codex quota snapshot
+- Codex rows may be refreshed by either the cloud worker or a stable local client report; a complete weekly window is enough for a local client report because Codex no longer has a live 5H window. It may replace stale worker-preserved windows, and a newer worker soft failure does not replace an existing good local Codex quota snapshot
 - Claude rows may come from the cloud worker or from a stable local client snapshot, depending on whether the current Claude environment can be replayed reliably on the worker. If `~/.claude/settings.json` injects `ANTHROPIC_*` provider credentials, the skill skips Claude cloud uploads for that machine.
 
 ## Output expectations

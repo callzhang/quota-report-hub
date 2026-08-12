@@ -1852,6 +1852,35 @@ Reading additional input from stdin...
         self.assertEqual(result["reason"], "quota_unavailable")
         post_auth_pool_quota.assert_not_called()
 
+    def test_report_current_quota_to_auth_pool_posts_complete_codex_week_without_five_hour(self):
+        payload = {
+            "source": "codex",
+            "status": "ok",
+            "account_id": "acct-1",
+            "windows": {
+                "5h": None,
+                "1week": {
+                    "remaining_percent": 62.0,
+                    "reset_at": "2026-08-18T02:07:14Z",
+                },
+            },
+        }
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+
+        with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post_auth_pool_quota:
+            result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
+
+        self.assertTrue(result["reported"])
+        post_auth_pool_quota.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            source="codex",
+            quota_payload=payload,
+        )
+
     def test_report_current_quota_to_auth_pool_posts_confirmed_codex_out_of_credits(self):
         payload = {
             "source": "codex",

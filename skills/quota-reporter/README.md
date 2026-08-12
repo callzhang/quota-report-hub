@@ -57,6 +57,8 @@ The hub and local guard remain source-aware:
 
 For Codex app-server auth reloads, the guard calls only the official managed-daemon restart. It does so after the guard writes Codex auth and when a manual login updates `auth.json` after the current app-server started. An unmanaged app-server is reported but never signaled.
 
+For Codex quota reporting, a complete `1week` window is sufficient. The retired Codex `5H` window is not required for a stable local snapshot to be sent to the hub.
+
 ## Removed Legacy Wrappers
 
 The old single-purpose wrappers were removed because the install and guard flows now cover the active product path:
