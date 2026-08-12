@@ -1813,7 +1813,21 @@ def run_guard(args: argparse.Namespace) -> dict:
             codex_app_server = timed_guard_step(timings, "codex_app_server", restart_codex_app_server)
             codex_app_server["trigger"] = "codex_auth_changed"
     else:
-        timings["codex_app_server"] = 0.0
+        stale_check = stale_codex_app_server_for_auth(args.codex_auth_path)
+        if stale_check.get("reason") == "app_server_started_before_auth":
+            if getattr(args, "no_restart_codex_app_server", False):
+                codex_app_server = {
+                    "restarted": False,
+                    "reason": "disabled",
+                    "trigger": "auth_newer_than_app_server",
+                }
+                timings["codex_app_server"] = 0.0
+            else:
+                codex_app_server = timed_guard_step(timings, "codex_app_server", restart_codex_app_server)
+                codex_app_server["trigger"] = "auth_newer_than_app_server"
+            codex_app_server["stale_check"] = stale_check
+        else:
+            timings["codex_app_server"] = 0.0
 
     notifications = {}
     if not getattr(args, "no_toast", False):

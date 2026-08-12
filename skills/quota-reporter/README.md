@@ -55,6 +55,8 @@ The hub and local guard remain source-aware:
   - shared helper library used by the scripts above
   - not intended as the main user entrypoint
 
+For Codex app-server auth reloads, the guard calls only the official managed-daemon restart. It does so after the guard writes Codex auth and when a manual login updates `auth.json` after the current app-server started. An unmanaged app-server is reported but never signaled.
+
 ## Removed Legacy Wrappers
 
 The old single-purpose wrappers were removed because the install and guard flows now cover the active product path:

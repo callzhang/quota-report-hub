@@ -154,7 +154,7 @@ The guard then:
 - for Claude, the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
 - if the server returns `repair_auth`, the guard installs that auth instead of a shared replacement so the uploader can re-login and refresh their own invalidated auth
 - only replaces local source credentials when the fetched auth is different from what is already installed
-- after a Codex write, invokes only `codex app-server daemon restart`; an unmanaged app-server returns `unmanaged_app_server_not_restarted` and is left running
+- after a Codex write, or when a manual login makes `auth.json` newer than the running app-server, invokes only `codex app-server daemon restart`; an unmanaged app-server returns `unmanaged_app_server_not_restarted` and is left running
 - shows a desktop notification after a successful local replacement
 - opens Claude CLI login only when a Claude auth uploaded by the current token user has a cloud-confirmed `refresh_token_rejected` result and `auto_relogin_owner_auth` is enabled; Codex login is never launched
 - does nothing when the cloud cannot provide a better auth than the current one

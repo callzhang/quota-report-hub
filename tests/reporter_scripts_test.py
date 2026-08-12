@@ -2885,14 +2885,18 @@ Reading additional input from stdin...
                             with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}) as report_quota:
                                 with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value=codex_replacement) as replace_codex:
                                     with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
-                                        with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth") as stale_app_server:
+                                        with mock.patch.object(
+                                            quota_guard,
+                                            "stale_codex_app_server_for_auth",
+                                            return_value={"stale": False, "reason": "no_stale_app_server"},
+                                        ) as stale_app_server:
                                             with mock.patch.object(quota_guard, "restart_codex_app_server") as restart_app_server:
                                                 result = quota_guard.run_guard(args)
 
         probe_codex.assert_called_once_with(args.codex_auth_path)
         sync_codex.assert_called_once()
         replace_codex.assert_called_once()
-        stale_app_server.assert_not_called()
+        stale_app_server.assert_called_once_with(args.codex_auth_path)
         restart_app_server.assert_not_called()
         self.assertIn(mock.call(config, "codex", codex_payload), report_quota.call_args_list)
         self.assertEqual(result["codex"], codex_payload)
@@ -3305,7 +3309,7 @@ Reading additional input from stdin...
         self.assertTrue(result["codex_app_server"]["restarted"])
         self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
 
-    def test_run_guard_does_not_restart_codex_after_manual_login_without_guard_write(self):
+    def test_run_guard_restarts_managed_codex_after_manual_login(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
@@ -3339,9 +3343,10 @@ Reading additional input from stdin...
                                             with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
                                                 result = quota_guard.run_guard(args)
 
-        restart.assert_not_called()
-        self.assertFalse(result["codex_app_server"]["restarted"])
-        self.assertEqual(result["codex_app_server"]["reason"], "codex_auth_unchanged")
+        restart.assert_called_once()
+        self.assertTrue(result["codex_app_server"]["restarted"])
+        self.assertEqual(result["codex_app_server"]["trigger"], "auth_newer_than_app_server")
+        self.assertEqual(result["codex_app_server"]["stale_check"], stale_check)
 
     def test_run_guard_can_disable_replacement_toasts(self):
         args = mock.Mock(
