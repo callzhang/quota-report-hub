@@ -140,7 +140,7 @@ python3 scripts/trigger_remote_probe.py --no-watch
 The guard then:
 
 - checks GitHub `main` for a newer `quota-reporter` skill and updates the installed skill unless `--skip-self-update` is passed
-- reports GitHub self-update failures explicitly in the compact summary; a failed version check does not masquerade as `Self update: ok`
+- falls back to GitHub's branch Atom feed when the commits API is rate limited, and reports any remaining self-update failure explicitly instead of masquerading as `Self update: ok`
 - updates Codex and Claude entries in `~/.agents/auth/known_auth.json`
 - reuploads current auths so a missing cloud entry can recover automatically
 - probes current live Codex and Claude auth and quota

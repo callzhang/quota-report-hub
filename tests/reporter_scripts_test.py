@@ -3757,6 +3757,27 @@ Reading additional input from stdin...
         self.assertFalse(result["updated"])
         self.assertEqual(result["reason"], "already_current")
 
+    def test_github_latest_sha_falls_back_to_atom_when_api_is_rate_limited(self):
+        api_error = urllib.error.HTTPError(
+            "https://api.github.com/repos/callzhang/quota-report-hub/commits/main",
+            403,
+            "rate limit exceeded",
+            {},
+            None,
+        )
+        atom = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><id>tag:github.com,2008:Grit::Commit/70481803c019ce34cfc606786e3e70ecfe0d99ab</id></entry>
+</feed>"""
+        atom_response = mock.MagicMock()
+        atom_response.__enter__.return_value.read.return_value = atom
+
+        with mock.patch.object(quota_guard.urllib.request, "urlopen", side_effect=[api_error, atom_response]) as urlopen:
+            sha = quota_guard.github_latest_sha()
+
+        self.assertEqual(sha, "70481803c019ce34cfc606786e3e70ecfe0d99ab")
+        self.assertEqual(urlopen.call_count, 2)
+
     def test_self_update_skill_copies_downloaded_skill_and_records_sha(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)

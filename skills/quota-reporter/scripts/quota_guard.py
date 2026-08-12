@@ -15,7 +15,9 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from install_quota_guard import (
@@ -97,12 +99,36 @@ def github_latest_sha(repo: str = DEFAULT_SELF_UPDATE_REPO, ref: str = DEFAULT_S
             "User-Agent": "quota-reporter-self-update",
         },
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        if error.code not in {403, 429}:
+            raise
+        return github_latest_sha_from_atom(repo=repo, ref=ref, timeout=timeout)
     sha = payload.get("sha")
     if not sha:
         raise RuntimeError(f"GitHub response did not include a commit sha for {repo}@{ref}")
     return str(sha)
+
+
+def github_latest_sha_from_atom(
+    repo: str = DEFAULT_SELF_UPDATE_REPO,
+    ref: str = DEFAULT_SELF_UPDATE_REF,
+    timeout: int = 20,
+) -> str:
+    request = urllib.request.Request(
+        f"https://github.com/{repo}/commits/{ref}.atom",
+        headers={"User-Agent": "quota-reporter-self-update"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        root = ET.fromstring(response.read())
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+    commit_id = root.findtext("atom:entry/atom:id", default="", namespaces=namespace)
+    sha = commit_id.rsplit("/", 1)[-1]
+    if len(sha) != 40 or any(character not in "0123456789abcdefABCDEF" for character in sha):
+        raise RuntimeError(f"GitHub Atom feed did not include a commit sha for {repo}@{ref}")
+    return sha.lower()
 
 
 def download_github_tarball(repo: str, sha: str, destination: Path, timeout: int = 60) -> Path:

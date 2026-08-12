@@ -59,7 +59,7 @@ For Codex app-server auth reloads, the guard calls only the official managed-dae
 
 For Codex quota reporting, a complete `1week` window is sufficient. The retired Codex `5H` window is not required for a stable local snapshot to be sent to the hub.
 
-The compact guard summary reports self-update network or GitHub rate-limit failures explicitly instead of labeling them as successful checks.
+Self-update falls back to GitHub's branch Atom feed when the commits API is rate limited. The compact guard summary reports any remaining update failure explicitly instead of labeling it as a successful check.
 
 ## Removed Legacy Wrappers
 
