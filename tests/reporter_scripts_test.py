@@ -1358,12 +1358,15 @@ Reading additional input from stdin...
                         with mock.patch("quota_reporters.probe_claude_rate_limits", return_value={"available": True, "windows": api_windows, "status_code": 200}):
                             with mock.patch("quota_reporters.read_claude_stats", return_value=None):
                                 with tempfile.TemporaryDirectory() as backoff_dir:
-                                    payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=Path(backoff_dir) / "b.json")
+                                    backoff = Path(backoff_dir) / "b.json"
+                                    payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=backoff)
+                                    usage_state = json.loads(backoff.read_text(encoding="utf-8"))
 
         self.assertEqual(payload["windows"]["5h"]["remaining_percent"], 75.0)
         self.assertEqual(payload["windows"]["1week"]["remaining_percent"], 60.0)
         self.assertEqual(payload["usage_summary"]["quota_source"], "oauth_usage_api")
         self.assertEqual(payload["usage_summary"]["oauth_usage_probe"]["status_code"], 200)
+        self.assertEqual(usage_state["windows"], api_windows)
 
     def test_probe_claude_marks_oauth_usage_401_as_invalid_auth(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
@@ -4781,6 +4784,85 @@ Reading additional input from stdin...
                                 with mock.patch("quota_reporters.probe_claude_rate_limits") as probe:
                                     payload = probe_claude(Path("/tmp/claude-home"), now=1000.0, usage_backoff_path=backoff)
         probe.assert_not_called()
+        self.assertEqual(payload["usage_summary"]["quota_source"], "usage_endpoint_backoff")
+
+    def test_probe_claude_reuses_cached_usage_windows_during_backoff(self):
+        auth_json, auth_text = self._claude_auth_mocks()
+        cached_windows = {
+            "5h": {
+                "used_percent": 3.0,
+                "remaining_percent": 97.0,
+                "window_minutes": 300,
+                "reset_at": "2026-08-12T12:00:00Z",
+                "reset_in_seconds": 3600,
+            },
+            "1week": {
+                "used_percent": 4.0,
+                "remaining_percent": 96.0,
+                "window_minutes": 10080,
+                "reset_at": "2026-08-18T12:00:00Z",
+                "reset_in_seconds": 500000,
+            },
+        }
+        with tempfile.TemporaryDirectory() as backoff_dir:
+            backoff = Path(backoff_dir) / "b.json"
+            backoff.write_text(
+                json.dumps({"next_allowed_at": 5000.0, "windows": cached_windows}),
+                encoding="utf-8",
+            )
+            with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+                with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
+                    with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"subscriptionType": "max"}}, "credentials_file")):
+                        with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None):
+                            with mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                                with mock.patch("quota_reporters.probe_claude_rate_limits") as probe:
+                                    payload = probe_claude(Path("/tmp/claude-home"), now=1000.0, usage_backoff_path=backoff)
+
+        probe.assert_not_called()
+        self.assertEqual(payload["windows"]["5h"]["remaining_percent"], 97.0)
+        self.assertEqual(payload["windows"]["1week"]["remaining_percent"], 96.0)
+        self.assertEqual(payload["usage_summary"]["quota_source"], "oauth_usage_cache")
+
+    def test_claude_usage_backoff_persists_successful_windows(self):
+        windows = {
+            "5h": {"remaining_percent": 97.0, "reset_at": "2026-08-12T12:00:00Z"},
+            "1week": {"remaining_percent": 96.0, "reset_at": "2026-08-18T12:00:00Z"},
+        }
+        with tempfile.TemporaryDirectory() as backoff_dir:
+            backoff = Path(backoff_dir) / "b.json"
+            quota_reporters.write_claude_usage_backoff(5000.0, backoff, windows=windows)
+            state = json.loads(backoff.read_text(encoding="utf-8"))
+
+        self.assertEqual(state["next_allowed_at"], 5000.0)
+        self.assertEqual(state["windows"], windows)
+
+    def test_probe_claude_does_not_reuse_expired_cached_usage_windows(self):
+        auth_json, auth_text = self._claude_auth_mocks()
+        with tempfile.TemporaryDirectory() as backoff_dir:
+            backoff = Path(backoff_dir) / "b.json"
+            backoff.write_text(
+                json.dumps(
+                    {
+                        "next_allowed_at": 5000.0,
+                        "windows": {
+                            "5h": {"remaining_percent": 97.0, "reset_at": "1970-01-01T00:15:00Z"},
+                            "1week": {"remaining_percent": 96.0, "reset_at": "1970-01-01T00:16:00Z"},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+                with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
+                    with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"subscriptionType": "max"}}, "credentials_file")):
+                        with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None):
+                            with mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                                with mock.patch("quota_reporters.probe_claude_rate_limits") as probe:
+                                    payload = probe_claude(Path("/tmp/claude-home"), now=1000.0, usage_backoff_path=backoff)
+
+        probe.assert_not_called()
+        self.assertIsNone(payload["windows"]["5h"])
+        self.assertIsNone(payload["windows"]["1week"])
         self.assertEqual(payload["usage_summary"]["quota_source"], "usage_endpoint_backoff")
 
     def test_probe_claude_records_backoff_on_429(self):

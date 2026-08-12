@@ -50,6 +50,7 @@ The hub and local guard remain source-aware:
 - `scripts/claude_statusline_probe.py`
   - captures Claude statusline JSON into a local snapshot file
   - preserves previous unexpired `5H` and `7d` rate-limit windows when Claude Code sends a startup or failed-response statusline payload without `rate_limits`
+- `scripts/quota_reporters.py` caches successful Claude OAuth usage windows during polling backoff and discards each cached window at its provider reset time
 - `scripts/quota_reporters.py`
   - shared helper library used by the scripts above
   - not intended as the main user entrypoint

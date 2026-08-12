@@ -146,7 +146,7 @@ The guard then:
 - if Codex is below `5%` in `1week`, calls `/api/auth/fetch-best` for a strictly better Codex auth; legacy Codex `5H` does not trigger rotation
 - resolves the Claude CLI binary from common non-interactive locations such as `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin` before relying on `PATH`
 - may push stable local Claude quota snapshots back to the hub when available
-- for Claude, the local probe reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; a 429 response with `Retry-After` is reported as a zero-remaining `5H` window until that reset time
+- for Claude, the local probe reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; successful usage windows are cached during the endpoint polling backoff and reused only until their provider reset time, so alternating guard runs do not fall back to `n/a`
 - Claude Code only sends statusline `rate_limits` after the first successful API response in a session. The statusline capture preserves previous unexpired `5H` or `7d` windows when a startup or failed-response statusline payload has no quota fields.
 - if Claude is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - ordinary probe errors and unavailable quota snapshots do not trigger auth replacement; replacement requires a real low-quota window or a hard auth invalidation

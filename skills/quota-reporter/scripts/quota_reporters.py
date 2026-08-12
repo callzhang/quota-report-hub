@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import ctypes
 import getpass
 import hashlib
@@ -1768,17 +1769,55 @@ def claude_account_id(auth_text_details: dict | None = None) -> str:
     return "claude-email-missing"
 
 
+def read_claude_usage_state(path: Path = CLAUDE_USAGE_BACKOFF_PATH) -> dict:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        return state if isinstance(state, dict) else {}
+    except Exception:
+        return {}
+
+
 def read_claude_usage_backoff(path: Path = CLAUDE_USAGE_BACKOFF_PATH) -> float:
     try:
-        return float(json.loads(path.read_text(encoding="utf-8")).get("next_allowed_at") or 0)
-    except Exception:
+        return float(read_claude_usage_state(path).get("next_allowed_at") or 0)
+    except (TypeError, ValueError):
         return 0.0
 
 
-def write_claude_usage_backoff(next_allowed_at: float, path: Path = CLAUDE_USAGE_BACKOFF_PATH) -> None:
+def fresh_cached_claude_usage_windows(state: dict, now_ts: float) -> dict:
+    cached = state.get("windows") if isinstance(state, dict) else None
+    cached = cached if isinstance(cached, dict) else {}
+    windows = empty_windows()
+    for key in windows:
+        window = cached.get(key)
+        if not isinstance(window, dict):
+            continue
+        reset_at = window.get("reset_at")
+        if not isinstance(reset_at, str) or not reset_at:
+            continue
+        try:
+            reset_ts = datetime.fromisoformat(reset_at.replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            continue
+        if reset_ts <= now_ts:
+            continue
+        windows[key] = copy.deepcopy(window)
+        windows[key]["reset_in_seconds"] = max(int(reset_ts - now_ts), 0)
+    return windows
+
+
+def write_claude_usage_backoff(
+    next_allowed_at: float,
+    path: Path = CLAUDE_USAGE_BACKOFF_PATH,
+    *,
+    windows: dict | None = None,
+) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"next_allowed_at": next_allowed_at}) + "\n", encoding="utf-8")
+        state = {"next_allowed_at": next_allowed_at}
+        if isinstance(windows, dict) and any(windows.get(key) is not None for key in ("5h", "1week")):
+            state["windows"] = windows
+        path.write_text(json.dumps(state) + "\n", encoding="utf-8")
     except Exception:
         pass
 
@@ -1870,16 +1909,30 @@ def probe_claude(
     # don't keep hammering the usage endpoint that throttled us.
     if quota_source == "unavailable":
         now_ts = now if now is not None else datetime.now(timezone.utc).timestamp()
+        usage_state = read_claude_usage_state(usage_backoff_path)
+        cached_windows = fresh_cached_claude_usage_windows(usage_state, now_ts)
         if now_ts < read_claude_usage_backoff(usage_backoff_path):
-            quota_source = "usage_endpoint_backoff"
+            if cached_windows["5h"] is not None or cached_windows["1week"] is not None:
+                windows = cached_windows
+                quota_source = "oauth_usage_cache"
+            else:
+                quota_source = "usage_endpoint_backoff"
         else:
             oauth_usage_probe = probe_claude_rate_limits(claude_home)
             retry_after = oauth_usage_probe.get("retry_after_seconds")
             if oauth_usage_probe.get("usage_endpoint_throttled") and retry_after:
-                write_claude_usage_backoff(now_ts + retry_after, usage_backoff_path)
+                write_claude_usage_backoff(
+                    now_ts + retry_after,
+                    usage_backoff_path,
+                    windows=cached_windows,
+                )
             elif oauth_usage_probe.get("available"):
                 # Be polite even on success: don't re-poll for a while.
-                write_claude_usage_backoff(now_ts + CLAUDE_USAGE_MIN_INTERVAL_SECONDS, usage_backoff_path)
+                write_claude_usage_backoff(
+                    now_ts + CLAUDE_USAGE_MIN_INTERVAL_SECONDS,
+                    usage_backoff_path,
+                    windows=oauth_usage_probe.get("windows"),
+                )
             if oauth_usage_probe.get("available"):
                 windows = oauth_usage_probe.get("windows") or empty_windows()
                 quota_source = "oauth_usage_api"
