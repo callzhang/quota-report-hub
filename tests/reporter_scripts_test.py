@@ -3611,6 +3611,19 @@ Reading additional input from stdin...
         self.assertLessEqual(len(summary.splitlines()), 10)
         self.assertNotIn('"refresh_capture"', summary)
 
+    def test_format_guard_summary_shows_self_update_failure(self):
+        result = self._sample_guard_result()
+        result["self_update"] = {
+            "ok": False,
+            "updated": False,
+            "error": "HTTP Error 403: rate limit exceeded",
+        }
+
+        summary = quota_guard.format_guard_summary(result)
+
+        self.assertIn("Self update: failed (HTTP Error 403: rate limit exceeded)", summary)
+        self.assertNotIn("Self update: ok", summary)
+
     def test_quota_guard_main_skips_self_update_when_config_disables_it(self):
         args = quota_guard.build_parser().parse_args([])
 

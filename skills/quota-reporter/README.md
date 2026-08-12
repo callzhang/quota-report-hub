@@ -59,6 +59,8 @@ For Codex app-server auth reloads, the guard calls only the official managed-dae
 
 For Codex quota reporting, a complete `1week` window is sufficient. The retired Codex `5H` window is not required for a stable local snapshot to be sent to the hub.
 
+The compact guard summary reports self-update network or GitHub rate-limit failures explicitly instead of labeling them as successful checks.
+
 ## Removed Legacy Wrappers
 
 The old single-purpose wrappers were removed because the install and guard flows now cover the active product path:

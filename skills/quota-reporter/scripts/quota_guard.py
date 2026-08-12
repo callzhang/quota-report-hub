@@ -1496,7 +1496,11 @@ def format_guard_summary(result: dict) -> str:
     app_server_status = "restarted" if app_server.get("restarted") else "not restarted"
     app_server_reason = app_server.get("reason")
     self_update = result.get("self_update") or {}
-    self_update_text = "updated" if self_update.get("updated") else self_update.get("reason") or "ok"
+    if self_update.get("ok") is False:
+        self_update_error = str(self_update.get("error") or "unknown error")[:300]
+        self_update_text = f"failed ({self_update_error})"
+    else:
+        self_update_text = "updated" if self_update.get("updated") else self_update.get("reason") or "ok"
     errors = result.get("errors") or {}
 
     lines = [
