@@ -124,7 +124,7 @@ Important runtime notes:
 - the server also tracks active assignments by each machine's latest fetch event; an auth already installed on many machines is treated as loaded even if those machines have not fetched again within the last 5 hours
 - local upload is idempotent: even when `known_auth.json` records the same uploaded `account_id`, auth refresh time, and digest, the guard reuploads the current auth so a missing cloud entry can be restored automatically
 - uploading a new current auth does not delete older auths previously uploaded by the same user; the hub keeps monitoring all of them so invalidated-owner notifications still work
-- if a fetched shared auth is later reuploaded by another machine, the hub preserves the first uploader for that `source + account_id`; using someone else's shared auth does not make that user responsible for re-login notifications
+- `uploader_email` records the Hub account authenticated on the most recent client upload. Re-uploading an account moves subsequent re-login notifications and “my uploaded auth” behavior to that latest uploader; internal worker refreshes retain the last client uploader.
 - if the same account is refreshed locally, the new auth refresh time forces a new upload and overwrites the old cloud copy
 - `~/.agents/auth/quota-reporter.json` should stay private because it contains the user's personal auth-pool token.
 - after the guard writes `~/.codex/auth.json`, it requests only `codex app-server daemon restart`; unmanaged and desktop app-server processes are never terminated. An already-open Codex session may need to be reopened to use the replacement. The guard never launches `codex login`.
@@ -193,7 +193,7 @@ Auth pool support:
 - The selection logic only compares candidates within the same source and skips hard-invalidated auths. Codex selection is weekly-quota-first; Claude selection still uses both `5H` and `1week`.
 - Soft probe failures such as missing quota details can still contribute stale-but-last-known-good windows; hard token invalidations clear the old windows.
 - The auth pool requires server-side encryption plus Mailgun delivery for issuing personal user tokens.
-- The auth pool deduplicates by stable `source + account_id`, preserves the first uploader as the account owner, and only replaces an existing entry when the incoming `auth_last_refresh` is newer. If two machines upload different files for the same account without a newer refresh time, the cloud keeps the existing entry.
+- The auth pool deduplicates by stable `source + account_id` and records the authenticated Hub account from the latest client upload in `uploader_email`. A newer `auth_last_refresh` replaces the stored auth; an identical auth still updates changed uploader/machine metadata without replacing the encrypted credential.
 
 The installer is reboot-safe and runs every 15 minutes:
 

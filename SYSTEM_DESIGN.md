@@ -50,12 +50,12 @@ It is a four-tier system:
 
 - **Source** — `codex` or `claude`. Every credential, probe, and pool entry is scoped to one source.
 - **Pool entry** — one encrypted auth blob + metadata for one account, keyed `(source, account_id)` (see [§4](#4-data-model)).
-- **Owner / uploader** — the member whose machine first uploaded an account's auth. Tracked in `uploader_email`.
+- **Uploader** — the Hub member authenticated on the most recent client upload. Tracked in `uploader_email`; internal worker refreshes retain it.
 - **Borrower** — a member whose local quota is low and who fetches a replacement auth from the pool.
 - **AT / RT** — OAuth **access token** (short-lived, used for API calls) / **refresh token** (long-lived, mints new ATs; rotates on use).
 - **Refresh-token death spiral** — when N machines share one full credential, each refresh rotates the RT and invalidates the others' copies, cascading the whole token family to death. The motivating problem (see [§9](#9-the-disabled_refresh_token-mechanism)).
 - **`disabled_refresh_token`** — the admin kill-switch flag. When ON: borrowers receive **access-token-only** blobs (RT stripped to a placeholder) and the hub becomes the **sole** RT custodian/refresher.
-- **Hard-dead / hard invalidation** — an account whose RT is rejected: errors `auth invalidated (token_invalidated)`, `auth failed (401 unauthorized)`, `claude auth invalid (authentication_error)`, `claude auth email unavailable`. Needs owner re-login. (`lib/db.js:174-183`, `lib/auth-pool.js:202-212`)
+- **Hard-dead / hard invalidation** — an account whose RT is rejected: errors `auth invalidated (token_invalidated)`, `auth failed (401 unauthorized)`, `claude auth invalid (authentication_error)`, `claude auth email unavailable`. The latest uploader must re-login. (`lib/db.js:174-183`, `lib/auth-pool.js:202-212`)
 - **Abuse-class error** — provider pushback on a *shared AT*: 429 / 403 / rate-limit / suspend / ban / abuse. Categorically distinct from RT death (`lib/abuse-errors.js`).
 
 ---
@@ -89,7 +89,7 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 
 ### 3.4 Rotation decision (`source_needs_replacement` `:186-197`)
 Replace when the source is hard-invalidated or status≠ok. For Codex, quota-based replacement uses `1week_remaining < 5%` only; `5h` is display/legacy metadata because Codex no longer has a meaningful 5-hour rotation limit. For Claude, quota-based replacement still uses `5h_remaining < 20%` or `1week_remaining < 5%`. `maybe_replace_*` then calls `/api/auth/fetch-best`. Two outcomes:
-- **`repair_auth`** — the hub hands back the *owner's own* dead auth so they re-login (state `repair_auth_from_auth_pool`).
+- **`repair_auth`** — the hub hands the dead auth back to its latest uploader so they re-login (state `repair_auth_from_auth_pool`).
 - **`replacement`** — install the better auth. If it's the same account it's an `auth_refreshed` (state `fetched_from_auth_pool`), else a true switch.
 
 ### 3.5 `disabled_refresh_token` client behavior (Phase-4 strip)
@@ -169,7 +169,7 @@ All handlers are Vercel functions; most require a Bearer token via `authenticate
 | `/api/auth/delete` | POST | Bearer | Remove a pool entry (cascade) |
 | `/api/auth/issue-token` | POST | **none** (company-email gate) | Email a one-time access token |
 | `/api/admin/flags` | GET/POST | Bearer (POST: admin) | Read flags / flip `disabled_refresh_token` |
-| `/api/cron/invalidated-auth-notifications` | GET/POST | **`CRON_SECRET`** | Daily email to owners of 24h-dead auths |
+| `/api/cron/invalidated-auth-notifications` | GET/POST | **`CRON_SECRET`** | Daily email to latest uploaders of 24h-dead auths |
 | `/api/cron/probe-auth-pool` | GET/POST | **`CRON_SECRET`** | Lightweight manual/external trigger that dispatches the GitHub probe workflow when health snapshots are stale |
 | `/api/status` | any | Bearer | Dashboard dataset |
 | `/api/status-revision` | any | Scoped `qrr.` ticket | Singleton dashboard revision only |
@@ -237,7 +237,7 @@ Code: `scripts/probe_auth_pool_worker.mjs`, spawning `scripts/probe_{codex,claud
 ### 7.2 Per-entry processing (`processAuthPoolEntry`) — the per-cycle decision
 Each cycle decides, **per entry and independently**, whether to probe and whether to refresh:
 
-- **Probe selectivity** (`probeSkipReason`): skip the cloud probe when the client already reported fresh quota (`fresh_client_quota_report`) **or** the owner re-uploaded within `PROBE_STALE_MS = 1 h` (`recently_updated`) — *unless* there's no prior report (a brand-new entry is always probed for a baseline). Skipping avoids aging a fresh token and cuts load.
+- **Probe selectivity** (`probeSkipReason`): skip the cloud probe when the client already reported fresh quota (`fresh_client_quota_report`) **or** a client re-uploaded within `PROBE_STALE_MS = 1 h` (`recently_updated`) — *unless* there's no prior report (a brand-new entry is always probed for a baseline). Skipping avoids aging a fresh token and cuts load.
 - **Refresh selectivity** (`refreshEntryIfNeeded`, when `disabled_refresh_token` ON): compute `accessTokenMsUntilExpiry(authJson, source)`; refresh only if within `REFRESH_THRESHOLD_MS = 1 h` (T-1h) of expiry — **unified for claude and codex**. Refreshed tokens are written back to the pool, and the *probe sees the fresh AT*.
 - **Probe** the (possibly refreshed) blob via the source-specific Python probe.
 - **Auth-invalid backstop**: if a probe reports a hard auth error in `disabled_refresh_token` mode but the worker skipped proactive refresh because the saved AT expiry looked far away, the worker force-refreshes the cloud RT once and probes again. Only a provider 400/401 from that forced refresh is treated as confirmed `refresh_token_rejected`; a successful forced refresh clears the stale AT failure.
@@ -259,7 +259,7 @@ Result per item carries `central_refresh` (attempted/ok/rejected) and a probe st
 Reads `.env.local` if env unset, then: (1) **abuse scan** over `authPoolQuotaLatest` — any abuse-class error → `VERDICT: ABUSE_SUSPECTED`, **exit 3**; (2) per-source **hard-dead trend** over a window (default 4 h) from `pool_health_snapshots` → `CLIMBING`/`flat`/`falling` + central-refresh ok/dead-RT counts. **Exit 0** contained, **1** climbing, **2** no creds, **3** abuse.
 
 ### 8.2 invalidated-auth notifications
-`lib/invalidated-auth-notifications.js` + the daily cron: an account hard-dead ≥24 h triggers one owner email (Mailgun), repeated at most every 24 h; recovery clears the state. `first_invalidated_at` is the **earliest contiguous** invalidation found by scanning the event log backward (`lib/db.js:200-241`), so a recovered-then-failed account resets the clock.
+`lib/invalidated-auth-notifications.js` + the daily cron: an account hard-dead ≥24 h triggers one email to its latest uploader (Mailgun), repeated at most every 24 h; recovery clears the state. `first_invalidated_at` is the **earliest contiguous** invalidation found by scanning the event log backward (`lib/db.js:200-241`), so a recovered-then-failed account resets the clock.
 
 ### 8.3 Blob migration
 `migrate_auth_blobs_to_object_storage.mjs`: three modes (`scan` / `write-only` / `apply`). Per row it writes the envelope to Tigris, **round-trip verifies** (`readAuthBlob` must equal what was written), then in `apply` mode nulls the inline columns under an **optimistic-concurrency guard** (the UPDATE's WHERE re-checks the exact old ciphertext and `rowsAffected===1`, else throws). Backs up candidates to JSONL first.
@@ -273,20 +273,20 @@ Reads `.env.local` if env unset, then: (1) **abuse scan** over `authPoolQuotaLat
 **Solution (flag ON).** The hub becomes the single point of refresh:
 1. **Serve AT-only** — `fetch-best` strips the RT to a placeholder before serving ([§6.1](#61-fetch-best-the-borrow-path)). Borrowers can use the AT but cannot rotate the shared RT.
 2. **Reject stripped-RT uploads** — the poison guard ([§6.2](#62-stripped-rt-poison-guard)) keeps the real RT in the pool intact.
-3. **Owner goes AT-only too** — after uploading its real RT, the owner's guard strips its own local RT (Phase-4, [§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)) and thereafter relies on the hub.
+3. **Uploader goes AT-only too** — after uploading its real RT, that client's guard strips its own local RT (Phase-4, [§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)) and thereafter relies on the hub.
 4. **Hub refreshes centrally** — the worker proactively refreshes near-expiry ATs ([§7.2](#72-per-entry-processing-processauthpoolentry)) and clients pull fresh ATs via `refresh_current`.
 
 **Lifecycle of one account under the flag:**
 
 ```
-owner uploads full auth ──► pool stores real RT ──► owner strips local RT (AT-only)
+client uploads full auth ──► pool stores real RT ──► client strips local RT (AT-only)
         │                                                      │
         ▼                                                      ▼
  borrowers fetch AT-only ◄── hub central-refresh (T-1h) ◄── worker probes + refreshes
         │                                                      │
    AT near expiry ──► refresh_current ──► hub serves fresh AT ─┘
         │
-   RT truly dead (revoked elsewhere) ──► hard-dead ──► repair-handback ──► owner re-login
+   RT truly dead (revoked elsewhere) ──► hard-dead ──► repair-handback ──► latest uploader re-login
 ```
 
 **Safety properties.** Because borrowers can't refresh, they can't cause cascade. The unique *new* risk is many machines sharing one AT → provider abuse pushback; this is monitored separately ([§8.1](#81-assess_healthmjs), abuse-class scan). Observed data: 0 abuse-class errors; all failures are RT-class.
@@ -311,13 +311,13 @@ For a borrow request, candidates are filtered then ranked:
 
 `lib/token-refresh.js` is the server-side refresher (hub is sole refresher under the flag):
 - **Endpoints**: Claude `platform.claude.com/v1/oauth/token` (client `9d1c…`, scope `user:inference`); Codex `auth.openai.com/oauth/token` (client `app_EMoam…`, no scope) (`:5-10`).
-- **Classification** (`postRefresh` `:12-39`): HTTP 400/401 → `auth_rejected` (RT dead, owner must re-login); anything else (network, 5xx, 200-without-token) → transient.
+- **Classification** (`postRefresh` `:12-39`): HTTP 400/401 → `auth_rejected` (RT dead, latest uploader must re-login); anything else (network, 5xx, 200-without-token) → transient.
 - **`applyRefreshToBlob`**: per-source field updates that preserve unrelated sections (e.g. claude `mcpOAuth`); sets `expiresAt`/`last_refresh`.
 - **`accessTokenMsUntilExpiry`** — the crux of selectivity:
   - **Claude**: `credentials.claudeAiOauth.expiresAt` (real, AT ~8 h).
   - **Codex**: decode the **access_token JWT** `exp` (real ~**10-day** lifetime), falling back to the `id_token` JWT (~1 h, identity only) **only** if the access_token isn't a decodable JWT (`:105-122`).
 
-**Why one T-1h threshold for both** (today's unification): the worker decides which accounts to refresh each cycle by comparing `accessTokenMsUntilExpiry` to `REFRESH_THRESHOLD_MS = 1 h`. Codex's 10-day AT means proactive refresh almost never fires on a healthy codex account (it's effectively claude-driven), but unifying the code path removes per-source special-casing. The threshold is sized against the worst worker gap (~110 min); the backstops for a missed window are owner re-upload + the `refresh_current` AT-freshness fallback.
+**Why one T-1h threshold for both** (today's unification): the worker decides which accounts to refresh each cycle by comparing `accessTokenMsUntilExpiry` to `REFRESH_THRESHOLD_MS = 1 h`. Codex's 10-day AT means proactive refresh almost never fires on a healthy codex account (it's effectively claude-driven), but unifying the code path removes per-source special-casing. The threshold is sized against the worst worker gap (~110 min); the backstops for a missed window are client re-upload + the `refresh_current` AT-freshness fallback.
 
 > **Historical pitfall (encoded in tests + memory):** codex AT lifetime was once misread from the id_token (~1 h), producing a wrong "codex AT dies hourly" analysis. The fix reads the access_token JWT. See `memory/codex-access-token-lifetime.md`.
 
@@ -361,7 +361,7 @@ Facts surfaced during the read that future maintainers should know:
 5. **`fetch-best.js` is misleadingly named** — it holds RT-stripping/repair helpers, *not* the borrower selection logic. Selection is `pickBestAuthPoolCandidate` in `lib/auth-pool.js` (reached via `lib/db.js bestAuthPoolEntry`).
 6. **Two refreshers exist** — the worker (central, server-side, under the flag) and the client's own Claude AT refresh (`ensure_fresh_claude_access_token`). They don't conflict because under the flag the client strips its RT and stops self-refreshing the shared credential.
 7. **Probe schedule is unreliable** — never assume 15 min. Thresholds (`REFRESH_THRESHOLD_MS`, `PROBE_STALE_MS`) are tuned against the real worst-case gap, and the named constants make them a one-line tune.
-8. **Probe success is not current quota evidence** — an `ok` request may omit a required window, may be older than the one-hour freshness boundary, or may describe a window whose reset has passed. Diagnose `QUOTA UNKNOWN` or `WAITING FOR NEW QUOTA` by comparing probe time, per-window `captured_at`, and `reset_at`; request owner login only for an explicit unavailable authentication reason.
+8. **Probe success is not current quota evidence** — an `ok` request may omit a required window, may be older than the one-hour freshness boundary, or may describe a window whose reset has passed. Diagnose `QUOTA UNKNOWN` or `WAITING FOR NEW QUOTA` by comparing probe time, per-window `captured_at`, and `reset_at`; request latest-uploader login only for an explicit unavailable authentication reason.
 
 ---
 
@@ -375,6 +375,6 @@ Facts surfaced during the read that future maintainers should know:
 
 **Steady state (hub, every ~15–35 min):** dedupe pool to one entry per account → prune stale sessions → for each account: skip-probe-if-fresh, central-refresh-if-near-expiry (T-1h, both sources, only under the flag), cloud-probe, delete-if-unusable, write quota → record a health snapshot.
 
-**Daily:** notify owners of auths hard-dead ≥24 h.
+**Daily:** notify latest uploaders of auths hard-dead ≥24 h.
 
 **Admin:** flip `disabled_refresh_token` on the dashboard to switch the whole pool between full-credential distribution and hub-sole-refresher AT-only distribution.

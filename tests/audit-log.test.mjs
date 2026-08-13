@@ -420,7 +420,7 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
         accountId: "same-provider-id",
         email: "same@stardust.ai",
         lastRefresh: "2026-05-06T01:00:00Z",
-        sid: "session-b",
+        sid: "session-a",
       }),
       uploader_email: "bob@stardust.ai",
       reporter_name: "bob@mac",
@@ -428,7 +428,7 @@ test("ensureSchema migrates auth_pool_entries primary key to preserve multiple s
     });
     const entries = (await mod.authPoolEntries()).filter((entry) => entry.account_id === "same@stardust.ai");
     assert.equal(entries.length, 1);
-    assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["alice@stardust.ai"]));
+    assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["bob@stardust.ai"]));
   } finally {
     if (previousUrl === undefined) {
       delete process.env.TURSO_DATABASE_URL;
@@ -478,7 +478,7 @@ test("identical re-upload repairs an unknown refresh capability marker exactly o
   }
 });
 
-test("upsertAuthPoolEntry preserves the first uploader for later same-account uploads", async () => {
+test("upsertAuthPoolEntry records the latest uploader for later same-account uploads", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
     await mod.upsertAuthPoolEntry({
@@ -500,25 +500,25 @@ test("upsertAuthPoolEntry preserves the first uploader for later same-account up
         accountId: "provider-a",
         email: "shared@stardust.ai",
         lastRefresh: "2026-06-09T01:03:13Z",
-        sid: "session-b",
+        sid: "session-a",
       }),
       uploader_email: "borrower@stardust.ai",
       reporter_name: "borrower@mac",
       hostname: "borrower-mac",
     });
 
-    assert.equal(update.uploader_email, "owner@stardust.ai");
+    assert.equal(update.uploader_email, "borrower@stardust.ai");
     assert.equal(update.reporter_name, "borrower@mac");
 
     const entries = (await mod.authPoolEntries()).filter((entry) => entry.account_id === "shared@stardust.ai");
     assert.equal(entries.length, 1);
-    assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["owner@stardust.ai"]));
+    assert.deepEqual(new Set(entries.map((entry) => entry.uploader_email)), new Set(["borrower@stardust.ai"]));
   } finally {
     cleanup();
   }
 });
 
-test("upsertAuthPoolEntry assigns company account ownership to the account user", async () => {
+test("upsertAuthPoolEntry keeps the authenticated uploader instead of assigning the account user", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
     await mod.issueApiToken("shared@stardust.ai");
@@ -535,13 +535,13 @@ test("upsertAuthPoolEntry assigns company account ownership to the account user"
       hostname: "borrower-mac",
     });
 
-    assert.equal(entry.uploader_email, "shared@stardust.ai");
+    assert.equal(entry.uploader_email, "borrower@stardust.ai");
   } finally {
     cleanup();
   }
 });
 
-test("upsertAuthPoolEntry maps non-company account aliases to company users", async () => {
+test("upsertAuthPoolEntry does not replace the authenticated uploader with a mapped account alias", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
     await mod.issueApiToken("shawn.hou@stardust.ai");
@@ -558,7 +558,58 @@ test("upsertAuthPoolEntry maps non-company account aliases to company users", as
       hostname: "borrower-mac",
     });
 
-    assert.equal(entry.uploader_email, "shawn.hou@stardust.ai");
+    assert.equal(entry.uploader_email, "borrower@stardust.ai");
+  } finally {
+    cleanup();
+  }
+});
+
+test("identical re-upload updates uploader and machine metadata exactly once", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const authJson = fakeAuthJson({
+      accountId: "same-provider",
+      email: "same@stardust.ai",
+      lastRefresh: "2026-06-09T01:03:13Z",
+      sid: "session-a",
+    });
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: authJson,
+      uploader_email: "first@stardust.ai",
+      reporter_name: "first@mac",
+      hostname: "first-mac",
+    });
+    const before = await mod.dashboardRevision();
+
+    const updated = await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: authJson,
+      uploader_email: "derek@stardust.ai",
+      reporter_name: "derek@new-mac",
+      hostname: "new-mac",
+    });
+    const afterUpdate = await mod.dashboardRevision();
+    const duplicate = await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: authJson,
+      uploader_email: "derek@stardust.ai",
+      reporter_name: "derek@new-mac",
+      hostname: "new-mac",
+    });
+    const afterDuplicate = await mod.dashboardRevision();
+
+    assert.equal(updated.deduplicated, true);
+    assert.equal(updated.uploader_email, "derek@stardust.ai");
+    assert.equal(updated.reporter_name, "derek@new-mac");
+    assert.equal(updated.hostname, "new-mac");
+    assert.equal(afterUpdate.revision, before.revision + 1);
+    assert.equal(duplicate.uploader_email, "derek@stardust.ai");
+    assert.equal(afterDuplicate.revision, afterUpdate.revision);
+    const stored = (await mod.authPoolEntries()).find((entry) => entry.account_id === "same@stardust.ai");
+    assert.equal(stored.uploader_email, "derek@stardust.ai");
+    assert.equal(stored.reporter_name, "derek@new-mac");
+    assert.equal(stored.hostname, "new-mac");
   } finally {
     cleanup();
   }
