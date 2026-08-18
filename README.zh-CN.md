@@ -1,5 +1,19 @@
 # Quota Report Hub 中文运行说明
 
+## 团队 Token 用量统计
+
+Hub 提供独立的 `token-usage.html` 页面。登录后默认查询最近 7 天，按小时、Hub 用户分组并显示 Total；可按时间、Hub 用户、提供方、模型账户、原始模型名筛选，也可切换聚合颗粒度、分组和指标。页面只读取 `GET /api/token-usage-query`，同一登录会话中完全相同的查询缓存 5 分钟，并明确区分“成功查询且用量为 0”和“尚未收到用量汇报”。
+
+每次 15 分钟 quota guard 运行时同时执行用量采集，单轮最多使用 10 秒。每台机器首次运行固定回扫最近 72 小时；之后只从已确认的文件位置向后读取新增或更新内容。Codex 按累计 `token_count` 计算正向增量并去除复制历史，Claude 按最终 assistant message ID 更新计数。quota guard 自动切换时按写凭证前记录的精确时间切分；用户手动切换时按汇报当时观察到的账户归属，因此允许一个汇报周期内的小误差。
+
+Total 保持提供方原始定义；Input、Output 是组成部分，Cache Read、Cache Write 和 Codex Reasoning 是 Total 的子集，不能再次相加。Claude Total 按原始记录包含 input、output、cache read 和 cache creation/write。模型名不使用固定白名单，新出现的 GPT 或 Claude 模型会原样统计和展示。
+
+隐私边界：上传内容仅包含 15 分钟数字汇总——Hub 用户由登录身份确定，另含提供方、模型账户、原始模型、时间桶和 6 个计数。不会上传 prompt、response、项目名、对话标题、工具内容、本地路径、session/message ID、记录指纹或文件位置。本地状态位于 `~/.agents/auth/token-usage.sqlite3`，权限仅限当前用户。待上传批次可幂等重试；服务端明确拒绝的无效批次只推进一次，不会无限重报。
+
+`POST /api/token-usage` 接收有上限且幂等的批次；`GET /api/token-usage-query` 返回总计、受限趋势点、四维明细和每个 Hub 用户的上报状态。15 分钟明细保留并可查询 90 天；受保护的每日 `/api/cron/token-usage-retention` 每次最多把 7 个旧 UTC 日期压缩为日汇总，同时清理旧回执。账户首页、revision 轮询、quota 写入/历史与 fetch-best 都不会读取 token 用量表。
+
+设计基准为 95 个文件、约 2.9 GB 历史：完整解析约 44.97 秒，峰值内存约 54 MB。正常定时运行从字节位置增量读取，并受 10 秒预算限制，因此开销远低于完整回扫。
+
 项目安装、部署和完整 API 说明见 [README.md](README.md)。本页重点解释 Hub 页面如何判断账号状态，以及如何排查“Probe 正常但 Quota 不可用”。
 
 ## 账号生命周期与单一主状态

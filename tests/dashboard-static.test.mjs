@@ -163,4 +163,16 @@ test("login page automatically reuses an existing valid hub session", async () =
   assert.match(html, /fetch\("\/api\/status", \{[\s\S]*Authorization: "Bearer " \+ token/);
   assert.match(html, /completeLogin\(payload\.auth_pool_user_token \|\| token, payload\.viewer_email \|\| ""\)/);
   assert.match(html, /restoreExistingSession\(\)/);
+  assert.match(html, /function safeLoginDestination\(\)/);
+  assert.match(html, /target\.origin !== location\.origin/);
+  assert.match(html, /location\.replace\(safeLoginDestination\(\)\)/);
+});
+
+test("accounts and users pages link to the independent token usage page", async () => {
+  const [dashboard, users] = await Promise.all([
+    readFile(new URL("../index.html", import.meta.url), "utf8"),
+    readFile(new URL("../users.html", import.meta.url), "utf8"),
+  ]);
+  assert.match(dashboard, /href="\.\/token-usage\.html"/);
+  assert.match(users, /href="\.\/token-usage\.html"/);
 });

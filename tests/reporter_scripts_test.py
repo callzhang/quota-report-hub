@@ -69,6 +69,284 @@ class ReporterScriptsTest(unittest.TestCase):
         )
         self.codex_restart_binary_guard.start()
         self.addCleanup(self.codex_restart_binary_guard.stop)
+        self.token_usage_state = mock.Mock()
+        self.token_usage_state_guard = mock.patch.object(
+            quota_guard,
+            "TokenUsageState",
+            return_value=self.token_usage_state,
+            create=True,
+        )
+        self.token_usage_collector_guard = mock.patch.object(
+            quota_guard,
+            "collect_and_report_token_usage",
+            return_value={
+                "ok": True,
+                "reported": False,
+                "rows": 0,
+                "total_tokens": 0,
+                "bytes_read": 0,
+                "backfill_complete": True,
+                "retry": False,
+                "warnings": {"files": 0, "parse": 0},
+                "elapsed_seconds": 0.0,
+            },
+            create=True,
+        )
+        self.token_usage_state_guard.start()
+        self.token_usage_collector = self.token_usage_collector_guard.start()
+        self.addCleanup(self.token_usage_collector_guard.stop)
+        self.addCleanup(self.token_usage_state_guard.stop)
+
+    def test_auth_install_records_exact_switch_boundary_before_write(self):
+        events = []
+        usage_state = mock.Mock()
+        usage_state.prepare_account_switch.side_effect = lambda **kwargs: events.append(
+            ("prepare", kwargs)
+        ) or 17
+        usage_state.finalize_account_switch.side_effect = lambda switch_id, **kwargs: events.append(
+            ("finalize", switch_id, kwargs)
+        ) or True
+
+        result = quota_guard.install_auth_with_usage_boundary(
+            provider="codex",
+            from_account_id="old-account",
+            to_account_id="new-account",
+            usage_state=usage_state,
+            write_auth=lambda: events.append(("write",)),
+            read_installed_account=lambda: events.append(("read",)) or "new-account",
+            now_iso=lambda: "2026-08-18T03:04:05.000Z",
+        )
+
+        self.assertEqual(result["switch_id"], 17)
+        self.assertEqual([event[0] for event in events], ["prepare", "write", "read", "finalize"])
+        self.assertEqual(events[0][1]["prepared_at"], "2026-08-18T03:04:05.000Z")
+        self.assertEqual(events[-1][2]["finalized_at"], "2026-08-18T03:04:05.000Z")
+
+    def test_auth_install_does_not_record_same_account_refresh(self):
+        usage_state = mock.Mock()
+
+        quota_guard.install_auth_with_usage_boundary(
+            provider="claude",
+            from_account_id="same-account",
+            to_account_id="same-account",
+            usage_state=usage_state,
+            write_auth=lambda: None,
+            read_installed_account=lambda: "same-account",
+            now_iso=lambda: "2026-08-18T03:04:05.000Z",
+        )
+
+        usage_state.prepare_account_switch.assert_not_called()
+        usage_state.finalize_account_switch.assert_not_called()
+
+    def test_auth_install_reconciles_failed_write_from_readback(self):
+        now_iso = lambda: "2026-08-18T03:04:05.000Z"
+        for observed, expected_method in (("new-account", "finalize_account_switch"), ("old-account", "cancel_account_switch")):
+            usage_state = mock.Mock()
+            usage_state.prepare_account_switch.return_value = 23
+
+            with self.assertRaisesRegex(RuntimeError, "write failed"):
+                quota_guard.install_auth_with_usage_boundary(
+                    provider="codex",
+                    from_account_id="old-account",
+                    to_account_id="new-account",
+                    usage_state=usage_state,
+                    write_auth=lambda: (_ for _ in ()).throw(RuntimeError("write failed")),
+                    read_installed_account=lambda observed=observed: observed,
+                    now_iso=now_iso,
+                )
+
+            getattr(usage_state, expected_method).assert_called_once()
+
+        usage_state = mock.Mock()
+        usage_state.prepare_account_switch.return_value = 29
+        with self.assertRaisesRegex(RuntimeError, "write failed"):
+            quota_guard.install_auth_with_usage_boundary(
+                provider="codex",
+                from_account_id="old-account",
+                to_account_id="new-account",
+                usage_state=usage_state,
+                write_auth=lambda: (_ for _ in ()).throw(RuntimeError("write failed")),
+                read_installed_account=lambda: "third-account",
+                now_iso=now_iso,
+            )
+        usage_state.finalize_account_switch.assert_not_called()
+        usage_state.cancel_account_switch.assert_not_called()
+
+    def test_run_guard_collects_after_replacement_and_app_restart_before_notifications(self):
+        args = mock.Mock(
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=False,
+            no_restart_codex_app_server=False,
+        )
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        events = []
+        self.token_usage_collector.side_effect = lambda **kwargs: events.append(
+            ("collect", kwargs)
+        ) or {
+            "ok": True,
+            "reported": True,
+            "rows": 2,
+            "total_tokens": 123,
+            "bytes_read": 456,
+            "backfill_complete": True,
+            "retry": False,
+            "warnings": {"files": 0, "parse": 0},
+            "elapsed_seconds": 0.01,
+        }
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(quota_guard, "load_config", return_value=config))
+            stack.enter_context(mock.patch.object(quota_guard, "ensure_scheduler_registration", return_value={"ok": True}))
+            stack.enter_context(mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "codex-old", "status": "ok"}))
+            stack.enter_context(mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None))
+            stack.enter_context(mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-current", "status": "ok"}))
+            stack.enter_context(mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True}))
+            stack.enter_context(mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True}))
+            stack.enter_context(mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True}))
+            replace_codex = stack.enter_context(mock.patch.object(
+                quota_guard,
+                "maybe_replace_codex_auth",
+                side_effect=lambda *call_args: events.append(("replace_codex", call_args)) or {
+                    "ok": True,
+                    "replaced": True,
+                    "from_account_id": "codex-old",
+                    "to_account_id": "codex-new",
+                },
+            ))
+            stack.enter_context(mock.patch.object(
+                quota_guard,
+                "maybe_replace_claude_auth",
+                side_effect=lambda *call_args: events.append(("replace_claude", call_args)) or {
+                    "ok": True,
+                    "replaced": False,
+                    "reason": "healthy",
+                },
+            ))
+            stack.enter_context(mock.patch.object(
+                quota_guard,
+                "restart_codex_app_server",
+                side_effect=lambda: events.append(("restart",)) or {"ok": True, "restarted": True},
+            ))
+            stack.enter_context(mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}))
+            stack.enter_context(mock.patch.object(quota_guard, "notify_replacement_success", side_effect=lambda *args: events.append(("notify",)) or {"shown": False}))
+            stack.enter_context(mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False}))
+            result = quota_guard.run_guard(args)
+
+        event_names = [event[0] for event in events]
+        self.assertLess(event_names.index("replace_codex"), event_names.index("restart"))
+        self.assertLess(event_names.index("restart"), event_names.index("collect"))
+        self.assertLess(event_names.index("collect"), event_names.index("notify"))
+        self.assertIs(replace_codex.call_args.args[6], self.token_usage_state)
+        collector_args = self.token_usage_collector.call_args.kwargs
+        self.assertEqual(collector_args["codex_account_id"], "codex-new")
+        self.assertEqual(collector_args["claude_account_id"], "claude-current")
+        self.assertIs(collector_args["state"], self.token_usage_state)
+        self.token_usage_state.close.assert_called_once()
+        self.assertEqual(result["token_usage"]["total_tokens"], 123)
+
+    def test_run_guard_isolates_token_usage_failure(self):
+        self.token_usage_collector.side_effect = RuntimeError("collector exploded")
+        args = mock.Mock(
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=True,
+        )
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(quota_guard, "load_config", return_value={}))
+            stack.enter_context(mock.patch.object(quota_guard, "ensure_scheduler_registration", return_value={"ok": True}))
+            stack.enter_context(mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "codex-a", "status": "ok"}))
+            stack.enter_context(mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None))
+            stack.enter_context(mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}))
+            stack.enter_context(mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False}))
+            stack.enter_context(mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False}))
+            stack.enter_context(mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}))
+            result = quota_guard.run_guard(args)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["errors"]["token_usage"]["reason"], "token_usage_collection_failed")
+        self.assertEqual(result["replacement"]["codex"]["replaced"], False)
+
+    def test_all_auth_install_paths_use_usage_boundaries(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        low_quota = {
+            "account_id": "old-account",
+            "status": "ok",
+            "windows": {"5h": {"remaining_percent": 1}, "1week": {"remaining_percent": 1}},
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            codex_blob = json.dumps({"tokens": {"account_id": "new-codex"}})
+            claude_blob = json.dumps({
+                "schema": "claude_credentials_v1",
+                "account_id": "new-claude",
+                "credentials": {"claudeAiOauth": {"accessToken": "new-token"}},
+            })
+            scenarios = (
+                ("codex", "replacement", {"replacement": {"account_id": "new-codex", "auth_json": codex_blob}}),
+                ("codex", "repair", {"replacement": None, "repair_auth": {"account_id": "new-codex", "auth_json": codex_blob}}),
+                ("claude", "replacement", {"replacement": {"account_id": "new-claude", "auth_json": claude_blob}}),
+                ("claude", "repair", {"replacement": None, "repair_auth": {"account_id": "new-claude", "auth_json": claude_blob}}),
+            )
+            for provider, path_kind, fetched in scenarios:
+                with self.subTest(provider=provider, path=path_kind):
+                    with contextlib.ExitStack() as stack:
+                        stack.enter_context(mock.patch.object(quota_guard, "fetch_best_auth", return_value=fetched))
+                        stack.enter_context(mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None))
+                        boundary = stack.enter_context(mock.patch.object(
+                            quota_guard,
+                            "install_auth_with_usage_boundary",
+                            return_value={"switch_id": 1, "switched": True},
+                        ))
+                        stack.enter_context(mock.patch.object(
+                            quota_guard,
+                            "auth_metadata",
+                            return_value={"digest": "d", "account_id": "new-codex", "auth_last_refresh": None},
+                        ))
+                        stack.enter_context(mock.patch.object(
+                            quota_guard,
+                            "claude_auth_blob_metadata",
+                            return_value={"digest": "d", "account_id": "new-claude", "auth_last_refresh": None},
+                        ))
+                        stack.enter_context(mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "d"}))
+                        if provider == "codex":
+                            result = quota_guard.maybe_replace_codex_auth(
+                                config,
+                                low_quota,
+                                base / f"{path_kind}-auth.json",
+                                base / "known.json",
+                                20.0,
+                                5.0,
+                                self.token_usage_state,
+                            )
+                        else:
+                            result = quota_guard.maybe_replace_claude_auth(
+                                config,
+                                low_quota,
+                                base / f"{path_kind}-claude",
+                                base / "known.json",
+                                20.0,
+                                5.0,
+                                self.token_usage_state,
+                            )
+
+                    self.assertTrue(result["replaced"])
+                    boundary.assert_called_once()
+                    self.assertEqual(boundary.call_args.kwargs["provider"], provider)
+                    self.assertIs(boundary.call_args.kwargs["usage_state"], self.token_usage_state)
 
     def test_codex_auth_refresh_delta_requires_same_account(self):
         delta = codex_auth_refresh_delta(

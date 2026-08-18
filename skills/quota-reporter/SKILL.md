@@ -19,6 +19,7 @@ This skill installs and runs the local Codex and Claude quota guard.
 8. Installs a reboot-safe scheduler that runs every 15 minutes
 9. Notifies the local user when any auth uploaded by that same token user has a refresh token rejected by the cloud worker, even if that auth is not the currently installed local auth
 10. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
+11. Incrementally reports numeric token usage by Hub user, provider account, and raw model without uploading conversation content
 
 ## Files
 
@@ -26,6 +27,8 @@ This skill installs and runs the local Codex and Claude quota guard.
 - Installer: `scripts/install_quota_guard.py`
 - Claude statusline hook: `scripts/claude_statusline_probe.py`
 - Internal shared helper library: `scripts/quota_reporters.py`
+- Token usage collector: `scripts/token_usage_collector.py`
+- Private token usage checkpoints: `~/.agents/auth/token-usage.sqlite3` (`0600`)
 - Remote worker trigger/watch: `scripts/trigger_remote_probe.py`
 - Archived legacy scripts: `archive/`
 - Skill overview: `README.md`
@@ -163,6 +166,10 @@ The guard then:
 - preserves the first uploader as the owner for each `source + account_id`, so a fetched shared auth does not become owned by the machine that happened to reupload it
 - if the same account is refreshed locally, the changed `auth_last_refresh` is enough to trigger a new upload
 - does not delete older auths previously uploaded by the same token user when the local machine switches to a different current auth
+- on every installation, initially scans only the previous 72 hours of usage records, then resumes changed files from acknowledged byte positions with a 10-second cycle budget
+- reports only quarter-hour numeric aggregates; prompts, responses, project/title/tool content, local paths, conversation identifiers, fingerprints, and cursor positions stay local
+- records an exact pre-write boundary for automatic account switches; user-driven switches use the account observed at report time and are intentionally approximate
+- persists pending idempotent batches and checkpoints in owner-only `~/.agents/auth/token-usage.sqlite3`; collection failure is isolated from quota replacement and notifications
 
 Operational notes:
 

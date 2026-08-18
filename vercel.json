@@ -12,12 +12,19 @@
     },
     "api/cron/probe-auth-pool.js": {
       "maxDuration": 30
+    },
+    "api/cron/token-usage-retention.js": {
+      "maxDuration": 30
     }
   },
   "crons": [
     {
       "path": "/api/cron/invalidated-auth-notifications",
       "schedule": "0 17 * * *"
+    },
+    {
+      "path": "/api/cron/token-usage-retention",
+      "schedule": "30 18 * * *"
     }
   ]
 }

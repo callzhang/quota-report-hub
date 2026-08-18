@@ -150,6 +150,70 @@ test("dashboard-visible logical writes batch their data and revision updates ato
   assert.match(flag, /changes\(\) > 0/);
 });
 
+test("token usage ingestion is one receipt-gated batch and current reads stay isolated", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  const ingestion = functionBody(source, "ingestTokenUsageBatch");
+
+  assert.match(ingestion, /client\.batch/);
+  assert.doesNotMatch(ingestion, /client\.execute/);
+  assert.match(ingestion, /token_usage_batch_receipts/);
+  assert.match(ingestion, /applied_at IS NULL/);
+  assert.match(ingestion, /token_usage_15m\.input_tokens \+ excluded\.input_tokens/);
+  assert.doesNotMatch(ingestion, /FROM token_usage_15m|FROM token_usage_daily/);
+
+  assert.match(source, /CREATE INDEX IF NOT EXISTS token_usage_15m_time_idx/);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS token_usage_daily_time_idx/);
+
+  for (const path of [
+    "../api/status.js",
+    "../api/status-revision.js",
+    "../api/auth/quota.js",
+    "../api/auth/fetch-best.js",
+    "../api/quota-history.js",
+  ]) {
+    const currentRead = await readFile(new URL(path, import.meta.url), "utf8");
+    assert.doesNotMatch(currentRead, /token_usage_15m|token_usage_daily|token_usage_batch_receipts/);
+  }
+});
+
+test("token usage query uses bounded indexed ranges without dashboard coupling", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  const query = functionBody(source, "queryTokenUsage");
+  assert.match(query, /client\.batch/);
+  assert.match(query, /buildRange\("bucket_start"\)/);
+  assert.match(query, /`\$\{timeColumn\} >= \?`/);
+  assert.match(query, /`\$\{timeColumn\} < \?`/);
+  assert.match(query, /TOKEN_USAGE_TREND_LIMIT \+ 1/);
+  assert.match(query, /TOKEN_USAGE_BREAKDOWN_LIMIT \+ 1/);
+  assert.match(query, /token_usage_15m/);
+  assert.match(query, /token_usage_daily/);
+  assert.match(query, /token_usage_reporter_state/);
+  assert.match(query, /auth_users/);
+  assert.doesNotMatch(query, /auth_pool_quota|auth_pool_entries|auth_pool_fetch_log/);
+  assert.doesNotMatch(query, /installation_id|batch_id|payload_digest|local_path|record_fingerprint|file_key|logical_record_key/);
+});
+
+test("token usage wire responses and collector payload exclude conversation identity and content", async () => {
+  const ingestion = await readFile(new URL("../api/token-usage.js", import.meta.url), "utf8");
+  const responseStart = ingestion.indexOf("sendJson(res, 200");
+  const responseEnd = ingestion.indexOf("}, authContext));", responseStart);
+  const responseBody = ingestion.slice(responseStart, responseEnd);
+  assert.doesNotMatch(responseBody, /installation_id|normalized\.rows|payload_digest/);
+
+  const collector = await readFile(new URL("../skills/quota-reporter/scripts/token_usage_collector.py", import.meta.url), "utf8");
+  const payloadStart = collector.lastIndexOf("        payload = {");
+  const payloadEnd = collector.indexOf("        pending = usage_state.stage_batch", payloadStart);
+  const uploadConstruction = collector.slice(payloadStart, payloadEnd);
+  assert.match(uploadConstruction, /"installation_id"/);
+  assert.match(uploadConstruction, /"rows": rows/);
+  assert.doesNotMatch(uploadConstruction, /prompt|response|project|path|title|tool|content|fingerprint|record_key/);
+
+  const page = await readFile(new URL("../token-usage.html", import.meta.url), "utf8");
+  assert.match(page, /currentToken = getStoredToken\(\)/);
+  assert.match(page, /else loadUsage\(\)\.catch/);
+  assert.equal((page.match(/fetch\(`\/api\/token-usage-query/g) || []).length, 1);
+});
+
 test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
   const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
   assert.ok(vercelConfig.crons.every((cron) => cron.path !== "/api/cron/probe-auth-pool"));

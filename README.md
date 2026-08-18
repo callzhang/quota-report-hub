@@ -2,6 +2,20 @@
 
 Minimal Vercel app that stores encrypted Codex and Claude auth snapshots, issues per-user access tokens by company email, and serves a dashboard plus source-aware auth-pool APIs for local quota guards.
 
+## Team token usage analytics
+
+The Hub has an independent `token-usage.html` page for authenticated team members. It defaults to the previous seven days, hourly buckets, grouping by Hub user, and the Total counter. Queries can filter by time, Hub user, provider (`codex` or `claude`), model account, and the raw provider model name, then group by Hub user, provider, model account, or model. The page uses only `GET /api/token-usage-query`, caches each exact query for five minutes per login session, and distinguishes a successful zero from `No usage report received`.
+
+Every quota guard cycle also scans usage records with a 10-second budget. A new installation starts from a fixed 72-hour cutoff; later cycles read only new bytes after the last acknowledged file position. Codex cumulative `token_count` records are converted to positive deltas and copied history is deduplicated. Claude final assistant-message counters are updated by message ID. Automatic quota-guard switches use the recorded pre-write boundary; manual switches use the account observed at report time, so a small interval of manual-switch attribution error is intentional.
+
+Counters retain provider meaning. `Total` is the provider-reported total. Input and Output are components. Cache Read, Cache Write, and Codex Reasoning are displayed as subsets and must not be added to Total. Claude Total includes input, output, cache read, and cache creation/write according to the provider record. Raw model names such as future GPT or Claude variants are stored and rendered without a fixed allowlist.
+
+Privacy boundary: the collector uploads numeric quarter-hour aggregates only—Hub user is derived from authentication, with provider, model account, raw model, bucket, and six counters. It never uploads prompts, responses, project names, conversation titles, tool content, local paths, session IDs, message IDs, record fingerprints, or file positions. Local checkpoints live in `~/.agents/auth/token-usage.sqlite3` with owner-only permissions. Pending batches are retried idempotently; a rejected invalid batch advances once so it cannot loop forever.
+
+`POST /api/token-usage` ingests a bounded idempotent batch. `GET /api/token-usage-query` returns totals, bounded trend points, bounded four-dimension breakdown rows, and per-Hub-user reporter state. Fifteen-minute detail is accepted and queryable for 90 days. The protected daily `/api/cron/token-usage-retention` job compacts at most seven old UTC days per run into daily rollups and removes old receipts. Token usage tables are not read by the Accounts dashboard, revision polling, quota ingestion/history, or fetch-best paths.
+
+Reference sizing from the approved design benchmark was 95 files and about 2.9 GB of history: a full parse took 44.97 seconds and about 54 MB peak memory. Normal scheduled work is substantially smaller because it resumes from byte positions and stops at the per-cycle budget.
+
 ![Quota Report Hub dashboard](docs/hub-dashboard.png)
 
 *The dashboard: one primary availability state per cloud auth entry, with quota and authentication evidence available on demand. Codex uses the weekly quota window; Claude requires both the 5-hour and weekly windows. (Accounts shown are anonymized demo data.)*
