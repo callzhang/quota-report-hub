@@ -64,6 +64,14 @@
       .trend-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
       .trend-legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
       .trend-legend i { width: 10px; height: 10px; border-radius: 50%; }
+      #reporter-region { display: grid; gap: 4px; }
+      .reporter-row {
+        display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+        padding: 10px 0; border-bottom: 1px solid var(--line);
+      }
+      .reporter-row:last-child { border-bottom: 0; }
+      .reporter-row span { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+      .reporter-row strong { white-space: nowrap; font-variant-numeric: tabular-nums; }
       @media (min-width: 920px) {
         #trend-panel { grid-column: span 8; }
         #reporter-panel { grid-column: span 4; }
@@ -125,7 +133,7 @@
           <div id="trend-region"></div>
         </section>
         <section class="panel" id="reporter-panel" aria-labelledby="reporter-title">
-          <h2 id="reporter-title">Reporter state</h2>
+          <h2 id="reporter-title">Usage by Hub user</h2>
           <div id="reporter-region"></div>
         </section>
         <section class="panel" aria-labelledby="breakdown-title">
@@ -399,9 +407,14 @@
         breakdownRegion.innerHTML = renderBreakdown(payload.breakdown || []);
         bindBreakdownActions();
         reporterRegion.innerHTML = (payload.reporters || []).length
-          ? (payload.reporters || []).map((item) => item.last_reported_at
-            ? `<div><strong>${escapeHtml(item.hub_user_email)}</strong><div class="meta">Last report ${escapeHtml(new Date(item.last_reported_at).toLocaleString())}</div></div>`
-            : `<div><strong>${escapeHtml(item.hub_user_email)}</strong><div class="empty">No usage report received</div></div>`).join("")
+          ? (payload.reporters || []).map((item) => {
+            const reportState = item.last_reported_at
+              ? `Last reported at ${new Date(item.last_reported_at).toLocaleString()}`
+              : "No usage report received";
+            const label = `${item.hub_user_email}, ${number(item.total_tokens)} tokens. ${reportState}`;
+            return `<div class="reporter-row" title="${escapeHtml(reportState)}" aria-label="${escapeHtml(label)}">` +
+              `<span>${escapeHtml(item.hub_user_email)}</span><strong>${number(item.total_tokens)} tokens</strong></div>`;
+          }).join("")
           : '<div class="empty">No usage report received</div>';
       }
 

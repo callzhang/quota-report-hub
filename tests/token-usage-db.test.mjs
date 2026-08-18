@@ -232,8 +232,8 @@ test("queryTokenUsage aggregates indexed detail with exact filters and determini
     }]);
     assert.equal(result.breakdown[0].model_id, "gpt-5.6-sol");
     assert.deepEqual(result.reporters, [
-      { hub_user_email: "derek@stardust.ai", last_reported_at: "2026-08-18T12:00:00.000Z" },
-      { hub_user_email: "never-reported@stardust.ai", last_reported_at: null },
+      { hub_user_email: "derek@stardust.ai", last_reported_at: "2026-08-18T12:00:00.000Z", total_tokens: 270 },
+      { hub_user_email: "never-reported@stardust.ai", last_reported_at: null, total_tokens: 0 },
     ]);
 
     const claudeOnly = await mod.queryTokenUsage({
