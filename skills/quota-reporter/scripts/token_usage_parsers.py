@@ -37,6 +37,11 @@ class CodexParseContext:
     warning_count: int = 0
 
 
+@dataclasses.dataclass
+class ClaudeParseContext:
+    warning_count: int = 0
+
+
 def _safe_identifier(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -163,3 +168,88 @@ def codex_counter_delta(
         field: normalized_current[field] - normalized_acknowledged[field]
         for field in COUNTER_FIELDS
     }
+
+
+def parse_claude_line(
+    line: str,
+    context: ClaudeParseContext | None = None,
+) -> UsageRecord | None:
+    parse_context = context if context is not None else ClaudeParseContext()
+    try:
+        value = json.loads(line)
+    except (json.JSONDecodeError, TypeError):
+        parse_context.warning_count += 1
+        return None
+    if not isinstance(value, dict):
+        parse_context.warning_count += 1
+        return None
+    if value.get("type") != "assistant":
+        return None
+    message = value.get("message")
+    if not isinstance(message, dict):
+        parse_context.warning_count += 1
+        return None
+    message_id = _safe_identifier(message.get("id"))
+    model_id = _safe_identifier(message.get("model"))
+    event_at = _safe_identifier(value.get("timestamp"))
+    usage = message.get("usage")
+    if message_id is None or model_id is None or event_at is None or not isinstance(usage, dict):
+        parse_context.warning_count += 1
+        return None
+
+    source_fields = {
+        "input_tokens": ("input_tokens", True),
+        "output_tokens": ("output_tokens", True),
+        "cache_read_tokens": ("cache_read_input_tokens", False),
+        "cache_write_tokens": ("cache_creation_input_tokens", False),
+    }
+    counters: dict[str, int] = {}
+    for target, (source, required) in source_fields.items():
+        if required and source not in usage:
+            parse_context.warning_count += 1
+            return None
+        counter = _safe_counter(usage.get(source, 0))
+        if counter is None:
+            parse_context.warning_count += 1
+            return None
+        counters[target] = counter
+    counters["reasoning_tokens"] = 0
+    counters["total_tokens"] = sum(counters[field] for field in (
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"
+    ))
+    if counters["total_tokens"] > MAX_SAFE_INTEGER:
+        parse_context.warning_count += 1
+        return None
+
+    structural = {
+        "provider": "claude",
+        "message_id": message_id,
+        "event_at": event_at,
+        "model_id": model_id,
+        "counters": counters,
+    }
+    return UsageRecord(
+        provider="claude",
+        event_at=event_at,
+        logical_record_key=f"claude:{message_id}",
+        model_id=model_id,
+        counters=counters,
+        fingerprint=_fingerprint(structural),
+    )
+
+
+def claude_counter_delta(
+    current: dict[str, int],
+    acknowledged: dict[str, int] | None,
+) -> dict[str, int]:
+    normalized_current = {field: int(current.get(field, 0)) for field in COUNTER_FIELDS}
+    if acknowledged is None:
+        return normalized_current
+    normalized_acknowledged = {field: int(acknowledged.get(field, 0)) for field in COUNTER_FIELDS}
+    delta = {
+        field: max(0, normalized_current[field] - normalized_acknowledged[field])
+        for field in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+    }
+    delta["reasoning_tokens"] = 0
+    delta["total_tokens"] = sum(delta.values())
+    return delta

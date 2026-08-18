@@ -8,8 +8,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent / "skills" / "quota-reporter
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from token_usage_parsers import (  # noqa: E402
+    ClaudeParseContext,
     CodexParseContext,
+    claude_counter_delta,
     codex_counter_delta,
+    parse_claude_line,
     parse_codex_line,
     parse_codex_lines,
 )
@@ -117,6 +120,94 @@ class CodexTokenUsageParserTests(unittest.TestCase):
         reset = {key: max(0, value // 2) for key, value in current.items()}
         self.assertEqual(codex_counter_delta(reset, current), reset)
         self.assertTrue(all(value >= 0 for value in codex_counter_delta(reset, current).values()))
+
+
+class ClaudeTokenUsageParserTests(unittest.TestCase):
+    def assistant_line(self, *, message_id="msg-1", usage=None, content=None):
+        message = {
+            "id": message_id,
+            "model": "claude-opus-4-8",
+            "usage": usage or {
+                "input_tokens": 2,
+                "output_tokens": 100,
+                "cache_read_input_tokens": 900,
+                "cache_creation_input_tokens": 50,
+            },
+        }
+        if content is not None:
+            message["content"] = content
+        return json.dumps({
+            "type": "assistant",
+            "timestamp": "2026-08-18T11:50:00.000Z",
+            "message": message,
+        })
+
+    def test_assistant_usage_maps_cache_creation_and_derived_total(self):
+        record = parse_claude_line(self.assistant_line())
+        self.assertIsNotNone(record)
+        self.assertEqual(record.provider, "claude")
+        self.assertEqual(record.logical_record_key, "claude:msg-1")
+        self.assertEqual(record.model_id, "claude-opus-4-8")
+        self.assertEqual(record.counters, {
+            "input_tokens": 2,
+            "output_tokens": 100,
+            "cache_read_tokens": 900,
+            "cache_write_tokens": 50,
+            "reasoning_tokens": 0,
+            "total_tokens": 1052,
+        })
+
+    def test_repeated_message_uses_structural_fingerprint_and_final_value_delta(self):
+        first = parse_claude_line(self.assistant_line(content="private first"))
+        copied = parse_claude_line(self.assistant_line(content="private changed"))
+        self.assertEqual(first.fingerprint, copied.fingerprint)
+        self.assertEqual(claude_counter_delta(copied.counters, first.counters), {
+            field: 0 for field in first.counters
+        })
+
+        increased = parse_claude_line(self.assistant_line(usage={
+            "input_tokens": 2,
+            "output_tokens": 120,
+            "cache_read_input_tokens": 910,
+            "cache_creation_input_tokens": 50,
+        }))
+        self.assertEqual(claude_counter_delta(increased.counters, first.counters), {
+            "input_tokens": 0,
+            "output_tokens": 20,
+            "cache_read_tokens": 10,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "total_tokens": 30,
+        })
+
+    def test_lower_correction_never_emits_negative_tokens(self):
+        current = {
+            "input_tokens": 2, "output_tokens": 90, "cache_read_tokens": 800,
+            "cache_write_tokens": 40, "reasoning_tokens": 0, "total_tokens": 932,
+        }
+        acknowledged = {
+            "input_tokens": 2, "output_tokens": 100, "cache_read_tokens": 900,
+            "cache_write_tokens": 50, "reasoning_tokens": 0, "total_tokens": 1052,
+        }
+        self.assertEqual(claude_counter_delta(current, acknowledged), {
+            field: 0 for field in current
+        })
+
+    def test_user_tool_and_missing_assistant_structure_emit_no_content(self):
+        context = ClaudeParseContext()
+        self.assertIsNone(parse_claude_line(json.dumps({
+            "type": "user", "message": {"content": "private user content"}
+        }), context))
+        self.assertEqual(context.warning_count, 0)
+        self.assertIsNone(parse_claude_line(json.dumps({
+            "type": "assistant", "timestamp": "2026-08-18T11:50:00.000Z",
+            "message": {"content": "private assistant content"},
+        }), context))
+        self.assertEqual(context.warning_count, 1)
+
+        good = parse_claude_line(self.assistant_line(content="never hashed"), context)
+        same = parse_claude_line(self.assistant_line(content="different private content"), context)
+        self.assertEqual(good.fingerprint, same.fingerprint)
 
 
 if __name__ == "__main__":
