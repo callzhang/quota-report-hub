@@ -60,6 +60,10 @@
       th, td { padding: 11px 10px; text-align: left; border-bottom: 1px solid var(--line); }
       th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
       .table-shell { overflow-x: auto; }
+      #trend-region svg { display: block; width: 100%; min-height: 260px; margin-top: 12px; overflow: visible; }
+      .trend-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+      .trend-legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+      .trend-legend i { width: 10px; height: 10px; border-radius: 50%; }
       @media (min-width: 920px) {
         #trend-panel { grid-column: span 8; }
         #reporter-panel { grid-column: span 4; }
@@ -92,7 +96,7 @@
           <label>Model account <input id="model-account" placeholder="account id" /></label>
           <label>Raw model <input id="model" placeholder="gpt-5.5, claude-opus…" /></label>
           <label>Granularity
-            <select id="granularity"><option value="hour">Hourly</option><option value="day">Daily</option></select>
+            <select id="granularity"><option value="15m">15 minutes</option><option value="hour">Hourly</option><option value="day">Daily</option></select>
           </label>
           <label>Group by
             <select id="group-by">
@@ -139,6 +143,7 @@
       let authSessionGeneration = 0;
       let currentToken = "";
       let lastSuccessfulPayload = null;
+      let pendingBreakdownFocus = false;
 
       const start = document.getElementById("start");
       const end = document.getElementById("end");
@@ -199,6 +204,158 @@
 
       function number(value) { return Number(value || 0).toLocaleString(); }
 
+      const COUNTERS = [
+        ["Total", "total_tokens"], ["Input", "input_tokens"], ["Output", "output_tokens"],
+        ["Cache read", "cache_read_tokens"], ["Cache write", "cache_write_tokens"],
+        ["Reasoning", "reasoning_tokens"],
+      ];
+
+      function selectedMetricCounter() {
+        return {
+          total: "total_tokens", input: "input_tokens", output: "output_tokens",
+          cache_read: "cache_read_tokens", cache_write: "cache_write_tokens",
+          reasoning: "reasoning_tokens",
+        }[metric.value] || "total_tokens";
+      }
+
+      function stableColor(value) {
+        let hash = 0;
+        for (const character of String(value)) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+        return `hsl(${Math.abs(hash) % 360} 52% 42%)`;
+      }
+
+      function groupLabel() {
+        return { hub_user: "Hub user", provider: "Provider", model_account: "Model account", model: "Model" }[groupBy.value] || "Group";
+      }
+
+      function trendBucketMs() {
+        return granularity.value === "day" ? 24 * 60 * 60 * 1000
+          : granularity.value === "15m" ? 15 * 60 * 1000
+          : 60 * 60 * 1000;
+      }
+
+      function pointLabel(point) {
+        const bucketStart = new Date(point.bucket_start);
+        const bucketEnd = new Date(bucketStart.getTime() + trendBucketMs());
+        const dimensions = [groupLabel() + " " + point.group_value];
+        if (point.provider) dimensions.push("provider " + point.provider);
+        if (point.model_account_id) dimensions.push("model account " + point.model_account_id);
+        if (point.model_id) dimensions.push("model " + point.model_id);
+        return `${bucketStart.toLocaleString()}–${bucketEnd.toLocaleString()}, ${dimensions.join(", ")}, ` +
+          COUNTERS.map(([label, key]) => `${label.toLowerCase()} ${number(point[key])}`).join(", ");
+      }
+
+      function renderTrendChart(points) {
+        if (!points.length) return '<div class="empty">No usage in this range.</div>';
+        const width = 760;
+        const height = 260;
+        const padding = { left: 48, right: 18, top: 20, bottom: 36 };
+        const metricCounter = selectedMetricCounter();
+        const sorted = [...points].sort((a, b) =>
+          String(a.bucket_start).localeCompare(String(b.bucket_start)) || String(a.group_value).localeCompare(String(b.group_value))
+        );
+        const bucketRows = new Map();
+        for (const point of sorted) {
+          if (!bucketRows.has(point.bucket_start)) bucketRows.set(point.bucket_start, []);
+          bucketRows.get(point.bucket_start).push(point);
+        }
+        const stacked = [];
+        let maximum = 0;
+        for (const rows of bucketRows.values()) {
+          let base = 0;
+          for (const point of rows) {
+            const value = Number(point[metricCounter] || 0);
+            const stackedPoint = { ...point, stack_base: base, stack_top: base + value };
+            stacked.push(stackedPoint);
+            base += value;
+          }
+          maximum = Math.max(maximum, base);
+        }
+        maximum = Math.max(1, maximum);
+        const times = stacked.map((point) => new Date(point.bucket_start).getTime());
+        const minimumTime = Math.min(...times);
+        const maximumTime = Math.max(...times);
+        const timeSpan = Math.max(trendBucketMs(), maximumTime - minimumTime);
+        const x = (time) => padding.left + ((time - minimumTime) / timeSpan) * (width - padding.left - padding.right);
+        const y = (value) => padding.top + (1 - value / maximum) * (height - padding.top - padding.bottom);
+        const byGroup = new Map();
+        for (const point of stacked) {
+          const key = String(point.group_value || "Unknown");
+          if (!byGroup.has(key)) byGroup.set(key, []);
+          byGroup.get(key).push(point);
+        }
+        const paths = [];
+        const circles = [];
+        const legend = [];
+        for (const [group, groupPoints] of byGroup) {
+          const color = stableColor(group);
+          const segments = [];
+          let segment = [];
+          let previousTime = null;
+          for (const point of groupPoints) {
+            const time = new Date(point.bucket_start).getTime();
+            if (previousTime !== null && time - previousTime > trendBucketMs() * 1.5) {
+              segments.push(segment);
+              segment = [];
+            }
+            segment.push({ point, time });
+            previousTime = time;
+          }
+          if (segment.length) segments.push(segment);
+          for (const entries of segments) {
+            const path = entries.map(({ point, time }, index) =>
+              `${index ? "L" : "M"}${x(time).toFixed(1)} ${y(point.stack_top).toFixed(1)}`
+            ).join(" ");
+            paths.push(`<path d="${path}" fill="none" stroke="${color}" stroke-width="3" />`);
+          }
+          for (const { point, time } of groupPoints.map((point) => ({ point, time: new Date(point.bucket_start).getTime() }))) {
+            circles.push(`<circle cx="${x(time).toFixed(1)}" cy="${y(point.stack_top).toFixed(1)}" r="5" fill="${color}" tabindex="0" role="img" aria-label="${escapeHtml(pointLabel(point))}" />`);
+          }
+          legend.push(`<span><i style="background:${color}"></i>${escapeHtml(group)}</span>`);
+        }
+        return `<div class="meta">Stacked by ${escapeHtml(groupLabel())}. Missing buckets remain gaps; use Tab for exact values.</div>` +
+          `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Token usage trend stacked by ${escapeHtml(groupLabel())}">` +
+          `<line x1="${padding.left}" y1="${height - padding.bottom}" x2="${width - padding.right}" y2="${height - padding.bottom}" stroke="currentColor" opacity=".25" />` +
+          paths.join("") + circles.join("") + `</svg><div class="trend-legend">${legend.join("")}</div>`;
+      }
+
+      function renderBreakdown(rows) {
+        if (!rows.length) return '<div class="empty">No usage in this range.</div>';
+        const sortedRows = [...rows].sort((a, b) => Number(b.total_tokens || 0) - Number(a.total_tokens || 0));
+        const headers = ["Hub user", "Provider", "Model account", "Model", ...COUNTERS.map(([label]) => label)];
+        const body = sortedRows.map((row, index) => `<tr>` +
+          `<td><button id="breakdown-${index}" data-breakdown-index="${index}" aria-label="Filter to ${escapeHtml(row.hub_user_email)}, ${escapeHtml(row.provider)}, ${escapeHtml(row.model_account_id)}, ${escapeHtml(row.model_id)}">${escapeHtml(row.hub_user_email)}</button></td>` +
+          `<td>${escapeHtml(row.provider)}</td><td>${escapeHtml(row.model_account_id)}</td><td>${escapeHtml(row.model_id)}</td>` +
+          COUNTERS.map(([, key]) => `<td>${number(row[key])}</td>`).join("") + `</tr>`).join("");
+        breakdownRegion.dataset.rows = JSON.stringify(sortedRows);
+        return `<table><thead><tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>`;
+      }
+
+      function bindBreakdownActions() {
+        const rows = JSON.parse(breakdownRegion.dataset.rows || "[]");
+        document.querySelectorAll("[data-breakdown-index]").forEach((button) => {
+          button.addEventListener("click", () => applyBreakdownFilters(rows[Number(button.dataset.breakdownIndex)]));
+        });
+        if (pendingBreakdownFocus) {
+          document.getElementById("breakdown-0")?.focus();
+          pendingBreakdownFocus = false;
+        }
+      }
+
+      function updateUrlState() {
+        history.replaceState(null, "", `${location.pathname}?${currentQueryString()}`);
+      }
+
+      async function applyBreakdownFilters(row) {
+        hubUser.value = row.hub_user_email || "";
+        provider.value = row.provider || "";
+        modelAccount.value = row.model_account_id || "";
+        model.value = row.model_id || "";
+        pendingBreakdownFocus = true;
+        updateUrlState();
+        return loadUsage();
+      }
+
       function localInputValue(date) {
         const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
         return shifted.toISOString().slice(0, 16);
@@ -232,17 +389,19 @@
       function renderShell(payload) {
         const totals = payload.totals || {};
         summaryRegion.innerHTML = [
-          ["Total", totals.total_tokens], ["Input", totals.input_tokens],
-          ["Output", totals.output_tokens], ["Cache", Number(totals.cache_read_tokens || 0) + Number(totals.cache_write_tokens || 0)],
-        ].map(([label, value]) => `<article class="summary-card"><span class="meta">${label}</span><strong>${number(value)}</strong></article>`).join("");
-        trendRegion.innerHTML = (payload.trend || []).length
-          ? `<div class="meta">${number(payload.trend.length)} aggregated points</div>`
-          : '<div class="empty">No usage in this range.</div>';
-        breakdownRegion.innerHTML = (payload.breakdown || []).length
-          ? `<div class="meta">${number(payload.breakdown.length)} breakdown rows</div>`
-          : '<div class="empty">No usage in this range.</div>';
+          `<article class="summary-card"><span class="meta">Total</span><strong>${number(totals.total_tokens)}</strong><div class="meta">All provider-reported tokens</div></article>`,
+          `<article class="summary-card"><span class="meta">Input</span><strong>${number(totals.input_tokens)}</strong><div class="meta">Provider input counter</div></article>`,
+          `<article class="summary-card"><span class="meta">Output</span><strong>${number(totals.output_tokens)}</strong><div class="meta">Provider output counter</div></article>`,
+          `<article class="summary-card"><span class="meta">Cache</span><strong>${number(Number(totals.cache_read_tokens || 0) + Number(totals.cache_write_tokens || 0))}</strong>` +
+            `<div class="meta">Cache read ${number(totals.cache_read_tokens)} · Cache write ${number(totals.cache_write_tokens)} · Reasoning ${number(totals.reasoning_tokens)}. These are subsets of Total, not additions.</div></article>`,
+        ].join("");
+        trendRegion.innerHTML = renderTrendChart(payload.trend || []);
+        breakdownRegion.innerHTML = renderBreakdown(payload.breakdown || []);
+        bindBreakdownActions();
         reporterRegion.innerHTML = (payload.reporters || []).length
-          ? (payload.reporters || []).map((item) => `<div>${escapeHtml(item.hub_user_email || item.reporter_email || "Reporter")} · ${escapeHtml(item.last_reported_at || "received")}</div>`).join("")
+          ? (payload.reporters || []).map((item) => item.last_reported_at
+            ? `<div><strong>${escapeHtml(item.hub_user_email)}</strong><div class="meta">Last report ${escapeHtml(new Date(item.last_reported_at).toLocaleString())}</div></div>`
+            : `<div><strong>${escapeHtml(item.hub_user_email)}</strong><div class="empty">No usage report received</div></div>`).join("")
           : '<div class="empty">No usage report received</div>';
       }
 

@@ -192,3 +192,63 @@ test("transient errors preserve auth, selected filters, and the last successful 
   assert.equal(harness.replacements.length, 0);
   assert.equal(harness.element("error-region").hidden, false);
 });
+
+test("summary, accessible trend, and reporters render exact counters without inventing data", async () => {
+  const payload = usagePayload({
+    totals: { total_tokens: 1200, input_tokens: 700, output_tokens: 200, cache_read_tokens: 250, cache_write_tokens: 50, reasoning_tokens: 33 },
+    trend: [
+      { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100, input_tokens: 60, output_tokens: 20, cache_read_tokens: 15, cache_write_tokens: 5, reasoning_tokens: 3 },
+      { bucket_start: "2026-08-18T11:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 200, input_tokens: 120, output_tokens: 40, cache_read_tokens: 30, cache_write_tokens: 10, reasoning_tokens: 4 },
+    ],
+    reporters: [{ hub_user_email: "derek@stardust.ai", last_reported_at: "2026-08-18T11:45:00.000Z" }],
+  });
+  const harness = await pageHarness(async () => response(200, payload));
+  const summary = harness.element("summary-region").innerHTML;
+  const trend = harness.element("trend-region").innerHTML;
+  assert.match(summary, />1,200</);
+  assert.match(summary, />700</);
+  assert.match(summary, />200</);
+  assert.match(summary, />300</);
+  assert.match(summary, /Cache read 250/);
+  assert.match(summary, /Cache write 50/);
+  assert.match(summary, /Reasoning 33/);
+  assert.match(summary, /subsets of Total/);
+  assert.match(trend, /<svg/);
+  assert.match(trend, /tabindex="0"/);
+  assert.match(trend, /derek@stardust\.ai/);
+  assert.match(trend, /total 100/);
+  assert.match(trend, /input 60/);
+  assert.match(trend, /cache read 15/);
+  assert.match(trend, /reasoning 3/);
+  assert.equal((trend.match(/<path /g) || []).length, 2, "missing hourly bucket splits the path");
+  assert.match(harness.element("reporter-region").innerHTML, /derek@stardust\.ai/);
+});
+
+test("breakdown sorts by total and drilldown applies four exact dimensions once", async () => {
+  let calls = 0;
+  const payload = usagePayload({ breakdown: [
+    { hub_user_email: "small@stardust.ai", provider: "codex", model_account_id: "small-account", model_id: "future-model-x", total_tokens: 10, input_tokens: 8, output_tokens: 2, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0 },
+    { hub_user_email: "large@stardust.ai", provider: "claude", model_account_id: "large-account", model_id: "claude-new-9", total_tokens: 900, input_tokens: 400, output_tokens: 100, cache_read_tokens: 300, cache_write_tokens: 100, reasoning_tokens: 0 },
+  ] });
+  const harness = await pageHarness(async () => { calls += 1; return response(200, payload); });
+  const table = harness.element("breakdown-region").innerHTML;
+  assert.ok(table.indexOf("large@stardust.ai") < table.indexOf("small@stardust.ai"));
+  assert.match(table, /future-model-x/);
+
+  await harness.evaluate(`applyBreakdownFilters(${JSON.stringify(payload.breakdown[0])})`);
+  assert.equal(harness.element("hub-user").value, "small@stardust.ai");
+  assert.equal(harness.element("provider").value, "codex");
+  assert.equal(harness.element("model-account").value, "small-account");
+  assert.equal(harness.element("model").value, "future-model-x");
+  assert.equal(calls, 2, "drilldown changes the query exactly once");
+});
+
+test("reporter absence differs from a successful zero usage result", async () => {
+  const harness = await pageHarness(async () => response(200, usagePayload({
+    totals: { total_tokens: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0 },
+    reporters: [{ hub_user_email: "never@stardust.ai", last_reported_at: null }],
+  })));
+  assert.match(harness.element("summary-region").innerHTML, />0</);
+  assert.match(harness.element("reporter-region").innerHTML, /No usage report received/);
+  assert.match(harness.element("reporter-region").innerHTML, /never@stardust\.ai/);
+});
