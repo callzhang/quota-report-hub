@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 function functionBody(source, name) {
   const marker = `export async function ${name}`;
@@ -9,6 +11,31 @@ function functionBody(source, name) {
   const next = source.indexOf("\nexport ", start + marker.length);
   return source.slice(start, next === -1 ? source.length : next);
 }
+
+async function apiFunctionFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const nested = await Promise.all(entries.map((entry) => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? apiFunctionFiles(path) : [path];
+  }));
+  return nested.flat().filter((path) => path.endsWith(".js"));
+}
+
+test("Hobby deployment stays within twelve serverless functions", async () => {
+  const apiDirectory = fileURLToPath(new URL("../api", import.meta.url));
+  const functions = await apiFunctionFiles(apiDirectory);
+  assert.ok(functions.length <= 12, `expected at most 12 API functions, found ${functions.length}`);
+  const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
+  const consolidatedSources = new Set(vercel.rewrites
+    .filter((rewrite) => rewrite.destination.startsWith("/api/data?route="))
+    .map((rewrite) => rewrite.source));
+  assert.deepEqual(consolidatedSources, new Set([
+    "/api/quota-history",
+    "/api/token-usage",
+    "/api/token-usage-query",
+    "/api/cron/token-usage-retention",
+  ]));
+});
 
 test("auth-pool active assignment reads use compact latest-state tables", async () => {
   const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
@@ -169,11 +196,13 @@ test("token usage ingestion is one receipt-gated batch and current reads stay is
     "../api/status-revision.js",
     "../api/auth/quota.js",
     "../api/auth/fetch-best.js",
-    "../api/quota-history.js",
   ]) {
     const currentRead = await readFile(new URL(path, import.meta.url), "utf8");
     assert.doesNotMatch(currentRead, /token_usage_15m|token_usage_daily|token_usage_batch_receipts/);
   }
+  const dataApi = await readFile(new URL("../lib/data-api.js", import.meta.url), "utf8");
+  const quotaHistory = functionBody(dataApi, "quotaHistoryHandlerImpl");
+  assert.doesNotMatch(quotaHistory, /token_usage_15m|token_usage_daily|token_usage_batch_receipts/);
 });
 
 test("token usage query uses bounded indexed ranges without dashboard coupling", async () => {
@@ -194,10 +223,11 @@ test("token usage query uses bounded indexed ranges without dashboard coupling",
 });
 
 test("token usage wire responses and collector payload exclude conversation identity and content", async () => {
-  const ingestion = await readFile(new URL("../api/token-usage.js", import.meta.url), "utf8");
-  const responseStart = ingestion.indexOf("sendJson(res, 200");
-  const responseEnd = ingestion.indexOf("}, authContext));", responseStart);
-  const responseBody = ingestion.slice(responseStart, responseEnd);
+  const ingestion = await readFile(new URL("../lib/data-api.js", import.meta.url), "utf8");
+  const tokenUsage = functionBody(ingestion, "tokenUsageHandlerImpl");
+  const responseStart = tokenUsage.indexOf("sendJson(res, 200");
+  const responseEnd = tokenUsage.indexOf("}, authContext));", responseStart);
+  const responseBody = tokenUsage.slice(responseStart, responseEnd);
   assert.doesNotMatch(responseBody, /installation_id|normalized\.rows|payload_digest/);
 
   const collector = await readFile(new URL("../skills/quota-reporter/scripts/token_usage_collector.py", import.meta.url), "utf8");

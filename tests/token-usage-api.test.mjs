@@ -43,7 +43,7 @@ function dependencies(overrides = {}) {
 }
 
 test("token usage accepts POST only", async () => {
-  const { tokenUsageHandlerImpl } = await import("../api/token-usage.js");
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   let authenticated = false;
   await tokenUsageHandlerImpl({ method: "GET" }, recorder.res, dependencies({
@@ -55,7 +55,7 @@ test("token usage accepts POST only", async () => {
 });
 
 test("missing auth returns before body parsing and database writes", async () => {
-  const { tokenUsageHandlerImpl } = await import("../api/token-usage.js");
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   let bodyReads = 0;
   let writes = 0;
@@ -70,7 +70,7 @@ test("missing auth returns before body parsing and database writes", async () =>
 });
 
 test("uses authenticated email and passes normalized rows once", async () => {
-  const { tokenUsageHandlerImpl } = await import("../api/token-usage.js");
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   const requestBody = { installation_id: "raw", batch_id: "raw", rows: [] };
   const normalizedRows = [{ model_id: "gpt-5.6-sol" }];
@@ -108,7 +108,7 @@ test("uses authenticated email and passes normalized rows once", async () => {
 });
 
 test("identical retry returns applied false and preserves a token upgrade", async () => {
-  const { tokenUsageHandlerImpl } = await import("../api/token-usage.js");
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies({
     authenticateApiRequest: async () => ({
@@ -125,7 +125,7 @@ test("identical retry returns applied false and preserves a token upgrade", asyn
 });
 
 test("client-provided user identity is rejected before ingestion", async () => {
-  const { tokenUsageHandlerImpl } = await import("../api/token-usage.js");
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   let writes = 0;
   await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies({
@@ -139,7 +139,7 @@ test("client-provided user identity is rejected before ingestion", async () => {
 });
 
 test("maps validation, conflict, and database failures", async () => {
-  const { tokenUsageHandlerImpl } = await import("../api/token-usage.js");
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
 
   const invalid = responseRecorder();
   await tokenUsageHandlerImpl({ method: "POST" }, invalid.res, dependencies({
@@ -171,7 +171,7 @@ test("maps validation, conflict, and database failures", async () => {
 });
 
 test("success never echoes installation identity, rows, or digest", async () => {
-  const { tokenUsageHandlerImpl } = await import("../api/token-usage.js");
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies());
   const payload = JSON.parse(recorder.result().body);

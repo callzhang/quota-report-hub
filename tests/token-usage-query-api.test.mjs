@@ -44,7 +44,7 @@ function dependencies(overrides = {}) {
 }
 
 test("query authenticates before parsing and is team-readable for a member", async () => {
-  const { tokenUsageQueryHandlerImpl } = await import("../api/token-usage-query.js");
+  const { tokenUsageQueryHandlerImpl } = await import("../lib/data-api.js");
   const unauthorized = responseRecorder();
   let parses = 0;
   let reads = 0;
@@ -71,7 +71,7 @@ test("query authenticates before parsing and is team-readable for a member", asy
 });
 
 test("query response carries token upgrades and exact public query", async () => {
-  const { tokenUsageQueryHandlerImpl } = await import("../api/token-usage-query.js");
+  const { tokenUsageQueryHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   await tokenUsageQueryHandlerImpl({ method: "GET", url: "/api/token-usage-query?valid" }, recorder.res, dependencies({
     authenticateApiRequest: async () => ({ email: "member@stardust.ai", token_upgrade: {} }),
@@ -83,7 +83,7 @@ test("query response carries token upgrades and exact public query", async () =>
 });
 
 test("query maps validation, broad results, and service failures without treating them as auth errors", async () => {
-  const { tokenUsageQueryHandlerImpl } = await import("../api/token-usage-query.js");
+  const { tokenUsageQueryHandlerImpl } = await import("../lib/data-api.js");
   const invalid = responseRecorder();
   await tokenUsageQueryHandlerImpl({ method: "GET", url: "/api/token-usage-query" }, invalid.res, dependencies({
     parseTokenUsageQuery: () => { throw new TokenUsageValidationError("bad query"); },

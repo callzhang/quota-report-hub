@@ -25,7 +25,7 @@ function dependencies(overrides = {}) {
 }
 
 test("retention cron accepts GET and POST only", async () => {
-  const { tokenUsageRetentionHandlerImpl } = await import("../api/cron/token-usage-retention.js");
+  const { tokenUsageRetentionHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   await tokenUsageRetentionHandlerImpl({ method: "PUT", headers: {} }, recorder.res, dependencies());
   assert.equal(recorder.res.statusCode, 405);
@@ -33,7 +33,7 @@ test("retention cron accepts GET and POST only", async () => {
 });
 
 test("retention cron requires the configured bearer secret", async () => {
-  const { tokenUsageRetentionHandlerImpl } = await import("../api/cron/token-usage-retention.js");
+  const { tokenUsageRetentionHandlerImpl } = await import("../lib/data-api.js");
   for (const authorization of [undefined, "Bearer wrong"]) {
     const recorder = responseRecorder();
     await tokenUsageRetentionHandlerImpl({ method: "GET", headers: { authorization } }, recorder.res, dependencies());
@@ -42,7 +42,7 @@ test("retention cron requires the configured bearer secret", async () => {
 });
 
 test("retention cron requires only database configuration", async () => {
-  const { tokenUsageRetentionHandlerImpl } = await import("../api/cron/token-usage-retention.js");
+  const { tokenUsageRetentionHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   let calls = 0;
   await tokenUsageRetentionHandlerImpl({ method: "GET", headers: { authorization: "Bearer cron-secret" } }, recorder.res, dependencies({
@@ -54,7 +54,7 @@ test("retention cron requires only database configuration", async () => {
 });
 
 test("retention cron uses an exact 90-day cutoff and seven-day bound", async () => {
-  const { tokenUsageRetentionHandlerImpl } = await import("../api/cron/token-usage-retention.js");
+  const { tokenUsageRetentionHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   let seen;
   await tokenUsageRetentionHandlerImpl({ method: "POST", headers: { authorization: "Bearer cron-secret" } }, recorder.res, dependencies({
@@ -73,7 +73,7 @@ test("retention cron uses an exact 90-day cutoff and seven-day bound", async () 
 });
 
 test("retention cron returns service failure without exposing internals", async () => {
-  const { tokenUsageRetentionHandlerImpl } = await import("../api/cron/token-usage-retention.js");
+  const { tokenUsageRetentionHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   await tokenUsageRetentionHandlerImpl({ method: "GET", headers: { authorization: "Bearer cron-secret" } }, recorder.res, dependencies({
     compactTokenUsage: async () => { throw new Error("private database detail"); },

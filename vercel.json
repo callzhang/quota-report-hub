@@ -13,10 +13,16 @@
     "api/cron/probe-auth-pool.js": {
       "maxDuration": 30
     },
-    "api/cron/token-usage-retention.js": {
+    "api/data.js": {
       "maxDuration": 30
     }
   },
+  "rewrites": [
+    { "source": "/api/quota-history", "destination": "/api/data?route=quota-history" },
+    { "source": "/api/token-usage", "destination": "/api/data?route=token-usage" },
+    { "source": "/api/token-usage-query", "destination": "/api/data?route=token-usage-query" },
+    { "source": "/api/cron/token-usage-retention", "destination": "/api/data?route=token-usage-retention" }
+  ],
   "crons": [
     {
       "path": "/api/cron/invalidated-auth-notifications",

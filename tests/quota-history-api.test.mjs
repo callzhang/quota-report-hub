@@ -34,7 +34,7 @@ function dependencies(overrides = {}) {
 }
 
 test("quota history rejects missing authentication before parsing or reading", async () => {
-  const { quotaHistoryHandlerImpl } = await import("../api/quota-history.js");
+  const { quotaHistoryHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   let reads = 0;
 
@@ -55,7 +55,7 @@ for (const url of [
   "/api/quota-history?source=codex&source=claude&account_id=acct-1",
 ]) {
   test(`quota history rejects malformed exact parameters: ${url}`, async () => {
-    const { quotaHistoryHandlerImpl } = await import("../api/quota-history.js");
+    const { quotaHistoryHandlerImpl } = await import("../lib/data-api.js");
     const recorder = responseRecorder();
     let reads = 0;
     await quotaHistoryHandlerImpl({ url }, recorder.res, dependencies({
@@ -67,7 +67,7 @@ for (const url of [
 }
 
 test("quota history decodes exact account parameters and returns a safe 24-hour series", async () => {
-  const { quotaHistoryHandlerImpl } = await import("../api/quota-history.js");
+  const { quotaHistoryHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   let query;
 
@@ -148,7 +148,7 @@ test("quota history includes second-resolution 24-hour boundaries when now has m
       });
     }
 
-    const { quotaHistoryHandlerImpl } = await import("../api/quota-history.js");
+    const { quotaHistoryHandlerImpl } = await import("../lib/data-api.js");
     const recorder = responseRecorder();
     await quotaHistoryHandlerImpl({
       url: "/api/quota-history?source=codex&account_id=acct-boundary",
@@ -187,7 +187,7 @@ test("quota history normalizes offset timestamps before indexed storage and reje
       reported_at: "not-a-time", account_id: "acct-offset", status: "ok", windows: {},
     }), /reported_at must be a valid timestamp/);
 
-    const { quotaHistoryHandlerImpl } = await import("../api/quota-history.js");
+    const { quotaHistoryHandlerImpl } = await import("../lib/data-api.js");
     const recorder = responseRecorder();
     await quotaHistoryHandlerImpl({ url: "/api/quota-history?source=codex&account_id=acct-offset" }, recorder.res, dependencies({
       authPoolQuotaEvents: db.authPoolQuotaEvents,
@@ -203,7 +203,7 @@ test("quota history normalizes offset timestamps before indexed storage and reje
 });
 
 test("quota history follows the service-unavailable contract", async () => {
-  const { quotaHistoryHandlerImpl } = await import("../api/quota-history.js");
+  const { quotaHistoryHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   const previousConsoleError = console.error;
   console.error = () => {};
@@ -221,7 +221,7 @@ test("quota history follows the service-unavailable contract", async () => {
 });
 
 test("quota history endpoint uses primary auth and exposes no unsafe fields", async () => {
-  const source = await readFile(new URL("../api/quota-history.js", import.meta.url), "utf8");
+  const source = await readFile(new URL("../lib/data-api.js", import.meta.url), "utf8");
   assert.match(source, /authenticateApiRequest/);
   assert.match(source, /withTokenUpgrade/);
   assert.match(source, /authPoolQuotaEvents/);
