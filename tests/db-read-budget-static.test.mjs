@@ -150,6 +150,31 @@ test("dashboard-visible logical writes batch their data and revision updates ato
   assert.match(flag, /changes\(\) > 0/);
 });
 
+test("token usage ingestion is one receipt-gated batch and current reads stay isolated", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  const ingestion = functionBody(source, "ingestTokenUsageBatch");
+
+  assert.match(ingestion, /client\.batch/);
+  assert.doesNotMatch(ingestion, /client\.execute/);
+  assert.match(ingestion, /token_usage_batch_receipts/);
+  assert.match(ingestion, /applied_at IS NULL/);
+  assert.match(ingestion, /token_usage_15m\.input_tokens \+ excluded\.input_tokens/);
+  assert.doesNotMatch(ingestion, /FROM token_usage_15m|FROM token_usage_daily/);
+
+  assert.match(source, /CREATE INDEX IF NOT EXISTS token_usage_15m_time_idx/);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS token_usage_daily_time_idx/);
+
+  for (const path of [
+    "../api/status.js",
+    "../api/status-revision.js",
+    "../api/auth/quota.js",
+    "../api/auth/fetch-best.js",
+  ]) {
+    const currentRead = await readFile(new URL(path, import.meta.url), "utf8");
+    assert.doesNotMatch(currentRead, /token_usage_15m|token_usage_daily|token_usage_batch_receipts/);
+  }
+});
+
 test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
   const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
   assert.ok(vercelConfig.crons.every((cron) => cron.path !== "/api/cron/probe-auth-pool"));
