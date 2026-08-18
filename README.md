@@ -16,6 +16,8 @@ Privacy boundary: the collector uploads numeric quarter-hour aggregates only—H
 
 Vercel Functions are pinned to `pdx1`, matching the Turso database's AWS `us-west-2` location. This keeps database-backed requests in one region while static pages continue to use Vercel's CDN.
 
+Token analytics reads never run schema migrations during a serverless cold start. Authentication lookup/touch is one database batch, followed by one bounded analytics batch.
+
 Reference sizing from the approved design benchmark was 95 files and about 2.9 GB of history: a full parse took 44.97 seconds and about 54 MB peak memory. Normal scheduled work is substantially smaller because it resumes from byte positions and stops at the per-cycle budget.
 
 ![Quota Report Hub dashboard](docs/hub-dashboard.png)

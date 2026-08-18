@@ -14,6 +14,8 @@ Token analytics is an isolated read model, not part of auth selection or quota a
 
 Vercel Functions run in `pdx1` (AWS `us-west-2`) so database-backed requests execute in the same cloud region as the Turso primary. Static HTML remains CDN-served near the browser; keeping compute and data together avoids a cross-country database round trip on every dashboard query.
 
+Read-only token analytics requests do not run schema creation or migrations on serverless cold starts. Schema work remains on initialization/write paths, and API-token lookup plus its `last_used_at` touch share one database batch before the bounded analytics query batch.
+
 Codex parsing uses structural `session_meta`, `turn_context`, and cumulative `token_count` fields. Canonical numeric fingerprints remove copied parent history, and counter resets start a new non-negative epoch. Claude parsing uses assistant message ID, raw model, timestamp, and final usage counters; repeated records update only the positive difference. No parser output contains conversation content.
 
 Account attribution has two cases. An automatic guard switch inserts a prepared boundary before credential installation, reads the installed target back, then finalizes or cancels that boundary. Collector events are split at finalized boundaries. A manual switch has no exact boundary, so events read in that cycle use the account observed during the report. This is intentionally approximate and is not a billing ledger.

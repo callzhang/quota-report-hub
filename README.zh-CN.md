@@ -14,6 +14,8 @@ Total 保持提供方原始定义；Input、Output 是组成部分，Cache Read�
 
 Vercel Functions 固定运行在 `pdx1`，与 Turso 数据库的 AWS `us-west-2` 位置一致。数据库请求不再跨美国东西海岸，静态页面仍由 Vercel CDN 就近提供。
 
+Token 用量只读请求不会在 Serverless 冷启动时执行建表或迁移；认证查询与 `last_used_at` 更新合并为一个数据库批次，随后只执行一个有界统计批次。
+
 设计基准为 95 个文件、约 2.9 GB 历史：完整解析约 44.97 秒，峰值内存约 54 MB。正常定时运行从字节位置增量读取，并受 10 秒预算限制，因此开销远低于完整回扫。
 
 项目安装、部署和完整 API 说明见 [README.md](README.md)。本页重点解释 Hub 页面如何判断账号状态，以及如何排查“Probe 正常但 Quota 不可用”。
