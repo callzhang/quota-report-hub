@@ -102,7 +102,7 @@ test("page exposes the complete query shell and reads only token usage", async (
   for (const id of ["start", "end", "hub-user", "provider", "model-account", "model", "granularity", "group-by", "metric"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
-  for (const id of ["summary-region", "trend-region", "breakdown-region", "reporter-region"]) {
+  for (const id of ["summary-region", "trend-region", "breakdown-region"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /const QUERY_CACHE_MS = 5 \* 60 \* 1000/);
@@ -112,7 +112,8 @@ test("page exposes the complete query shell and reads only token usage", async (
   assert.match(html, /groupBy\.value = "hub_user"/);
   assert.match(html, /metric\.value = "total"/);
   assert.match(html, /fetch\(`\/api\/token-usage-query\?\$\{queryString\}`/);
-  assert.match(html, /<h2 id="reporter-title">Usage by Hub user<\/h2>/);
+  assert.doesNotMatch(html, /id="reporter-panel"|id="reporter-region"|Usage by Hub user/);
+  assert.doesNotMatch(html, /#trend-panel\s*\{[^}]*grid-column:\s*span 8/);
   assert.doesNotMatch(html, /\/api\/(?:status|status-revision|quota-history|auth-pool)/);
 });
 
@@ -194,14 +195,13 @@ test("transient errors preserve auth, selected filters, and the last successful 
   assert.equal(harness.element("error-region").hidden, false);
 });
 
-test("summary, accessible trend, and reporters render exact counters without inventing data", async () => {
+test("summary and accessible trend render exact counters without inventing data", async () => {
   const payload = usagePayload({
     totals: { total_tokens: 1200, input_tokens: 700, output_tokens: 200, cache_read_tokens: 250, cache_write_tokens: 50, reasoning_tokens: 33 },
     trend: [
       { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100, input_tokens: 60, output_tokens: 20, cache_read_tokens: 15, cache_write_tokens: 5, reasoning_tokens: 3 },
       { bucket_start: "2026-08-18T11:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 200, input_tokens: 120, output_tokens: 40, cache_read_tokens: 30, cache_write_tokens: 10, reasoning_tokens: 4 },
     ],
-    reporters: [{ hub_user_email: "derek@stardust.ai", last_reported_at: "2026-08-18T11:45:00.000Z", total_tokens: 1200 }],
   });
   const harness = await pageHarness(async () => response(200, payload));
   const summary = harness.element("summary-region").innerHTML;
@@ -222,11 +222,6 @@ test("summary, accessible trend, and reporters render exact counters without inv
   assert.match(trend, /cache read 15/);
   assert.match(trend, /reasoning 3/);
   assert.equal((trend.match(/<path /g) || []).length, 2, "missing hourly bucket splits the path");
-  const reporter = harness.element("reporter-region").innerHTML;
-  assert.match(reporter, /derek@stardust\.ai/);
-  assert.match(reporter, />1,200 tokens</);
-  assert.match(reporter, /title="Last reported at [^"]+"/);
-  assert.doesNotMatch(reporter, />Last report /);
 });
 
 test("breakdown sorts by total and drilldown applies four exact dimensions once", async () => {
@@ -248,14 +243,10 @@ test("breakdown sorts by total and drilldown applies four exact dimensions once"
   assert.equal(calls, 2, "drilldown changes the query exactly once");
 });
 
-test("reporter absence differs from a successful zero usage result", async () => {
+test("successful zero usage remains visible without a duplicate user summary panel", async () => {
   const harness = await pageHarness(async () => response(200, usagePayload({
     totals: { total_tokens: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0 },
     reporters: [{ hub_user_email: "never@stardust.ai", last_reported_at: null, total_tokens: 0 }],
   })));
   assert.match(harness.element("summary-region").innerHTML, />0</);
-  const reporter = harness.element("reporter-region").innerHTML;
-  assert.match(reporter, />0 tokens</);
-  assert.match(reporter, /title="No usage report received"/);
-  assert.match(reporter, /never@stardust\.ai/);
 });
