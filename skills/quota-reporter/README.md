@@ -17,6 +17,15 @@ The skill installs a local 15-minute quota guard that:
 - keeps older uploaded auths in the cloud pool when the local machine switches to a different current auth
 - preserves the first uploader as the owner for each shared account, so using a fetched auth does not transfer re-login responsibility
 - can trigger a remote cloud-worker probe on demand
+- reports content-free token usage aggregates for each Hub user, provider account, and raw model
+
+## Token usage collection
+
+Every installation performs its own initial 72-hour backfill, then reads only changed Codex/Claude JSONL files from the last acknowledged byte position. Each guard cycle has a 10-second collector budget and resumes unfinished work on the next cycle. Codex cumulative counters and Claude final-message counters are converted to positive deltas; copied Codex history is deduplicated. Automatic guard switches are split at a prepared-and-verified credential boundary. Manual switches are attributed to the account observed during that report and may have one-cycle error.
+
+The collector sends quarter-hour numeric rows only: provider, current model account, raw model, bucket, input, output, cache read, cache write, reasoning, and total. It never sends prompts, responses, projects, titles, tools, content, paths, session/message identifiers, fingerprints, or cursor positions. Local checkpoints and pending idempotent uploads are stored in `~/.agents/auth/token-usage.sqlite3` with owner-only permissions. Deleting this file intentionally starts a new 72-hour backfill.
+
+The guard's compact JSON result includes only whether usage was reported, row/token/byte counts, backfill completion, retry state, warnings, and elapsed time. A collection or upload failure is recorded under `errors.token_usage` and does not change quota probing, account replacement, notifications, or the top-level guard result.
 
 The hub and local guard remain source-aware:
 

@@ -8,6 +8,20 @@
 
 `quota-report-hub` runs a **shared, encrypted pool of OpenAI Codex + Anthropic Claude subscription credentials** for a team. Members install a local "quota guard" that, every 15 minutes, measures each source's remaining quota and — when a member's own auth is throttled or dead — borrows a healthier credential from the pool. The hub stores credentials encrypted, reports per-account quota for a dashboard, and (in `disabled_refresh_token` mode) acts as the **sole refresher** of OAuth refresh tokens to stop a multi-machine "refresh-token death spiral."
 
+### Token usage read model
+
+Token analytics is an isolated read model, not part of auth selection or quota availability. Each local installation owns a private SQLite checkpoint database at `~/.agents/auth/token-usage.sqlite3` (`0600`). The first collector run fixes a 72-hour backfill cutoff. Subsequent runs discover only changed JSONL files and resume at acknowledged byte positions, with a 10-second cycle budget and a maximum of 400 aggregate rows per batch. A pending upload and its proposed file/counter/fingerprint checkpoint are committed locally only after server acknowledgement; retries reuse the same batch.
+
+Codex parsing uses structural `session_meta`, `turn_context`, and cumulative `token_count` fields. Canonical numeric fingerprints remove copied parent history, and counter resets start a new non-negative epoch. Claude parsing uses assistant message ID, raw model, timestamp, and final usage counters; repeated records update only the positive difference. No parser output contains conversation content.
+
+Account attribution has two cases. An automatic guard switch inserts a prepared boundary before credential installation, reads the installed target back, then finalizes or cancels that boundary. Collector events are split at finalized boundaries. A manual switch has no exact boundary, so events read in that cycle use the account observed during the report. This is intentionally approximate and is not a billing ledger.
+
+The authenticated ingestion API writes a receipt-gated `token_usage_15m` aggregate and reporter state in one batch. The query API reads indexed time ranges from 15-minute detail and, for daily queries, `token_usage_daily`. It returns only totals, trend, breakdown, and reporter freshness; trend and breakdown are capped. No token usage query selects installation IDs, batch IDs, payload digests, file paths, logical record IDs, or fingerprints. Existing status, revision, quota, history, and auth-selection paths do not join token usage.
+
+The independent page defaults to seven days/hour/Hub-user/Total and lazily makes one authenticated query. Exact query plus auth-generation results are cached for five minutes and concurrent requests are deduplicated. Token rotation moves the successful result to the new auth generation. A stale old-token response cannot clear a newer login. Charts preserve missing-bucket gaps and expose exact values by keyboard and text; breakdown rows drill into Hub user, provider, model account, and raw model.
+
+Detail ingestion and hourly queries are bounded to 90 days. The daily protected retention cron compacts at most seven old UTC dates atomically per run, deletes the compacted detail, and prunes old receipts. Reference full-scan sizing was 95 files/about 2.9 GB, 44.97 seconds, and about 54 MB peak memory; scheduled incremental work is byte-positioned and budgeted.
+
 It is a four-tier system:
 
 | Tier | Runtime | Code | Role |

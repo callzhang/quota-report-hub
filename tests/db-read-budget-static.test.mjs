@@ -169,6 +169,7 @@ test("token usage ingestion is one receipt-gated batch and current reads stay is
     "../api/status-revision.js",
     "../api/auth/quota.js",
     "../api/auth/fetch-best.js",
+    "../api/quota-history.js",
   ]) {
     const currentRead = await readFile(new URL(path, import.meta.url), "utf8");
     assert.doesNotMatch(currentRead, /token_usage_15m|token_usage_daily|token_usage_batch_receipts/);
@@ -189,6 +190,28 @@ test("token usage query uses bounded indexed ranges without dashboard coupling",
   assert.match(query, /token_usage_reporter_state/);
   assert.match(query, /auth_users/);
   assert.doesNotMatch(query, /auth_pool_quota|auth_pool_entries|auth_pool_fetch_log/);
+  assert.doesNotMatch(query, /installation_id|batch_id|payload_digest|local_path|record_fingerprint|file_key|logical_record_key/);
+});
+
+test("token usage wire responses and collector payload exclude conversation identity and content", async () => {
+  const ingestion = await readFile(new URL("../api/token-usage.js", import.meta.url), "utf8");
+  const responseStart = ingestion.indexOf("sendJson(res, 200");
+  const responseEnd = ingestion.indexOf("}, authContext));", responseStart);
+  const responseBody = ingestion.slice(responseStart, responseEnd);
+  assert.doesNotMatch(responseBody, /installation_id|normalized\.rows|payload_digest/);
+
+  const collector = await readFile(new URL("../skills/quota-reporter/scripts/token_usage_collector.py", import.meta.url), "utf8");
+  const payloadStart = collector.lastIndexOf("        payload = {");
+  const payloadEnd = collector.indexOf("        pending = usage_state.stage_batch", payloadStart);
+  const uploadConstruction = collector.slice(payloadStart, payloadEnd);
+  assert.match(uploadConstruction, /"installation_id"/);
+  assert.match(uploadConstruction, /"rows": rows/);
+  assert.doesNotMatch(uploadConstruction, /prompt|response|project|path|title|tool|content|fingerprint|record_key/);
+
+  const page = await readFile(new URL("../token-usage.html", import.meta.url), "utf8");
+  assert.match(page, /currentToken = getStoredToken\(\)/);
+  assert.match(page, /else loadUsage\(\)\.catch/);
+  assert.equal((page.match(/fetch\(`\/api\/token-usage-query/g) || []).length, 1);
 });
 
 test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
