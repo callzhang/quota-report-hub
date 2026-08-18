@@ -170,3 +170,188 @@ test("one invalid row rolls back receipt, details, and reporter state", async ()
     cleanup();
   }
 });
+
+test("queryTokenUsage aggregates indexed detail with exact filters and deterministic groups", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai",
+      installationId: "query-install",
+      batchId: "query-batch",
+      receivedAt: "2026-08-18T12:00:00.000Z",
+      rows: [
+        usageRow({ bucket_start: "2026-08-18T11:00:00.000Z", total_tokens: 120 }),
+        usageRow({ bucket_start: "2026-08-18T11:15:00.000Z", input_tokens: 125, output_tokens: 25, cache_read_tokens: 65, total_tokens: 150 }),
+      ],
+    });
+    await mod.ingestTokenUsageBatch({
+      hubUserEmail: "member@stardust.ai",
+      installationId: "member-install",
+      batchId: "member-batch",
+      receivedAt: "2026-08-18T12:00:00.000Z",
+      rows: [{
+        ...usageRow(),
+        bucket_start: "2026-08-18T11:15:00.000Z",
+        provider: "claude",
+        model_account_id: "claude@stardust.ai",
+        model_id: "claude-opus-4-1",
+        input_tokens: 10,
+        output_tokens: 20,
+        cache_read_tokens: 30,
+        cache_write_tokens: 40,
+        reasoning_tokens: 0,
+        total_tokens: 100,
+      }],
+    });
+    await client.batch([
+      { sql: "INSERT INTO auth_users (email, created_at, last_token_issued_at) VALUES (?, ?, ?)", args: ["derek@stardust.ai", "2026-08-01T00:00:00.000Z", "2026-08-18T00:00:00.000Z"] },
+      { sql: "INSERT INTO auth_users (email, created_at, last_token_issued_at) VALUES (?, ?, ?)", args: ["never-reported@stardust.ai", "2026-08-01T00:00:00.000Z", "2026-08-18T00:00:00.000Z"] },
+    ], "write");
+
+    const result = await mod.queryTokenUsage({
+      start: "2026-08-11T12:00:00.000Z",
+      end: "2026-08-18T12:00:00.000Z",
+      granularity: "hour",
+      groupBy: "hub_user",
+      metric: "total",
+      hubUsers: ["derek@stardust.ai"],
+      providers: [],
+      modelAccounts: [],
+      models: [],
+    });
+    assert.equal(result.totals.total_tokens, 270);
+    assert.equal(result.totals.input_tokens, 225);
+    assert.deepEqual(result.trend.map((point) => ({
+      bucket_start: point.bucket_start,
+      group_value: point.group_value,
+      total_tokens: point.total_tokens,
+    })), [{
+      bucket_start: "2026-08-18T11:00:00.000Z",
+      group_value: "derek@stardust.ai",
+      total_tokens: 270,
+    }]);
+    assert.equal(result.breakdown[0].model_id, "gpt-5.6-sol");
+    assert.deepEqual(result.reporters, [
+      { hub_user_email: "derek@stardust.ai", last_reported_at: "2026-08-18T12:00:00.000Z" },
+      { hub_user_email: "never-reported@stardust.ai", last_reported_at: null },
+    ]);
+
+    const claudeOnly = await mod.queryTokenUsage({
+      start: "2026-08-18T11:00:00.000Z",
+      end: "2026-08-18T12:00:00.000Z",
+      granularity: "15m",
+      groupBy: "model",
+      metric: "cache_write",
+      hubUsers: [],
+      providers: ["claude"],
+      modelAccounts: ["claude@stardust.ai"],
+      models: ["claude-opus-4-1"],
+    });
+    assert.equal(claudeOnly.totals.total_tokens, 100);
+    assert.equal(claudeOnly.totals.cache_write_tokens, 40);
+    assert.equal(claudeOnly.trend[0].group_value, "claude-opus-4-1");
+  } finally {
+    cleanup();
+  }
+});
+
+test("daily query combines compacted rows and recent detail", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    await client.execute({
+      sql: `
+        INSERT INTO token_usage_daily (
+          hub_user_email, provider, model_account_id, model_id, day_start,
+          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+          reasoning_tokens, total_tokens, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: ["derek@stardust.ai", "codex", "ir@stardust.ai", "gpt-5.5", "2026-08-01T00:00:00.000Z", 250, 50, 100, 0, 20, 300, "2026-08-18T00:00:00.000Z"],
+    });
+    await mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai",
+      installationId: "recent-install",
+      batchId: "recent-batch",
+      receivedAt: "2026-08-18T12:00:00.000Z",
+      rows: [usageRow({ bucket_start: "2026-08-18T11:00:00.000Z" })],
+    });
+    const result = await mod.queryTokenUsage({
+      start: "2026-08-01T00:00:00.000Z",
+      end: "2026-08-19T00:00:00.000Z",
+      granularity: "day",
+      groupBy: "provider",
+      metric: "reasoning",
+    });
+    assert.equal(result.totals.total_tokens, 420);
+    assert.deepEqual(result.trend.map((point) => point.bucket_start), [
+      "2026-08-01T00:00:00.000Z",
+      "2026-08-18T00:00:00.000Z",
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("queryTokenUsage rejects result sets beyond finite trend and breakdown limits", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    const rows = [];
+    for (let index = 0; index < 501; index += 1) {
+      rows.push({
+        sql: `
+          INSERT INTO token_usage_15m (
+            hub_user_email, provider, model_account_id, model_id, bucket_start,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            reasoning_tokens, total_tokens, updated_at
+          ) VALUES (?, 'codex', ?, ?, '2026-08-18T11:00:00.000Z', 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z')
+        `,
+        args: [`member-${index}@stardust.ai`, `account-${index}`, `model-${index}`],
+      });
+    }
+    await client.batch(rows, "write");
+    await assert.rejects(mod.queryTokenUsage({
+      start: "2026-08-18T10:00:00.000Z",
+      end: "2026-08-18T12:00:00.000Z",
+      granularity: "15m",
+      groupBy: "hub_user",
+      metric: "total",
+    }), (error) => error?.code === "query_too_broad");
+  } finally {
+    cleanup();
+  }
+});
+
+test("queryTokenUsage rejects more than 2000 chronological trend points", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    await client.execute(`
+      WITH RECURSIVE sequence(value) AS (
+        SELECT 0
+        UNION ALL
+        SELECT value + 1 FROM sequence WHERE value < 2000
+      )
+      INSERT INTO token_usage_15m (
+        hub_user_email, provider, model_account_id, model_id, bucket_start,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        reasoning_tokens, total_tokens, updated_at
+      )
+      SELECT
+        'trend@stardust.ai', 'codex', 'trend-account', 'trend-model',
+        strftime('%Y-%m-%dT%H:%M:00.000Z', '2026-07-28T15:00:00Z', '+' || (value * 15) || ' minutes'),
+        1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z'
+      FROM sequence
+    `);
+    await assert.rejects(mod.queryTokenUsage({
+      start: "2026-07-28T15:00:00.000Z",
+      end: "2026-08-18T12:00:00.000Z",
+      granularity: "15m",
+      groupBy: "provider",
+      metric: "total",
+    }), (error) => error?.code === "query_too_broad");
+  } finally {
+    cleanup();
+  }
+});

@@ -175,6 +175,22 @@ test("token usage ingestion is one receipt-gated batch and current reads stay is
   }
 });
 
+test("token usage query uses bounded indexed ranges without dashboard coupling", async () => {
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  const query = functionBody(source, "queryTokenUsage");
+  assert.match(query, /client\.batch/);
+  assert.match(query, /buildRange\("bucket_start"\)/);
+  assert.match(query, /`\$\{timeColumn\} >= \?`/);
+  assert.match(query, /`\$\{timeColumn\} < \?`/);
+  assert.match(query, /TOKEN_USAGE_TREND_LIMIT \+ 1/);
+  assert.match(query, /TOKEN_USAGE_BREAKDOWN_LIMIT \+ 1/);
+  assert.match(query, /token_usage_15m/);
+  assert.match(query, /token_usage_daily/);
+  assert.match(query, /token_usage_reporter_state/);
+  assert.match(query, /auth_users/);
+  assert.doesNotMatch(query, /auth_pool_quota|auth_pool_entries|auth_pool_fetch_log/);
+});
+
 test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
   const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
   assert.ok(vercelConfig.crons.every((cron) => cron.path !== "/api/cron/probe-auth-pool"));
