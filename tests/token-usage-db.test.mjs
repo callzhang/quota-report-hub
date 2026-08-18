@@ -355,3 +355,124 @@ test("queryTokenUsage rejects more than 2000 chronological trend points", async 
     cleanup();
   }
 });
+
+test("compactTokenUsage moves only rows before cutoff, adds to daily data, and prunes old receipts", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    const detailSql = `
+      INSERT INTO token_usage_15m (
+        hub_user_email, provider, model_account_id, model_id, bucket_start,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        reasoning_tokens, total_tokens, updated_at
+      ) VALUES (?, 'codex', 'account', ?, ?, ?, ?, 0, 0, 0, ?, '2026-08-18T12:00:00.000Z')
+    `;
+    await client.batch([
+      { sql: detailSql, args: ["derek@stardust.ai", "gpt-5.5", "2026-05-19T23:45:00.000Z", 100, 20, 120] },
+      { sql: detailSql, args: ["derek@stardust.ai", "gpt-5.6-sol", "2026-05-19T23:45:00.000Z", 80, 20, 100] },
+      { sql: detailSql, args: ["derek@stardust.ai", "boundary", "2026-05-20T12:00:00.000Z", 1, 0, 1] },
+      { sql: detailSql, args: ["derek@stardust.ai", "after", "2026-05-20T12:15:00.000Z", 1, 0, 1] },
+      {
+        sql: `
+          INSERT INTO token_usage_daily (
+            hub_user_email, provider, model_account_id, model_id, day_start,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            reasoning_tokens, total_tokens, updated_at
+          ) VALUES ('derek@stardust.ai', 'codex', 'account', 'gpt-5.5', '2026-05-19T00:00:00.000Z', 10, 0, 0, 0, 0, 10, '2026-05-20T00:00:00.000Z')
+        `,
+        args: [],
+      },
+      {
+        sql: `INSERT INTO token_usage_batch_receipts VALUES ('derek@stardust.ai', 'old', 'old', 'digest-old', '2026-05-20T11:59:59.999Z', '2026-05-20T11:59:59.999Z', 'marker-old')`,
+        args: [],
+      },
+      {
+        sql: `INSERT INTO token_usage_batch_receipts VALUES ('derek@stardust.ai', 'boundary', 'boundary', 'digest-boundary', '2026-05-20T12:00:00.000Z', '2026-05-20T12:00:00.000Z', 'marker-boundary')`,
+        args: [],
+      },
+    ], "write");
+
+    const result = await mod.compactTokenUsage({
+      before: "2026-05-20T12:00:00.000Z",
+      receiptBefore: "2026-05-20T12:00:00.000Z",
+      maxDays: 7,
+    });
+    assert.deepEqual(result.days, ["2026-05-19"]);
+    assert.equal(result.detail_rows_removed, 2);
+    assert.equal(result.daily_rows_affected, 2);
+    assert.equal(result.receipts_removed, 1);
+
+    const daily = await client.execute("SELECT model_id, total_tokens FROM token_usage_daily ORDER BY model_id");
+    assert.deepEqual(daily.rows.map((row) => [row.model_id, Number(row.total_tokens)]), [
+      ["gpt-5.5", 130],
+      ["gpt-5.6-sol", 100],
+    ]);
+    const remaining = await client.execute("SELECT bucket_start FROM token_usage_15m ORDER BY bucket_start");
+    assert.deepEqual(remaining.rows.map((row) => row.bucket_start), [
+      "2026-05-20T12:00:00.000Z",
+      "2026-05-20T12:15:00.000Z",
+    ]);
+    const receipts = await client.execute("SELECT installation_id FROM token_usage_batch_receipts ORDER BY installation_id");
+    assert.deepEqual(receipts.rows.map((row) => row.installation_id), ["boundary"]);
+
+    assert.deepEqual(await mod.compactTokenUsage({
+      before: "2026-05-20T12:00:00.000Z",
+      receiptBefore: "2026-05-20T12:00:00.000Z",
+      maxDays: 7,
+    }), {
+      days: [], detail_rows_removed: 0, daily_rows_affected: 0, receipts_removed: 0,
+    });
+  } finally {
+    cleanup();
+  }
+});
+
+test("compactTokenUsage processes at most seven UTC days per call", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    const statements = Array.from({ length: 8 }, (_, index) => ({
+      sql: `
+        INSERT INTO token_usage_15m (
+          hub_user_email, provider, model_account_id, model_id, bucket_start,
+          input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+          reasoning_tokens, total_tokens, updated_at
+        ) VALUES ('derek@stardust.ai', 'codex', 'account', 'model', ?, 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z')
+      `,
+      args: [`2026-05-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`],
+    }));
+    await client.batch(statements, "write");
+    const result = await mod.compactTokenUsage({ before: "2026-06-01T00:00:00.000Z", maxDays: 7 });
+    assert.equal(result.days.length, 7);
+    const remaining = await client.execute("SELECT COUNT(*) AS count FROM token_usage_15m");
+    assert.equal(Number(remaining.rows[0].count), 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("failed daily aggregation leaves that day's detail untouched", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    await client.execute(`
+      INSERT INTO token_usage_15m (
+        hub_user_email, provider, model_account_id, model_id, bucket_start,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        reasoning_tokens, total_tokens, updated_at
+      ) VALUES ('derek@stardust.ai', 'codex', 'account', 'model', '2026-05-01T00:00:00.000Z', 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z')
+    `);
+    await client.execute(`
+      CREATE TRIGGER fail_token_usage_daily
+      BEFORE INSERT ON token_usage_daily
+      BEGIN
+        SELECT RAISE(ABORT, 'forced daily failure');
+      END
+    `);
+    await assert.rejects(mod.compactTokenUsage({ before: "2026-06-01T00:00:00.000Z", maxDays: 7 }));
+    const remaining = await client.execute("SELECT COUNT(*) AS count FROM token_usage_15m");
+    assert.equal(Number(remaining.rows[0].count), 1);
+  } finally {
+    cleanup();
+  }
+});
