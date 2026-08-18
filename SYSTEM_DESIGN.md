@@ -12,6 +12,8 @@
 
 Token analytics is an isolated read model, not part of auth selection or quota availability. Each local installation owns a private SQLite checkpoint database at `~/.agents/auth/token-usage.sqlite3` (`0600`). The first collector run fixes a 72-hour backfill cutoff. Subsequent runs discover only changed JSONL files and resume at acknowledged byte positions, with a 10-second cycle budget and a maximum of 400 aggregate rows per batch. A pending upload and its proposed file/counter/fingerprint checkpoint are committed locally only after server acknowledgement; retries reuse the same batch.
 
+Vercel Functions run in `pdx1` (AWS `us-west-2`) so database-backed requests execute in the same cloud region as the Turso primary. Static HTML remains CDN-served near the browser; keeping compute and data together avoids a cross-country database round trip on every dashboard query.
+
 Codex parsing uses structural `session_meta`, `turn_context`, and cumulative `token_count` fields. Canonical numeric fingerprints remove copied parent history, and counter resets start a new non-negative epoch. Claude parsing uses assistant message ID, raw model, timestamp, and final usage counters; repeated records update only the positive difference. No parser output contains conversation content.
 
 Account attribution has two cases. An automatic guard switch inserts a prepared boundary before credential installation, reads the installed target back, then finalizes or cancels that boundary. Collector events are split at finalized boundaries. A manual switch has no exact boundary, so events read in that cycle use the account observed during the report. This is intentionally approximate and is not a billing ledger.

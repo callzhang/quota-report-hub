@@ -14,6 +14,8 @@ Privacy boundary: the collector uploads numeric quarter-hour aggregates only—H
 
 `POST /api/token-usage` ingests a bounded idempotent batch. `GET /api/token-usage-query` returns totals, bounded trend points, bounded four-dimension breakdown rows, and per-Hub-user reporter state. Fifteen-minute detail is accepted and queryable for 90 days. The protected daily `/api/cron/token-usage-retention` job compacts at most seven old UTC days per run into daily rollups and removes old receipts. Token usage tables are not read by the Accounts dashboard, revision polling, quota ingestion/history, or fetch-best paths.
 
+Vercel Functions are pinned to `pdx1`, matching the Turso database's AWS `us-west-2` location. This keeps database-backed requests in one region while static pages continue to use Vercel's CDN.
+
 Reference sizing from the approved design benchmark was 95 files and about 2.9 GB of history: a full parse took 44.97 seconds and about 54 MB peak memory. Normal scheduled work is substantially smaller because it resumes from byte positions and stops at the per-cycle budget.
 
 ![Quota Report Hub dashboard](docs/hub-dashboard.png)

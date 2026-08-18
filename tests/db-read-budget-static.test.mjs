@@ -37,6 +37,11 @@ test("Hobby deployment stays within twelve serverless functions", async () => {
   ]));
 });
 
+test("Vercel functions run beside the Turso us-west-2 database", async () => {
+  const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
+  assert.deepEqual(vercel.regions, ["pdx1"]);
+});
+
 test("auth-pool active assignment reads use compact latest-state tables", async () => {
   const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
 

@@ -12,6 +12,8 @@ Total 保持提供方原始定义；Input、Output 是组成部分，Cache Read�
 
 `POST /api/token-usage` 接收有上限且幂等的批次；`GET /api/token-usage-query` 返回总计、受限趋势点、四维明细和每个 Hub 用户的上报状态。15 分钟明细保留并可查询 90 天；受保护的每日 `/api/cron/token-usage-retention` 每次最多把 7 个旧 UTC 日期压缩为日汇总，同时清理旧回执。账户首页、revision 轮询、quota 写入/历史与 fetch-best 都不会读取 token 用量表。
 
+Vercel Functions 固定运行在 `pdx1`，与 Turso 数据库的 AWS `us-west-2` 位置一致。数据库请求不再跨美国东西海岸，静态页面仍由 Vercel CDN 就近提供。
+
 设计基准为 95 个文件、约 2.9 GB 历史：完整解析约 44.97 秒，峰值内存约 54 MB。正常定时运行从字节位置增量读取，并受 10 秒预算限制，因此开销远低于完整回扫。
 
 项目安装、部署和完整 API 说明见 [README.md](README.md)。本页重点解释 Hub 页面如何判断账号状态，以及如何排查“Probe 正常但 Quota 不可用”。
