@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Token Usage · Quota Report Hub</title>
+    <style>
+      :root {
+        --bg: #f4efe7;
+        --panel: rgba(255, 251, 245, 0.94);
+        --ink: #1d1915;
+        --muted: #6d6154;
+        --line: rgba(75, 52, 31, 0.14);
+        --accent: #1f6d68;
+        --bad: #b23a32;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(31, 109, 104, 0.18), transparent 26%),
+          radial-gradient(circle at top right, rgba(206, 96, 48, 0.16), transparent 28%),
+          linear-gradient(180deg, #f9f4ea 0%, #ece0ce 100%);
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+      }
+      main { max-width: 1520px; margin: 0 auto; padding: 28px 24px 48px; }
+      .hero, .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: 0 18px 54px rgba(77, 58, 37, 0.09);
+      }
+      .hero { padding: 28px; display: grid; gap: 14px; }
+      .hero-top { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+      h1 { margin: 0; font: 52px/0.95 "Iowan Old Style", serif; }
+      h2 { margin: 0 0 14px; font-size: 18px; }
+      .nav { display: flex; gap: 16px; flex-wrap: wrap; }
+      .nav a { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); }
+      .meta { color: var(--muted); }
+      .panel { margin-top: 18px; padding: 20px; }
+      .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
+      label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+      input, select, button {
+        width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid var(--line);
+        border-radius: 12px; background: rgba(255,255,255,.82); color: var(--ink); font: inherit;
+      }
+      button { cursor: pointer; width: auto; }
+      .actions { display: flex; align-items: end; gap: 10px; }
+      .primary { background: var(--accent); color: #fff; border-color: transparent; }
+      .regions { display: grid; grid-template-columns: repeat(12, 1fr); gap: 18px; }
+      .regions .panel { grid-column: span 12; }
+      #summary-region { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+      .summary-card { border: 1px solid var(--line); border-radius: 16px; padding: 16px; background: rgba(255,255,255,.55); }
+      .summary-card strong { display: block; margin-top: 6px; font-size: 28px; }
+      .error { margin-top: 14px; padding: 12px 14px; border: 1px solid rgba(178,58,50,.25); border-radius: 12px; color: var(--bad); }
+      .empty { color: var(--muted); padding: 18px 0; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 11px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+      th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
+      .table-shell { overflow-x: auto; }
+      @media (min-width: 920px) {
+        #trend-panel { grid-column: span 8; }
+        #reporter-panel { grid-column: span 4; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div class="hero-top">
+          <nav class="nav" aria-label="Hub pages">
+            <a href="./">Accounts</a>
+            <a href="./users.html">Users</a>
+          </nav>
+          <div id="viewer" class="meta"></div>
+        </div>
+        <h1>Token Usage</h1>
+        <div class="meta">Team usage by Hub user, provider account, and raw model name. Data is collected every guard cycle.</div>
+      </section>
+
+      <section class="panel" aria-labelledby="filters-title">
+        <h2 id="filters-title">Query</h2>
+        <div class="filters">
+          <label>Start <input id="start" type="datetime-local" /></label>
+          <label>End <input id="end" type="datetime-local" /></label>
+          <label>Hub user <input id="hub-user" placeholder="email, email" /></label>
+          <label>Provider
+            <select id="provider"><option value="">All</option><option value="codex">Codex</option><option value="claude">Claude</option></select>
+          </label>
+          <label>Model account <input id="model-account" placeholder="account id" /></label>
+          <label>Raw model <input id="model" placeholder="gpt-5.5, claude-opus…" /></label>
+          <label>Granularity
+            <select id="granularity"><option value="hour">Hourly</option><option value="day">Daily</option></select>
+          </label>
+          <label>Group by
+            <select id="group-by">
+              <option value="hub_user">Hub user</option><option value="provider">Provider</option>
+              <option value="model_account">Model account</option><option value="model">Model</option>
+            </select>
+          </label>
+          <label>Metric
+            <select id="metric">
+              <option value="total">Total</option><option value="input">Input</option><option value="output">Output</option>
+              <option value="cache_read">Cache read</option><option value="cache_write">Cache write</option><option value="reasoning">Reasoning</option>
+            </select>
+          </label>
+          <div class="actions"><button id="apply" class="primary">Apply</button><button id="retry">Retry</button></div>
+        </div>
+        <div id="error-region" class="error" role="alert" hidden></div>
+      </section>
+
+      <div class="regions">
+        <section class="panel" aria-labelledby="summary-title">
+          <h2 id="summary-title">Summary</h2>
+          <div id="summary-region" aria-live="polite"></div>
+        </section>
+        <section class="panel" id="trend-panel" aria-labelledby="trend-title">
+          <h2 id="trend-title">Trend</h2>
+          <div id="trend-region"></div>
+        </section>
+        <section class="panel" id="reporter-panel" aria-labelledby="reporter-title">
+          <h2 id="reporter-title">Reporter state</h2>
+          <div id="reporter-region"></div>
+        </section>
+        <section class="panel" aria-labelledby="breakdown-title">
+          <h2 id="breakdown-title">Breakdown</h2>
+          <div id="breakdown-region" class="table-shell"></div>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const COOKIE_NAME = "quota_report_hub_token";
+      const QUERY_CACHE_MS = 5 * 60 * 1000;
+      const queryCache = new Map();
+      const queryRequests = new Map();
+      let authSessionGeneration = 0;
+      let currentToken = "";
+      let lastSuccessfulPayload = null;
+
+      const start = document.getElementById("start");
+      const end = document.getElementById("end");
+      const hubUser = document.getElementById("hub-user");
+      const provider = document.getElementById("provider");
+      const modelAccount = document.getElementById("model-account");
+      const model = document.getElementById("model");
+      const granularity = document.getElementById("granularity");
+      const groupBy = document.getElementById("group-by");
+      const metric = document.getElementById("metric");
+      const summaryRegion = document.getElementById("summary-region");
+      const trendRegion = document.getElementById("trend-region");
+      const breakdownRegion = document.getElementById("breakdown-region");
+      const reporterRegion = document.getElementById("reporter-region");
+      const errorRegion = document.getElementById("error-region");
+      const applyButton = document.getElementById("apply");
+      const retryButton = document.getElementById("retry");
+
+      function getCookie(name) {
+        const prefix = `${name}=`;
+        return document.cookie.split(";").map((part) => part.trim())
+          .find((part) => part.startsWith(prefix))?.slice(prefix.length) || "";
+      }
+
+      function safeDecodeCookieValue(value) {
+        try { return decodeURIComponent(value); } catch { return ""; }
+      }
+
+      function getStoredToken() { return safeDecodeCookieValue(getCookie(COOKIE_NAME)); }
+
+      function setTokenCookie(token) {
+        const secure = location.protocol === "https:" ? "; Secure" : "";
+        document.cookie = `${COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax${secure}`;
+      }
+
+      function clearTokenCookie() {
+        document.cookie = `${COOKIE_NAME}=; Path=/; Max-Age=0; SameSite=Lax`;
+      }
+
+      function setCurrentToken(token) {
+        if (token === currentToken) return;
+        currentToken = token;
+        authSessionGeneration += 1;
+        queryCache.clear();
+        queryRequests.clear();
+        if (token) setTokenCookie(token); else clearTokenCookie();
+      }
+
+      function loginReturn() {
+        location.replace("/login.html?next=%2Ftoken-usage.html");
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (character) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+        }[character]));
+      }
+
+      function number(value) { return Number(value || 0).toLocaleString(); }
+
+      function localInputValue(date) {
+        const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+        return shifted.toISOString().slice(0, 16);
+      }
+
+      function inputIso(input) {
+        const parsed = new Date(input.value);
+        return parsed.toISOString();
+      }
+
+      function appendRepeated(params, key, rawValue) {
+        String(rawValue || "").split(",").map((value) => value.trim()).filter(Boolean)
+          .forEach((value) => params.append(key, value));
+      }
+
+      function currentQueryString() {
+        const params = new URLSearchParams();
+        params.set("start", inputIso(start));
+        params.set("end", inputIso(end));
+        params.set("granularity", granularity.value);
+        params.set("group_by", groupBy.value);
+        params.set("metric", metric.value);
+        appendRepeated(params, "hub_user", hubUser.value);
+        appendRepeated(params, "provider", provider.value);
+        appendRepeated(params, "model_account", modelAccount.value);
+        appendRepeated(params, "model", model.value);
+        params.sort();
+        return params.toString();
+      }
+
+      function renderShell(payload) {
+        const totals = payload.totals || {};
+        summaryRegion.innerHTML = [
+          ["Total", totals.total_tokens], ["Input", totals.input_tokens],
+          ["Output", totals.output_tokens], ["Cache", Number(totals.cache_read_tokens || 0) + Number(totals.cache_write_tokens || 0)],
+        ].map(([label, value]) => `<article class="summary-card"><span class="meta">${label}</span><strong>${number(value)}</strong></article>`).join("");
+        trendRegion.innerHTML = (payload.trend || []).length
+          ? `<div class="meta">${number(payload.trend.length)} aggregated points</div>`
+          : '<div class="empty">No usage in this range.</div>';
+        breakdownRegion.innerHTML = (payload.breakdown || []).length
+          ? `<div class="meta">${number(payload.breakdown.length)} breakdown rows</div>`
+          : '<div class="empty">No usage in this range.</div>';
+        reporterRegion.innerHTML = (payload.reporters || []).length
+          ? (payload.reporters || []).map((item) => `<div>${escapeHtml(item.hub_user_email || item.reporter_email || "Reporter")} · ${escapeHtml(item.last_reported_at || "received")}</div>`).join("")
+          : '<div class="empty">No usage report received</div>';
+      }
+
+      function showError(message) {
+        errorRegion.hidden = false;
+        errorRegion.innerHTML = `${escapeHtml(message)} <button id="inline-retry">Retry</button>`;
+      }
+
+      function clearError() { errorRegion.hidden = true; errorRegion.innerHTML = ""; }
+
+      function sessionIsCurrent(token, generation) {
+        return token === currentToken && generation === authSessionGeneration;
+      }
+
+      async function queryPayload(queryString) {
+        const token = currentToken;
+        const generation = authSessionGeneration;
+        const key = `${generation}:${queryString}`;
+        const cached = queryCache.get(key);
+        if (cached && Date.now() - cached.fetchedAt < QUERY_CACHE_MS) return cached.payload;
+        if (queryRequests.has(key)) return queryRequests.get(key);
+
+        const request = (async () => {
+          const response = await fetch(`/api/token-usage-query?${queryString}`, {
+            cache: "no-store",
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!sessionIsCurrent(token, generation)) throw new Error("auth session changed");
+          if (response.status === 401) {
+            setCurrentToken("");
+            loginReturn();
+            throw new Error("unauthorized");
+          }
+          if (!response.ok) throw new Error(payload.message || payload.error || `query failed (${response.status})`);
+          if (payload.auth_pool_user_token && payload.auth_pool_user_token !== token) {
+            setCurrentToken(payload.auth_pool_user_token);
+          }
+          const currentKey = `${authSessionGeneration}:${queryString}`;
+          queryCache.set(currentKey, { fetchedAt: Date.now(), payload });
+          return payload;
+        })();
+        queryRequests.set(key, request);
+        try { return await request; }
+        finally { if (queryRequests.get(key) === request) queryRequests.delete(key); }
+      }
+
+      async function loadUsage() {
+        if (!currentToken) { loginReturn(); throw new Error("login required"); }
+        const queryString = currentQueryString();
+        applyButton.disabled = true;
+        try {
+          const payload = await queryPayload(queryString);
+          lastSuccessfulPayload = payload;
+          clearError();
+          renderShell(payload);
+          return payload;
+        } catch (error) {
+          if (error.message !== "auth session changed" && error.message !== "unauthorized") showError(error.message);
+          throw error;
+        } finally {
+          applyButton.disabled = false;
+        }
+      }
+
+      function initializeDefaults() {
+        const now = new Date();
+        start.value = localInputValue(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
+        end.value = localInputValue(now);
+        granularity.value = "hour";
+        groupBy.value = "hub_user";
+        metric.value = "total";
+      }
+
+      applyButton.addEventListener("click", () => loadUsage().catch(() => {}));
+      retryButton.addEventListener("click", () => loadUsage().catch(() => {}));
+      initializeDefaults();
+      currentToken = getStoredToken();
+      if (!currentToken) loginReturn();
+      else loadUsage().catch(() => {});
+    </script>
+  </body>
+</html>

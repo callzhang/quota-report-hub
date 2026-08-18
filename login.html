@@ -135,6 +135,7 @@
       const params = new URLSearchParams(location.search);
       const callback = params.get("callback") || "";
       const state = params.get("state") || "";
+      const requestedNext = params.get("next") || "";
       const COOKIE_NAME = "quota_report_hub_token";
 
       const loginCard = document.getElementById("login-card");
@@ -196,6 +197,17 @@
         show("Invalid callback target — only localhost is allowed. Your token will be shown for manual copy instead.", "warn");
       }
 
+      function safeLoginDestination() {
+        if (callback || !requestedNext) return "/";
+        try {
+          const target = new URL(requestedNext, location.origin);
+          if (target.origin !== location.origin || target.pathname === "/login.html") return "/";
+          return target.pathname + target.search;
+        } catch {
+          return "/";
+        }
+      }
+
       function completeLogin(token, viewer) {
         setTokenCookie(token);
         if (hasValidCallback) {
@@ -208,7 +220,7 @@
           return;
         }
         if (!callback) {
-          location.replace("/");
+          location.replace(safeLoginDestination());
           return;
         }
         loginCard.hidden = false;
