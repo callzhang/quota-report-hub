@@ -277,10 +277,32 @@ class TokenUsageState:
             self._connection.execute("ROLLBACK")
             raise
 
+    def apply_checkpoint(self, proposed: dict[str, Any]) -> None:
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._apply_proposed(proposed, iso_timestamp(self._now()))
+            self._connection.execute("COMMIT")
+        except BaseException:
+            self._connection.execute("ROLLBACK")
+            raise
+
     def file_cursor(self, file_key: str) -> dict[str, Any] | None:
         row = self._connection.execute(
             "SELECT file_key, path, offset, size, mtime_ns, updated_at FROM file_cursors WHERE file_key = ?",
             (file_key,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def file_cursor_for_path(self, path: str) -> dict[str, Any] | None:
+        row = self._connection.execute(
+            """
+            SELECT file_key, path, offset, size, mtime_ns, updated_at
+            FROM file_cursors
+            WHERE path = ?
+            ORDER BY updated_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (path,),
         ).fetchone()
         return dict(row) if row is not None else None
 

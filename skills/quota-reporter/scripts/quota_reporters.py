@@ -2250,6 +2250,34 @@ def post_auth_pool_quota(
         return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
 
 
+def post_token_usage_batch(
+    auth_pool_url: str,
+    auth_pool_user_token: str,
+    payload: dict,
+) -> dict:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        auth_pool_url.rstrip("/") + "/api/token-usage",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {auth_pool_user_token}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            result = read_auth_pool_response(response)
+            result.setdefault("status_code", int(getattr(response, "status", 200)))
+            return result
+    except urllib.error.HTTPError as error:
+        return read_auth_pool_http_error(
+            error,
+            auth_pool_url=auth_pool_url,
+            auth_pool_user_token=auth_pool_user_token,
+        )
+
+
 def delete_auth_pool_entry(
     auth_pool_url: str,
     auth_pool_user_token: str,
