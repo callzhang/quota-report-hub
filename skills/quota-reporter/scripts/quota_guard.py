@@ -46,22 +46,73 @@ from quota_reporters import (
     seed_guidance_lines,
     fetch_best_auth,
     fetched_auth_near_expiry,
+    iso_now,
     load_config,
     post_auth_pool_quota,
     probe_claude,
     probe_codex,
+    read_claude_oauth_credentials,
     runtime_cli_path,
     sync_current_claude_auth_pool,
     sync_current_codex_auth_pool,
     write_claude_keychain_credentials,
     write_known_auth_state,
 )
+from token_usage_collector import collect_and_report_token_usage
+from token_usage_state import TokenUsageState
 
 DEFAULT_SELF_UPDATE_REPO = "callzhang/quota-report-hub"
 DEFAULT_SELF_UPDATE_REF = "main"
 SELF_UPDATE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-self-update.json"
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 AUTH_POOL_MISSING_CONFIG_TEXT = "auth pool not configured (run install_quota_guard.py)"
+
+
+def install_auth_with_usage_boundary(
+    *,
+    provider: str,
+    from_account_id: str | None,
+    to_account_id: str | None,
+    usage_state: TokenUsageState | None,
+    write_auth,
+    read_installed_account,
+    now_iso=iso_now,
+) -> dict:
+    switch_id = None
+    switched = from_account_id != to_account_id
+    if usage_state is None:
+        write_auth()
+        return {"switch_id": None, "switched": switched}
+    if switched:
+        prepared_at = now_iso()
+        switch_id = usage_state.prepare_account_switch(
+            provider=provider,
+            from_account_id=from_account_id,
+            to_account_id=to_account_id,
+            prepared_at=prepared_at,
+        )
+    try:
+        write_auth()
+        observed_account_id = read_installed_account()
+        if observed_account_id != to_account_id:
+            raise RuntimeError(
+                f"{provider} auth verification failed: expected installed account {to_account_id!r}, "
+                f"observed {observed_account_id!r}"
+            )
+    except Exception:
+        if switch_id is not None:
+            try:
+                observed_account_id = read_installed_account()
+            except Exception:
+                observed_account_id = object()
+            if observed_account_id == to_account_id:
+                usage_state.finalize_account_switch(switch_id, finalized_at=now_iso())
+            elif observed_account_id == from_account_id:
+                usage_state.cancel_account_switch(switch_id, cancelled_at=now_iso())
+        raise
+    if switch_id is not None:
+        usage_state.finalize_account_switch(switch_id, finalized_at=now_iso())
+    return {"switch_id": switch_id, "switched": switched}
 
 
 def auth_json_digest(auth_json: str | None) -> str | None:
@@ -1124,6 +1175,7 @@ def maybe_replace_codex_auth(
     known_auth_path: Path,
     threshold_percent: float,
     weekly_threshold_percent: float,
+    usage_state: TokenUsageState | None = None,
 ) -> dict:
     current_account_id = current_codex_payload.get("account_id") if current_codex_payload else None
     current_quota = {
@@ -1174,9 +1226,21 @@ def maybe_replace_codex_auth(
                 "account_id": fetched_account_id,
             }
 
-        codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
-        codex_auth_path.write_text(repair_auth["auth_json"], encoding="utf-8")
-        codex_auth_path.chmod(0o600)
+        def write_repair_auth():
+            codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
+            codex_auth_path.write_text(repair_auth["auth_json"], encoding="utf-8")
+            codex_auth_path.chmod(0o600)
+
+        install_auth_with_usage_boundary(
+            provider="codex",
+            from_account_id=current_account_id,
+            to_account_id=fetched_account_id,
+            usage_state=usage_state,
+            write_auth=write_repair_auth,
+            read_installed_account=lambda: fetched_account_id
+            if codex_auth_path.read_text(encoding="utf-8") == repair_auth["auth_json"]
+            else auth_metadata(codex_auth_path).get("account_id"),
+        )
         metadata = auth_metadata(codex_auth_path)
         known_auth = write_known_auth_state(
             source="codex",
@@ -1239,9 +1303,21 @@ def maybe_replace_codex_auth(
             "account_id": fetched_account_id,
         }
 
-    codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
-    codex_auth_path.write_text(replacement["auth_json"], encoding="utf-8")
-    codex_auth_path.chmod(0o600)
+    def write_replacement_auth():
+        codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
+        codex_auth_path.write_text(replacement["auth_json"], encoding="utf-8")
+        codex_auth_path.chmod(0o600)
+
+    install_auth_with_usage_boundary(
+        provider="codex",
+        from_account_id=current_account_id,
+        to_account_id=fetched_account_id,
+        usage_state=usage_state,
+        write_auth=write_replacement_auth,
+        read_installed_account=lambda: fetched_account_id
+        if codex_auth_path.read_text(encoding="utf-8") == replacement["auth_json"]
+        else auth_metadata(codex_auth_path).get("account_id"),
+    )
     metadata = auth_metadata(codex_auth_path)
     known_auth = write_known_auth_state(
         source="codex",
@@ -1283,6 +1359,7 @@ def maybe_replace_claude_auth(
     known_auth_path: Path,
     threshold_percent: float,
     weekly_threshold_percent: float,
+    usage_state: TokenUsageState | None = None,
 ) -> dict:
     custom_provider = detect_claude_custom_provider_env(claude_home)
     if custom_provider is not None:
@@ -1329,14 +1406,27 @@ def maybe_replace_claude_auth(
         except Exception:
             return {"ok": True, "replaced": False, "reason": "repair_auth_unparseable", "triggered_by": ["claude"]}
         repair_credentials = repair_blob.get("credentials")
-        wrote_keychain = False
-        if platform.system().lower() == "darwin":
-            wrote_keychain = write_claude_keychain_credentials(repair_credentials)
-        if not wrote_keychain:
-            credentials_path = claude_home / ".credentials.json"
-            credentials_path.parent.mkdir(parents=True, exist_ok=True)
-            credentials_path.write_text(json.dumps(repair_credentials, indent=2) + "\n", encoding="utf-8")
-            credentials_path.chmod(0o600)
+        def write_repair_credentials():
+            wrote_keychain = False
+            if platform.system().lower() == "darwin":
+                wrote_keychain = write_claude_keychain_credentials(repair_credentials)
+            if not wrote_keychain:
+                credentials_path = claude_home / ".credentials.json"
+                credentials_path.parent.mkdir(parents=True, exist_ok=True)
+                credentials_path.write_text(json.dumps(repair_credentials, indent=2) + "\n", encoding="utf-8")
+                credentials_path.chmod(0o600)
+
+        repair_account_id = repair_auth.get("account_id")
+        install_auth_with_usage_boundary(
+            provider="claude",
+            from_account_id=current_account_id,
+            to_account_id=repair_account_id,
+            usage_state=usage_state,
+            write_auth=write_repair_credentials,
+            read_installed_account=lambda: repair_account_id
+            if read_claude_oauth_credentials(claude_home)[0] == repair_credentials
+            else current_account_id,
+        )
         metadata = claude_auth_blob_metadata(repair_auth["auth_json"])
         known_auth = write_known_auth_state(
             source="claude",
@@ -1377,14 +1467,27 @@ def maybe_replace_claude_auth(
     # there, so a file-only write is shadowed by the existing keychain credential — the replacement
     # would never take effect, and the guard would "replace" again every cycle. Mirror the
     # repair-auth path above (keychain-first, file as fallback).
-    wrote_keychain = False
-    if platform.system().lower() == "darwin":
-        wrote_keychain = write_claude_keychain_credentials(replacement_credentials)
-    if not wrote_keychain:
-        credentials_path = claude_home / ".credentials.json"
-        credentials_path.parent.mkdir(parents=True, exist_ok=True)
-        credentials_path.write_text(json.dumps(replacement_credentials, indent=2) + "\n", encoding="utf-8")
-        credentials_path.chmod(0o600)
+    def write_replacement_credentials():
+        wrote_keychain = False
+        if platform.system().lower() == "darwin":
+            wrote_keychain = write_claude_keychain_credentials(replacement_credentials)
+        if not wrote_keychain:
+            credentials_path = claude_home / ".credentials.json"
+            credentials_path.parent.mkdir(parents=True, exist_ok=True)
+            credentials_path.write_text(json.dumps(replacement_credentials, indent=2) + "\n", encoding="utf-8")
+            credentials_path.chmod(0o600)
+
+    replacement_account_id = replacement.get("account_id")
+    install_auth_with_usage_boundary(
+        provider="claude",
+        from_account_id=current_account_id,
+        to_account_id=replacement_account_id,
+        usage_state=usage_state,
+        write_auth=write_replacement_credentials,
+        read_installed_account=lambda: replacement_account_id
+        if read_claude_oauth_credentials(claude_home)[0] == replacement_credentials
+        else current_account_id,
+    )
     metadata = claude_auth_blob_metadata(replacement["auth_json"])
     known_auth = write_known_auth_state(
         source="claude",
@@ -1725,6 +1828,17 @@ def run_guard(args: argparse.Namespace) -> dict:
         weekly_threshold_percent = args.weekly_threshold_percent
         guard_errors["config_thresholds"] = guard_exception_result("load_config_thresholds_failed", error)
 
+    usage_state = None
+    usage_state_path = args.known_auth_path.parent / "token-usage.sqlite3"
+    try:
+        usage_state = timed_guard_step(
+            timings,
+            "token_usage_state",
+            lambda: TokenUsageState(usage_state_path),
+        )
+    except Exception as error:
+        guard_errors["token_usage"] = guard_exception_result("token_usage_state_failed", error)
+
     warnings = {}
     scheduler_check = run_guard_step(
         "scheduler_check_failed",
@@ -1814,6 +1928,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                 args.known_auth_path,
                 threshold_percent,
                 weekly_threshold_percent,
+                usage_state,
             ),
         ),
     )
@@ -1829,6 +1944,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                 args.known_auth_path,
                 threshold_percent,
                 weekly_threshold_percent,
+                usage_state,
             ),
         ),
     )
@@ -1866,6 +1982,42 @@ def run_guard(args: argparse.Namespace) -> dict:
         else:
             timings["codex_app_server"] = 0.0
 
+    if usage_state is None:
+        token_usage = guard_errors["token_usage"]
+        timings["token_usage"] = 0.0
+    else:
+        effective_codex_account_id = (
+            codex_replacement.get("to_account_id")
+            if codex_replacement.get("replaced")
+            else (codex_payload or {}).get("account_id")
+        )
+        effective_claude_account_id = (
+            claude_replacement.get("to_account_id")
+            if claude_replacement.get("replaced")
+            else (claude_payload or {}).get("account_id")
+        )
+        token_usage = run_guard_step(
+            "token_usage_collection_failed",
+            lambda: timed_guard_step(
+                timings,
+                "token_usage",
+                lambda: collect_and_report_token_usage(
+                    config=config,
+                    codex_account_id=effective_codex_account_id,
+                    claude_account_id=effective_claude_account_id,
+                    state=usage_state,
+                ),
+            ),
+        )
+        if token_usage.get("ok") is False:
+            guard_errors["token_usage"] = token_usage
+        try:
+            usage_state.close()
+        except Exception as error:
+            guard_errors["token_usage_state_close"] = guard_exception_result(
+                "token_usage_state_close_failed", error
+            )
+
     notifications = {}
     if not getattr(args, "no_toast", False):
         def notify_all():
@@ -1893,6 +2045,7 @@ def run_guard(args: argparse.Namespace) -> dict:
             "claude": claude_replacement,
         },
         "codex_app_server": codex_app_server,
+        "token_usage": token_usage,
         "notifications": notifications,
         "warnings": warnings,
         "errors": guard_errors,
