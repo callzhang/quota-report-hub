@@ -84,17 +84,19 @@ test("phase 2 refuses an outdated client and names the upgrade as the fix", () =
   assert.equal(result.notices[0].code, "reporter_upgrade_required");
 });
 
-test("a current client that has simply been idle is warned, never refused", () => {
-  // The collector only posts when there IS usage, so silence is indistinguishable from a day off.
-  // Refusing on it would deadlock anyone back from leave: no auth, so no usage, so no report to
-  // lift the refusal with.
+test("a current client that has simply been idle is left alone entirely", () => {
+  // Silence is not a signal: the collector only posts when there IS usage, so "has not reported" is
+  // indistinguishable from "took the day off". Only an unpaid debt -- given an account, accounted
+  // for nothing -- says anything, and an idle user has none. Nagging on silence would mean nagging
+  // everybody on leave every six hours.
   const result = evaluateFetchPolicy(inputs({
     lastReportAt: null,
+    lastNewAccountAt: null,
     premiumWeighted: 0,
     totalWeighted: 0,
   }));
   assert.equal(result.allowed, true);
-  assert.equal(result.notices[0].code, "reporter_upgrade_required");
+  assert.deepEqual(result.notices, []);
 });
 
 test("a fresh install is served before it has any usage to report", () => {
@@ -258,4 +260,44 @@ test("the hub sets the repeat interval rather than the client compiling one in",
   for (const notice of result.notices) {
     assert.ok(Number.isFinite(notice.repeat_seconds), `${notice.code} carries no repeat interval`);
   }
+});
+
+test("debt stops growing the moment a user goes dormant", () => {
+  // The debt is the gap between being handed an account and accounting for it -- a fixed distance,
+  // not a running clock. This is the whole reason dormancy is harmless: an idle month adds nothing.
+  const base = {
+    requestClientVersion: "2.0.0",
+    premiumWeighted: 0,
+    totalWeighted: 0,
+    lastServedAt: null,
+    lastReportAt: "2026-06-01T00:00:00.000Z",
+    lastNewAccountAt: "2026-06-01T01:00:00.000Z",   // reported, then served an hour later
+  };
+  for (const now of ["2026-06-02T00:00:00.000Z", "2026-07-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z"]) {
+    const result = evaluateFetchPolicy({ ...base, now: new Date(now) });
+    assert.equal(result.allowed, true, `dormant until ${now} must stay allowed`);
+    assert.deepEqual(result.notices, [], `dormant until ${now} must not even be nagged`);
+  }
+});
+
+test("a single report clears the debt on the very next fetch", () => {
+  const servedAt = "2026-09-08T00:00:00.000Z";
+  const now = new Date("2026-09-10T00:00:00.000Z");
+  const base = {
+    now,
+    requestClientVersion: "2.0.0",
+    premiumWeighted: 0,
+    totalWeighted: 0,
+    lastServedAt: null,
+    lastNewAccountAt: servedAt,
+  };
+
+  const before = evaluateFetchPolicy({ ...base, lastReportAt: null });
+  assert.equal(before.allowed, false);
+  assert.equal(before.reason, "usage_reporting_required");
+
+  // The guard backfills local session logs on its first run, so this report needs no working auth.
+  const after = evaluateFetchPolicy({ ...base, lastReportAt: "2026-09-09T23:00:00.000Z" });
+  assert.equal(after.allowed, true, "reporting once must lift the refusal immediately");
+  assert.deepEqual(after.notices, [], "and stop the nagging with it");
 });
