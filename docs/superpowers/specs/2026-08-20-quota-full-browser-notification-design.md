@@ -32,8 +32,9 @@ An in-memory `Map` (`quotaFullNotifyState`), keyed `${source}:${account_id}:${wi
 1. For every valid window reading, look up the previous value.
 2. Store the new value (overwriting the previous one).
 3. If a previous value existed and was `< 100`, and the new value is `>= 100`, fire a notification.
+4. After processing all current items, drop every map entry whose `source:account_id` is not present in this load's `items` (both the `5h` and `1week` keys for that account).
 
-No previous value (first load, or first valid reading for that account/window) never fires — this prevents notifying for accounts that are already full when the page opens. State is process-local to the tab and resets on reload; this is a live-tab alert, not a persisted log.
+No previous value (first load, first valid reading for that account/window, or the account's first reading after reappearing) never fires — this prevents notifying for accounts that are already full when the page opens. It also means an account that disappears from the active table (archived, invalidated, temporarily absent) and later reappears is treated as a fresh baseline: even if it comes back already at 100%, that alone does not fire, because step 4 erased what we knew about it while it was gone and we cannot tell whether it was already full or just recovered during the gap. A notification only fires again once a subsequent load observes a `<100 → 100` transition while the account stays continuously present. State is process-local to the tab and resets on reload; this is a live-tab alert, not a persisted log.
 
 ## Integration point
 
@@ -63,4 +64,6 @@ Extend the existing `vm`-based dashboard test harness (`tests/dashboard-refresh-
 - a stale, missing, or `reset_unavailable_reason` reading neither updates state nor fires;
 - a window moving between two values both `<100` (e.g. 40% → 60%) does not fire;
 - Codex accounts (no `5h` window) do not throw and are only evaluated on `1week`;
+- an account that drops out of `items` on one load and reappears already at 100% on a later load does not fire (its prior state was cleared while absent);
+- an account that drops out and reappears below 100%, then on a subsequent load reaches 100%, does fire (fresh baseline established, then a genuine transition observed);
 - running the existing dashboard suite with no `Notification` on the harness `window` (current default) still passes unchanged.
