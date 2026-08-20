@@ -37,7 +37,7 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
   const element = (id) => {
     if (!elements.has(id)) {
       const listeners = {};
-      elements.set(id, {
+      const current = {
         id,
         hidden: false,
         value: "",
@@ -48,7 +48,16 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
         addEventListener(type, listener) { listeners[type] = listener; },
         focus() {},
         listeners,
-      });
+      };
+      if (id === "trend-region") {
+        const chart = { dataset: {}, querySelectorAll: () => [] };
+        const legend = { dataset: { trendGroup: "derek@stardust.ai" }, listeners, addEventListener(type, listener) { listeners[type] = listener; } };
+        current.querySelector = (selector) => selector === "[data-trend-chart]" ? chart : null;
+        current.querySelectorAll = (selector) => selector === "[data-trend-legend]" ? [legend] : [];
+        current.trendChart = chart;
+        current.trendLegend = legend;
+      }
+      elements.set(id, current);
     }
     return elements.get(id);
   };
@@ -88,6 +97,8 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
   await new Promise((resolve) => setImmediate(resolve));
   return {
     element,
+    trendChart: element("trend-region").trendChart,
+    trendLegend: element("trend-region").trendLegend,
     replacements,
     getCookie: () => cookieValue,
     setNow(value) { now = value; },
@@ -243,6 +254,32 @@ test("explicit zero remains connected in a trend line", async () => {
   const harness = await pageHarness(async () => response(200, payload));
   const trend = harness.element("trend-region").innerHTML;
   assert.equal((trend.match(/<path class="trend-line"/g) || []).length, 1);
+});
+
+test("trend x-axis labels use unique evenly spaced buckets and intraday time", async () => {
+  const trend = [];
+  for (const bucket of ["09:00:00.000Z", "10:00:00.000Z", "11:00:00.000Z", "12:00:00.000Z"]) {
+    for (const group of ["derek@stardust.ai", "member@stardust.ai"]) {
+      trend.push({ bucket_start: `2026-08-18T${bucket}`, group_value: group, total_tokens: 100 });
+    }
+  }
+  const harness = await pageHarness(async () => response(200, usagePayload({ trend })));
+  const xAxis = harness.element("trend-region").innerHTML.match(/<g aria-label="X axis labels">([\s\S]*?)<\/g>/)?.[1] || "";
+  const labels = [...xAxis.matchAll(/<text[^>]*>([^<]+)<\/text>/g)].map((match) => match[1]);
+  assert.equal(labels.length, 4);
+  assert.equal(new Set(labels).size, labels.length);
+  assert.match(xAxis, /\d{1,2}:00/);
+});
+
+test("legend focus highlights its group and blur clears it without fetching", async () => {
+  let calls = 0;
+  const harness = await pageHarness(async () => { calls += 1; return response(200, usagePayload()); });
+  assert.equal(calls, 1);
+  harness.trendLegend.listeners.focus();
+  assert.equal(harness.trendChart.dataset.highlightGroup, "derek@stardust.ai");
+  harness.trendLegend.listeners.blur();
+  assert.equal(harness.trendChart.dataset.highlightGroup, undefined);
+  assert.equal(calls, 1);
 });
 
 test("breakdown sorts by total and drilldown applies four exact dimensions once", async () => {

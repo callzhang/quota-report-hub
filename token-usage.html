@@ -305,11 +305,15 @@
           const yPosition = y(value).toFixed(1);
           return `<line x1="${padding.left}" y1="${yPosition}" x2="${width - padding.right}" y2="${yPosition}" stroke="currentColor" opacity=".12" /><text x="${padding.left - 8}" y="${Number(yPosition) + 4}" text-anchor="end">${compactNumber(value)}</text>`;
         }).join("");
-        const xSampleCount = Math.min(5, sorted.length);
+        const bucketTimes = [...new Set(sorted.map((point) => new Date(point.bucket_start).getTime()))];
+        const xSampleCount = Math.min(5, bucketTimes.length);
         const xLabels = Array.from({ length: xSampleCount }, (_, index) => {
-          const point = sorted[Math.round(index * (sorted.length - 1) / Math.max(1, xSampleCount - 1))];
-          const time = new Date(point.bucket_start).getTime();
-          return `<text x="${x(time).toFixed(1)}" y="${height - 12}" text-anchor="middle">${escapeHtml(new Date(time).toLocaleDateString())}</text>`;
+          const time = bucketTimes[Math.round(index * (bucketTimes.length - 1) / Math.max(1, xSampleCount - 1))];
+          const date = new Date(time);
+          const label = granularity.value === "day"
+            ? date.toLocaleDateString()
+            : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+          return `<text x="${x(time).toFixed(1)}" y="${height - 12}" text-anchor="middle">${escapeHtml(label)}</text>`;
         }).join("");
         return `<div class="meta">Trend · ${escapeHtml(COUNTERS.find(([label, key]) => key === metricCounter)?.[0] || "Total")} · ${escapeHtml(groupLabel())}. Missing buckets remain gaps; use Tab for exact values.</div>` +
           `<div data-trend-chart><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Token usage trend by ${escapeHtml(groupLabel())}">` +

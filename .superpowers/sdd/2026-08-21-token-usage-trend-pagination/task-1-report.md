@@ -57,3 +57,22 @@ The sole failure is the pre-existing environment-sensitive `assertPortAvailable 
 
 - The full suite remains one test short of clean because the sandbox denied a loopback listener (`EPERM`). This is an environment blocker, not a renderer failure.
 - Legend DOM event binding is exercised by the browser implementation; the lightweight existing VM harness does not implement query selectors, so the binding helper safely no-ops there.
+
+## Review fix round 1
+
+Addressed both review findings:
+
+- X-axis labels now derive from distinct bucket timestamps, sample up to five evenly across the full range, and use local intraday time for hourly/15-minute views. Added a regression with two groups per bucket across four buckets; it verifies four unique, spread labels and intraday text.
+- Enhanced only the dashboard VM harness with minimal chart/legend objects and added a behavioral regression invoking stored focus and blur listeners. It verifies `data-highlight-group` is set and removed without an additional fetch.
+
+Verification after the fix:
+
+```text
+node --test tests/token-usage-dashboard.test.mjs
+tests 12, pass 12, fail 0
+
+npm test
+tests 337, pass 336, fail 1
+```
+
+The same unrelated `assertPortAvailable` loopback bind failure (`EPERM`) remains the only full-suite failure.
