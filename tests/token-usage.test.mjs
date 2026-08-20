@@ -45,7 +45,8 @@ test("normalizes exact ingestion fields and sorts rows deterministically", () =>
 
   assert.equal(result.installation_id, "install-019f");
   assert.deepEqual(result.rows.map((row) => row.model_id), ["a-model", "z-model"]);
-  assert.deepEqual(Object.keys(result).sort(), ["batch_id", "installation_id", "rows"]);
+  assert.deepEqual(Object.keys(result).sort(), ["batch_id", "client_version", "installation_id", "rows"]);
+  assert.equal(result.client_version, null, "a reporter predating client_version still normalizes");
   assert.equal(result.rows[0].model_id, "a-model");
 });
 
@@ -188,4 +189,19 @@ test("allows daily queries older than the 90-day detail window", () => {
   );
   assert.equal(query.granularity, "day");
   assert.equal(query.metric, "cache_write");
+});
+
+test("accepts an optional client_version so the server can gate on reporter age", () => {
+  const result = normalizeTokenUsageBatch(validBody({ client_version: " 2.1.0 " }), { now });
+  assert.equal(result.client_version, "2.1.0");
+});
+
+test("rejects a malformed client_version rather than storing junk", () => {
+  for (const value of [42, "", "x".repeat(33), "2.1\u00000"]) {
+    assert.throws(
+      () => normalizeTokenUsageBatch(validBody({ client_version: value }), { now }),
+      TokenUsageValidationError,
+      `client_version ${JSON.stringify(value)} must be rejected`,
+    );
+  }
 });

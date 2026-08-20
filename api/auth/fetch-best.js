@@ -6,12 +6,14 @@ import {
   dbConfigured,
   getFeatureFlag,
   getInvalidatedUploaderEntry,
+  fetchPolicyInputs,
   hasUploadedAnyHealthyAuth,
   recordAuthPoolFetch,
   upsertAuthPoolEntry,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch-best.js";
+import { PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy } from "../../lib/premium-ratio.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
 import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 
@@ -51,6 +53,49 @@ export default async function handler(req, res) {
     accountId: currentAccountId,
   });
   const repairAuth = invalidatedEntryToRepairAuth(invalidatedEntry);
+
+  // Premium-share gate. It runs before both fetch paths on purpose: 82% of pool traffic is
+  // refresh_current, so a gate that only covered account switches would leave the subsidy that
+  // actually matters — the hub keeping one account's access token alive indefinitely — untouched.
+  const policyWindowStart = new Date(Date.now() - PREMIUM_RATIO_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const policy = evaluateFetchPolicy({
+    ...await fetchPolicyInputs({ email: authContext.email, since: policyWindowStart }),
+    requestClientVersion: body?.client_version ? String(body.client_version) : null,
+  });
+
+  // Live kill switch, separate from the hardcoded schedule: if a phase lands badly the flag turns
+  // refusals off within one request, while the notices keep flowing so users still see where they
+  // stand. Turning enforcement off must never also turn the warnings off.
+  const enforcePolicy = await getFeatureFlag("premium_ratio_enforcement", true);
+
+  if (!policy.allowed && enforcePolicy) {
+    await recordAuthPoolFetch({
+      requesterEmail: authContext.email,
+      requesterId,
+      source,
+      servedEntry: null,
+      reason: policy.reason,
+      currentAccountId,
+      currentQuota,
+    });
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(withTokenUpgrade({
+      ok: true,
+      requested_by: authContext.email,
+      replacement: null,
+      // The repair path stays open even while gated: this hands back the caller's OWN invalidated
+      // auth so they can re-login. It borrows nothing from the pool, and locking someone out of
+      // fixing their own credentials would make the gate impossible to escape.
+      repair_auth: repairAuth,
+      reason: policy.reason,
+      retry_after_seconds: policy.retry_after_seconds,
+      premium_share: policy.premium_share,
+      notices: policy.notices,
+      message: policy.notices[0]?.message || null,
+    }, authContext)));
+    return;
+  }
 
   // Phase 2: a client whose access token is near expiry asks to refresh the account it is
   // already using rather than switch accounts. Return that account's current pool blob (kept
@@ -119,6 +164,8 @@ export default async function handler(req, res) {
           ok: true,
           requested_by: authContext.email,
           disabled_refresh_token: disabledRefreshToken,
+          notices: policy.notices,
+          premium_share: policy.premium_share,
           refreshed_current: true,
           replacement: {
             source: sameEntry.source,
@@ -179,6 +226,7 @@ export default async function handler(req, res) {
           ok: true,
           requested_by: authContext.email,
           replacement: null,
+          notices: policy.notices,
           repair_auth: repairAuth,
           reason: repairAuth ? "uploaded_auth_requires_reauth" : "must_upload_auth_to_pool",
           message: repairAuth
@@ -203,6 +251,7 @@ export default async function handler(req, res) {
     res.end(JSON.stringify(withTokenUpgrade({
       ok: true,
       replacement: null,
+      notices: policy.notices,
       reason: "no_better_auth_available",
     }, authContext)));
     return;
@@ -230,6 +279,8 @@ export default async function handler(req, res) {
       ok: true,
       requested_by: authContext.email,
       disabled_refresh_token: atOnlyMode,
+      notices: policy.notices,
+      premium_share: policy.premium_share,
       replacement: {
         source: entry.source,
         account_id: entry.account_id,

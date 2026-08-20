@@ -19,6 +19,8 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+
+from reporter_version import CLIENT_VERSION
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -2754,6 +2756,10 @@ def fetch_best_auth(
             "current_quota": current_quota or {},
             "requester_id": requester_id or reporter_name(),
             "refresh_current": refresh_current,
+            # The hub gates on this. It travels with the request rather than being looked up from
+            # the last usage batch so a fresh install -- which fetches auth before it has any usage
+            # to report -- can still be recognised as current.
+            "client_version": CLIENT_VERSION,
         }
     ).encode("utf-8")
     request = urllib.request.Request(

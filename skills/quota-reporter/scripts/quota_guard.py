@@ -64,6 +64,8 @@ from token_usage_state import TokenUsageState
 DEFAULT_SELF_UPDATE_REPO = "callzhang/quota-report-hub"
 DEFAULT_SELF_UPDATE_REF = "main"
 SELF_UPDATE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-self-update.json"
+HUB_NOTICE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-hub-notices.json"
+HUB_NOTICE_REPEAT_SECONDS = 6 * 60 * 60
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 AUTH_POOL_MISSING_CONFIG_TEXT = "auth pool not configured (run install_quota_guard.py)"
 
@@ -507,6 +509,59 @@ def show_desktop_notification(title: str, message: str) -> bool:
     except Exception:
         return False
     return False
+
+
+def read_hub_notice_state(state_path: Path = HUB_NOTICE_STATE_PATH) -> dict:
+    if not state_path.exists():
+        return {}
+    try:
+        return json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def notify_hub_notices(
+    result: dict,
+    *,
+    now: float | None = None,
+    state_path: Path = HUB_NOTICE_STATE_PATH,
+) -> dict:
+    """Show hub-side notices as a desktop toast, at most once per code per repeat window.
+
+    The guard runs every 15 minutes. A toast on every run would train people to dismiss it without
+    reading, which is the opposite of what a warning is for -- so each distinct notice code is shown
+    once per HUB_NOTICE_REPEAT_SECONDS. The hub decides what to say; the client only decides how
+    often to say it.
+    """
+    notices = result.get("notices") if isinstance(result, dict) else None
+    if not isinstance(notices, list) or not notices:
+        return {"shown": [], "reason": "no_notices"}
+
+    current = time.time() if now is None else now
+    state = read_hub_notice_state(state_path)
+    shown: list[str] = []
+    for notice in notices:
+        if not isinstance(notice, dict):
+            continue
+        code = str(notice.get("code") or "").strip()
+        message = str(notice.get("message") or "").strip()
+        if not code or not message:
+            continue
+        last_shown = state.get(code)
+        if isinstance(last_shown, (int, float)) and current - last_shown < HUB_NOTICE_REPEAT_SECONDS:
+            continue
+        if show_desktop_notification(str(notice.get("title") or "额度守护"), message):
+            shown.append(code)
+        # Record the attempt either way: a platform without a working notifier must not retry
+        # every 15 minutes forever.
+        state[code] = current
+
+    if shown or state:
+        try:
+            write_self_update_state(state, state_path)
+        except Exception:
+            pass
+    return {"shown": shown}
 
 
 def notify_replacement_success(source: str, replacement: dict) -> dict:
@@ -1202,6 +1257,7 @@ def maybe_replace_codex_auth(
         requester_id=current_codex_payload.get("reporter_name") if current_codex_payload else None,
         refresh_current=refresh_current,
     )
+    notify_hub_notices(result)
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
     if replacement is None and repair_auth is not None:
@@ -1396,6 +1452,7 @@ def maybe_replace_claude_auth(
         requester_id=current_claude_payload.get("reporter_name") if current_claude_payload else None,
         refresh_current=refresh_current,
     )
+    notify_hub_notices(result)
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
     if replacement is None and repair_auth is not None:
