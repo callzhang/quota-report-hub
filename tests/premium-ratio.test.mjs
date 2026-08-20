@@ -8,6 +8,7 @@ import {
   PHASE_REPORTER_GATE_AT,
   PREMIUM_RATIO_COOLDOWN_MINUTES,
   PREMIUM_RATIO_MIN_WEIGHTED_TOKENS,
+  NOTICE_REPEAT_SECONDS,
   PREMIUM_RATIO_THRESHOLD,
   compareVersions,
   evaluateFetchPolicy,
@@ -240,7 +241,7 @@ test("a refresh never starts the debt clock, only a new account does", async () 
   assert.match(source, /String\(reason\) === NEW_ACCOUNT_REASON \? fetchedAt : null/);
 });
 
-test("the hub sets each notice's repeat interval, and the reporting reminder is hourly", () => {
+test("the hub sets the repeat interval rather than the client compiling one in", () => {
   const result = evaluateFetchPolicy({
     now: new Date("2026-08-25T00:00:00.000Z"),
     requestClientVersion: "2.0.0",
@@ -253,7 +254,7 @@ test("the hub sets each notice's repeat interval, and the reporting reminder is 
   assert.equal(result.allowed, true, "before the gate date this only warns");
   const reminder = result.notices.find((notice) => notice.code === "usage_reporting_required");
   assert.ok(reminder, "a user in reporting debt gets the reminder");
-  assert.equal(reminder.repeat_seconds, 3600);
+  assert.equal(reminder.repeat_seconds, NOTICE_REPEAT_SECONDS);
   for (const notice of result.notices) {
     assert.ok(Number.isFinite(notice.repeat_seconds), `${notice.code} carries no repeat interval`);
   }
