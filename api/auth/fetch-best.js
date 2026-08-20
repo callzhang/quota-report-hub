@@ -8,11 +8,12 @@ import {
   getInvalidatedUploaderEntry,
   hasUploadedAnyHealthyAuth,
   recordAuthPoolFetch,
+  upsertAuthPoolEntry,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch-best.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
-import { accessTokenMsUntilExpiry } from "../../lib/token-refresh.js";
+import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -59,14 +60,48 @@ export default async function handler(req, res) {
   if (body?.refresh_current && currentAccountId) {
     const sameEntry = await authPoolEntry(source, currentAccountId);
     if (sameEntry) {
-      const sameAuthJson = await decryptAuthJson(sameEntry);
+      let sameAuthJson = await decryptAuthJson(sameEntry);
+      let idTokenRefreshDead = false;
+      // The codex CLI/app decide locally when to self-refresh based on id_token's ~1h exp, not
+      // access_token's ~10-day one. A pooled/AT-only borrower holds a stripped placeholder
+      // refresh_token, so once id_token goes stale their own refresh attempt always 400s even
+      // though access_token is still valid for days. When the caller is asking specifically
+      // because it is near-expiry, and id_token is what's actually stale, do a real upstream
+      // refresh now (using the real RT this hub holds server-side) and persist it, instead of
+      // silently re-serving the same id_token-expired blob every time.
+      if (source === "codex") {
+        const idMsLeft = codexIdTokenMsUntilExpiry(sameAuthJson);
+        const atMsLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
+        const idStale = idMsLeft !== null && idMsLeft <= 5 * 60 * 1000;
+        const atFresh = atMsLeft !== null && atMsLeft > 5 * 60 * 1000;
+        if (idStale && atFresh) {
+          const refreshed = await verifyAndRefreshAuthBlob(sameAuthJson, source);
+          if (refreshed.ok) {
+            await upsertAuthPoolEntry({
+              source,
+              auth_json: refreshed.auth_json,
+              uploader_email: sameEntry.uploader_email || null,
+              reporter_name: sameEntry.reporter_name || "api-refresh-current",
+              hostname: sameEntry.hostname || "api-refresh-current",
+            });
+            sameAuthJson = refreshed.auth_json;
+          } else if (refreshed.auth_rejected) {
+            // The real RT is dead — this account can't self-heal even though its access_token
+            // still looks fresh. Don't strand the caller on a copy that will 400 every hour;
+            // fall through to a normal replacement (a different healthy account) below.
+            idTokenRefreshDead = true;
+          }
+          // A transient (non-rejected) failure just falls through to the staleness check below
+          // with the original blob — still usable via access_token for now.
+        }
+      }
       // Only hand the same account back if the pooled copy has a genuinely fresh access token.
       // If its AT is already (near) expired — the worker hasn't written a refreshed copy, or every
       // entry for this account is stale — returning it leaves the owner stuck on a copy as dead as
       // its local one. In that case fall through to a normal replacement (a different healthy
       // account) so the owner keeps working instead of dead-locking on its own account.
       const msLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
-      if (msLeft === null || msLeft > 5 * 60 * 1000) {
+      if (!idTokenRefreshDead && (msLeft === null || msLeft > 5 * 60 * 1000)) {
         const disabledRefreshToken = await getFeatureFlag("disabled_refresh_token", false);
         const servedAuthJson = disabledRefreshToken ? stripRefreshToken(sameAuthJson, source) : sameAuthJson;
         await recordAuthPoolFetch({

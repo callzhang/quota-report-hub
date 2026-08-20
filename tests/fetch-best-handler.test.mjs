@@ -284,5 +284,95 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     const xinLog = await db.authPoolFetchLog({ limit: 5 });
     assert.ok(xinLog.some((row) => row.reason === "served"));
     assert.ok(!xinLog.some((row) => row.reason === "repair_returned"), "healthy shared auth should be served before repair handback");
+
+    // Phase 3: refresh_current must force a real upstream refresh when codex's id_token has gone
+    // stale even though its access_token is still fresh for days. The codex CLI/app key their own
+    // self-refresh trigger off id_token (~1h exp), not access_token (~10-day exp); a pooled/AT-only
+    // borrower's local refresh_token is a stripped placeholder, so once id_token goes stale, the
+    // local client's own refresh attempt always 400s ("Invalid refresh token") — this is a
+    // reproduction of exactly that: quota_guard reporting "replacement best_auth_already_installed"
+    // while the local CLI/app kept failing every ~40-60 minutes. Reuses this test's own db/handler
+    // (not fresh imports) so the handler's internally-cached lib/db.js client stays pointed at the
+    // SAME sqlite file this test has been writing to all along.
+    const { decryptAuthJson } = await import(`../lib/auth-pool.js?ts=${Date.now()}`);
+
+    const now = Date.now();
+    function jwt(claims) {
+      const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+      return `x.${payload}.y`;
+    }
+    function jwtExp(jwtStr) {
+      return JSON.parse(Buffer.from(jwtStr.split(".")[1], "base64url").toString("utf8")).exp;
+    }
+    // The pool's canonical account_id is the id_token's email claim (see canonicalCodexAccountId
+    // in lib/auth-pool.js), not the raw tokens.account_id field — keep them matching here.
+    const accountId = "borrowed@stardust.ai";
+
+    // access_token has a real ~10-day exp (far in the future); id_token — what the codex CLI/app
+    // actually key their own self-refresh trigger off — already expired 5 minutes ago. This is
+    // exactly what quota_guard observed: "quota reported | replacement best_auth_already_installed"
+    // while the local CLI/app kept hitting "400 Bad Request: Invalid refresh token" every ~40-60min.
+    await db.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: JSON.stringify({
+        last_refresh: "2026-05-06T00:00:00Z",
+        tokens: {
+          account_id: "borrowed-provider",
+          id_token: jwt({ email: accountId, exp: Math.floor((now - 5 * 60 * 1000) / 1000) }),
+          access_token: jwt({ exp: Math.floor((now + 10 * 24 * 60 * 60 * 1000) / 1000) }),
+          refresh_token: "rt.1.REAL-" + accountId,
+        },
+      }),
+      uploader_email: "derek@stardust.ai",
+      reporter_name: "derek@mac",
+      hostname: "mac",
+    });
+
+    const originalFetch = globalThis.fetch;
+    let refreshCalled = false;
+    globalThis.fetch = async (url, opts) => {
+      refreshCalled = true;
+      assert.match(String(url), /auth\.openai\.com\/oauth\/token/);
+      const body = JSON.parse(opts.body);
+      assert.equal(body.refresh_token, "rt.1.REAL-" + accountId, "must use the real server-held RT, not a placeholder");
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            access_token: jwt({ exp: Math.floor((now + 10 * 24 * 60 * 60 * 1000) / 1000) }),
+            id_token: jwt({ email: "borrowed@stardust.ai", exp: Math.floor((now + 60 * 60 * 1000) / 1000) }),
+            refresh_token: "rt.1.REAL-ROTATED-" + accountId,
+            expires_in: 864000,
+          };
+        },
+      };
+    };
+
+    try {
+      const req = mockJsonRequest({
+        token,
+        body: { source: "codex", requester_id: "derek@mac", current_account_id: accountId, refresh_current: true },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+      const payload = JSON.parse(res.body);
+
+      assert.equal(refreshCalled, true, "must call OpenAI's refresh endpoint when id_token is stale, even though access_token is fresh");
+      assert.equal(res.statusCode, 200);
+      assert.equal(payload.refreshed_current, true);
+      assert.equal(payload.replacement.account_id, accountId, "must refresh the SAME account, not switch to a different one");
+
+      const served = JSON.parse(payload.replacement.auth_json);
+      assert.ok(jwtExp(served.tokens.id_token) * 1000 > now, "served id_token must be freshly minted, not the stale original");
+
+      // The pool entry itself must be persisted with the rotated tokens, not just handed back once.
+      const persistedEntry = await db.authPoolEntry("codex", accountId);
+      const persisted = JSON.parse(await decryptAuthJson(persistedEntry));
+      assert.equal(persisted.tokens.refresh_token, "rt.1.REAL-ROTATED-" + accountId);
+      assert.ok(jwtExp(persisted.tokens.id_token) * 1000 > now);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
