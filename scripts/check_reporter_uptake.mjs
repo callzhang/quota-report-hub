@@ -43,22 +43,41 @@ const rows = (await client.execute({
   args: [since],
 })).rows;
 
-const blocked = rows.filter((row) => clientNeedsUpgrade(row.client_version));
+// A null version means one of two very different things, and conflating them turns a healthy
+// rollout into a false alarm: the client really is too old, OR the user simply has not fetched
+// since RECORDING_SINCE, when the hub started storing the version at all. Only the first is a
+// problem. Everyone still unseen resolves itself on their next fetch.
+const RECORDING_SINCE = "2026-08-20T16:18:00.000Z";
+
+const describe = (row) => ({
+  user: String(row.requester_email).replace(/@.*/, ""),
+  version: row.client_version || "(none)",
+  fetches: Number(row.fetch_count),
+  last_fetch: String(row.last_fetched_at).slice(0, 16).replace("T", " "),
+});
+
+const seen = rows.filter((row) => String(row.last_fetched_at) >= RECORDING_SINCE);
+const unseen = rows.filter((row) => String(row.last_fetched_at) < RECORDING_SINCE);
+const blocked = seen.filter((row) => clientNeedsUpgrade(row.client_version));
 
 console.log(`reporter gate fires ${PHASE_REPORTER_GATE_AT} (minimum client ${MIN_REPORTER_CLIENT_VERSION})`);
 console.log(`active fetchers in the last ${ACTIVE_DAYS} days: ${rows.length}`);
-console.log(`would be refused right now: ${blocked.length}\n`);
+console.log(`  checked in since the hub started recording versions: ${seen.length}`);
+console.log(`  of those, still on an old or absent client: ${blocked.length}`);
+console.log(`  not seen since recording started (verdict pending): ${unseen.length}\n`);
 
 if (blocked.length) {
-  console.table(blocked.map((row) => ({
-    user: String(row.requester_email).replace(/@.*/, ""),
-    version: row.client_version || "(none)",
-    fetches: Number(row.fetch_count),
-    last_fetch: String(row.last_fetched_at).slice(0, 16).replace("T", " "),
-  })));
-  console.log("\nEach of these needs quota_guard running so self_update_skill can pull the new client.");
-} else {
-  console.log("Every active fetcher is on a current client. The gate can fire safely.");
+  console.log("STILL ON AN OLD CLIENT -- these are refused when the gate fires:");
+  console.table(blocked.map(describe));
+  console.log("Each needs quota_guard running so self_update_skill can pull the new client.\n");
+} else if (seen.length) {
+  console.log("Every client seen since recording started is current.\n");
 }
 
+if (unseen.length) {
+  console.log("NOT SEEN YET -- no verdict until each fetches once more:");
+  console.table(unseen.map(describe));
+}
+
+// Only a confirmed-old client is a failure. A pending verdict is not.
 process.exitCode = blocked.length ? 1 : 0;

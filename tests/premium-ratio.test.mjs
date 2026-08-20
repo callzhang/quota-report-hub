@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { isPremiumModel, STANDARD_MODEL_IDS, PREMIUM_MODEL_IDS } from "../lib/model-tiers.js";
+import { isPremiumModel, STANDARD_MODEL_IDS, PREMIUM_MODEL_IDS, SUGGESTED_STANDARD_MODEL_IDS } from "../lib/model-tiers.js";
 import {
   PHASE_RATIO_COOLDOWN_AT,
   PHASE_REPORTER_GATE_AT,
@@ -171,4 +171,29 @@ test("version comparison orders by numeric component, not string", () => {
   assert.equal(compareVersions("2.10.0", "2.9.0"), 1);
   assert.equal(compareVersions("2.0.0", "2.0.0"), 0);
   assert.equal(compareVersions("1.9.9", "2.0.0"), -1);
+});
+
+test("the models the notice recommends are themselves non-premium", () => {
+  // Copy that tells a user to switch to a model which also counts against them is worse than no
+  // advice: they follow it, nothing improves, and they stop trusting the notice.
+  for (const modelId of SUGGESTED_STANDARD_MODEL_IDS) {
+    assert.equal(isPremiumModel(modelId), false, `${modelId} is recommended but counts as premium`);
+  }
+});
+
+test("both ratio notices name the models on each side of the line", () => {
+  const shared = { premiumWeighted: BIG * 0.9, totalWeighted: BIG, lastServedAt: null };
+  const warning = evaluateFetchPolicy({ ...inputs(shared), now: new Date(PHASE_REPORTER_GATE_AT) });
+  const cooldown = evaluateFetchPolicy({ ...inputs(shared), now: new Date(PHASE_RATIO_COOLDOWN_AT) });
+  for (const [label, result] of [["warning", warning], ["cooldown", cooldown]]) {
+    const notice = result.notices.find((item) => item.code.startsWith("premium_ratio"));
+    assert.ok(notice, `${label} produced no ratio notice`);
+    // A rule whose subject the reader has to guess at cannot be complied with.
+    assert.match(notice.message, /gpt-5\.6-sol/, `${label} does not name a premium model`);
+    for (const suggestion of SUGGESTED_STANDARD_MODEL_IDS) {
+      assert.ok(notice.message.includes(suggestion), `${label} does not offer ${suggestion}`);
+    }
+    assert.match(notice.message, /90%/, `${label} does not state the user's own share`);
+    assert.match(notice.message, /50%/, `${label} does not state the target`);
+  }
 });
