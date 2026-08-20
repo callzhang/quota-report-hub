@@ -49,6 +49,29 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
   const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
   assert.ok(script, "token usage inline script must exist");
   const elements = new Map();
+  let activeElement = null;
+  const breakdownButtons = { rows: [], pager: [], byId: new Map() };
+  const makeInteractiveElement = ({ id = "", dataset = {}, disabled = false } = {}) => {
+    const listeners = {};
+    return {
+      id,
+      dataset,
+      disabled,
+      addEventListener(type, listener) { listeners[type] = listener; },
+      focus() { activeElement = this; },
+      listeners,
+    };
+  };
+  const hydrateBreakdownRows = (html) => {
+    breakdownButtons.rows = [...html.matchAll(/<button id="([^"]+)" data-breakdown-index="([^"]+)"/g)]
+      .map(([, id, index]) => makeInteractiveElement({ id, dataset: { breakdownIndex: index } }));
+    breakdownButtons.byId = new Map(breakdownButtons.rows.map((button) => [button.id, button]));
+  };
+  const hydrateBreakdownButtons = (html) => {
+    hydrateBreakdownRows(html);
+    breakdownButtons.pager = [...html.matchAll(/<button data-breakdown-page="([^"]+)"([^>]*)>/g)]
+      .map(([, page, attributes]) => makeInteractiveElement({ dataset: { breakdownPage: page }, disabled: /\sdisabled(?:\s|$)/.test(attributes) }));
+  };
   const element = (id) => {
     if (!elements.has(id)) {
       const listeners = {};
@@ -61,23 +84,76 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
         disabled: false,
         dataset: {},
         addEventListener(type, listener) { listeners[type] = listener; },
-        focus() {},
+        focus() { activeElement = this; },
         listeners,
       };
       if (id === "trend-region") {
-        const chart = { dataset: {}, querySelectorAll: () => [] };
-        const legend = { dataset: { trendGroup: "derek@stardust.ai" }, listeners, addEventListener(type, listener) { listeners[type] = listener; } };
+        const trendLines = [
+          { dataset: { trendGroup: "derek@stardust.ai" }, classList: { states: new Set(), toggle(name, enabled) { if (enabled) this.states.add(name); else this.states.delete(name); }, remove(name) { this.states.delete(name); } } },
+          { dataset: { trendGroup: "member@stardust.ai" }, classList: { states: new Set(), toggle(name, enabled) { if (enabled) this.states.add(name); else this.states.delete(name); }, remove(name) { this.states.delete(name); } } },
+        ];
+        const chart = { dataset: {}, querySelectorAll: (selector) => selector === ".trend-line" ? trendLines : [] };
+        const legend = makeInteractiveElement({ dataset: { trendGroup: "derek@stardust.ai" } });
         current.querySelector = (selector) => selector === "[data-trend-chart]" ? chart : null;
         current.querySelectorAll = (selector) => selector === "[data-trend-legend]" ? [legend] : [];
         current.trendChart = chart;
+        current.trendLines = trendLines;
         current.trendLegend = legend;
+      }
+      if (id === "breakdown-region") {
+        let innerHTML = "";
+        const table = {
+          _innerHTML: "",
+          get innerHTML() { return this._innerHTML; },
+          set innerHTML(value) { this._innerHTML = value; hydrateBreakdownRows(value); },
+        };
+        const range = { _textContent: "", get textContent() { return this._textContent; }, set textContent(value) { this._textContent = value; } };
+        const pageStatus = { _textContent: "", get textContent() { return this._textContent; }, set textContent(value) { this._textContent = value; } };
+        Object.defineProperty(current, "innerHTML", {
+          get() {
+            return innerHTML
+              .replace(/(<div data-breakdown-table>)[\s\S]*?(<\/div>)/, `$1${table.innerHTML}$2`)
+              .replace(/(<span class="meta" data-breakdown-range>)[\s\S]*?(<\/span>)/, `$1${range.textContent}$2`)
+              .replace(/(<span aria-live="polite" data-breakdown-page-status>)[\s\S]*?(<\/span>)/, `$1${pageStatus.textContent}$2`)
+              .replace(/(<button data-breakdown-page="previous"[^>]*?)( disabled)?(>Previous)/, `$1${breakdownButtons.pager.find((button) => button.dataset.breakdownPage === "previous")?.disabled ? " disabled" : ""}$3`)
+              .replace(/(<button data-breakdown-page="next"[^>]*?)( disabled)?(>Next)/, `$1${breakdownButtons.pager.find((button) => button.dataset.breakdownPage === "next")?.disabled ? " disabled" : ""}$3`);
+          },
+          set(value) {
+            innerHTML = value;
+            hydrateBreakdownButtons(value);
+            table._innerHTML = value.match(/<div data-breakdown-table>([\s\S]*?)<\/div>/)?.[1] || "";
+            range._textContent = value.match(/data-breakdown-range>([^<]+)/)?.[1] || "";
+            pageStatus._textContent = value.match(/data-breakdown-page-status>([^<]+)/)?.[1] || "";
+          },
+        });
+        current.querySelector = (selector) => {
+          if (selector === "[data-breakdown-table]") return table;
+          if (selector === "[data-breakdown-range]") return range;
+          if (selector === "[data-breakdown-page-status]") return pageStatus;
+          if (selector === "[data-breakdown-page=previous]") return breakdownButtons.pager.find((button) => button.dataset.breakdownPage === "previous") || null;
+          if (selector === "[data-breakdown-page=next]") return breakdownButtons.pager.find((button) => button.dataset.breakdownPage === "next") || null;
+          return null;
+        };
+        current.querySelectorAll = (selector) => {
+          if (selector === "[data-breakdown-index]") return breakdownButtons.rows;
+          if (selector === "[data-breakdown-page]") return breakdownButtons.pager;
+          return [];
+        };
       }
       elements.set(id, current);
     }
     return elements.get(id);
   };
   let cookieValue = initialToken ? `quota_report_hub_token=${encodeURIComponent(initialToken)}` : "";
-  const document = { getElementById: element, querySelectorAll: () => [] };
+  const document = {
+    get activeElement() { return activeElement; },
+    getElementById(id) { return /^breakdown-\d+$/.test(id) ? breakdownButtons.byId.get(id) || null : element(id); },
+    querySelectorAll(selector) {
+      if (selector === "[data-breakdown-index]") return breakdownButtons.rows;
+      if (selector === "[data-breakdown-page]") return breakdownButtons.pager;
+      return [];
+    },
+  };
   Object.defineProperty(document, "cookie", {
     get() { return cookieValue; },
     set(value) { cookieValue = value.includes("Max-Age=0") ? "" : value.split(";")[0]; },
@@ -113,7 +189,10 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
   return {
     element,
     trendChart: element("trend-region").trendChart,
+    trendLines: element("trend-region").trendLines,
     trendLegend: element("trend-region").trendLegend,
+    get breakdownNext() { return breakdownButtons.pager.find((button) => button.dataset.breakdownPage === "next"); },
+    get activeElement() { return document.activeElement; },
     replacements,
     getCookie: () => cookieValue,
     setNow(value) { now = value; },
@@ -282,6 +361,18 @@ test("explicit zero remains connected in a trend line", async () => {
   assert.equal((trend.match(/<path class="trend-line"/g) || []).length, 1);
 });
 
+test("singleton trend segments include painted line geometry while their exact-value markers stay hidden", async () => {
+  const payload = usagePayload({ trend: [
+    { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100 },
+    { bucket_start: "2026-08-18T11:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 200 },
+  ] });
+  const harness = await pageHarness(async () => response(200, payload));
+  const trend = harness.element("trend-region").innerHTML;
+  assert.match(trend, /<path class="trend-line"[^>]*d="M[^\"]+ L[^\"]+"/);
+  const html = await readFile(new URL("../token-usage.html", import.meta.url), "utf8");
+  assert.match(html, /\.trend-point \{ opacity: 0/);
+});
+
 test("trend x-axis labels use unique evenly spaced buckets and intraday time", async () => {
   const trend = [];
   for (const bucket of ["09:00:00.000Z", "10:00:00.000Z", "11:00:00.000Z", "12:00:00.000Z"]) {
@@ -297,15 +388,40 @@ test("trend x-axis labels use unique evenly spaced buckets and intraday time", a
   assert.match(xAxis, /\d{1,2}:00/);
 });
 
+test("multi-day hourly trend labels include compact local dates and times", async () => {
+  const trend = Array.from({ length: 7 }, (_, index) => ({
+    bucket_start: new Date(Date.UTC(2026, 7, 17 + index, 9)).toISOString(),
+    group_value: "derek@stardust.ai",
+    total_tokens: 100 + index,
+  }));
+  const harness = await pageHarness(async () => response(200, usagePayload({ trend })));
+  const xAxis = harness.element("trend-region").innerHTML.match(/<g aria-label="X axis labels">([\s\S]*?)<\/g>/)?.[1] || "";
+  assert.ok((xAxis.match(/<text /g) || []).length <= 5);
+  assert.match(xAxis, /<tspan[^>]*>[^<]+<\/tspan><tspan[^>]*>[^<]+<\/tspan>/);
+});
+
 test("legend focus highlights its group and blur clears it without fetching", async () => {
   let calls = 0;
   const harness = await pageHarness(async () => { calls += 1; return response(200, usagePayload()); });
   assert.equal(calls, 1);
   harness.trendLegend.listeners.focus();
   assert.equal(harness.trendChart.dataset.highlightGroup, "derek@stardust.ai");
+  assert.equal(harness.trendLines[0].classList.states.has("is-highlighted"), true);
+  assert.equal(harness.trendLines[1].classList.states.has("is-highlighted"), false);
   harness.trendLegend.listeners.blur();
   assert.equal(harness.trendChart.dataset.highlightGroup, undefined);
   assert.equal(calls, 1);
+});
+
+test("focused Next keeps its logical control after local paging", async () => {
+  let calls = 0;
+  const harness = await pageHarness(async () => { calls += 1; return response(200, usagePayload({ breakdown: breakdownRows() })); });
+  const next = harness.breakdownNext;
+  next.focus();
+  next.listeners.click();
+  assert.match(harness.element("breakdown-region").innerHTML, /Showing 21–40 of 42/);
+  assert.equal(calls, 1);
+  assert.equal(harness.activeElement, harness.breakdownNext);
 });
 
 test("breakdown paginates locally without additional fetches and resets on a successful payload", async () => {

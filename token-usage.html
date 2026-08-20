@@ -295,9 +295,15 @@
           const color = stableColor(group);
           const segments = splitTrendSegments(groupPoints);
           for (const entries of segments) {
-            const path = entries.map(({ point, time }, index) =>
-              `${index ? "L" : "M"}${x(time).toFixed(1)} ${y(Number(point[metricCounter] || 0)).toFixed(1)}`
-            ).join(" ");
+            const path = entries.length === 1
+              ? (() => {
+                const { point, time } = entries[0];
+                const yPosition = y(Number(point[metricCounter] || 0)).toFixed(1);
+                return `M${(x(time) - 3).toFixed(1)} ${yPosition} L${(x(time) + 3).toFixed(1)} ${yPosition}`;
+              })()
+              : entries.map(({ point, time }, index) =>
+                `${index ? "L" : "M"}${x(time).toFixed(1)} ${y(Number(point[metricCounter] || 0)).toFixed(1)}`
+              ).join(" ");
             paths.push(`<path class="trend-line" data-trend-group="${escapeHtml(group)}" d="${path}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />`);
           }
           for (const { point, time } of groupPoints.map((point) => ({ point, time: new Date(point.bucket_start).getTime() }))) {
@@ -312,13 +318,18 @@
         }).join("");
         const bucketTimes = [...new Set(sorted.map((point) => new Date(point.bucket_start).getTime()))];
         const xSampleCount = Math.min(5, bucketTimes.length);
+        const rangeCrossesLocalDays = new Date(minimumTime).toLocaleDateString() !== new Date(maximumTime).toLocaleDateString();
         const xLabels = Array.from({ length: xSampleCount }, (_, index) => {
           const time = bucketTimes[Math.round(index * (bucketTimes.length - 1) / Math.max(1, xSampleCount - 1))];
           const date = new Date(time);
-          const label = granularity.value === "day"
-            ? date.toLocaleDateString()
-            : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-          return `<text x="${x(time).toFixed(1)}" y="${height - 12}" text-anchor="middle">${escapeHtml(label)}</text>`;
+          const xPosition = x(time).toFixed(1);
+          if (granularity.value !== "day" && rangeCrossesLocalDays) {
+            const dateLabel = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+            const timeLabel = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+            return `<text x="${xPosition}" y="${height - 22}" text-anchor="middle"><tspan x="${xPosition}" dy="0">${escapeHtml(dateLabel)}</tspan><tspan x="${xPosition}" dy="12">${escapeHtml(timeLabel)}</tspan></text>`;
+          }
+          const label = granularity.value === "day" ? date.toLocaleDateString() : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+          return `<text x="${xPosition}" y="${height - 12}" text-anchor="middle">${escapeHtml(label)}</text>`;
         }).join("");
         return `<div class="meta">Trend · ${escapeHtml(COUNTERS.find(([label, key]) => key === metricCounter)?.[0] || "Total")} · ${escapeHtml(groupLabel())}. Missing buckets remain gaps; use Tab for exact values.</div>` +
           `<div data-trend-chart><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Token usage trend by ${escapeHtml(groupLabel())}">` +
@@ -368,26 +379,40 @@
           COUNTERS.map(([, key]) => `<td>${number(row[key])}</td>`).join("") + `</tr>`).join("");
         const previousDisabled = breakdownPage === 1 ? " disabled" : "";
         const nextDisabled = breakdownPage === pageCount ? " disabled" : "";
-        return `<table><thead><tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>` +
-          `<div class="breakdown-pagination" aria-label="Breakdown pagination"><span class="meta">Showing ${startIndex + 1}–${endIndex} of ${rows.length}</span>` +
+        return `<div data-breakdown-table><table><thead><tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>` +
+          `<div class="breakdown-pagination" aria-label="Breakdown pagination"><span class="meta" data-breakdown-range>Showing ${startIndex + 1}–${endIndex} of ${rows.length}</span>` +
           `<div class="pager-actions"><button data-breakdown-page="previous" aria-label="Previous breakdown page"${previousDisabled}>Previous</button>` +
-          `<span aria-live="polite">Page ${breakdownPage} of ${pageCount}</span><button data-breakdown-page="next" aria-label="Next breakdown page"${nextDisabled}>Next</button></div></div>`;
+          `<span aria-live="polite" data-breakdown-page-status>Page ${breakdownPage} of ${pageCount}</span><button data-breakdown-page="next" aria-label="Next breakdown page"${nextDisabled}>Next</button></div></div>`;
       }
 
       function goToBreakdownPage(delta) {
         const rows = JSON.parse(breakdownRegion.dataset.rows || "[]");
         const pageCount = Math.max(1, Math.ceil(rows.length / BREAKDOWN_PAGE_SIZE));
         breakdownPage = Math.min(pageCount, Math.max(1, breakdownPage + delta));
-        breakdownRegion.innerHTML = renderBreakdownPage();
+        const table = breakdownRegion.querySelector("[data-breakdown-table]");
+        if (!table) {
+          breakdownRegion.innerHTML = renderBreakdownPage();
+          bindBreakdownActions();
+          return;
+        }
+        const pageMarkup = renderBreakdownPage();
+        table.innerHTML = pageMarkup.match(/<div data-breakdown-table>([\s\S]*?)<\/div>/)?.[1] || "";
+        const range = pageMarkup.match(/data-breakdown-range>[^<]+/)?.[0]?.replace("data-breakdown-range>", "");
+        breakdownRegion.querySelector("[data-breakdown-range]").textContent = range || "";
+        breakdownRegion.querySelector("[data-breakdown-page-status]").textContent = `Page ${breakdownPage} of ${pageCount}`;
+        breakdownRegion.querySelector("[data-breakdown-page=previous]").disabled = breakdownPage === 1;
+        breakdownRegion.querySelector("[data-breakdown-page=next]").disabled = breakdownPage === pageCount;
         bindBreakdownActions();
       }
 
       function bindBreakdownActions() {
         const rows = JSON.parse(breakdownRegion.dataset.rows || "[]");
-        document.querySelectorAll("[data-breakdown-index]").forEach((button) => {
+        breakdownRegion.querySelectorAll("[data-breakdown-index]").forEach((button) => {
           button.addEventListener("click", () => applyBreakdownFilters(rows[Number(button.dataset.breakdownIndex)]));
         });
-        document.querySelectorAll("[data-breakdown-page]").forEach((button) => {
+        breakdownRegion.querySelectorAll("[data-breakdown-page]").forEach((button) => {
+          if (button.dataset.breakdownBound) return;
+          button.dataset.breakdownBound = "true";
           button.addEventListener("click", () => goToBreakdownPage(button.dataset.breakdownPage === "previous" ? -1 : 1));
         });
         if (pendingBreakdownFocus) {
