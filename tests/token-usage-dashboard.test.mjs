@@ -200,6 +200,7 @@ test("summary and accessible trend render exact counters without inventing data"
     totals: { total_tokens: 1200, input_tokens: 700, output_tokens: 200, cache_read_tokens: 250, cache_write_tokens: 50, reasoning_tokens: 33 },
     trend: [
       { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100, input_tokens: 60, output_tokens: 20, cache_read_tokens: 15, cache_write_tokens: 5, reasoning_tokens: 3 },
+      { bucket_start: "2026-08-18T10:00:00.000Z", group_value: "member@stardust.ai", total_tokens: 50, input_tokens: 30, output_tokens: 10, cache_read_tokens: 7, cache_write_tokens: 3, reasoning_tokens: 1 },
       { bucket_start: "2026-08-18T11:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 200, input_tokens: 120, output_tokens: 40, cache_read_tokens: 30, cache_write_tokens: 10, reasoning_tokens: 4 },
     ],
   });
@@ -214,14 +215,34 @@ test("summary and accessible trend render exact counters without inventing data"
   assert.match(summary, /Cache write 50/);
   assert.match(summary, /Reasoning 33/);
   assert.match(summary, /subsets of Total/);
+  assert.match(trend, /Trend · Total/);
   assert.match(trend, /<svg/);
   assert.match(trend, /tabindex="0"/);
   assert.match(trend, /derek@stardust\.ai/);
+  assert.match(trend, /member@stardust\.ai/);
   assert.match(trend, /total 100/);
   assert.match(trend, /input 60/);
   assert.match(trend, /cache read 15/);
   assert.match(trend, /reasoning 3/);
-  assert.equal((trend.match(/<path /g) || []).length, 2, "missing hourly bucket splits the path");
+  assert.match(trend, /data-trend-group="derek@stardust\.ai"/);
+  assert.match(trend, /data-trend-group="member@stardust\.ai"/);
+  assert.match(trend, /stroke-width="1\.8"/);
+  assert.match(trend, /stroke-linecap="round"/);
+  assert.match(trend, /data-trend-point/);
+  assert.match(trend, /aria-label="Y axis/);
+  assert.match(trend, /aria-label="X axis/);
+  assert.equal((trend.match(/<path class="trend-line"/g) || []).length, 3, "missing hourly bucket splits the path");
+});
+
+test("explicit zero remains connected in a trend line", async () => {
+  const payload = usagePayload({ trend: [
+    { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100 },
+    { bucket_start: "2026-08-18T10:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 0 },
+    { bucket_start: "2026-08-18T11:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 200 },
+  ] });
+  const harness = await pageHarness(async () => response(200, payload));
+  const trend = harness.element("trend-region").innerHTML;
+  assert.equal((trend.match(/<path class="trend-line"/g) || []).length, 1);
 });
 
 test("breakdown sorts by total and drilldown applies four exact dimensions once", async () => {

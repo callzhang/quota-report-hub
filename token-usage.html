@@ -62,8 +62,12 @@
       .table-shell { overflow-x: auto; }
       #trend-region svg { display: block; width: 100%; min-height: 260px; margin-top: 12px; overflow: visible; }
       .trend-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
-      .trend-legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+      .trend-legend button { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; min-height: 30px; padding: 4px 8px; }
       .trend-legend i { width: 10px; height: 10px; border-radius: 50%; }
+      .trend-point { opacity: 0; transition: opacity .12s ease; }
+      .trend-point:hover, .trend-point:focus { opacity: 1; }
+      [data-trend-chart][data-highlight-group] .trend-line { opacity: .18; }
+      [data-trend-chart][data-highlight-group] .trend-line.is-highlighted { opacity: 1; }
     </style>
   </head>
   <body>
@@ -236,6 +240,27 @@
           COUNTERS.map(([label, key]) => `${label.toLowerCase()} ${number(point[key])}`).join(", ");
       }
 
+      function compactNumber(value) {
+        return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
+      }
+
+      function splitTrendSegments(points) {
+        const segments = [];
+        let segment = [];
+        let previousTime = null;
+        for (const point of points) {
+          const time = new Date(point.bucket_start).getTime();
+          if (previousTime !== null && time - previousTime > trendBucketMs() * 1.5) {
+            segments.push(segment);
+            segment = [];
+          }
+          segment.push({ point, time });
+          previousTime = time;
+        }
+        if (segment.length) segments.push(segment);
+        return segments;
+      }
+
       function renderTrendChart(points) {
         if (!points.length) return '<div class="empty">No usage in this range.</div>';
         const width = 760;
@@ -245,32 +270,15 @@
         const sorted = [...points].sort((a, b) =>
           String(a.bucket_start).localeCompare(String(b.bucket_start)) || String(a.group_value).localeCompare(String(b.group_value))
         );
-        const bucketRows = new Map();
-        for (const point of sorted) {
-          if (!bucketRows.has(point.bucket_start)) bucketRows.set(point.bucket_start, []);
-          bucketRows.get(point.bucket_start).push(point);
-        }
-        const stacked = [];
-        let maximum = 0;
-        for (const rows of bucketRows.values()) {
-          let base = 0;
-          for (const point of rows) {
-            const value = Number(point[metricCounter] || 0);
-            const stackedPoint = { ...point, stack_base: base, stack_top: base + value };
-            stacked.push(stackedPoint);
-            base += value;
-          }
-          maximum = Math.max(maximum, base);
-        }
-        maximum = Math.max(1, maximum);
-        const times = stacked.map((point) => new Date(point.bucket_start).getTime());
+        const maximum = Math.max(1, ...sorted.map((point) => Number(point[metricCounter] || 0)));
+        const times = sorted.map((point) => new Date(point.bucket_start).getTime());
         const minimumTime = Math.min(...times);
         const maximumTime = Math.max(...times);
         const timeSpan = Math.max(trendBucketMs(), maximumTime - minimumTime);
         const x = (time) => padding.left + ((time - minimumTime) / timeSpan) * (width - padding.left - padding.right);
         const y = (value) => padding.top + (1 - value / maximum) * (height - padding.top - padding.bottom);
         const byGroup = new Map();
-        for (const point of stacked) {
+        for (const point of sorted) {
           const key = String(point.group_value || "Unknown");
           if (!byGroup.has(key)) byGroup.set(key, []);
           byGroup.get(key).push(point);
@@ -280,34 +288,54 @@
         const legend = [];
         for (const [group, groupPoints] of byGroup) {
           const color = stableColor(group);
-          const segments = [];
-          let segment = [];
-          let previousTime = null;
-          for (const point of groupPoints) {
-            const time = new Date(point.bucket_start).getTime();
-            if (previousTime !== null && time - previousTime > trendBucketMs() * 1.5) {
-              segments.push(segment);
-              segment = [];
-            }
-            segment.push({ point, time });
-            previousTime = time;
-          }
-          if (segment.length) segments.push(segment);
+          const segments = splitTrendSegments(groupPoints);
           for (const entries of segments) {
             const path = entries.map(({ point, time }, index) =>
-              `${index ? "L" : "M"}${x(time).toFixed(1)} ${y(point.stack_top).toFixed(1)}`
+              `${index ? "L" : "M"}${x(time).toFixed(1)} ${y(Number(point[metricCounter] || 0)).toFixed(1)}`
             ).join(" ");
-            paths.push(`<path d="${path}" fill="none" stroke="${color}" stroke-width="3" />`);
+            paths.push(`<path class="trend-line" data-trend-group="${escapeHtml(group)}" d="${path}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />`);
           }
           for (const { point, time } of groupPoints.map((point) => ({ point, time: new Date(point.bucket_start).getTime() }))) {
-            circles.push(`<circle cx="${x(time).toFixed(1)}" cy="${y(point.stack_top).toFixed(1)}" r="5" fill="${color}" tabindex="0" role="img" aria-label="${escapeHtml(pointLabel(point))}" />`);
+            circles.push(`<circle class="trend-point" data-trend-point data-trend-group="${escapeHtml(group)}" cx="${x(time).toFixed(1)}" cy="${y(Number(point[metricCounter] || 0)).toFixed(1)}" r="4" fill="${color}" tabindex="0" role="img" aria-label="${escapeHtml(pointLabel(point))}" />`);
           }
-          legend.push(`<span><i style="background:${color}"></i>${escapeHtml(group)}</span>`);
+          legend.push(`<button type="button" data-trend-legend data-trend-group="${escapeHtml(group)}"><i style="background:${color}"></i>${escapeHtml(group)}</button>`);
         }
-        return `<div class="meta">Stacked by ${escapeHtml(groupLabel())}. Missing buckets remain gaps; use Tab for exact values.</div>` +
-          `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Token usage trend stacked by ${escapeHtml(groupLabel())}">` +
-          `<line x1="${padding.left}" y1="${height - padding.bottom}" x2="${width - padding.right}" y2="${height - padding.bottom}" stroke="currentColor" opacity=".25" />` +
-          paths.join("") + circles.join("") + `</svg><div class="trend-legend">${legend.join("")}</div>`;
+        const grid = Array.from({ length: 4 }, (_, index) => {
+          const value = maximum * (1 - index / 3);
+          const yPosition = y(value).toFixed(1);
+          return `<line x1="${padding.left}" y1="${yPosition}" x2="${width - padding.right}" y2="${yPosition}" stroke="currentColor" opacity=".12" /><text x="${padding.left - 8}" y="${Number(yPosition) + 4}" text-anchor="end">${compactNumber(value)}</text>`;
+        }).join("");
+        const xSampleCount = Math.min(5, sorted.length);
+        const xLabels = Array.from({ length: xSampleCount }, (_, index) => {
+          const point = sorted[Math.round(index * (sorted.length - 1) / Math.max(1, xSampleCount - 1))];
+          const time = new Date(point.bucket_start).getTime();
+          return `<text x="${x(time).toFixed(1)}" y="${height - 12}" text-anchor="middle">${escapeHtml(new Date(time).toLocaleDateString())}</text>`;
+        }).join("");
+        return `<div class="meta">Trend · ${escapeHtml(COUNTERS.find(([label, key]) => key === metricCounter)?.[0] || "Total")} · ${escapeHtml(groupLabel())}. Missing buckets remain gaps; use Tab for exact values.</div>` +
+          `<div data-trend-chart><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Token usage trend by ${escapeHtml(groupLabel())}">` +
+          `<g aria-label="Y axis labels">${grid}</g><g aria-label="X axis labels">${xLabels}</g>` + paths.join("") + circles.join("") + `</svg></div><div class="trend-legend">${legend.join("")}</div>`;
+      }
+
+      function bindTrendLegendActions() {
+        if (typeof trendRegion.querySelector !== "function") return;
+        const chart = trendRegion.querySelector("[data-trend-chart]");
+        if (!chart) return;
+        trendRegion.querySelectorAll("[data-trend-legend]").forEach((legend) => {
+          const setHighlight = () => {
+            chart.dataset.highlightGroup = legend.dataset.trendGroup;
+            chart.querySelectorAll(".trend-line").forEach((line) => {
+              line.classList.toggle("is-highlighted", line.dataset.trendGroup === legend.dataset.trendGroup);
+            });
+          };
+          const clearHighlight = () => {
+            delete chart.dataset.highlightGroup;
+            chart.querySelectorAll(".trend-line").forEach((line) => line.classList.remove("is-highlighted"));
+          };
+          legend.addEventListener("mouseenter", setHighlight);
+          legend.addEventListener("focus", setHighlight);
+          legend.addEventListener("mouseleave", clearHighlight);
+          legend.addEventListener("blur", clearHighlight);
+        });
       }
 
       function renderBreakdown(rows) {
@@ -387,6 +415,7 @@
             `<div class="meta">Cache read ${number(totals.cache_read_tokens)} · Cache write ${number(totals.cache_write_tokens)} · Reasoning ${number(totals.reasoning_tokens)}. These are subsets of Total, not additions.</div></article>`,
         ].join("");
         trendRegion.innerHTML = renderTrendChart(payload.trend || []);
+        bindTrendLegendActions();
         breakdownRegion.innerHTML = renderBreakdown(payload.breakdown || []);
         bindBreakdownActions();
       }
