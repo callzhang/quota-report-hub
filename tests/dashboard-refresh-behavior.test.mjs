@@ -44,7 +44,7 @@ function quotaItem(overrides = {}) {
   };
 }
 
-async function dashboardHarness(fetchImpl, initialToken = "old-token", { notificationPermission = "granted" } = {}) {
+async function dashboardHarness(fetchImpl, initialToken = "old-token", { notificationPermission } = {}) {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
   assert.ok(script, "dashboard inline script must exist");
@@ -100,6 +100,18 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token", { notific
     currentNotificationPermission = "granted";
     return currentNotificationPermission;
   };
+  const windowMock = {
+    innerWidth: 1280,
+    innerHeight: 800,
+    addEventListener(type, listener) { windowListeners.set(type, listener); },
+    removeEventListener(type, listener) {
+      if (windowListeners.get(type) === listener) windowListeners.delete(type);
+    },
+  };
+  if (notificationPermission !== undefined) {
+    windowMock.focus = () => { windowFocusCalls += 1; };
+    windowMock.Notification = NotificationMock;
+  }
   const context = vm.createContext({
     document,
     location: { protocol: "https:", origin: "https://hub.example" },
@@ -111,16 +123,7 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token", { notific
     setInterval() {},
     setTimeout,
     clearTimeout,
-    window: {
-      innerWidth: 1280,
-      innerHeight: 800,
-      addEventListener(type, listener) { windowListeners.set(type, listener); },
-      removeEventListener(type, listener) {
-        if (windowListeners.get(type) === listener) windowListeners.delete(type);
-      },
-      focus() { windowFocusCalls += 1; },
-      Notification: NotificationMock,
-    },
+    window: windowMock,
     console,
   });
   vm.runInContext(script, context);
@@ -388,7 +391,7 @@ test("a revision 401 received after the page becomes hidden does not retry full 
 });
 
 test("checkQuotaFullNotifications fires when a window recovers from below 100 to 100", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
   const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
 
@@ -402,7 +405,7 @@ test("checkQuotaFullNotifications fires when a window recovers from below 100 to
 });
 
 test("checkQuotaFullNotifications does not fire for an account already at 100 on first load", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 100 } } })];
 
   harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
@@ -411,7 +414,7 @@ test("checkQuotaFullNotifications does not fire for an account already at 100 on
 });
 
 test("checkQuotaFullNotifications does not fire when remaining percent changes but stays below 100", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const step1 = [quotaItem({ display_windows: { "5h": { remaining_percent: 40 }, "1week": { remaining_percent: 40 } } })];
   const step2 = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 40 } } })];
 
@@ -422,7 +425,7 @@ test("checkQuotaFullNotifications does not fire when remaining percent changes b
 });
 
 test("checkQuotaFullNotifications ignores stale readings and does not fire off them", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
   const staleFull = [quotaItem({ display_windows_stale: true, display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
   const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
@@ -436,7 +439,7 @@ test("checkQuotaFullNotifications ignores stale readings and does not fire off t
 });
 
 test("checkQuotaFullNotifications ignores unavailable or missing readings", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
   const unavailable = [quotaItem({ display_windows: { "5h": { remaining_percent: null, reset_unavailable_reason: "auth_token_expired" }, "1week": { remaining_percent: 60 } } })];
   const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
@@ -450,7 +453,7 @@ test("checkQuotaFullNotifications ignores unavailable or missing readings", asyn
 });
 
 test("checkQuotaFullNotifications ignores a reading with reset_unavailable_reason even when remaining_percent is present", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
   const unavailableButPresent = [quotaItem({ display_windows: { "5h": { remaining_percent: 100, reset_unavailable_reason: "quota_window_expired" }, "1week": { remaining_percent: 60 } } })];
   const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
@@ -464,7 +467,7 @@ test("checkQuotaFullNotifications ignores a reading with reset_unavailable_reaso
 });
 
 test("checkQuotaFullNotifications handles Codex accounts with no 5h window", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const low = [{ source: "codex", account_id: "codex-1", email: "bob@example.com", display_windows: { "1week": { remaining_percent: 60 } } }];
   const full = [{ source: "codex", account_id: "codex-1", email: "bob@example.com", display_windows: { "1week": { remaining_percent: 100 } } }];
 
@@ -478,7 +481,7 @@ test("checkQuotaFullNotifications handles Codex accounts with no 5h window", asy
 });
 
 test("checkQuotaFullNotifications treats a reappearing account as a fresh baseline", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
   const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
 
@@ -490,7 +493,7 @@ test("checkQuotaFullNotifications treats a reappearing account as a fresh baseli
 });
 
 test("checkQuotaFullNotifications fires again after a reappearance establishes a new baseline and then recovers", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
   const reappearedLow = [quotaItem({ display_windows: { "5h": { remaining_percent: 40 }, "1week": { remaining_percent: 60 } } })];
   const reappearedFull = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
@@ -531,7 +534,7 @@ test("checkQuotaFullNotifications does not throw when notification construction 
 });
 
 test("clicking a fired notification focuses the window", async () => {
-  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
   const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
   const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
 
@@ -541,6 +544,18 @@ test("clicking a fired notification focuses the window", async () => {
   assert.equal(harness.notifications.length, 1);
   harness.notifications[0].onclick();
   assert.equal(harness.getWindowFocusCalls(), 1);
+});
+
+test("checkQuotaFullNotifications and requestQuotaFullNotificationPermission do not throw when the browser has no Notification API", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 100 } } })];
+  assert.doesNotThrow(() => {
+    harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+    harness.evaluate(`requestQuotaFullNotificationPermission()`);
+  });
 });
 
 test("dashboard init requests notification permission when it is in the default state", async () => {
