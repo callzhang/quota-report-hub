@@ -692,7 +692,7 @@
           </div>`;
       }
 
-      function quotaFullNotifyKey(item, windowKey) {
+      function quotaFullNotifyTag(item, windowKey) {
         return `${item.source}:${item.account_id}:${windowKey}`;
       }
 
@@ -700,11 +700,10 @@
         if (typeof window === "undefined" || !("Notification" in window)) return;
         if (window.Notification.permission !== "granted") return;
         const label = item.email || item.account_id;
-        const windowLabel = windowKey === "5h" ? "5h" : "1week";
         try {
           const notification = new window.Notification(`${label} (${item.source}) quota is back to 100%`, {
-            body: `${windowLabel} window full`,
-            tag: quotaFullNotifyKey(item, windowKey),
+            body: `${windowKey} window full`,
+            tag: quotaFullNotifyTag(item, windowKey),
           });
           notification.onclick = () => { window.focus(); };
         } catch {
@@ -715,7 +714,7 @@
       function checkQuotaFullNotifications(items) {
         const seenAccounts = new Set();
         for (const item of items || []) {
-          const accountKey = `${item.source}:${item.account_id}`;
+          const accountKey = accountItemKey(item.source, item.account_id);
           seenAccounts.add(accountKey);
           const stale = item.display_windows_stale ?? item.windows_stale;
           if (stale) continue;
@@ -724,17 +723,20 @@
             if (!windowData || windowData.remaining_percent === null || windowData.remaining_percent === undefined) continue;
             if (windowData.reset_unavailable_reason) continue;
             const percent = Number(windowData.remaining_percent);
-            const stateKey = quotaFullNotifyKey(item, windowKey);
-            const previous = quotaFullNotifyState.get(stateKey);
-            quotaFullNotifyState.set(stateKey, percent);
+            let windowState = quotaFullNotifyState.get(accountKey);
+            if (!windowState) {
+              windowState = new Map();
+              quotaFullNotifyState.set(accountKey, windowState);
+            }
+            const previous = windowState.get(windowKey);
+            windowState.set(windowKey, percent);
             if (previous !== undefined && previous < 100 && percent >= 100) {
               fireQuotaFullNotification(item, windowKey);
             }
           }
         }
-        for (const stateKey of [...quotaFullNotifyState.keys()]) {
-          const accountKey = stateKey.slice(0, stateKey.lastIndexOf(":"));
-          if (!seenAccounts.has(accountKey)) quotaFullNotifyState.delete(stateKey);
+        for (const accountKey of [...quotaFullNotifyState.keys()]) {
+          if (!seenAccounts.has(accountKey)) quotaFullNotifyState.delete(accountKey);
         }
       }
 

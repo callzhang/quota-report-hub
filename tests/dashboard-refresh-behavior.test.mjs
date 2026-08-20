@@ -449,6 +449,20 @@ test("checkQuotaFullNotifications ignores unavailable or missing readings", asyn
   assert.equal(harness.notifications.length, 1);
 });
 
+test("checkQuotaFullNotifications ignores a reading with reset_unavailable_reason even when remaining_percent is present", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const unavailableButPresent = [quotaItem({ display_windows: { "5h": { remaining_percent: 100, reset_unavailable_reason: "quota_window_expired" }, "1week": { remaining_percent: 60 } } })];
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(unavailableButPresent)})`);
+  assert.equal(harness.notifications.length, 0, "a reading marked reset_unavailable_reason must not fire even with remaining_percent 100");
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+  assert.equal(harness.notifications.length, 1, "the prior valid (60) baseline must still be intact so a later genuine 100 reading fires");
+});
+
 test("checkQuotaFullNotifications handles Codex accounts with no 5h window", async () => {
   const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
   const low = [{ source: "codex", account_id: "codex-1", email: "bob@example.com", display_windows: { "1week": { remaining_percent: 60 } } }];
