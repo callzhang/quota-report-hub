@@ -740,6 +740,17 @@
         }
       }
 
+      function requestQuotaFullNotificationPermission() {
+        if (typeof window === "undefined" || !("Notification" in window)) return;
+        if (window.Notification.permission !== "default") return;
+        try {
+          const result = window.Notification.requestPermission();
+          if (result && typeof result.catch === "function") result.catch(() => {});
+        } catch {
+          // Older browsers may throw synchronously for unsupported usage; ignore.
+        }
+      }
+
       function statusChip(item) {
         const rawStatus = item.auth_expired ? "auth_expired" : (item.effective_status || item.status || "unknown");
         const cssStatus = String(rawStatus).replaceAll("_", "-");
@@ -1418,6 +1429,7 @@
         if (availabilityPopover.contains(event.target) || openAvailabilityTrigger.contains(event.target)) return;
         closeAvailabilityPopover();
       });
+      requestQuotaFullNotificationPermission();
       load();
       async function checkDashboardRevision() {
         if (document.visibilityState !== "visible") {

@@ -542,3 +542,26 @@ test("clicking a fired notification focuses the window", async () => {
   harness.notifications[0].onclick();
   assert.equal(harness.getWindowFocusCalls(), 1);
 });
+
+test("dashboard init requests notification permission when it is in the default state", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  }, "old-token", { notificationPermission: "default" });
+
+  assert.equal(harness.getRequestPermissionCalls(), 1);
+});
+
+test("dashboard init does not request notification permission when already decided", async () => {
+  const grantedHarness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  }, "old-token", { notificationPermission: "granted" });
+  assert.equal(grantedHarness.getRequestPermissionCalls(), 0);
+
+  const deniedHarness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  }, "old-token", { notificationPermission: "denied" });
+  assert.equal(deniedHarness.getRequestPermissionCalls(), 0);
+});
