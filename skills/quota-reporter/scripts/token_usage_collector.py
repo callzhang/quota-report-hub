@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from quota_reporters import post_token_usage_batch
+from reporter_version import CLIENT_VERSION
 from token_usage_parsers import (
     COUNTER_FIELDS,
     ClaudeParseContext,
@@ -417,6 +418,7 @@ def collect_and_report_token_usage(
         payload = {
             "installation_id": usage_state.installation_id,
             "batch_id": str(uuid.uuid4()),
+            "client_version": CLIENT_VERSION,
             "rows": rows,
         }
         pending = usage_state.stage_batch(payload=payload, proposed=proposed)

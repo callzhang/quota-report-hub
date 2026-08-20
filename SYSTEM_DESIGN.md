@@ -313,6 +313,87 @@ The flag defaults OFF (`getFeatureFlag("disabled_refresh_token", false)`), so de
 
 ---
 
+## 9b. The premium-share gate (`lib/premium-ratio.js`)
+
+### Why a share and not a volume cap
+
+Users solve a problem inside one conversation, so every turn replays the whole context. Measured on
+the pool, `gpt-5.6-sol` carries 26.2B raw tokens against 787.6M fresh ones: **33 replayed tokens per
+new token**. That ratio is a mechanical consequence of not throwing the context away, not a choice —
+capping absolute volume would penalise finishing a task, and the workaround it teaches (start a new
+session, lose the context, redo the work) costs more than it saves.
+
+Model selection *is* a choice, made fresh on every turn. So the hub caps the share of a user's usage
+that goes to premium models, and leaves absolute volume unlimited.
+
+### The metric
+
+`weightedTokens()` normalises fresh input across providers (Codex folds `cache_read` into
+`input_tokens`; Claude reports it alongside) and discounts replayed context to a tenth. The same
+weight applies to numerator and denominator, so a long session neither earns nor loses headroom.
+`WEIGHTED_TOKENS_SQL` is the SQL twin, kept in the same module so the two cannot drift; a test
+asserts they agree on the same rows.
+
+Premium membership is an allow-list of NON-premium models (`lib/model-tiers.js`). An unrecognised
+model id counts as premium: a model the hub has never seen is more likely to be a new flagship than
+a new budget tier, and guessing "cheap" opens a loophole that stays open until somebody reads the
+bill. Guessing "premium" costs one line and a complaint.
+
+### Where the gate sits
+
+`api/auth/fetch-best.js` consults it before **both** fetch paths. 82% of pool traffic is
+`refresh_current`, so a gate covering only account switches would leave the subsidy that actually
+matters — the hub keeping one account's access token alive indefinitely — untouched.
+
+The `repair_auth` path stays open even while gated: it hands back the caller's own invalidated auth
+so they can re-login, borrows nothing from the pool, and locking someone out of fixing their own
+credentials would make the gate inescapable.
+
+### Cooldown, not a block
+
+Over the threshold, a user may fetch once every `PREMIUM_RATIO_COOLDOWN_MINUTES`. One flat duration,
+no per-path or per-severity multipliers: severity is already encoded in how long a user stays above
+the line, and a second dial would only make the rule harder to reason about. A refused attempt does
+not restart the clock — `last_served_at` advances only on `served` / `refreshed_current`.
+
+Measured re-fetch intervals make this bite where it should: the heaviest users return every 5–15
+minutes (they hold AT-only credentials under `disabled_refresh_token` and must keep coming back),
+while light users rarely notice.
+
+### Reporter gate: version travels with the request
+
+The gate reads `client_version` off the fetch-best request body, **not** from the last usage batch.
+Two traps this avoids:
+
+- A fresh install's first act is to fetch auth, before it has any usage to report. Inferring the
+  version from usage history would leave it permanently unrecognised and permanently refused.
+- The collector only posts when there IS usage, so "no recent report" is indistinguishable from "took
+  the afternoon off". Refusing on report silence would deadlock anyone back from leave: no auth means
+  no usage, and no usage means no report to lift the refusal with.
+
+Report silence therefore only ever produces a *notice*. Only an outdated (or absent) request version
+produces a refusal, and the fix — letting `self_update_skill()` run — is available whether or not the
+hub is serving that user.
+
+### Schedule and kill switch
+
+Phase dates are hardcoded in `lib/premium-ratio.js` and cumulative:
+
+| Phase | From | Behaviour |
+|---|---|---|
+| notice | always | Notices ride on every response; nothing is refused |
+| reporter_gate | `PHASE_REPORTER_GATE_AT` | Outdated clients refused |
+| ratio_cooldown | `PHASE_RATIO_COOLDOWN_AT` | Over-share users cooled down |
+
+`PREMIUM_RATIO_REPORTER_GATE_AT` / `PREMIUM_RATIO_COOLDOWN_AT` override the dates (for a canary, an
+emergency rollback, or reaching a phase from a test). The `premium_ratio_enforcement` feature flag is
+a separate live kill switch: it stops refusals within one request while the notices keep flowing —
+turning enforcement off must never also turn the warnings off.
+
+Clients surface notices through `notify_hub_notices()` (`quota_guard.py`), once per notice code per
+6 hours. The guard runs every 15 minutes; a toast on every run would train people to dismiss it
+without reading, which is the opposite of what a warning is for.
+
 ## 10. Selection algorithm (`pickBestAuthPoolCandidate`, `lib/auth-pool.js:260-312`)
 
 For a borrow request, candidates are filtered then ranked:
