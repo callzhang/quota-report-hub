@@ -68,6 +68,8 @@ For Codex app-server auth reloads, the guard calls only the official managed-dae
 
 For Codex quota reporting, a complete `1week` window is sufficient. The retired Codex `5H` window is not required for a stable local snapshot to be sent to the hub.
 
+When the current auth is first uploaded or changes after a provider refresh, the upload includes the same freshly probed quota used by the guard. This prevents the auth verification event from replacing a fresh dashboard reading with a preserved stale snapshot.
+
 Self-update falls back to GitHub's branch Atom feed when the commits API is rate limited. The compact guard summary reports any remaining update failure explicitly instead of labeling it as a successful check.
 
 ## Removed Legacy Wrappers

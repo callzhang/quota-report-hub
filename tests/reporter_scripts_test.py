@@ -2088,6 +2088,49 @@ Reading additional input from stdin...
         self.assertEqual(result["status_code"], 500)
         self.assertEqual(result["error"], "insert failed")
 
+    def test_changed_auth_upload_bundles_fresh_quota(self):
+        quota_payload = {
+            "source": "claude",
+            "status": "ok",
+            "account_id": "claude-leizhang0121@gmail.com",
+            "windows": {
+                "5h": {"remaining_percent": 95, "reset_at": "2026-08-20T08:00:00Z"},
+                "1week": {"remaining_percent": 97, "reset_at": "2026-08-25T12:00:00Z"},
+            },
+        }
+        metadata = {
+            "account_id": "claude-leizhang0121@gmail.com",
+            "email": "leizhang0121@gmail.com",
+            "name": None,
+            "auth_last_refresh": "2026-08-20T07:08:00Z",
+            "auth_path": "token_cache_v2",
+            "digest": "new-auth-digest",
+            "plan_name": "Max",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            known_auth_path = Path(temp_dir) / "known_auth.json"
+            with mock.patch.object(
+                quota_reporters,
+                "post_auth_pool_entry",
+                return_value={"ok": True, "entry": metadata},
+            ) as post_auth_pool_entry:
+                result = quota_reporters.sync_current_auth_pool_entry(
+                    source="claude",
+                    auth_pool_url="https://quota-report-hub.vercel.app",
+                    auth_pool_user_token="token",
+                    auth_json_text='{"schema":"claude_credentials_v1"}',
+                    metadata=metadata,
+                    known_auth_path=known_auth_path,
+                    quota_payload=quota_payload,
+                )
+
+        self.assertTrue(result["uploaded"])
+        self.assertEqual(
+            post_auth_pool_entry.call_args.kwargs["quota_payload"],
+            quota_payload,
+        )
+
     def test_report_current_quota_to_auth_pool_returns_error_when_post_fails(self):
         payload = {
             "source": "claude",

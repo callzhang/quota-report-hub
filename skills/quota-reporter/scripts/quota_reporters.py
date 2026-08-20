@@ -2418,6 +2418,7 @@ def sync_current_auth_pool_entry(
         auth_pool_user_token,
         source=source,
         auth_json_text=auth_json_text,
+        quota_payload=quota_payload,
     )
     if uploaded.get("ok") is False:
         return {
