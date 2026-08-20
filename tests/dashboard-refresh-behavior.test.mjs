@@ -31,7 +31,20 @@ function statusPayload(revision, revisionToken, email = "member@stardust.ai") {
   };
 }
 
-async function dashboardHarness(fetchImpl, initialToken = "old-token") {
+function quotaItem(overrides = {}) {
+  return {
+    source: "claude",
+    account_id: "acct-1",
+    email: "alice@example.com",
+    display_windows: {
+      "5h": { remaining_percent: 80 },
+      "1week": { remaining_percent: 80 },
+    },
+    ...overrides,
+  };
+}
+
+async function dashboardHarness(fetchImpl, initialToken = "old-token", { notificationPermission } = {}) {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
   const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
   assert.ok(script, "dashboard inline script must exist");
@@ -70,6 +83,35 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token") {
   });
   const storage = new Map();
   const windowListeners = new Map();
+  const notifications = [];
+  let currentNotificationPermission = notificationPermission;
+  let requestPermissionCalls = 0;
+  let windowFocusCalls = 0;
+  function NotificationMock(title, options) {
+    this.title = title;
+    this.options = options;
+    notifications.push(this);
+  }
+  Object.defineProperty(NotificationMock, "permission", {
+    get() { return currentNotificationPermission; },
+  });
+  NotificationMock.requestPermission = async () => {
+    requestPermissionCalls += 1;
+    currentNotificationPermission = "granted";
+    return currentNotificationPermission;
+  };
+  const windowMock = {
+    innerWidth: 1280,
+    innerHeight: 800,
+    addEventListener(type, listener) { windowListeners.set(type, listener); },
+    removeEventListener(type, listener) {
+      if (windowListeners.get(type) === listener) windowListeners.delete(type);
+    },
+  };
+  if (notificationPermission !== undefined) {
+    windowMock.focus = () => { windowFocusCalls += 1; };
+    windowMock.Notification = NotificationMock;
+  }
   const context = vm.createContext({
     document,
     location: { protocol: "https:", origin: "https://hub.example" },
@@ -81,14 +123,7 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token") {
     setInterval() {},
     setTimeout,
     clearTimeout,
-    window: {
-      innerWidth: 1280,
-      innerHeight: 800,
-      addEventListener(type, listener) { windowListeners.set(type, listener); },
-      removeEventListener(type, listener) {
-        if (windowListeners.get(type) === listener) windowListeners.delete(type);
-      },
-    },
+    window: windowMock,
     console,
   });
   vm.runInContext(script, context);
@@ -100,6 +135,9 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token") {
     getCookie: () => cookieValue,
     evaluate(source) { return vm.runInContext(source, context); },
     windowListeners,
+    notifications,
+    getRequestPermissionCalls: () => requestPermissionCalls,
+    getWindowFocusCalls: () => windowFocusCalls,
   };
 }
 
@@ -350,4 +388,195 @@ test("a revision 401 received after the page becomes hidden does not retry full 
   await new Promise((resolve) => setImmediate(resolve));
 
   assert.equal(statusCalls, 1);
+});
+
+test("checkQuotaFullNotifications fires when a window recovers from below 100 to 100", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+
+  assert.equal(harness.notifications.length, 1);
+  assert.equal(harness.notifications[0].title, "alice@example.com (claude) quota is back to 100%");
+  assert.equal(harness.notifications[0].options.body, "5h window full");
+  assert.equal(harness.notifications[0].options.tag, "claude:acct-1:5h");
+});
+
+test("checkQuotaFullNotifications does not fire for an account already at 100 on first load", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 100 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+
+  assert.equal(harness.notifications.length, 0);
+});
+
+test("checkQuotaFullNotifications does not fire when remaining percent changes but stays below 100", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const step1 = [quotaItem({ display_windows: { "5h": { remaining_percent: 40 }, "1week": { remaining_percent: 40 } } })];
+  const step2 = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 40 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(step1)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(step2)})`);
+
+  assert.equal(harness.notifications.length, 0);
+});
+
+test("checkQuotaFullNotifications ignores stale readings and does not fire off them", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const staleFull = [quotaItem({ display_windows_stale: true, display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(staleFull)})`);
+  assert.equal(harness.notifications.length, 0, "stale reading must not fire");
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+  assert.equal(harness.notifications.length, 1, "fresh 100 reading after the last valid (60) reading must fire");
+});
+
+test("checkQuotaFullNotifications ignores unavailable or missing readings", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const unavailable = [quotaItem({ display_windows: { "5h": { remaining_percent: null, reset_unavailable_reason: "auth_token_expired" }, "1week": { remaining_percent: 60 } } })];
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(unavailable)})`);
+  assert.equal(harness.notifications.length, 0);
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+  assert.equal(harness.notifications.length, 1);
+});
+
+test("checkQuotaFullNotifications ignores a reading with reset_unavailable_reason even when remaining_percent is present", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const unavailableButPresent = [quotaItem({ display_windows: { "5h": { remaining_percent: 100, reset_unavailable_reason: "quota_window_expired" }, "1week": { remaining_percent: 60 } } })];
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(unavailableButPresent)})`);
+  assert.equal(harness.notifications.length, 0, "a reading marked reset_unavailable_reason must not fire even with remaining_percent 100");
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+  assert.equal(harness.notifications.length, 1, "the prior valid (60) baseline must still be intact so a later genuine 100 reading fires");
+});
+
+test("checkQuotaFullNotifications handles Codex accounts with no 5h window", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const low = [{ source: "codex", account_id: "codex-1", email: "bob@example.com", display_windows: { "1week": { remaining_percent: 60 } } }];
+  const full = [{ source: "codex", account_id: "codex-1", email: "bob@example.com", display_windows: { "1week": { remaining_percent: 100 } } }];
+
+  assert.doesNotThrow(() => {
+    harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+    harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+  });
+
+  assert.equal(harness.notifications.length, 1);
+  assert.equal(harness.notifications[0].options.tag, "codex:codex-1:1week");
+});
+
+test("checkQuotaFullNotifications treats a reappearing account as a fresh baseline", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify([])})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+
+  assert.equal(harness.notifications.length, 0, "reappearing already-full must not fire immediately");
+});
+
+test("checkQuotaFullNotifications fires again after a reappearance establishes a new baseline and then recovers", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const reappearedLow = [quotaItem({ display_windows: { "5h": { remaining_percent: 40 }, "1week": { remaining_percent: 60 } } })];
+  const reappearedFull = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify([])})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(reappearedLow)})`);
+  assert.equal(harness.notifications.length, 0, "fresh baseline after reappearance must not fire by itself");
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(reappearedFull)})`);
+  assert.equal(harness.notifications.length, 1, "a genuine transition after the new baseline must fire");
+});
+
+test("checkQuotaFullNotifications does not construct a notification when permission is not granted", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "denied" });
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+
+  assert.equal(harness.notifications.length, 0);
+});
+
+test("checkQuotaFullNotifications does not throw when notification construction fails", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); });
+  harness.evaluate(`
+    window.Notification = function() { throw new Error("boom"); };
+    window.Notification.permission = "granted";
+  `);
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  assert.doesNotThrow(() => {
+    harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+  });
+});
+
+test("clicking a fired notification focuses the window", async () => {
+  const harness = await dashboardHarness(async () => { throw new Error("unexpected fetch"); }, "old-token", { notificationPermission: "granted" });
+  const low = [quotaItem({ display_windows: { "5h": { remaining_percent: 60 }, "1week": { remaining_percent: 60 } } })];
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 60 } } })];
+
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(low)})`);
+  harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+
+  assert.equal(harness.notifications.length, 1);
+  harness.notifications[0].onclick();
+  assert.equal(harness.getWindowFocusCalls(), 1);
+});
+
+test("checkQuotaFullNotifications and requestQuotaFullNotificationPermission do not throw when the browser has no Notification API", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  const full = [quotaItem({ display_windows: { "5h": { remaining_percent: 100 }, "1week": { remaining_percent: 100 } } })];
+  assert.doesNotThrow(() => {
+    harness.evaluate(`checkQuotaFullNotifications(${JSON.stringify(full)})`);
+    harness.evaluate(`requestQuotaFullNotificationPermission()`);
+  });
+});
+
+test("dashboard init requests notification permission when it is in the default state", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  }, "old-token", { notificationPermission: "default" });
+
+  assert.equal(harness.getRequestPermissionCalls(), 1);
+});
+
+test("dashboard init does not request notification permission when already decided", async () => {
+  const grantedHarness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  }, "old-token", { notificationPermission: "granted" });
+  assert.equal(grantedHarness.getRequestPermissionCalls(), 0);
+
+  const deniedHarness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  }, "old-token", { notificationPermission: "denied" });
+  assert.equal(deniedHarness.getRequestPermissionCalls(), 0);
 });
