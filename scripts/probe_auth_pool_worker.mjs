@@ -10,6 +10,7 @@ import {
   deleteAuthPoolEntryRow,
   getFeatureFlag,
   recordPoolHealthSnapshot,
+  recomputePoolScarcity,
   upsertAuthPoolEntry,
   upsertAuthPoolQuota,
 } from "../lib/db.js";
@@ -575,6 +576,10 @@ export async function main() {
   for (const snapshot of Object.values(health)) {
     try {
       await recordPoolHealthSnapshot({ ...snapshot, captured_at: capturedAt });
+      // Recompute here rather than in the fetch path: the 24h window function over quota events is
+      // far too heavy to run per request, and this is the moment the numbers it reads just changed.
+      await recomputePoolScarcity({ now: new Date(capturedAt) })
+        .catch((error) => console.error("scarcity recompute failed:", error?.message || error));
     } catch (error) {
       console.error("failed to record pool health snapshot:", error?.message || error);
     }

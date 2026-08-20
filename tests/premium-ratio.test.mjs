@@ -25,6 +25,8 @@ function inputs(overrides = {}) {
     premiumWeighted: BIG * 0.9,
     totalWeighted: BIG,
     lastServedAt: null,
+    // Most of these exercise the cooldown, which now only bites while the pool is actually scarce.
+    poolScarce: true,
     ...overrides,
   };
 }
@@ -300,4 +302,40 @@ test("a single report clears the debt on the very next fetch", () => {
   const after = evaluateFetchPolicy({ ...base, lastReportAt: "2026-09-09T23:00:00.000Z" });
   assert.equal(after.allowed, true, "reporting once must lift the refusal immediately");
   assert.deepEqual(after.notices, [], "and stop the nagging with it");
+});
+
+test("the cooldown holds fire while the pool has room, but the warning still goes out", () => {
+  // Throttling during abundance is pure friction -- nobody gains from it. The warning still lands,
+  // which is what gives people time to change habits before the pool tightens.
+  const shared = inputs({ lastServedAt: PHASE_RATIO_COOLDOWN_AT, lastNewAccountAt: null });
+
+  const healthy = evaluateFetchPolicy({ ...shared, poolScarce: false });
+  assert.equal(healthy.allowed, true);
+  assert.equal(healthy.notices[0].code, "premium_ratio_warning");
+
+  const scarce = evaluateFetchPolicy({ ...shared, poolScarce: true });
+  assert.equal(scarce.allowed, false);
+  assert.equal(scarce.reason, "premium_ratio_cooldown");
+});
+
+test("scarcity never excuses an unmetered client", () => {
+  // The reporting gate is a measurement precondition, not a rationing rule. Gating it on scarcity
+  // would mean nobody fixes their reporter during abundance, so when the pool does tighten those
+  // users still have no measurable share and the cooldown cannot reach them.
+  const base = {
+    now: new Date(PHASE_RATIO_COOLDOWN_AT),
+    premiumWeighted: 0,
+    totalWeighted: 0,
+    lastServedAt: null,
+    lastNewAccountAt: "2026-09-01T00:00:00.000Z",
+    lastReportAt: null,
+  };
+  for (const poolScarce of [true, false]) {
+    const result = evaluateFetchPolicy({ ...base, requestClientVersion: "2.0.0", poolScarce });
+    assert.equal(result.reason, "usage_reporting_required", `poolScarce=${poolScarce}`);
+  }
+  for (const poolScarce of [true, false]) {
+    const result = evaluateFetchPolicy({ ...base, requestClientVersion: "1.0.0", poolScarce, lastNewAccountAt: null });
+    assert.equal(result.reason, "reporter_upgrade_required", `poolScarce=${poolScarce}`);
+  }
 });

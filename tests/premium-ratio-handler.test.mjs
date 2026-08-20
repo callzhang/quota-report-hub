@@ -20,6 +20,11 @@ process.env.PREMIUM_RATIO_COOLDOWN_AT = "2000-01-01T00:00:00.000Z";
 
 const db = await import("../lib/db.js");
 const { default: handler } = await import("../api/auth/fetch-best.js");
+const { createClient } = await import("@libsql/client");
+const scarcityClient = createClient({
+  url: process.env.TURSO_DATABASE_URL,
+  authToken: process.env.TURSO_AUTH_TOKEN,
+});
 
 test.after(() => rmSync(tempDir, { recursive: true, force: true }));
 
@@ -80,6 +85,20 @@ async function seedUsage(email, modelId, batchId) {
   });
 }
 
+// The cooldown is a rationing rule, so it only bites while there is something to ration. These
+// tests have to put the pool in that state deliberately.
+async function seedScarcePool(scarce) {
+  await scarcityClient.execute({
+    sql: `INSERT INTO pool_scarcity_state (
+            source, computed_at, burn_points_per_day, available_points,
+            demand_points, runway_days, horizon_days, scarce
+          ) VALUES ('codex', ?, 400, 100, 2800, 0.25, 7, ?)
+          ON CONFLICT(source) DO UPDATE SET
+            computed_at = excluded.computed_at, scarce = excluded.scarce`,
+    args: [new Date().toISOString(), scarce ? 1 : 0],
+  });
+}
+
 async function seedServe(email) {
   await db.recordAuthPoolFetch({
     requesterEmail: email,
@@ -120,6 +139,7 @@ test("cooldown holds an over-share user, and a refused attempt does not extend t
   const { token } = await db.issueApiToken(email);
   await seedUsage(email, "gpt-5.6-sol", "batch-heavy");
   await seedServe(email);
+  await seedScarcePool(true);
 
   const first = await call(token);
   assert.equal(first.reason, "premium_ratio_cooldown");
@@ -139,6 +159,7 @@ test("the kill switch stops refusals without silencing the warning", async () =>
   const { token } = await db.issueApiToken(email);
   await seedUsage(email, "gpt-5.6-sol", "batch-heavy2");
   await seedServe(email);
+  await seedScarcePool(true);
   await db.setFeatureFlag("premium_ratio_enforcement", false, "test");
   try {
     const payload = await call(token);
@@ -150,4 +171,19 @@ test("the kill switch stops refusals without silencing the warning", async () =>
   } finally {
     await db.setFeatureFlag("premium_ratio_enforcement", true, "test");
   }
+});
+
+test("an over-share user is only warned while the pool has room to spare", async () => {
+  const email = "heavy3@stardust.ai";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.6-sol", "batch-heavy3");
+  await seedServe(email);
+  await seedScarcePool(false);
+
+  const payload = await call(token);
+  assert.notEqual(payload.reason, "premium_ratio_cooldown", "abundance must not throttle anyone");
+  assert.ok(
+    payload.notices.some((notice) => notice.code === "premium_ratio_warning"),
+    "the warning still goes out, so habits can change before the pool tightens",
+  );
 });

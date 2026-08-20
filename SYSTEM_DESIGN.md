@@ -375,6 +375,36 @@ Report silence therefore only ever produces a *notice*. Only an outdated (or abs
 produces a refusal, and the fix — letting `self_update_skill()` run — is available whether or not the
 hub is serving that user.
 
+### Scarcity: the cooldown only bites when there is something to ration
+
+Throttling during abundance is pure friction -- nobody gains from slowing a heavy user while there is
+quota to spare. `lib/pool-scarcity.js` decides whether the pool is on track to run dry, and the
+premium-share cooldown is inert unless it is.
+
+Supply is only ever observable as "how much of each account's week is left", so demand is measured in
+the same unit: the summed **decline** in `one_week_remaining_percent` across the pool over 24h. Only
+declines count -- a window reset sends the number back up, and that is supply arriving, not
+consumption. The horizon is 7 days because these are weekly windows; anything shorter would call
+every Monday a crisis. An account whose window renews inside the horizon contributes a full 100
+points, which slightly overcounts and therefore errs toward "healthy" -- the safe direction, since a
+wrong "scarce" throttles people who did not need throttling.
+
+Measured on 2026-08-20 the codex pool was in deficit: 403 points/day burn against 941 in hand plus
+1400 renewing, a runway of 5.8 days against a 7-day horizon. Claude had 32 days.
+
+Missing or stale state (`SCARCITY_STATE_MAX_AGE_HOURS`) reads as **not scarce**. A broken cron must
+fail open: throttling people on the strength of missing data is worse than letting a busy week
+through, and a stale verdict is missing data wearing a timestamp.
+
+The recompute runs in the probe worker right after fresh quota snapshots land -- the 24h window
+function over `auth_pool_quota_events` is far too heavy for the fetch path, which reads one stored
+row instead.
+
+**The reporting gate is deliberately NOT scarcity-gated.** It is a measurement precondition, not a
+rationing rule. Gating it would be self-defeating: nobody fixes their reporter during abundance, so
+when the pool does tighten those users still have no measurable share and the cooldown -- the actual
+rationing rule -- cannot reach them. The meter has to be running before it is needed.
+
 ### Schedule and kill switch
 
 Phase dates are hardcoded in `lib/premium-ratio.js` and cumulative:

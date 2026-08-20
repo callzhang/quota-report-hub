@@ -8,12 +8,14 @@ import {
   getInvalidatedUploaderEntry,
   fetchPolicyInputs,
   hasUploadedAnyHealthyAuth,
+  poolScarcityState,
   recordAuthPoolFetch,
   upsertAuthPoolEntry,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch-best.js";
 import { PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy } from "../../lib/premium-ratio.js";
+import { scarcityFromState } from "../../lib/pool-scarcity.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
 import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 
@@ -59,9 +61,14 @@ export default async function handler(req, res) {
   // actually matters — the hub keeping one account's access token alive indefinitely — untouched.
   const policyWindowStart = new Date(Date.now() - PREMIUM_RATIO_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const requestClientVersion = body?.client_version ? String(body.client_version) : null;
+  const [policyInputs, scarcityState] = await Promise.all([
+    fetchPolicyInputs({ email: authContext.email, since: policyWindowStart }),
+    poolScarcityState(source),
+  ]);
   const policy = evaluateFetchPolicy({
-    ...await fetchPolicyInputs({ email: authContext.email, since: policyWindowStart }),
+    ...policyInputs,
     requestClientVersion,
+    poolScarce: scarcityFromState(scarcityState).scarce,
   });
 
   // Live kill switch, separate from the hardcoded schedule: if a phase lands badly the flag turns
