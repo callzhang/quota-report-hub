@@ -524,6 +524,7 @@
       const quotaHistoryCache = new Map();
       const quotaHistoryRequests = new Map();
       const accountItems = new Map();
+      const quotaFullNotifyState = new Map();
       let currentToken = "";
       let authSessionGeneration = 0;
       let openAvailabilityTrigger = null;
@@ -689,6 +690,52 @@
             <div class="meta">${resetLabel}</div>
             ${isStale ? `<div class="meta">stale quota snapshot</div>` : ""}
           </div>`;
+      }
+
+      function quotaFullNotifyKey(item, windowKey) {
+        return `${item.source}:${item.account_id}:${windowKey}`;
+      }
+
+      function fireQuotaFullNotification(item, windowKey) {
+        if (typeof window === "undefined" || !("Notification" in window)) return;
+        if (window.Notification.permission !== "granted") return;
+        const label = item.email || item.account_id;
+        const windowLabel = windowKey === "5h" ? "5h" : "1week";
+        try {
+          const notification = new window.Notification(`${label} (${item.source}) quota is back to 100%`, {
+            body: `${windowLabel} window full`,
+            tag: quotaFullNotifyKey(item, windowKey),
+          });
+          notification.onclick = () => { window.focus(); };
+        } catch {
+          // Some browsers restrict Notification construction (e.g. permission revoked mid-session); ignore.
+        }
+      }
+
+      function checkQuotaFullNotifications(items) {
+        const seenAccounts = new Set();
+        for (const item of items || []) {
+          const accountKey = `${item.source}:${item.account_id}`;
+          seenAccounts.add(accountKey);
+          const stale = item.display_windows_stale ?? item.windows_stale;
+          if (stale) continue;
+          for (const windowKey of ["5h", "1week"]) {
+            const windowData = item.display_windows?.[windowKey];
+            if (!windowData || windowData.remaining_percent === null || windowData.remaining_percent === undefined) continue;
+            if (windowData.reset_unavailable_reason) continue;
+            const percent = Number(windowData.remaining_percent);
+            const stateKey = quotaFullNotifyKey(item, windowKey);
+            const previous = quotaFullNotifyState.get(stateKey);
+            quotaFullNotifyState.set(stateKey, percent);
+            if (previous !== undefined && previous < 100 && percent >= 100) {
+              fireQuotaFullNotification(item, windowKey);
+            }
+          }
+        }
+        for (const stateKey of [...quotaFullNotifyState.keys()]) {
+          const accountKey = stateKey.slice(0, stateKey.lastIndexOf(":"));
+          if (!seenAccounts.has(accountKey)) quotaFullNotifyState.delete(stateKey);
+        }
       }
 
       function statusChip(item) {
@@ -1145,6 +1192,7 @@
         renderHealthTrend(payload.health_history);
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
         scheduleDashboardTransition(items);
+        checkQuotaFullNotifications(items);
         const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
         const fetchLogByAccount = new Map();
         for (const log of (payload.fetch_log || [])) {
