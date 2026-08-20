@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { isPremiumModel, STANDARD_MODEL_IDS, PREMIUM_MODEL_IDS, SUGGESTED_STANDARD_MODEL_IDS } from "../lib/model-tiers.js";
 import {
@@ -195,5 +196,65 @@ test("both ratio notices name the models on each side of the line", () => {
     }
     assert.match(notice.message, /90%/, `${label} does not state the user's own share`);
     assert.match(notice.message, /50%/, `${label} does not state the target`);
+  }
+});
+
+test("unreported consumption is measured as a debt from the last new account, not report recency", () => {
+  const base = {
+    now: new Date(PHASE_REPORTER_GATE_AT),
+    requestClientVersion: "2.0.0",
+    premiumWeighted: 0,
+    totalWeighted: 0,
+    lastServedAt: null,
+  };
+  const hoursBefore = (count) =>
+    new Date(Date.parse(PHASE_REPORTER_GATE_AT) - count * 60 * 60 * 1000).toISOString();
+
+  // Took a new account and never accounted for any of it.
+  const delinquent = evaluateFetchPolicy({ ...base, lastNewAccountAt: hoursBefore(30), lastReportAt: null });
+  assert.equal(delinquent.allowed, false);
+  assert.equal(delinquent.reason, "usage_reporting_required");
+
+  // On leave: the last serve is exactly as old as the last report, so no debt accrued while away.
+  const onLeave = evaluateFetchPolicy({
+    ...base,
+    lastNewAccountAt: hoursBefore(24 * 9),
+    lastReportAt: hoursBefore(24 * 9 - 1),
+  });
+  assert.equal(onLeave.allowed, true, "an idle user accrues no debt");
+
+  // Reported within the grace window after being served.
+  const current = evaluateFetchPolicy({ ...base, lastNewAccountAt: hoursBefore(30), lastReportAt: hoursBefore(20) });
+  assert.equal(current.allowed, true);
+
+  // Never handed a new account at all -- a fresh install has nothing to account for.
+  const fresh = evaluateFetchPolicy({ ...base, lastNewAccountAt: null, lastReportAt: null });
+  assert.equal(fresh.allowed, true);
+});
+
+test("a refresh never starts the debt clock, only a new account does", async () => {
+  // An idle user's guard keeps refreshing to hold the token alive. Charging those would run the debt
+  // up on somebody who is not working, and they cannot repay it without working.
+  const source = await readFile(new URL("../lib/db.js", import.meta.url), "utf8");
+  assert.match(source, /const NEW_ACCOUNT_REASON = "served"/);
+  assert.match(source, /String\(reason\) === NEW_ACCOUNT_REASON \? fetchedAt : null/);
+});
+
+test("the hub sets each notice's repeat interval, and the reporting reminder is hourly", () => {
+  const result = evaluateFetchPolicy({
+    now: new Date("2026-08-25T00:00:00.000Z"),
+    requestClientVersion: "2.0.0",
+    lastNewAccountAt: "2026-08-20T00:00:00.000Z",
+    lastReportAt: null,
+    premiumWeighted: BIG * 0.9,
+    totalWeighted: BIG,
+    lastServedAt: null,
+  });
+  assert.equal(result.allowed, true, "before the gate date this only warns");
+  const reminder = result.notices.find((notice) => notice.code === "usage_reporting_required");
+  assert.ok(reminder, "a user in reporting debt gets the reminder");
+  assert.equal(reminder.repeat_seconds, 3600);
+  for (const notice of result.notices) {
+    assert.ok(Number.isFinite(notice.repeat_seconds), `${notice.code} carries no repeat interval`);
   }
 });

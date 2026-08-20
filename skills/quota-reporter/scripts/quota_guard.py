@@ -547,8 +547,13 @@ def notify_hub_notices(
         message = str(notice.get("message") or "").strip()
         if not code or not message:
             continue
+        # The hub decides how often each notice repeats: urgency is a policy judgement, and a client
+        # that picks its own cadence cannot be re-tuned without shipping a release.
+        repeat_seconds = notice.get("repeat_seconds")
+        if not isinstance(repeat_seconds, (int, float)) or repeat_seconds <= 0:
+            repeat_seconds = HUB_NOTICE_REPEAT_SECONDS
         last_shown = state.get(code)
-        if isinstance(last_shown, (int, float)) and current - last_shown < HUB_NOTICE_REPEAT_SECONDS:
+        if isinstance(last_shown, (int, float)) and current - last_shown < repeat_seconds:
             continue
         if show_desktop_notification(str(notice.get("title") or "额度守护"), message):
             shown.append(code)

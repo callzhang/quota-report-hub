@@ -81,3 +81,29 @@ class ClientVersionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RepeatIntervalTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.state_path = Path(self.temp.name) / "notices.json"
+        self.addCleanup(self.temp.cleanup)
+
+    def test_honours_the_interval_the_hub_chose(self):
+        # Urgency is the hub's judgement. A client that picks its own cadence cannot be re-tuned
+        # without shipping a release.
+        hourly = {"notices": [dict(notice(code="usage_reporting_required"), repeat_seconds=3600)]}
+        with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as shown:
+            quota_guard.notify_hub_notices(hourly, now=0.0, state_path=self.state_path)
+            quota_guard.notify_hub_notices(hourly, now=1800.0, state_path=self.state_path)   # 30 min
+            quota_guard.notify_hub_notices(hourly, now=3601.0, state_path=self.state_path)   # 60 min
+        self.assertEqual(shown.call_count, 2, "shown at 0 and 3601, suppressed at 1800")
+
+    def test_falls_back_to_the_default_when_the_hub_sends_none(self):
+        for bad in (None, 0, -5, "soon"):
+            state_path = Path(self.temp.name) / f"n-{bad}.json"
+            payload = {"notices": [dict(notice(), repeat_seconds=bad)]}
+            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as shown:
+                quota_guard.notify_hub_notices(payload, now=0.0, state_path=state_path)
+                quota_guard.notify_hub_notices(payload, now=3601.0, state_path=state_path)
+            self.assertEqual(shown.call_count, 1, f"repeat_seconds={bad!r} should fall back to the default")
