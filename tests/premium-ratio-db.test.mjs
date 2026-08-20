@@ -134,3 +134,26 @@ test("only a real serve starts the cooldown clock", async () => {
     cleanup();
   }
 });
+
+test("the version a fetch request carried is recorded, reported or not", async () => {
+  const { mod, cleanup } = await loadDb();
+  try {
+    // Uptake has to be measurable for clients that never report usage: those are precisely the ones
+    // the reporter gate will refuse, so a check that cannot see them cannot warn anybody in advance.
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "quiet@example.com",
+      source: "codex",
+      servedEntry: null,
+      reason: "no_better_auth_available",
+      clientVersion: "2.0.0",
+    });
+    const inputs = await mod.fetchPolicyInputs({
+      email: "quiet@example.com",
+      since: "2026-09-14T00:00:00.000Z",
+    });
+    assert.equal(inputs.fetchClientVersion, "2.0.0");
+    assert.equal(inputs.lastReportAt, null, "no usage was ever reported for this user");
+  } finally {
+    cleanup();
+  }
+});

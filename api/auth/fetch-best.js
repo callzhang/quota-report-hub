@@ -58,9 +58,10 @@ export default async function handler(req, res) {
   // refresh_current, so a gate that only covered account switches would leave the subsidy that
   // actually matters — the hub keeping one account's access token alive indefinitely — untouched.
   const policyWindowStart = new Date(Date.now() - PREMIUM_RATIO_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const requestClientVersion = body?.client_version ? String(body.client_version) : null;
   const policy = evaluateFetchPolicy({
     ...await fetchPolicyInputs({ email: authContext.email, since: policyWindowStart }),
-    requestClientVersion: body?.client_version ? String(body.client_version) : null,
+    requestClientVersion,
   });
 
   // Live kill switch, separate from the hardcoded schedule: if a phase lands badly the flag turns
@@ -77,6 +78,7 @@ export default async function handler(req, res) {
       reason: policy.reason,
       currentAccountId,
       currentQuota,
+      clientVersion: requestClientVersion,
     });
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -157,6 +159,7 @@ export default async function handler(req, res) {
           reason: "refreshed_current",
           currentAccountId,
           currentQuota,
+          clientVersion: requestClientVersion,
         });
         res.statusCode = 200;
         res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -217,6 +220,7 @@ export default async function handler(req, res) {
         reason: repairAuth ? "repair_returned" : "no_uploaded_auth",
         currentAccountId,
         currentQuota,
+        clientVersion: requestClientVersion,
       });
 
       res.statusCode = 200;
@@ -245,6 +249,7 @@ export default async function handler(req, res) {
       reason: "no_better_auth_available",
       currentAccountId,
       currentQuota,
+      clientVersion: requestClientVersion,
     });
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -265,6 +270,7 @@ export default async function handler(req, res) {
     reason: "served",
     currentAccountId,
     currentQuota,
+    clientVersion: requestClientVersion,
   });
 
   // When disabled_refresh_token is on, strip the refresh token so the borrower can use the access
