@@ -132,6 +132,9 @@ test("page exposes the complete query shell and reads only token usage", async (
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /const QUERY_CACHE_MS = 5 \* 60 \* 1000/);
+  assert.match(html, /const BREAKDOWN_PAGE_SIZE = 20/);
+  assert.match(html, /data-trend-chart/);
+  assert.match(html, /breakdown-pagination/);
   assert.match(html, /const queryCache = new Map\(\)/);
   assert.match(html, /const queryRequests = new Map\(\)/);
   assert.match(html, /granularity\.value = "hour"/);
@@ -141,6 +144,14 @@ test("page exposes the complete query shell and reads only token usage", async (
   assert.doesNotMatch(html, /id="reporter-panel"|id="reporter-region"|Usage by Hub user/);
   assert.doesNotMatch(html, /#trend-panel\s*\{[^}]*grid-column:\s*span 8/);
   assert.doesNotMatch(html, /\/api\/(?:status|status-revision|quota-history|auth-pool)/);
+});
+
+test("public READMEs document trend gaps and 20-row browser pagination", async () => {
+  for (const file of ["../README.md", "../README.zh-CN.md"]) {
+    const readme = await readFile(new URL(file, import.meta.url), "utf8");
+    assert.match(readme, /20/);
+    assert.match(readme, /(?:gap|缺口|空档)/i);
+  }
 });
 
 test("saved login loads automatically and missing login returns through login page", async () => {

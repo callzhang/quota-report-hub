@@ -4,6 +4,8 @@
 
 Hub 提供独立的 `token-usage.html` 页面。登录后默认查询最近 7 天，按小时、Hub 用户分组并显示 Total；可按时间、Hub 用户、提供方、模型账户、原始模型名筛选，也可切换聚合颗粒度、分组和指标。每个 Hub 用户的汇总直接放在 Breakdown，不再重复设置右侧面板。页面只读取 `GET /api/token-usage-query`，同一登录会话中完全相同的查询缓存 5 分钟。
 
+Token Usage Trend 按所选分组使用统一刻度绘制折线；没有采集数据的时间桶会保留为空档，不会被填充。Breakdown 在浏览器端分页，每页 20 行，切换页面时不会再次发起查询。
+
 每次 15 分钟 quota guard 运行时同时执行用量采集，单轮最多使用 10 秒。每台机器首次运行固定回扫最近 72 小时；之后只从已确认的文件位置向后读取新增或更新内容。Codex 按累计 `token_count` 计算正向增量并去除复制历史，Claude 按最终 assistant message ID 更新计数。quota guard 自动切换时按写凭证前记录的精确时间切分；用户手动切换时按汇报当时观察到的账户归属，因此允许一个汇报周期内的小误差。
 
 Total 保持提供方原始定义；Input、Output 是组成部分，Cache Read、Cache Write 和 Codex Reasoning 是 Total 的子集，不能再次相加。Claude Total 按原始记录包含 input、output、cache read 和 cache creation/write。模型名不使用固定白名单，新出现的 GPT 或 Claude 模型会原样统计和展示。
