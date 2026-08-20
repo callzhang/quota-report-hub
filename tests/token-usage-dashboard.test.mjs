@@ -29,6 +29,21 @@ function usagePayload(overrides = {}) {
   };
 }
 
+function breakdownRows() {
+  return Array.from({ length: 42 }, (_, index) => ({
+    hub_user_email: `user-${index + 1}@stardust.ai`,
+    provider: index % 2 ? "claude" : "codex",
+    model_account_id: `account-${index + 1}`,
+    model_id: `model-${index + 1}`,
+    total_tokens: 4_200 - index,
+    input_tokens: 2_000 - index,
+    output_tokens: 1_000 - index,
+    cache_read_tokens: 800 - index,
+    cache_write_tokens: 300 - index,
+    reasoning_tokens: 100 - index,
+  }));
+}
+
 async function pageHarness(fetchImpl, initialToken = "saved-token") {
   const html = await readFile(new URL("../token-usage.html", import.meta.url), "utf8");
   const script = html.match(/<script>([\s\S]*)<\/script>/)?.[1];
@@ -282,22 +297,46 @@ test("legend focus highlights its group and blur clears it without fetching", as
   assert.equal(calls, 1);
 });
 
+test("breakdown paginates locally without additional fetches and resets on a successful payload", async () => {
+  let calls = 0;
+  const payload = usagePayload({ breakdown: breakdownRows() });
+  const harness = await pageHarness(async () => { calls += 1; return response(200, payload); });
+  const firstPage = harness.element("breakdown-region").innerHTML;
+  assert.equal((firstPage.match(/data-breakdown-index/g) || []).length, 20);
+  assert.match(firstPage, /Showing 1–20 of 42/);
+  assert.match(firstPage, /Page 1 of 3/);
+  assert.match(firstPage, /aria-label="Previous breakdown page"[^>]*disabled/);
+  assert.match(firstPage, /aria-label="Next breakdown page"/);
+
+  harness.evaluate("goToBreakdownPage(1)");
+  assert.match(harness.element("breakdown-region").innerHTML, /Showing 21–40 of 42/);
+  harness.evaluate("goToBreakdownPage(1)");
+  const finalPage = harness.element("breakdown-region").innerHTML;
+  assert.equal((finalPage.match(/data-breakdown-index/g) || []).length, 2);
+  assert.match(finalPage, /Showing 41–42 of 42/);
+  assert.match(finalPage, /aria-label="Next breakdown page"[^>]*disabled/);
+  assert.equal(calls, 1, "page changes reuse the successful payload");
+
+  harness.evaluate(`renderShell(${JSON.stringify(payload)})`);
+  assert.match(harness.element("breakdown-region").innerHTML, /Page 1 of 3/);
+  assert.equal(calls, 1, "re-rendering a successful payload does not fetch");
+});
+
 test("breakdown sorts by total and drilldown applies four exact dimensions once", async () => {
   let calls = 0;
-  const payload = usagePayload({ breakdown: [
-    { hub_user_email: "small@stardust.ai", provider: "codex", model_account_id: "small-account", model_id: "future-model-x", total_tokens: 10, input_tokens: 8, output_tokens: 2, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0 },
-    { hub_user_email: "large@stardust.ai", provider: "claude", model_account_id: "large-account", model_id: "claude-new-9", total_tokens: 900, input_tokens: 400, output_tokens: 100, cache_read_tokens: 300, cache_write_tokens: 100, reasoning_tokens: 0 },
-  ] });
+  const rows = breakdownRows();
+  const payload = usagePayload({ breakdown: rows });
   const harness = await pageHarness(async () => { calls += 1; return response(200, payload); });
   const table = harness.element("breakdown-region").innerHTML;
-  assert.ok(table.indexOf("large@stardust.ai") < table.indexOf("small@stardust.ai"));
-  assert.match(table, /future-model-x/);
+  assert.ok(table.indexOf("user-1@stardust.ai") < table.indexOf("user-2@stardust.ai"));
 
-  await harness.evaluate(`applyBreakdownFilters(${JSON.stringify(payload.breakdown[0])})`);
-  assert.equal(harness.element("hub-user").value, "small@stardust.ai");
+  harness.evaluate("goToBreakdownPage(1)");
+  await harness.evaluate(`applyBreakdownFilters(${JSON.stringify(rows[20])})`);
+  assert.equal(harness.element("hub-user").value, "user-21@stardust.ai");
   assert.equal(harness.element("provider").value, "codex");
-  assert.equal(harness.element("model-account").value, "small-account");
-  assert.equal(harness.element("model").value, "future-model-x");
+  assert.equal(harness.element("model-account").value, "account-21");
+  assert.equal(harness.element("model").value, "model-21");
+  assert.match(harness.element("breakdown-region").innerHTML, /Page 1 of 3/);
   assert.equal(calls, 2, "drilldown changes the query exactly once");
 });
 

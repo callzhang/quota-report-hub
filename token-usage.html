@@ -60,6 +60,9 @@
       th, td { padding: 11px 10px; text-align: left; border-bottom: 1px solid var(--line); }
       th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
       .table-shell { overflow-x: auto; }
+      .breakdown-pagination { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px; }
+      .pager-actions { display:flex; align-items:center; gap:8px; }
+      .pager-actions button:disabled { cursor:default; opacity:.45; }
       #trend-region svg { display: block; width: 100%; min-height: 260px; margin-top: 12px; overflow: visible; }
       .trend-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
       .trend-legend button { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; min-height: 30px; padding: 4px 8px; }
@@ -140,6 +143,8 @@
       let currentToken = "";
       let lastSuccessfulPayload = null;
       let pendingBreakdownFocus = false;
+      const BREAKDOWN_PAGE_SIZE = 20;
+      let breakdownPage = 1;
 
       const start = document.getElementById("start");
       const end = document.getElementById("end");
@@ -343,21 +348,47 @@
       }
 
       function renderBreakdown(rows) {
-        if (!rows.length) return '<div class="empty">No usage in this range.</div>';
         const sortedRows = [...rows].sort((a, b) => Number(b.total_tokens || 0) - Number(a.total_tokens || 0));
+        breakdownRegion.dataset.rows = JSON.stringify(sortedRows);
+        breakdownPage = 1;
+        return renderBreakdownPage();
+      }
+
+      function renderBreakdownPage() {
+        const rows = JSON.parse(breakdownRegion.dataset.rows || "[]");
+        if (!rows.length) return '<div class="empty">No usage in this range.</div>';
+        const pageCount = Math.max(1, Math.ceil(rows.length / BREAKDOWN_PAGE_SIZE));
+        breakdownPage = Math.min(pageCount, Math.max(1, breakdownPage));
+        const startIndex = (breakdownPage - 1) * BREAKDOWN_PAGE_SIZE;
+        const endIndex = Math.min(rows.length, startIndex + BREAKDOWN_PAGE_SIZE);
         const headers = ["Hub user", "Provider", "Model account", "Model", ...COUNTERS.map(([label]) => label)];
-        const body = sortedRows.map((row, index) => `<tr>` +
-          `<td><button id="breakdown-${index}" data-breakdown-index="${index}" aria-label="Filter to ${escapeHtml(row.hub_user_email)}, ${escapeHtml(row.provider)}, ${escapeHtml(row.model_account_id)}, ${escapeHtml(row.model_id)}">${escapeHtml(row.hub_user_email)}</button></td>` +
+        const body = rows.slice(startIndex, endIndex).map((row, index) => `<tr>` +
+          `<td><button id="breakdown-${index}" data-breakdown-index="${startIndex + index}" aria-label="Filter to ${escapeHtml(row.hub_user_email)}, ${escapeHtml(row.provider)}, ${escapeHtml(row.model_account_id)}, ${escapeHtml(row.model_id)}">${escapeHtml(row.hub_user_email)}</button></td>` +
           `<td>${escapeHtml(row.provider)}</td><td>${escapeHtml(row.model_account_id)}</td><td>${escapeHtml(row.model_id)}</td>` +
           COUNTERS.map(([, key]) => `<td>${number(row[key])}</td>`).join("") + `</tr>`).join("");
-        breakdownRegion.dataset.rows = JSON.stringify(sortedRows);
-        return `<table><thead><tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>`;
+        const previousDisabled = breakdownPage === 1 ? " disabled" : "";
+        const nextDisabled = breakdownPage === pageCount ? " disabled" : "";
+        return `<table><thead><tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table>` +
+          `<div class="breakdown-pagination" aria-label="Breakdown pagination"><span class="meta">Showing ${startIndex + 1}–${endIndex} of ${rows.length}</span>` +
+          `<div class="pager-actions"><button data-breakdown-page="previous" aria-label="Previous breakdown page"${previousDisabled}>Previous</button>` +
+          `<span aria-live="polite">Page ${breakdownPage} of ${pageCount}</span><button data-breakdown-page="next" aria-label="Next breakdown page"${nextDisabled}>Next</button></div></div>`;
+      }
+
+      function goToBreakdownPage(delta) {
+        const rows = JSON.parse(breakdownRegion.dataset.rows || "[]");
+        const pageCount = Math.max(1, Math.ceil(rows.length / BREAKDOWN_PAGE_SIZE));
+        breakdownPage = Math.min(pageCount, Math.max(1, breakdownPage + delta));
+        breakdownRegion.innerHTML = renderBreakdownPage();
+        bindBreakdownActions();
       }
 
       function bindBreakdownActions() {
         const rows = JSON.parse(breakdownRegion.dataset.rows || "[]");
         document.querySelectorAll("[data-breakdown-index]").forEach((button) => {
           button.addEventListener("click", () => applyBreakdownFilters(rows[Number(button.dataset.breakdownIndex)]));
+        });
+        document.querySelectorAll("[data-breakdown-page]").forEach((button) => {
+          button.addEventListener("click", () => goToBreakdownPage(button.dataset.breakdownPage === "previous" ? -1 : 1));
         });
         if (pendingBreakdownFocus) {
           document.getElementById("breakdown-0")?.focus();
@@ -370,6 +401,7 @@
       }
 
       async function applyBreakdownFilters(row) {
+        breakdownPage = 1;
         hubUser.value = row.hub_user_email || "";
         provider.value = row.provider || "";
         modelAccount.value = row.model_account_id || "";
