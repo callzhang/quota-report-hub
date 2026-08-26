@@ -10,3 +10,6 @@ node_modules
 
 __pycache__/
 *.pyc
+
+# macOS "Keep Both" duplicates, e.g. "test_foo 2.py" -- never intentional
+* [0-9].*

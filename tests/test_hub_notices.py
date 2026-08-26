@@ -73,7 +73,9 @@ class ClientVersionTest(unittest.TestCase):
         marker = 'export const MIN_REPORTER_CLIENT_VERSION = "'
         start = source.index(marker) + len(marker)
         minimum = source[start:source.index('"', start)]
-        self.assertEqual(
+        # The client must be allowed to be NEWER than the floor: shipping a fix would otherwise
+        # force the floor up with it, locking out everyone who has not self-updated yet.
+        self.assertGreaterEqual(
             [int(part) for part in CLIENT_VERSION.split(".")],
             [int(part) for part in minimum.split(".")],
         )
