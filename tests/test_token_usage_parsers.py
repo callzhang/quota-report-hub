@@ -212,3 +212,58 @@ class ClaudeTokenUsageParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodexCompactionDeltaTest(unittest.TestCase):
+    """Context compaction is not a session reset."""
+
+    def test_a_cache_drop_mid_session_does_not_re_emit_the_whole_cumulative(self):
+        # codex compacts: cached_input_tokens collapses while the monotonic counters keep climbing.
+        # Reading that as a reset charged the user for their entire session history again, which is
+        # how 1.6% of buckets came to hold 86% of all recorded volume.
+        acknowledged = {
+            "input_tokens": 10_000_000, "output_tokens": 100_000,
+            "cache_read_tokens": 9_500_000, "cache_write_tokens": 0,
+            "reasoning_tokens": 50_000, "total_tokens": 10_100_000,
+        }
+        current = {
+            "input_tokens": 10_400_000, "output_tokens": 110_000,
+            "cache_read_tokens": 200_000,        # compacted away
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 55_000, "total_tokens": 10_510_000,
+        }
+        delta = codex_counter_delta(current, acknowledged)
+        self.assertEqual(delta["input_tokens"], 400_000)
+        self.assertEqual(delta["output_tokens"], 10_000)
+        self.assertEqual(delta["cache_read_tokens"], 0, "a cache drop is not negative usage")
+        self.assertEqual(delta["total_tokens"], 410_000)
+        self.assertLess(delta["total_tokens"], current["total_tokens"] / 20)
+
+    def test_a_real_restart_still_re_emits_the_cumulative(self):
+        acknowledged = {
+            "input_tokens": 10_000_000, "output_tokens": 100_000,
+            "cache_read_tokens": 9_500_000, "cache_write_tokens": 0,
+            "reasoning_tokens": 50_000, "total_tokens": 10_100_000,
+        }
+        current = {
+            "input_tokens": 5_000, "output_tokens": 400,
+            "cache_read_tokens": 0, "cache_write_tokens": 0,
+            "reasoning_tokens": 100, "total_tokens": 5_400,
+        }
+        self.assertEqual(codex_counter_delta(current, acknowledged), current)
+
+    def test_the_delta_keeps_the_invariants_the_hub_validates(self):
+        # A batch breaking these is rejected wholesale, so a clamped field must not desync the rest.
+        acknowledged = {
+            "input_tokens": 1_000, "output_tokens": 100, "cache_read_tokens": 900,
+            "cache_write_tokens": 500, "reasoning_tokens": 90, "total_tokens": 1_100,
+        }
+        current = {
+            "input_tokens": 1_200, "output_tokens": 150, "cache_read_tokens": 100,
+            "cache_write_tokens": 400, "reasoning_tokens": 20, "total_tokens": 1_350,
+        }
+        delta = codex_counter_delta(current, acknowledged)
+        self.assertLessEqual(delta["cache_read_tokens"], delta["input_tokens"])
+        self.assertLessEqual(delta["cache_write_tokens"], delta["input_tokens"])
+        self.assertLessEqual(delta["reasoning_tokens"], delta["output_tokens"])
+        self.assertEqual(delta["total_tokens"], delta["input_tokens"] + delta["output_tokens"])

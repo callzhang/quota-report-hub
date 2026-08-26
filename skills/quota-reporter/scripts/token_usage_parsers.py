@@ -162,12 +162,24 @@ def codex_counter_delta(
     if acknowledged is None:
         return normalized_current
     normalized_acknowledged = {field: int(acknowledged.get(field, 0)) for field in COUNTER_FIELDS}
-    if any(normalized_current[field] < normalized_acknowledged[field] for field in COUNTER_FIELDS):
+    # Only total_tokens going backwards means the session actually restarted and the cumulative
+    # counter was reset. cached_input_tokens drops every time codex compacts the context -- ordinary
+    # behaviour in a long conversation, and the single most common thing a long conversation does.
+    # Treating that as a reset re-emits the ENTIRE session cumulative as fresh usage, so the users
+    # who keep one conversation going get charged for their whole history again on every compaction.
+    if normalized_current["total_tokens"] < normalized_acknowledged["total_tokens"]:
         return normalized_current
-    return {
-        field: normalized_current[field] - normalized_acknowledged[field]
+    delta = {
+        field: max(0, normalized_current[field] - normalized_acknowledged[field])
         for field in COUNTER_FIELDS
     }
+    # Clamping individual fields can break the invariants the hub validates against, which would
+    # get the whole batch rejected. Derive the dependent counters instead of trusting their deltas.
+    delta["cache_read_tokens"] = min(delta["cache_read_tokens"], delta["input_tokens"])
+    delta["cache_write_tokens"] = min(delta["cache_write_tokens"], delta["input_tokens"])
+    delta["reasoning_tokens"] = min(delta["reasoning_tokens"], delta["output_tokens"])
+    delta["total_tokens"] = delta["input_tokens"] + delta["output_tokens"]
+    return delta
 
 
 def parse_claude_line(
