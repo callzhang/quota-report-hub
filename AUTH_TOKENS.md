@@ -83,8 +83,12 @@
 
 ### Credential shape
 - `credentials.claudeAiOauth = { accessToken, refreshToken, expiresAt (ms epoch), subscriptionType }`.
-- AT lifetime **~8 hours**, with a real `expiresAt`. `accessTokenMsUntilExpiry(authJson, "claude")`
-  reads `expiresAt - now` directly.
+- AT lifetime depends on the **scope the refresh asked for** (measured 2026-08-27, same `client_id`):
+  `user:inference` alone returns `expires_in` 28800 (**8 h**); the CLI's own scope set returns a
+  **30-day** token. The blob records what it was granted in `credentials.claudeAiOauth.scopes`, and
+  the hub refreshes with those, so a pooled claude AT normally lives ~30 days, not 8 hours. Either
+  way `expiresAt` is real and `accessTokenMsUntilExpiry(authJson, "claude")` reads `expiresAt - now`
+  directly.
 - The pool blob is wrapped as schema `claude_credentials_v1` (`build_claude_auth_blob`), carrying
   `credentials`, `account_id`, `session_id`, `auth_last_refresh`, `claude_cli_state`.
 
@@ -95,7 +99,11 @@
 
 ### Refresh endpoint
 - `POST https://platform.claude.com/v1/oauth/token`, `client_id = 9d1c250a-e61b-44d9-88ed-5944d1962f5e`,
-  scope `user:inference`, CLI-style User-Agent (`refreshClaudeToken`, [lib/token-refresh.js](lib/token-refresh.js)).
+  CLI-style User-Agent (`refreshClaudeToken`, [lib/token-refresh.js](lib/token-refresh.js)).
+- **Scope**: the credential's own `scopes`, falling back to `user:inference` once if the provider
+  rejects them. A rejected refresh does not consume the refresh token, so the narrow retry costs one
+  request and cannot orphan the grant. Every refresh logs `{requested_scope, granted_scope,
+  expires_in}` so the lifetime a scope buys stays observable rather than inferred.
 
 ---
 

@@ -16,7 +16,7 @@ import {
 } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
-import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry } from "../lib/token-refresh.js";
+import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob } from "../lib/token-refresh.js";
 import { REFRESH_TOKEN_REJECTED_ERROR, isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
 
 // Proactively refresh an access token (claude OR codex) once it is within this window of expiry.
@@ -62,7 +62,12 @@ async function refreshEntryIfNeeded(
   if (!refreshToken) {
     return { authJsonText, result: { attempted: false, reason: "no_refresh_token" } };
   }
-  const refreshed = await refreshTokenImpl(refreshToken);
+  // Claude refreshes carry the credential's own scopes: the narrow `user:inference` default mints an
+  // 8-hour access token where the full set mints a 30-day one, and a short token means the pool has
+  // to rotate (and risk orphaning a custodian) ~90x more often. Codex takes no scope argument.
+  const refreshed = source === "claude"
+    ? await refreshTokenImpl(refreshToken, claudeScopesFromAuthBlob(authJsonText))
+    : await refreshTokenImpl(refreshToken);
   if (!refreshed.ok) {
     return { authJsonText, result: { attempted: true, ok: false, auth_rejected: refreshed.auth_rejected, status: refreshed.status } };
   }

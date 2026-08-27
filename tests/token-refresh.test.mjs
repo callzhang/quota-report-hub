@@ -6,6 +6,7 @@ import {
   applyRefreshToBlob,
   accessTokenMsUntilExpiry,
   verifyAndRefreshAuthBlob,
+  claudeScopesFromAuthBlob,
 } from "../lib/token-refresh.js";
 import { deriveAuthPoolEntry, shouldReplaceAuthPoolEntry } from "../lib/auth-pool.js";
 
@@ -178,4 +179,53 @@ test("accessTokenMsUntilExpiry reads claude expiresAt and codex access_token exp
 
   assert.equal(accessTokenMsUntilExpiry("not json", "claude"), null);
   assert.equal(accessTokenMsUntilExpiry(JSON.stringify({ tokens: {} }), "codex"), null);
+});
+
+
+test("a claude refresh asks for the credential's own scopes, not the narrow default", async () => {
+  const fetchImpl = mockFetch([jsonResponse(200, { access_token: "NEW_AT", refresh_token: "NEW_RT", expires_in: 2592000 })]);
+  const scopes = ["user:inference", "user:file_upload", "user:profile", "user:sessions:claude_code"];
+  const result = await refreshClaudeToken("OLD_RT", scopes, fetchImpl);
+  assert.equal(result.ok, true);
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.equal(fetchImpl.calls[0].body.scope, scopes.join(" "));
+});
+
+test("a scoped claude refresh rejected by the provider falls back to user:inference once", async () => {
+  const fetchImpl = mockFetch([
+    jsonResponse(400, {}),
+    jsonResponse(200, { access_token: "NEW_AT", refresh_token: "NEW_RT", expires_in: 28800 }),
+  ]);
+  const result = await refreshClaudeToken("OLD_RT", ["user:inference", "user:profile"], fetchImpl);
+  assert.equal(result.ok, true);
+  assert.equal(fetchImpl.calls.length, 2);
+  assert.equal(fetchImpl.calls[0].body.scope, "user:inference user:profile");
+  assert.equal(fetchImpl.calls[1].body.scope, "user:inference");
+});
+
+test("a refresh already using the fallback scope is not retried, and a transient failure never is", async () => {
+  const narrow = mockFetch([jsonResponse(400, {})]);
+  assert.equal((await refreshClaudeToken("OLD_RT", null, narrow)).ok, false);
+  assert.equal(narrow.calls.length, 1);
+
+  const transient = mockFetch([jsonResponse(500, {})]);
+  assert.equal((await refreshClaudeToken("OLD_RT", ["user:inference", "user:profile"], transient)).ok, false);
+  assert.equal(transient.calls.length, 1, "a 500 is transient — retrying narrower would hide the outage");
+});
+
+test("verifyAndRefreshAuthBlob carries the stored claude scopes into the refresh", async () => {
+  const scopes = ["user:inference", "user:profile", "user:sessions:claude_code"];
+  const authJson = JSON.stringify({ credentials: { claudeAiOauth: { accessToken: "AT", refreshToken: "RT", expiresAt: 1, scopes } } });
+  const fetchImpl = mockFetch([jsonResponse(200, { access_token: "NEW_AT", refresh_token: "NEW_RT", expires_in: 2592000 })]);
+  const result = await verifyAndRefreshAuthBlob(authJson, "claude", fetchImpl);
+  assert.equal(result.ok, true);
+  assert.equal(fetchImpl.calls[0].body.scope, scopes.join(" "));
+});
+
+test("claudeScopesFromAuthBlob reads stored scopes and returns null when there are none to read", () => {
+  const withScopes = JSON.stringify({ credentials: { claudeAiOauth: { scopes: ["user:inference", "user:profile"] } } });
+  assert.deepEqual(claudeScopesFromAuthBlob(withScopes), ["user:inference", "user:profile"]);
+  assert.equal(claudeScopesFromAuthBlob(JSON.stringify({ credentials: { claudeAiOauth: { scopes: [] } } })), null);
+  assert.equal(claudeScopesFromAuthBlob(JSON.stringify({ credentials: {} })), null);
+  assert.equal(claudeScopesFromAuthBlob("not json"), null);
 });

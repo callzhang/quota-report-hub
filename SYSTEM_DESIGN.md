@@ -641,7 +641,19 @@ For a borrow request, candidates are filtered then ranked:
 ## 11. Token-refresh architecture
 
 `lib/token-refresh.js` is the server-side refresher (hub is sole refresher under the flag):
-- **Endpoints**: Claude `platform.claude.com/v1/oauth/token` (client `9d1c…`, scope `user:inference`); Codex `auth.openai.com/oauth/token` (client `app_EMoam…`, no scope) (`:5-10`).
+- **Endpoints**: Claude `platform.claude.com/v1/oauth/token` (client `9d1c…`); Codex `auth.openai.com/oauth/token` (client `app_EMoam…`, no scope) (`:5-10`).
+- **Claude scope decides AT lifetime.** `user:inference` alone mints an 8-hour access token; the
+  CLI's own scope set mints a 30-day one on the same `client_id` (measured 2026-08-27,
+  [`AUTH_TOKENS.md` §2](AUTH_TOKENS.md)). An 8-hour token makes the pool rotate ~90x more often, and
+  every rotation is a chance to orphan a custodian ([§9](#9-the-disabled_refresh_token-mechanism)),
+  so `refreshClaudeToken` asks for the scopes the stored blob was actually granted
+  (`claudeScopesFromAuthBlob`) and retries once with the narrow set only if the provider rejects
+  them — a rejected refresh does not consume the RT, so that retry cannot orphan the grant. Codex
+  sends no scope.
+- **Every refresh logs one line** (`logRefreshOutcome`): source, attempt, requested scope, granted
+  scope, `expires_in`, status, rejection. Stored expiry mirrors only show the result after the fact;
+  this is what makes "which scope buys which lifetime" answerable from the Vercel and Actions logs.
+  Telemetry is wrapped so it can never fail a refresh.
 - **Classification** (`postRefresh` `:12-39`): HTTP 400/401 → `auth_rejected` (RT dead, latest uploader must re-login); anything else (network, 5xx, 200-without-token) → transient.
 - **`applyRefreshToBlob`**: per-source field updates that preserve unrelated sections (e.g. claude `mcpOAuth`); sets `expiresAt`/`last_refresh`.
 - **`accessTokenMsUntilExpiry`** — the crux of selectivity:
