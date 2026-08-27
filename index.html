@@ -116,6 +116,23 @@
       .health-row .trend.flat { color: var(--muted); }
       .health-row .spark { display: block; }
 
+      .reporter-rows { display: grid; gap: 8px; }
+      .reporter-row {
+        display: grid;
+        grid-template-columns: 90px 1.2fr 2.2fr;
+        align-items: center;
+        gap: 14px;
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-left-width: 4px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.5);
+      }
+      @media (max-width: 720px) { .reporter-row { grid-template-columns: 1fr; } }
+      .reporter-row.danger { border-left-color: var(--bad); }
+      .reporter-row.warning { border-left-color: var(--warn, #b26a00); }
+      .reporter-row.success { border-left-color: var(--green, #1a7f37); }
+
       .meta { color: var(--muted); }
       .cards {
         margin-top: 10px;
@@ -448,6 +465,13 @@
         <div id="health-rows" class="health-rows"></div>
       </section>
 
+      <section class="panel section" id="reporter-health-section" hidden>
+        <h2>Reporter health</h2>
+        <div class="meta">Every guard run heartbeats here, whether or not it produced a usable quota reading. That separates a machine that is off or asleep (<strong>silent</strong>) from one whose guard runs every 15 minutes but whose quota probe keeps failing (<strong>probe failing</strong>) — the latter reports no quota and never rotates, so without this it looks identical to silence.</div>
+        <div id="reporter-health-rows" class="reporter-rows"></div>
+        <div class="meta" id="reporter-health-summary"></div>
+      </section>
+
       <section class="panel section">
         <h2>Cloud Auth Entries</h2>
         <div class="table-shell">
@@ -514,6 +538,9 @@
       const flagMessage = document.getElementById("flag-message");
       const healthSection = document.getElementById("health-section");
       const healthRows = document.getElementById("health-rows");
+      const reporterHealthSection = document.getElementById("reporter-health-section");
+      const reporterHealthRows = document.getElementById("reporter-health-rows");
+      const reporterHealthSummary = document.getElementById("reporter-health-summary");
       const availabilityPopover = document.getElementById("availability-popover");
       const COOKIE_NAME = "quota_report_hub_token";
       const DASHBOARD_REFRESH_MS = 60 * 1000;
@@ -1203,6 +1230,7 @@
         setAuthenticatedView(payload.viewer_email || "unknown");
         renderAdminFlag(payload);
         renderHealthTrend(payload.health_history);
+        renderReporterHealth(payload.reporter_health);
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
         scheduleDashboardTransition(items);
         checkQuotaFullNotifications(items);
@@ -1375,6 +1403,29 @@
               <div class="meta wrap">central refresh: ${crOk} ok · ${crRej} dead-RT</div>
             </div>`;
         }).join("");
+      }
+
+      function renderReporterHealth(health) {
+        const items = (health && health.items) || [];
+        if (!items.length) { reporterHealthSection.hidden = true; return; }
+        reporterHealthSection.hidden = false;
+        // Healthy reporters are the boring majority; showing every one of them would bury the two
+        // rows that need someone to act. They stay in the count line below instead.
+        const notable = items.filter((item) => item.state !== "ok");
+        const okCount = items.length - notable.length;
+        reporterHealthRows.innerHTML = notable.map((item) => {
+          const label = { silent: "silent", probe_failing: "probe failing", probe_error: "probe error", unknown: "unknown" }[item.state] || item.state;
+          const account = item.account_id ? ` · ${escapeHtml(item.account_id)}` : "";
+          return `
+            <div class="reporter-row ${escapeHtml(item.tone)}">
+              <div>${sourceTag(item.source)}</div>
+              <div class="wrap"><strong>${escapeHtml(item.hostname || item.reporter_key || "unknown")}</strong><div class="meta">${escapeHtml(label)}${account}</div></div>
+              <div class="meta wrap">${escapeHtml(item.summary)}</div>
+            </div>`;
+        }).join("");
+        reporterHealthSummary.textContent = notable.length
+          ? `${health.silent_count} silent · ${health.probe_failing_count} probe failing · ${health.probe_error_count} single probe error · ${okCount} healthy`
+          : `All ${okCount} reporters ran and probed successfully.`;
       }
 
       function renderAdminFlag(payload) {

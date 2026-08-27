@@ -8,8 +8,10 @@ import {
   dbConfigured,
   getFeatureFlag,
   poolHealthSnapshots,
+  reporterProbeHeartbeats,
 } from "../lib/db.js";
 import { authPoolStatusPayload } from "../lib/reports.js";
+import { reporterHealthPayload } from "../lib/reporter-health.js";
 import { isAdminEmail, signDashboardRevisionToken } from "../lib/company-auth.js";
 
 export default async function handler(req, res) {
@@ -28,7 +30,9 @@ export async function statusHandlerImpl(req, res, deps = {
   authPoolInvalidatedNotifications,
   authPoolFetchLog,
   poolHealthSnapshots,
+  reporterProbeHeartbeats,
   authPoolStatusPayload,
+  reporterHealthPayload,
   getFeatureFlag,
   isAdminEmail,
   signDashboardRevisionToken,
@@ -42,6 +46,7 @@ export async function statusHandlerImpl(req, res, deps = {
 
     if (!deps.dbConfigured()) {
       const dataset = deps.authPoolStatusPayload([], []);
+      dataset.reporter_health = deps.reporterHealthPayload([], dataset.generated_at);
       dataset.dashboard_revision = 0;
       dataset.dashboard_updated_at = null;
       dataset.dashboard_revision_token = deps.signDashboardRevisionToken(authContext.email);
@@ -53,12 +58,13 @@ export async function statusHandlerImpl(req, res, deps = {
     let snapshot = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const revisionBefore = await deps.dashboardRevision();
-      const [entries, reports, invalidatedStates, fetchLog, healthHistory, disabledRefreshToken] = await Promise.all([
+      const [entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken] = await Promise.all([
         deps.authPoolEntrySummaries(),
         deps.authPoolQuotaLatest(),
         deps.authPoolInvalidatedNotifications(),
         deps.authPoolFetchLog({ limit: 50 }),
         deps.poolHealthSnapshots({ limit: 96 }),
+        deps.reporterProbeHeartbeats({ limit: 200 }),
         deps.getFeatureFlag("disabled_refresh_token", false),
       ]);
       const revisionAfter = await deps.dashboardRevision();
@@ -69,6 +75,7 @@ export async function statusHandlerImpl(req, res, deps = {
           invalidatedStates,
           fetchLog,
           healthHistory,
+          heartbeats,
           disabledRefreshToken,
           revision: revisionAfter,
         };
@@ -78,10 +85,11 @@ export async function statusHandlerImpl(req, res, deps = {
     if (!snapshot) {
       throw new Error("dashboard changed while status was being assembled");
     }
-    const { entries, reports, invalidatedStates, fetchLog, healthHistory, disabledRefreshToken, revision } = snapshot;
+    const { entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken, revision } = snapshot;
     const dataset = deps.authPoolStatusPayload(entries, reports, new Date().toISOString(), invalidatedStates);
     dataset.fetch_log = fetchLog;
     dataset.health_history = healthHistory;
+    dataset.reporter_health = deps.reporterHealthPayload(heartbeats, dataset.generated_at);
     dataset.dashboard_revision = revision.revision;
     dataset.dashboard_updated_at = revision.updated_at;
     dataset.dashboard_revision_token = deps.signDashboardRevisionToken(authContext.email);

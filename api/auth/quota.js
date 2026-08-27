@@ -1,10 +1,23 @@
 import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
 import { dbConfigured } from "../../lib/db.js";
-import { ingestClientQuota } from "../../lib/quota-ingest.js";
+import { ingestClientQuota, ingestReporterHeartbeat } from "../../lib/quota-ingest.js";
 import { readJsonBody } from "../../lib/http.js";
 
 export default async function handler(req, res) {
+  return quotaHandlerImpl(req, res);
+}
+
+export async function quotaHandlerImpl(req, res, deps = {
+  authenticateApiRequest,
+  sendUnauthorized,
+  withTokenUpgrade,
+  dbConfigured,
+  authPoolConfigured,
+  readJsonBody,
+  ingestClientQuota,
+  ingestReporterHeartbeat,
+}) {
   if (req.method !== "POST") {
     res.statusCode = 405;
     res.setHeader("Allow", "POST");
@@ -12,35 +25,52 @@ export default async function handler(req, res) {
     return;
   }
 
-  const authContext = await authenticateApiRequest(req);
+  const authContext = await deps.authenticateApiRequest(req);
   if (!authContext) {
-    sendUnauthorized(res);
+    deps.sendUnauthorized(res);
     return;
   }
 
-  if (!dbConfigured() || !authPoolConfigured()) {
+  if (!deps.dbConfigured() || !deps.authPoolConfigured()) {
     res.statusCode = 500;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ error: "Auth pool is not configured" }));
     return;
   }
 
-  const body = await readJsonBody(req);
+  const body = await deps.readJsonBody(req);
   if (!body?.source) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ error: "source is required" }));
     return;
   }
-  if (!body?.quota_payload || typeof body.quota_payload !== "object") {
+  const hasQuotaPayload = Boolean(body?.quota_payload) && typeof body.quota_payload === "object";
+  const hasHeartbeat = Boolean(body?.heartbeat) && typeof body.heartbeat === "object";
+  // A heartbeat-only POST is the whole point of the heartbeat: it is what a client sends when the
+  // probe failed and there is no quota payload worth reporting. Requiring quota_payload here would
+  // keep exactly the runs we most want to see invisible.
+  if (!hasQuotaPayload && !hasHeartbeat) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({ error: "quota_payload is required" }));
+    res.end(JSON.stringify({ error: "quota_payload or heartbeat is required" }));
     return;
   }
 
   const source = String(body.source);
-  const result = await ingestClientQuota({ source, quotaPayload: body.quota_payload, reporterEmail: authContext.email });
+  const heartbeatResult = hasHeartbeat
+    ? await deps.ingestReporterHeartbeat({ source, heartbeat: body.heartbeat, reporterEmail: authContext.email })
+    : null;
+  if (!hasQuotaPayload) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(deps.withTokenUpgrade(
+      { ok: true, source, heartbeat: heartbeatResult, ignored: true, reason: "heartbeat_only" },
+      authContext,
+    )));
+    return;
+  }
+  const result = await deps.ingestClientQuota({ source, quotaPayload: body.quota_payload, reporterEmail: authContext.email });
 
   if (result.reason === "missing_account_id") {
     res.statusCode = 400;
@@ -51,10 +81,10 @@ export default async function handler(req, res) {
 
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(withTokenUpgrade(
+  res.end(JSON.stringify(deps.withTokenUpgrade(
     result.ignored
-      ? { ok: true, source, ignored: true, reason: "quota_unavailable" }
-      : { ok: true, source, account_id: result.account_id },
+      ? { ok: true, source, ignored: true, reason: "quota_unavailable", heartbeat: heartbeatResult }
+      : { ok: true, source, account_id: result.account_id, heartbeat: heartbeatResult },
     authContext,
   )));
 }

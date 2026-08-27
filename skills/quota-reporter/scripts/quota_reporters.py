@@ -2228,14 +2228,18 @@ def post_auth_pool_quota(
     auth_pool_user_token: str,
     *,
     source: str,
-    quota_payload: dict,
+    quota_payload: dict | None = None,
+    heartbeat: dict | None = None,
 ) -> dict:
-    body = json.dumps(
-        {
-            "source": source,
-            "quota_payload": quota_payload,
-        }
-    ).encode("utf-8")
+    """Report this run to the hub. `quota_payload` is omitted when the probe produced nothing the
+    hub would accept; `heartbeat` is sent either way so a machine whose probe keeps failing is
+    distinguishable from a machine that is simply not running the guard."""
+    request_body: dict = {"source": source}
+    if quota_payload is not None:
+        request_body["quota_payload"] = quota_payload
+    if heartbeat is not None:
+        request_body["heartbeat"] = heartbeat
+    body = json.dumps(request_body).encode("utf-8")
     request = urllib.request.Request(
         auth_pool_url.rstrip("/") + "/api/auth/quota",
         data=body,

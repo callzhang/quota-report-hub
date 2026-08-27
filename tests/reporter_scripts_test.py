@@ -2032,12 +2032,14 @@ Reading additional input from stdin...
             result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
 
         self.assertTrue(result["reported"])
-        post_auth_pool_quota.assert_called_once_with(
-            "https://quota-report-hub.vercel.app",
-            "qrp_token",
-            source="codex",
-            quota_payload=payload,
+        self.assertEqual(post_auth_pool_quota.call_count, 1)
+        self.assertEqual(
+            post_auth_pool_quota.call_args.args,
+            ("https://quota-report-hub.vercel.app", "qrp_token"),
         )
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["source"], "codex")
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["quota_payload"], payload)
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["heartbeat"]["status"], "ok")
 
     def test_report_current_quota_to_auth_pool_strips_refreshed_auth_secret(self):
         payload = {
@@ -2171,7 +2173,11 @@ Reading additional input from stdin...
 
         self.assertFalse(result["reported"])
         self.assertEqual(result["reason"], "quota_unavailable")
-        post_auth_pool_quota.assert_not_called()
+        # The quota itself is unreportable, but the run still heartbeats: without it the hub cannot
+        # tell this machine from one that is switched off.
+        self.assertEqual(post_auth_pool_quota.call_count, 1)
+        self.assertIsNone(post_auth_pool_quota.call_args.kwargs["quota_payload"])
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["heartbeat"]["status"], "ok")
 
     def test_report_current_quota_to_auth_pool_posts_complete_codex_week_without_five_hour(self):
         payload = {
@@ -2195,12 +2201,14 @@ Reading additional input from stdin...
             result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
 
         self.assertTrue(result["reported"])
-        post_auth_pool_quota.assert_called_once_with(
-            "https://quota-report-hub.vercel.app",
-            "qrp_token",
-            source="codex",
-            quota_payload=payload,
+        self.assertEqual(post_auth_pool_quota.call_count, 1)
+        self.assertEqual(
+            post_auth_pool_quota.call_args.args,
+            ("https://quota-report-hub.vercel.app", "qrp_token"),
         )
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["source"], "codex")
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["quota_payload"], payload)
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["heartbeat"]["status"], "ok")
 
     def test_report_current_quota_to_auth_pool_posts_confirmed_codex_out_of_credits(self):
         payload = {
@@ -2229,12 +2237,14 @@ Reading additional input from stdin...
             result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
 
         self.assertTrue(result["reported"])
-        post_auth_pool_quota.assert_called_once_with(
-            "https://quota-report-hub.vercel.app",
-            "qrp_token",
-            source="codex",
-            quota_payload=payload,
+        self.assertEqual(post_auth_pool_quota.call_count, 1)
+        self.assertEqual(
+            post_auth_pool_quota.call_args.args,
+            ("https://quota-report-hub.vercel.app", "qrp_token"),
         )
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["source"], "codex")
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["quota_payload"], payload)
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["heartbeat"]["status"], "ok")
 
     def test_report_current_quota_to_auth_pool_skips_unavailable_quota(self):
         config = {
@@ -2253,7 +2263,8 @@ Reading additional input from stdin...
 
         self.assertFalse(result["reported"])
         self.assertEqual(result["reason"], "quota_unavailable")
-        post_auth_pool_quota.assert_not_called()
+        self.assertEqual(post_auth_pool_quota.call_count, 1)
+        self.assertIsNone(post_auth_pool_quota.call_args.kwargs["quota_payload"])
 
     def test_guard_summary_mentions_installer_when_auth_pool_config_missing(self):
         self.assertEqual(
@@ -2962,6 +2973,7 @@ Reading additional input from stdin...
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / "state.json"
             with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
+              with mock.patch.object(quota_guard, "notify_probe_failures", return_value={"shown": []}):
                 with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
                     with mock.patch.object(quota_guard, "gui_session_active", return_value=True):
                         with mock.patch.object(quota_guard, "launch_owner_relogin", return_value={"launched": True}) as relogin:
@@ -2999,6 +3011,7 @@ Reading additional input from stdin...
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / "state.json"
             with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
+              with mock.patch.object(quota_guard, "notify_probe_failures", return_value={"shown": []}):
                 with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
                     with mock.patch.object(quota_guard, "launch_owner_relogin") as relogin:
                         result = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0, state_path=state)
@@ -3030,6 +3043,7 @@ Reading additional input from stdin...
         }
 
         with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
+          with mock.patch.object(quota_guard, "notify_probe_failures", return_value={"shown": []}):
             with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
                 with mock.patch.object(quota_guard, "launch_owner_relogin") as relogin:
                     result = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0)
@@ -3073,6 +3087,7 @@ Reading additional input from stdin...
         with tempfile.TemporaryDirectory() as tmp:
             state = Path(tmp) / "state.json"
             with mock.patch.object(quota_guard, "fetch_auth_pool_status", return_value=status_payload):
+              with mock.patch.object(quota_guard, "notify_probe_failures", return_value={"shown": []}):
                 with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
                     first = quota_guard.notify_uploaded_invalidated_auths(config, now=1_000_000.0, state_path=state)
                     # same invalidated set an hour later -> suppressed (no banner spam every 15 min)
@@ -3454,6 +3469,7 @@ Reading additional input from stdin...
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value=claude_replacement):
                                     with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
                                         with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
+                                          with mock.patch.object(quota_guard, "notify_probe_failures", return_value={"shown": []}):
                                             with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
                                                 with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
                                                     result = quota_guard.run_guard(args)
@@ -3500,6 +3516,7 @@ Reading additional input from stdin...
                                 with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
                                     with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
                                         with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
+                                          with mock.patch.object(quota_guard, "notify_probe_failures", return_value={"shown": []}):
                                             with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
                                                 with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
                                                     result = quota_guard.run_guard(args)
@@ -3612,6 +3629,7 @@ Reading additional input from stdin...
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
                                     with mock.patch.object(quota_guard, "notify_uploaded_invalidated_auths", return_value={"shown": False, "reason": "no_uploaded_invalidated_auths"}):
                                         with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
+                                          with mock.patch.object(quota_guard, "notify_probe_failures", return_value={"shown": []}):
                                             with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
                                                 with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
                                                     result = quota_guard.run_guard(args)
@@ -3722,6 +3740,7 @@ Reading additional input from stdin...
                             with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": True}):
                                 with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False}):
                                     with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
+                                      with mock.patch.object(quota_guard, "notify_probe_failures", return_value={"shown": []}):
                                         with mock.patch.object(quota_guard, "show_desktop_notification") as notify:
                                             with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
                                                 result = quota_guard.run_guard(args)
@@ -5615,6 +5634,108 @@ class ClaudeCredentialSourceOrderTests(unittest.TestCase):
              mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=self.KEYCHAIN):
             creds, src = quota_reporters.read_claude_oauth_credentials()
         self.assertEqual(src, "credentials_file")
+
+
+class ProbeHeartbeatTest(unittest.TestCase):
+    """The heartbeat exists so a guard that runs and fails is distinguishable from one that never
+    runs. Before it, a probe that could not produce a reportable payload sent the hub nothing at
+    all, which looked exactly like a machine that was switched off -- and the same payload was
+    treated as "healthy" locally, so it did not rotate either."""
+
+    CONFIG = {
+        "auth_pool_url": "https://quota-report-hub.vercel.app",
+        "auth_pool_user_token": "qrp_token",
+    }
+
+    def test_failed_probe_still_heartbeats_without_a_quota_payload(self):
+        payload = quota_guard.source_probe_error_payload(
+            "codex",
+            urllib.error.URLError("[Errno 8] nodename nor servname provided"),
+        )
+
+        with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post:
+            result = quota_guard.report_current_quota_to_auth_pool(self.CONFIG, "codex", payload)
+
+        self.assertFalse(result["reported"])
+        self.assertIsNone(post.call_args.kwargs["quota_payload"])
+        heartbeat = post.call_args.kwargs["heartbeat"]
+        self.assertEqual(heartbeat["status"], "error")
+        self.assertIn("nodename nor servname", heartbeat["error"])
+        self.assertEqual(heartbeat["client_version"], quota_guard.CLIENT_VERSION)
+        self.assertTrue(heartbeat["reporter_name"])
+        self.assertTrue(heartbeat["hostname"])
+
+    def test_rate_limited_probe_without_confirmed_exhaustion_counts_as_a_failure(self):
+        # This is the shape that hid a real 0% from the hub: codex is refusing to serve, but the
+        # probe could not confirm exhaustion, so there is no quota to report. It must not read as ok.
+        payload = {
+            "source": "codex",
+            "status": "error",
+            "error": "codex rate limited but quota exhaustion was not confirmed",
+            "account_id": "acct-1",
+            "reporter_name": "u@host",
+            "hostname": "host",
+            "windows": {"5h": None, "1week": None},
+        }
+
+        with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post:
+            quota_guard.report_current_quota_to_auth_pool(self.CONFIG, "codex", payload)
+
+        heartbeat = post.call_args.kwargs["heartbeat"]
+        self.assertEqual(heartbeat["status"], "error")
+        self.assertEqual(heartbeat["error"], "codex rate limited but quota exhaustion was not confirmed")
+        self.assertEqual(heartbeat["account_id"], "acct-1")
+
+    def test_missing_auth_pool_config_sends_nothing(self):
+        with mock.patch.object(quota_guard, "post_auth_pool_quota") as post:
+            result = quota_guard.report_current_quota_to_auth_pool({}, "codex", {"status": "ok"})
+        self.assertEqual(result["reason"], "missing_auth_pool_config")
+        post.assert_not_called()
+
+    def _failing_report(self, error="codex probe failed"):
+        return {"codex": {"heartbeat": {"status": "error", "error": error}}}
+
+    def test_toast_waits_for_the_failure_threshold_then_holds_off_until_the_repeat_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "probe-failures.json"
+            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                for run in range(1, quota_guard.PROBE_FAILURE_NOTIFY_THRESHOLD):
+                    quota_guard.notify_probe_failures(self._failing_report(), now=1000.0 + run, state_path=state_path)
+                notify.assert_not_called()
+
+                result = quota_guard.notify_probe_failures(self._failing_report(), now=2000.0, state_path=state_path)
+                self.assertEqual(result["shown"], ["codex:failing"])
+                self.assertEqual(notify.call_count, 1)
+                self.assertIn("codex probe failed", notify.call_args.args[1])
+
+                # Still failing on the next run, but nagging every 15 minutes trains people to
+                # dismiss the toast without reading it.
+                quota_guard.notify_probe_failures(self._failing_report(), now=2900.0, state_path=state_path)
+                self.assertEqual(notify.call_count, 1)
+
+                quota_guard.notify_probe_failures(
+                    self._failing_report(),
+                    now=2000.0 + quota_guard.PROBE_FAILURE_REPEAT_SECONDS,
+                    state_path=state_path,
+                )
+                self.assertEqual(notify.call_count, 2)
+
+    def test_recovery_is_announced_once_and_clears_the_streak(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "probe-failures.json"
+            with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+                for run in range(quota_guard.PROBE_FAILURE_NOTIFY_THRESHOLD):
+                    quota_guard.notify_probe_failures(self._failing_report(), now=1000.0 + run, state_path=state_path)
+                self.assertEqual(notify.call_count, 1)
+
+                healthy = {"codex": {"heartbeat": {"status": "ok"}}}
+                result = quota_guard.notify_probe_failures(healthy, now=3000.0, state_path=state_path)
+                self.assertEqual(result["shown"], ["codex:recovered"])
+                self.assertEqual(result["state"]["codex"], {"consecutive": 0})
+
+                # A recovered source stays quiet on subsequent healthy runs.
+                quota_guard.notify_probe_failures(healthy, now=4000.0, state_path=state_path)
+                self.assertEqual(notify.call_count, 2)
 
 
 if __name__ == "__main__":

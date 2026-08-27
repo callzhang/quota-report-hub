@@ -6,4 +6,4 @@ lib/premium-ratio.js — raising the floor there without shipping a client that 
 everybody out.
 """
 
-CLIENT_VERSION = "2.0.1"
+CLIENT_VERSION = "2.1.0"

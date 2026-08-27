@@ -10,6 +10,7 @@ import os
 import platform
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -32,6 +33,7 @@ from install_quota_guard import (
 )
 from quota_reporters import (
     CLAUDE_HOME,
+    CLIENT_VERSION,
     KNOWN_AUTH_PATH,
     SEED_STATE_NOT_LOGGED_IN,
     SEED_STATE_POOLED,
@@ -52,6 +54,7 @@ from quota_reporters import (
     probe_claude,
     probe_codex,
     read_claude_oauth_credentials,
+    reporter_name,
     runtime_cli_path,
     sync_current_claude_auth_pool,
     sync_current_codex_auth_pool,
@@ -66,6 +69,11 @@ DEFAULT_SELF_UPDATE_REF = "main"
 SELF_UPDATE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-self-update.json"
 HUB_NOTICE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-hub-notices.json"
 HUB_NOTICE_REPEAT_SECONDS = 6 * 60 * 60
+PROBE_FAILURE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-probe-failures.json"
+# Three consecutive failed runs is ~45 minutes of a guard that is alive but blind. Below that it is
+# usually a laptop waking up mid-run or a flaky DNS lookup, and a toast would just be noise.
+PROBE_FAILURE_NOTIFY_THRESHOLD = 3
+PROBE_FAILURE_REPEAT_SECONDS = 6 * 60 * 60
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 AUTH_POOL_MISSING_CONFIG_TEXT = "auth pool not configured (run install_quota_guard.py)"
 
@@ -343,39 +351,82 @@ def quota_payload_should_report(payload: dict | None) -> bool:
     return payload.get("status") == "ok" and quota_payload_has_window(payload)
 
 
-def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict | None) -> dict:
-    if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
-        return {"ok": True, "reported": False, "reason": "missing_auth_pool_config"}
+def quota_payload_is_reportable(source: str, payload: dict | None) -> bool:
+    """Whether the hub would accept this payload as a quota report.
+
+    Mirrors codexClientPayloadAccepted / ingestClientQuota in lib/quota-ingest.js -- posting a
+    payload the hub will discard just burns a request.
+    """
     if source == "codex":
         if not payload or not payload.get("account_id"):
-            return {"ok": True, "reported": False, "reason": "quota_unavailable"}
-        if not (
+            return False
+        return bool(
             is_hard_invalidated(payload)
             or (payload.get("status") == "ok" and quota_payload_has_complete_window(payload, "1week"))
             or (payload.get("status") == "ok" and quota_payload_is_confirmed_out_of_credits(payload))
-        ):
-            return {"ok": True, "reported": False, "reason": "quota_unavailable"}
-    elif not quota_payload_should_report(payload):
-        return {"ok": True, "reported": False, "reason": "quota_unavailable"}
-    quota_payload = without_sensitive_refresh_capture(payload)
+        )
+    return quota_payload_should_report(payload)
+
+
+def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
+    """Liveness + probe outcome for this run, sent to the hub whether or not the quota is reportable.
+
+    Without it a probe that fails every 15 minutes is invisible: the failing payload is never
+    reported, so the hub sees the same silence it would see from a machine that is switched off.
+    A probe that produced no usable quota counts as a failure here even when it did not raise --
+    "codex rate limited but quota exhaustion was not confirmed" is exactly the state someone needs
+    to be able to see.
+    """
+    probe_ok = bool(payload) and payload.get("status") == "ok"
+    error = None
+    if not probe_ok:
+        error = (payload or {}).get("error") or "quota probe produced no usable payload"
+    return {
+        "reporter_name": (payload or {}).get("reporter_name") or reporter_name(),
+        "hostname": (payload or {}).get("hostname") or socket.gethostname(),
+        "status": "ok" if probe_ok else "error",
+        "error": error,
+        "account_id": (payload or {}).get("account_id"),
+        "client_version": CLIENT_VERSION,
+        "last_run_at": iso_now(),
+    }
+
+
+def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict | None) -> dict:
+    if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
+        return {"ok": True, "reported": False, "reason": "missing_auth_pool_config"}
+    heartbeat = build_probe_heartbeat(source, payload)
+    reportable = quota_payload_is_reportable(source, payload)
+    quota_payload = without_sensitive_refresh_capture(payload) if reportable else None
     result = post_auth_pool_quota(
         config["auth_pool_url"],
         config["auth_pool_user_token"],
         source=source,
         quota_payload=quota_payload,
+        heartbeat=heartbeat,
     )
     if result.get("ok") is False:
         return {
             "ok": False,
             "reported": False,
             "reason": "post_auth_pool_quota_failed",
-            "account_id": quota_payload.get("account_id"),
+            "account_id": (quota_payload or {}).get("account_id"),
+            "heartbeat": heartbeat,
+            "result": result,
+        }
+    if not reportable:
+        return {
+            "ok": True,
+            "reported": False,
+            "reason": "quota_unavailable",
+            "heartbeat": heartbeat,
             "result": result,
         }
     return {
         "ok": True,
         "reported": True,
         "account_id": quota_payload.get("account_id"),
+        "heartbeat": heartbeat,
         "result": result,
     }
 
@@ -567,6 +618,69 @@ def notify_hub_notices(
         except Exception:
             pass
     return {"shown": shown}
+
+
+def read_probe_failure_state(state_path: Path = PROBE_FAILURE_STATE_PATH) -> dict:
+    if not state_path.exists():
+        return {}
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def notify_probe_failures(
+    quota_report_result: dict,
+    *,
+    now: float | None = None,
+    state_path: Path = PROBE_FAILURE_STATE_PATH,
+) -> dict:
+    """Tell the machine's owner when its quota probe has been failing run after run.
+
+    The hub-side heartbeat makes this visible to whoever watches the dashboard; this makes it
+    visible to the one person who can actually fix it. Same anti-nag rule as the hub notices: once
+    per repeat window, plus a single toast when it recovers so the warning is not left dangling.
+    """
+    current = time.time() if now is None else now
+    state = read_probe_failure_state(state_path)
+    shown: list[str] = []
+    touched = False
+    for source, result in sorted((quota_report_result or {}).items()):
+        heartbeat = (result or {}).get("heartbeat")
+        if not isinstance(heartbeat, dict):
+            continue
+        touched = True
+        entry = state.get(source) if isinstance(state.get(source), dict) else {}
+        if heartbeat.get("status") == "ok":
+            if entry.get("notified_at"):
+                if show_desktop_notification("额度守护", f"{source} 额度探测已恢复正常。"):
+                    shown.append(f"{source}:recovered")
+            state[source] = {"consecutive": 0}
+            continue
+        consecutive = int(entry.get("consecutive") or 0) + 1
+        notified_at = entry.get("notified_at")
+        should_notify = consecutive >= PROBE_FAILURE_NOTIFY_THRESHOLD and (
+            not isinstance(notified_at, (int, float))
+            or current - notified_at >= PROBE_FAILURE_REPEAT_SECONDS
+        )
+        if should_notify:
+            message = (
+                f"{source} 额度探测已连续 {consecutive} 次失败，额度守护无法判断额度、也不会自动换号。\n"
+                f"原因：{heartbeat.get('error') or '未知错误'}"
+            )
+            show_desktop_notification("额度守护", message)
+            shown.append(f"{source}:failing")
+            notified_at = current
+        state[source] = {"consecutive": consecutive, "notified_at": notified_at}
+    # No heartbeats to judge (no auth-pool config, or the run never got that far) means there is
+    # nothing to remember -- don't create or rewrite the state file just to store an empty object.
+    if touched:
+        try:
+            write_self_update_state(state, state_path)
+        except Exception:
+            pass
+    return {"shown": shown, "state": state}
 
 
 def notify_replacement_success(source: str, replacement: dict) -> dict:
@@ -2085,6 +2199,7 @@ def run_guard(args: argparse.Namespace) -> dict:
         def notify_all():
             if warnings.get("scheduler"):
                 notifications["scheduler"] = notify_scheduler_warning(warnings["scheduler"])
+            notifications["probe_failures"] = notify_probe_failures(quota_report_result)
             notifications["codex"] = notify_replacement_success("codex", codex_replacement)
             notifications["claude"] = notify_replacement_success("claude", claude_replacement)
             notifications["uploaded_invalidated_auths"] = notify_uploaded_invalidated_auths(config)

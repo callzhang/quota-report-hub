@@ -95,7 +95,7 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 2. **Scheduler self-heal** — re-register launchd/cron if missing (`ensure_scheduler_registration` `:511-564`).
 3. **Probe Codex** — `probe_codex(..., capture_refreshed_auth=True)`, persist any CLI-refreshed `auth.json` back atomically, then strip the sensitive `refreshed_auth_json` from the payload (`:1463-1468`).
 4. **Probe Claude** — `probe_claude` (or a synthetic error if a custom ANTHROPIC provider is active).
-5. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool` (`:1516-1557`).
+5. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool`, which always sends a **probe heartbeat** and attaches the quota payload only when the hub would accept it (see 3.7).
 6. **Rotate** — `maybe_replace_{codex,claude}_auth` (`:1559-1588`).
 7. **Codex app-server restart** if auth changed (`:1589-1609`).
 8. **Notifications** (toasts) unless `--no-toast`.
@@ -122,6 +122,19 @@ Replace when the source is hard-invalidated or status≠ok. For Codex, quota-bas
 - **In-band token upgrade**: every hub response is run through `persist_auth_pool_token_upgrade` — if the body carries a new `auth_pool_user_token`, it's written back to config (0600) and redacted from memory (`:1638-1672`).
 - On a `token_invalidated` body, `request_auth_pool_token_email_once` re-issues an emailed token at most once per (email, token-digest) (`:1675-1766`).
 
+### 3.7 Probe heartbeat (why a failing guard is not silence)
+A quota report only reaches the hub when the probe produced a payload the hub accepts (`lib/quota-ingest.js`). Every other outcome — a network failure reaching `auth.openai.com`, a rate-limited probe whose exhaustion could not be confirmed, a missing reset time — produces a `status="error"` payload with empty windows that is **not** reported. Before the heartbeat that meant a guard running every 15 minutes and failing every time was indistinguishable, from the hub's side, from a machine that was switched off. It also meant no rotation: `source_needs_replacement` returns False for a non-hard-invalidated error, so the run was treated as healthy (3.4).
+
+So every run now posts to `/api/auth/quota` regardless of probe outcome:
+- `quota_payload` — present only when `quota_payload_is_reportable` says the hub would accept it (mirrors `codexClientPayloadAccepted`, so no request is wasted on a payload that would be discarded).
+- `heartbeat` — always. Carries reporter name, hostname, `status` (`ok`/`error`), the probe error, the account in use, and `client_version`. A probe that produced no usable quota counts as `error` here even when it did not raise.
+
+The hub stores one row per (source, reporter) in `reporter_probe_heartbeats`, accumulating `consecutive_failures` and preserving `last_ok_at`. `lib/reporter-health.js` derives the state the dashboard shows: **silent** (no heartbeat for over an hour — off, asleep, or the scheduled job stopped), **probe failing** (≥2 consecutive failures), **probe error** (a single failure), or **ok**. Silence outranks a stale failure.
+
+Locally, `notify_probe_failures` toasts the machine's owner after `PROBE_FAILURE_NOTIFY_THRESHOLD = 3` consecutive failures (~45 minutes of a guard that is alive but blind), repeats at most every 6h, and toasts once on recovery.
+
+Note what the heartbeat does **not** change: a failing probe still does not rotate. It makes the condition visible; whether "codex is rate-limiting me but I could not confirm exhaustion" should itself trigger a replacement is a separate policy decision (3.4).
+
 ---
 
 ## 4. Data model
@@ -142,6 +155,7 @@ Single module-load client (`lib/db.js:15-18`); schema created lazily + memoized 
 | `auth_pool_invalidated_notifications` | PK `(source, account_id)` | Since-when an account is hard-dead + last email sent. (`:459-468`) |
 | `feature_flags` | PK `key` | `disabled_refresh_token` (stored as `"true"`/`"false"`). (`:469-476`) |
 | `pool_health_snapshots` | PK autoinc | Observability time series: ok/hard-dead/other + central-refresh outcomes per source per worker run. (`:477-494`) |
+| `reporter_probe_heartbeats` | PK `(source, reporter_key)` | Last guard run per machine: outcome, consecutive probe failures, last good probe. Written on every run, including runs with no reportable quota — this is what separates a silent machine from a failing probe ([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)). |
 | `dashboard_revision` | Singleton row (`singleton = 1`) | Monotonic change marker for dashboard-visible writes. The browser reads this one row instead of rebuilding full status every minute. |
 
 **PK evolution** (`migrateAuthPoolEntriesTableShape` `:23-81`): older deployments are rebuilt to the canonical `(source, account_id, session_id)` PK with **nullable** encryption columns + `auth_blob_key`. The active PK column list lives in a mutable global `authPoolPkColumns` used to build `ON CONFLICT(...)` (`:21, 80, 734`).
