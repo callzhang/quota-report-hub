@@ -403,20 +403,26 @@ cheaper.
 **Refusal targets the real failure**, and needs both halves:
 
 1. the pool is projected to run dry (see scarcity, below), **and**
-2. this user's share of total team spend exceeds `min(2.5 / active_users, 50%)`
+2. this user's share of total team spend exceeds the average, `1 / active_users`
 
 Either alone is not worth throttling anyone over: a shortage nobody is driving needs more accounts,
 not less work, and a heavy user during abundance is just somebody getting their job done. A share of
 team demand needs no threshold in dollars and rescales itself as the team and pool change size.
 
-Two guards on that line. The **ceiling** exists because `2.5 / active_users` passes 100% below three
-users, which would make the rule unreachable exactly when one person IS the shortage. The **minimum
-of three active users** exists because fair share presupposes somebody to be fair to -- holding one
-of two people back frees capacity for nobody, drains the pool at the same rate, and only stops work
-sooner.
+The line is simply the average: when quota has run out, everyone above average yields. A wider
+tolerance was tried and bought nothing -- spend is steep enough that 1.0 and 2.5 selected the same
+three people, so the wider line only moved the threshold into an empty stretch while being harder to
+explain. One guard remains: **at least two active users**, because fair share presupposes somebody
+to be fair to. A sole consumer holds nobody back, so throttling them frees capacity for no one.
 
-Measured on 2026-08-26 across 17 active users (line at 14.7%): it holds shawn.hou at 46.1%, derek at
-29.3%, and solutions at 14.8%, and touches nobody else.
+Measured on 2026-08-26 across 17 active users (line at 5.9%): it holds shawn.hou at 46.0%, derek at
+29.3%, and solutions at 14.7%; the next user down is at 3.3% and nobody else is close.
+
+The cooldown throttles how often somebody may draw on the pool; it does not stop them working. Its
+upper bound is the codex id_token, which goes stale about an hour after issue -- past that a held
+user cannot refresh at all and stops outright, turning a rate limit into an outage. Thirty minutes
+leaves a full margin under that, while cutting the heaviest users from a fetch every five minutes to
+one every thirty.
 
 ### Scarcity: the cooldown only bites when there is something to ration
 

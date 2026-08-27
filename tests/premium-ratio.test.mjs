@@ -16,7 +16,6 @@ import {
   PREMIUM_RATIO_COOLDOWN_MINUTES,
   PREMIUM_RATIO_MIN_COST,
   DEMAND_SHARE_TOLERANCE,
-  DEMAND_SHARE_CEILING,
   DEMAND_SHARE_MIN_ACTIVE_USERS,
   NOTICE_REPEAT_SECONDS,
   PREMIUM_RATIO_THRESHOLD,
@@ -186,13 +185,14 @@ test("phase 3 serves again once the cooldown has elapsed", () => {
 });
 
 test("a user inside their fair share is never cooled down, however scarce the pool", () => {
-  // Ten active users, tolerance 2.5, so the line is 25% of team spend. This user is at 20% and
+  // Ten active users, so the line is the 10% average. This user is at 8% and
   // spends every cent of it on premium models -- expensive taste is not the offence, driving the
   // shortage is. They get the advisory hint and nothing else.
   const result = evaluateFetchPolicy(inputs({
-    premiumCost: BIG * 0.2,
-    totalCost: BIG * 0.2,
-    teamCost: BIG,
+    // Well clear of the spend floor, so the advisory notice is genuinely exercised.
+    premiumCost: BIG * 0.08 * 100,
+    totalCost: BIG * 0.08 * 100,
+    teamCost: BIG * 100,
     activeUsers: 10,
     lastServedAt: PHASE_RATIO_COOLDOWN_AT,
   }));
@@ -205,11 +205,11 @@ test("the fair-share line scales with how many people are actually drawing on th
     premiumCost: 0, totalCost: BIG * 0.2, teamCost: BIG, activeUsers,
     lastServedAt: PHASE_RATIO_COOLDOWN_AT,
   }));
-  // At 20% of team spend: fine among 10 people (line 25%), too much among 20 (line 12.5%).
-  assert.equal(share(10).allowed, true);
-  assert.equal(share(20).allowed, false);
-  assert.equal(share(20).reason, "demand_share_cooldown");
-  assert.equal(DEMAND_SHARE_TOLERANCE, 2.5, "the tolerance the lines above assume");
+  // At 20% of team spend: fine among 4 people (line 25%), too much among 10 (line 10%).
+  assert.equal(share(4).allowed, true);
+  assert.equal(share(10).allowed, false);
+  assert.equal(share(10).reason, "demand_share_cooldown");
+  assert.equal(DEMAND_SHARE_TOLERANCE, 1.0, "the tolerance the lines above assume");
 });
 
 test("a user below the spend floor is not judged on a noisy share", () => {
@@ -405,19 +405,6 @@ test("scarcity never excuses an unmetered client", () => {
   }
 });
 
-test("the fair-share line never rises above the ceiling, however few people are active", () => {
-  // K/headcount passes 100% below three active users, which would make the rule unreachable exactly
-  // when one person IS the shortage. Two users, one burning 60% of the pool: still held.
-  const at = (share, activeUsers) => evaluateFetchPolicy(inputs({
-    premiumCost: 0, totalCost: BIG * share, teamCost: BIG, activeUsers,
-    lastServedAt: PHASE_RATIO_COOLDOWN_AT,
-  }));
-  assert.equal(DEMAND_SHARE_CEILING, 0.5, "the ceiling the lines below assume");
-  // Three active users: the per-head line would be 83%, so the ceiling is what binds.
-  assert.equal(at(0.6, 3).allowed, false);
-  assert.equal(at(0.6, 3).reason, "demand_share_cooldown");
-  assert.equal(at(0.4, 3).allowed, true);
-});
 
 test("nobody is held back when there is nobody to be fair to", () => {
   // Freeing capacity for an empty room drains the pool just as fast and only stops work sooner.
