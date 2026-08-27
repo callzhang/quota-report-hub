@@ -863,7 +863,7 @@ test("getInvalidatedUploaderEntry returns the owner's invalidated auth, preferri
   }
 });
 
-test("hasUploadedAnyHealthyAuth accepts a healthy upload from any source", async () => {
+test("fetchPolicyInputs counts a healthy upload from any source as supplying the pool", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
     await mod.upsertAuthPoolEntry({
@@ -885,8 +885,42 @@ test("hasUploadedAnyHealthyAuth accepts a healthy upload from any source", async
       },
     });
 
-    assert.equal(await mod.hasUploadedAnyHealthyAuth({ uploaderEmail: "alice@stardust.ai" }), true);
-    assert.equal(await mod.hasUploadedAnyHealthyAuth({ uploaderEmail: "bob@stardust.ai" }), false);
+    const since = "2026-05-01T00:00:00.000Z";
+    // The pool takes either source, so either source counts as supplying it.
+    const alice = await mod.fetchPolicyInputs({ email: "alice@stardust.ai", since });
+    const bob = await mod.fetchPolicyInputs({ email: "bob@stardust.ai", since });
+    assert.equal(alice.hasHealthyUpload, true);
+    assert.equal(bob.hasHealthyUpload, false);
+
+    // A drained account is still a contribution -- being drained is what a shared account is for.
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "alice@gpu4",
+      reported_at: "2026-05-06T02:00:00Z",
+      account_id: "codex-only@example.com",
+      status: "ok",
+      plan_name: "Team",
+      windows: {
+        "5h": { remaining_percent: 0, reset_at: "2026-05-06T06:00:00Z" },
+        "1week": { remaining_percent: 0, reset_at: "2026-05-13T01:00:00Z" },
+      },
+    });
+    assert.equal((await mod.fetchPolicyInputs({ email: "alice@stardust.ai", since })).hasHealthyUpload, true);
+
+    // A dead login is not: the pool cannot lend it to anybody.
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "alice@gpu4",
+      reported_at: "2026-05-06T03:00:00Z",
+      account_id: "codex-only@example.com",
+      status: "error",
+      error: "auth invalidated (token_invalidated)",
+      plan_name: "Team",
+      windows: { "5h": null, "1week": null },
+    });
+    assert.equal((await mod.fetchPolicyInputs({ email: "alice@stardust.ai", since })).hasHealthyUpload, false);
   } finally {
     cleanup();
   }

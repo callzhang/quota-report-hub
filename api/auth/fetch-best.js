@@ -7,14 +7,13 @@ import {
   getFeatureFlag,
   getInvalidatedUploaderEntry,
   fetchPolicyInputs,
-  hasUploadedAnyHealthyAuth,
   poolScarcityState,
   recordAuthPoolFetch,
   upsertAuthPoolEntry,
 } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch-best.js";
-import { PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy } from "../../lib/premium-ratio.js";
+import { NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy } from "../../lib/premium-ratio.js";
 import { scarcityFromState } from "../../lib/pool-scarcity.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
 import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
@@ -216,11 +215,12 @@ export default async function handler(req, res) {
   });
 
   if (!entry) {
-    // If the pool cannot serve a healthy shared replacement, then fall back to the
-    // contribution/repair gate. This avoids dead-locking users on their own invalidated
-    // auth when another healthy account is available to keep them working.
-    const uploaded = await hasUploadedAnyHealthyAuth({ uploaderEmail: authContext.email });
-    if (!uploaded) {
+    // Nothing borrowable exists right now. Selection has already run and come back empty, so this
+    // branch refuses nobody -- it only distinguishes, for the audit log and for what the caller is
+    // told, between somebody who has a dead auth of their own to repair and somebody who is drawing
+    // on a pool they do not supply. Rationing non-contributors happens in the policy above, while
+    // there is still something to ration.
+    if (!policyInputs.hasHealthyUpload) {
       await recordAuthPoolFetch({
         requesterEmail: authContext.email,
         requesterId,
@@ -239,12 +239,24 @@ export default async function handler(req, res) {
           ok: true,
           requested_by: authContext.email,
           replacement: null,
-          notices: policy.notices,
           repair_auth: repairAuth,
-          reason: repairAuth ? "uploaded_auth_requires_reauth" : "must_upload_auth_to_pool",
-          message: repairAuth
-            ? "Your uploaded auth has been invalidated. Re-login this auth and upload fresh credentials."
-            : "You must upload at least one healthy Codex or Claude auth to the pool before you can fetch shared auth.",
+          reason: repairAuth ? "uploaded_auth_requires_reauth" : "pool_empty_no_contribution",
+          // Notices are what the client actually shows (`notify_hub_notices`), so anything the user
+          // needs to read has to travel as one. The policy notices already carry the contribution
+          // warning; this adds the one fact only this branch knows -- the pool is empty right now.
+          notices: [
+            ...policy.notices,
+            {
+              code: "pool_empty",
+              title: "共享池暂无可用账号",
+              message:
+                "共享池当前没有额度可借的账号，因此这次没有给你换号——你手上正在用的账号不受影响。" +
+                (repairAuth
+                  ? "同时，你上传的账号已失效，已把它交还给你：重新登录一次即可恢复。"
+                  : "把你自己的 Codex 或 Claude 账号同步进池子，能直接缓解这种缺口。"),
+              repeat_seconds: NOTICE_REPEAT_SECONDS,
+            },
+          ],
         }, authContext))
       );
       return;

@@ -406,7 +406,11 @@
           normalized === "served" ? "served" :
           normalized === "repair_auth_returned" ? "repair auth" :
           normalized === "no_better_auth_available" ? "no match" :
-          normalized === "no_uploaded_auth" ? "no uploaded auth" :
+          // Logged when selection came back empty AND the requester supplies nothing, so the
+          // audit trail can tell the two empty-pool populations apart. Nobody was refused here.
+          normalized === "no_uploaded_auth" ? "no match · no upload" :
+          normalized === "demand_share_cooldown" ? "cooled down · share" :
+          normalized === "contribution_cooldown" ? "cooled down · no upload" :
           normalized;
         return `<span class="reason-tag ${escapeHtml(normalized)}">${escapeHtml(label)}</span>`;
       }

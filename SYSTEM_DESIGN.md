@@ -212,9 +212,10 @@ All handlers are Vercel functions; most require a Bearer token via `authenticate
 
 ### 6.1 fetch-best (the borrow path) — `api/auth/fetch-best.js`
 Three branches, in order:
-1. **Repair-handback gate** (`:47-86`): a requester with **no healthy uploaded auth** is never served a borrowed credential. If they have a dead auth of their own, it's handed back (`repair_returned`) for re-login; otherwise `no_uploaded_auth`. This enforces *upload-to-borrow*.
+1. **Policy gate** ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)): refusals for an outdated reporter, unreported consumption, an over-fair-share user during scarcity, or a non-contributor during scarcity. All are cooldowns or fixable states, never lockouts, and the `repair_auth` handback stays open through all of them.
 2. **`refresh_current` mode** (`:93-142`): when `refresh_current && current_account_id`, fetch the same account's pooled blob and only return it if its AT is genuinely fresh (`accessTokenMsUntilExpiry === null || > 5 min`); otherwise fall through to a normal replacement (so an owner can't dead-lock on its own stale copy).
-3. **Normal replacement** (`:144-216`): `bestAuthPoolEntry(...)` → `pickBestAuthPoolCandidate` ([§10](#10-selection-algorithm)). `selection_key` mixes email/requester/IP for stable selection. On a hit, `recordAuthPoolFetch(reason:"served")`.
+3. **Normal replacement**: `bestAuthPoolEntry(...)` → `pickBestAuthPoolCandidate` ([§10](#10-selection-algorithm)). `selection_key` mixes email/requester/IP for stable selection. On a hit, `recordAuthPoolFetch(reason:"served")`.
+4. **Empty pool**: selection found nothing. A caller who supplies the pool gets `no_better_auth_available`; one who does not gets their own invalidated auth back to re-login (`repair_returned`) or a `pool_empty` notice, logged as `no_uploaded_auth`. This branch refuses nobody — there was nothing to serve either way — so it carries no rule, only the explanation. Rationing non-contributors happens in branch 1, while there is still something to ration.
 
 In branches 2–3, when `disabled_refresh_token` is ON, the served blob is run through `stripRefreshToken` (`lib/fetch-best.js:30-51`) so the borrower gets an AT-only credential.
 
@@ -463,6 +464,24 @@ The recompute runs in the probe worker right after fresh quota snapshots land --
 function over `auth_pool_quota_events` is far too heavy for the fetch path, which reads one stored
 row instead.
 
+### Supply: rationing demand cannot create quota
+
+Every other rule here rations demand, and no amount of rationing puts a single point of quota into
+the pool -- when it runs dry the only remedy is another account in it. Supply therefore gets the same
+treatment demand does: `hasHealthyUpload` (one entry uploaded by this user that the pool can actually
+lend -- not a dead login, not a Free plan; a *drained* account still counts, since being drained is
+what a shared account is for) decides whether the same cooldown applies while the pool is scarce.
+
+This is not payment for access, and the numbers are why it cannot be. Over 14 days to 2026-08-27,
+half the people who fetched had never supplied anything, but they accounted for 7.4% of priced spend
+-- refusing them outright would have recovered almost nothing while locking colleagues out of a
+company tool over a Free plan or a broken login. What the pool actually lacked was accounts: 9
+suppliers against 28 borrowers, with 718 `no_better_auth_available` refusals in the window. So the
+rule buys supply rather than saving demand: a non-contributor is warned while the pool is healthy,
+and during scarcity draws once per cooldown instead of every five minutes, keeping the account
+already in their hand and getting their own dead auth handed back to re-login -- which is precisely
+how somebody stops being a non-contributor.
+
 **The reporting gate is deliberately NOT scarcity-gated.** It is a measurement precondition, not a
 rationing rule. Gating it would be self-defeating: nobody fixes their reporter during abundance, so
 when the pool does tighten those users still have no measurable share and the cooldown -- the actual
@@ -476,9 +495,9 @@ Phase dates are hardcoded in `lib/premium-ratio.js` and cumulative:
 |---|---|---|
 | notice | always | Notices ride on every response; nothing is refused |
 | reporter_gate | `PHASE_REPORTER_GATE_AT` | Outdated clients refused |
-| ratio_cooldown | `PHASE_RATIO_COOLDOWN_AT` | Over-share users cooled down |
+| cooldown | `PHASE_COOLDOWN_AT` | Over-share users and non-contributors cooled down |
 
-`PREMIUM_RATIO_REPORTER_GATE_AT` / `PREMIUM_RATIO_COOLDOWN_AT` override the dates (for a canary, an
+`PREMIUM_RATIO_REPORTER_GATE_AT` / `POOL_COOLDOWN_AT` override the dates (for a canary, an
 emergency rollback, or reaching a phase from a test). The `premium_ratio_enforcement` feature flag is
 a separate live kill switch: it stops refusals within one request while the notices keep flowing —
 turning enforcement off must never also turn the warnings off.

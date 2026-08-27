@@ -11,7 +11,7 @@ import {
   SUGGESTED_STANDARD_MODEL_IDS,
 } from "../lib/model-tiers.js";
 import {
-  PHASE_RATIO_COOLDOWN_AT,
+  PHASE_COOLDOWN_AT,
   PHASE_REPORTER_GATE_AT,
   PREMIUM_RATIO_COOLDOWN_MINUTES,
   PREMIUM_RATIO_MIN_COST,
@@ -27,8 +27,8 @@ const BIG = PREMIUM_RATIO_MIN_COST * 10;
 
 function inputs(overrides = {}) {
   return {
-    now: new Date(PHASE_RATIO_COOLDOWN_AT),
-    lastReportAt: PHASE_RATIO_COOLDOWN_AT,
+    now: new Date(PHASE_COOLDOWN_AT),
+    lastReportAt: PHASE_COOLDOWN_AT,
     requestClientVersion: "2.0.0",
     premiumCost: BIG * 0.9,
     totalCost: BIG,
@@ -147,7 +147,7 @@ test("a current client that has simply been idle is left alone entirely", () => 
 
 test("a fresh install is served before it has any usage to report", () => {
   const result = evaluateFetchPolicy({
-    now: new Date(PHASE_RATIO_COOLDOWN_AT),
+    now: new Date(PHASE_COOLDOWN_AT),
     requestClientVersion: "2.0.0",
     lastReportAt: null,
     premiumCost: 0,
@@ -170,7 +170,7 @@ test("phase 2 does not yet cool down an over-share user whose meter is on", () =
 
 test("phase 3 cools down a user driving a shortage, and reports the exact wait", () => {
   const result = evaluateFetchPolicy(inputs({
-    lastServedAt: at(PHASE_RATIO_COOLDOWN_AT, -10),
+    lastServedAt: at(PHASE_COOLDOWN_AT, -10),
   }));
   assert.equal(result.allowed, false);
   assert.equal(result.reason, "demand_share_cooldown");
@@ -179,7 +179,7 @@ test("phase 3 cools down a user driving a shortage, and reports the exact wait",
 
 test("phase 3 serves again once the cooldown has elapsed", () => {
   const result = evaluateFetchPolicy(inputs({
-    lastServedAt: at(PHASE_RATIO_COOLDOWN_AT, -(PREMIUM_RATIO_COOLDOWN_MINUTES + 1)),
+    lastServedAt: at(PHASE_COOLDOWN_AT, -(PREMIUM_RATIO_COOLDOWN_MINUTES + 1)),
   }));
   assert.equal(result.allowed, true);
 });
@@ -194,7 +194,7 @@ test("a user inside their fair share is never cooled down, however scarce the po
     totalCost: BIG * 0.08 * 100,
     teamCost: BIG * 100,
     activeUsers: 10,
-    lastServedAt: PHASE_RATIO_COOLDOWN_AT,
+    lastServedAt: PHASE_COOLDOWN_AT,
   }));
   assert.equal(result.allowed, true);
   assert.deepEqual(result.notices.map((notice) => notice.code), ["premium_ratio_warning"]);
@@ -203,7 +203,7 @@ test("a user inside their fair share is never cooled down, however scarce the po
 test("the fair-share line scales with how many people are actually drawing on the pool", () => {
   const share = (activeUsers) => evaluateFetchPolicy(inputs({
     premiumCost: 0, totalCost: BIG * 0.2, teamCost: BIG, activeUsers,
-    lastServedAt: PHASE_RATIO_COOLDOWN_AT,
+    lastServedAt: PHASE_COOLDOWN_AT,
   }));
   // At 20% of team spend: fine among 4 people (line 25%), too much among 10 (line 10%).
   assert.equal(share(4).allowed, true);
@@ -218,7 +218,7 @@ test("a user below the spend floor is not judged on a noisy share", () => {
     totalCost: PREMIUM_RATIO_MIN_COST * 0.99,
     teamCost: BIG * 100,
     activeUsers: 10,
-    lastServedAt: PHASE_RATIO_COOLDOWN_AT,
+    lastServedAt: PHASE_COOLDOWN_AT,
   }));
   assert.equal(result.allowed, true);
   assert.equal(result.premium_share, null, "a few cents of usage says nothing about habits");
@@ -233,7 +233,7 @@ test("a user who has never been served is not held by a cooldown", () => {
 test("the reporter gate outranks the cooldown so the fix is always the same one", () => {
   const result = evaluateFetchPolicy(inputs({
     requestClientVersion: "1.9.9",
-    lastServedAt: PHASE_RATIO_COOLDOWN_AT,
+    lastServedAt: PHASE_COOLDOWN_AT,
   }));
   assert.equal(result.reason, "reporter_upgrade_required");
 });
@@ -255,7 +255,7 @@ test("the models the notice recommends are themselves non-premium", () => {
 test("both ratio notices name the models on each side of the line", () => {
   const shared = { premiumCost: BIG * 0.9, totalCost: BIG, lastServedAt: null };
   const warning = evaluateFetchPolicy({ ...inputs(shared), now: new Date(PHASE_REPORTER_GATE_AT) });
-  const cooldown = evaluateFetchPolicy({ ...inputs(shared), now: new Date(PHASE_RATIO_COOLDOWN_AT) });
+  const cooldown = evaluateFetchPolicy({ ...inputs(shared), now: new Date(PHASE_COOLDOWN_AT) });
   for (const [label, result] of [["warning", warning], ["cooldown", cooldown]]) {
     const notice = result.notices.find((item) => item.code.startsWith("premium_ratio"));
     assert.ok(notice, `${label} produced no ratio notice`);
@@ -372,7 +372,7 @@ test("a single report clears the debt on the very next fetch", () => {
 test("the cooldown holds fire while the pool has room, but the warning still goes out", () => {
   // Throttling during abundance is pure friction -- nobody gains from it. The warning still lands,
   // which is what gives people time to change habits before the pool tightens.
-  const shared = inputs({ lastServedAt: PHASE_RATIO_COOLDOWN_AT, lastNewAccountAt: null });
+  const shared = inputs({ lastServedAt: PHASE_COOLDOWN_AT, lastNewAccountAt: null });
 
   const healthy = evaluateFetchPolicy({ ...shared, poolScarce: false });
   assert.equal(healthy.allowed, true);
@@ -388,7 +388,7 @@ test("scarcity never excuses an unmetered client", () => {
   // would mean nobody fixes their reporter during abundance, so when the pool does tighten those
   // users still have no measurable share and the cooldown cannot reach them.
   const base = {
-    now: new Date(PHASE_RATIO_COOLDOWN_AT),
+    now: new Date(PHASE_COOLDOWN_AT),
     premiumCost: 0,
     totalCost: 0,
     lastServedAt: null,
@@ -412,7 +412,7 @@ test("nobody is held back when there is nobody to be fair to", () => {
   for (let activeUsers = 0; activeUsers < DEMAND_SHARE_MIN_ACTIVE_USERS; activeUsers += 1) {
     const result = evaluateFetchPolicy(inputs({
       premiumCost: 0, totalCost: BIG, teamCost: BIG, activeUsers,
-      lastServedAt: PHASE_RATIO_COOLDOWN_AT,
+      lastServedAt: PHASE_COOLDOWN_AT,
     }));
     assert.equal(result.allowed, true, `${activeUsers} active users must not trigger a fair-share hold`);
   }
@@ -443,11 +443,98 @@ test("the cooldown releases itself, and says so", () => {
 });
 
 test("only the cooldown notice claims the pool is short, because only then is it", () => {
-  const shared = { premiumCost: 0, totalCost: 90, teamCost: 100, activeUsers: 10, lastServedAt: PHASE_RATIO_COOLDOWN_AT };
+  const shared = { premiumCost: 0, totalCost: 90, teamCost: 100, activeUsers: 10, lastServedAt: PHASE_COOLDOWN_AT };
   const text = (poolScarce) => {
     const result = evaluateFetchPolicy(inputs({ ...shared, poolScarce }));
     return result.notices.find((notice) => notice.code.startsWith("demand_share")).message;
   };
   assert.match(text(true), /供不应求/);
   assert.doesNotMatch(text(false), /当前供不应求/, "a healthy pool must not be described as short");
+});
+
+test("a non-contributor is warned before the phase, and never refused during abundance", () => {
+  // Inside their fair share, so only the supply rule can have anything to say about them.
+  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, activeUsers: 10 };
+  const beforePhase = evaluateFetchPolicy(inputs({
+    ...light,
+    hasHealthyUpload: false,
+    now: new Date(PHASE_REPORTER_GATE_AT),
+    lastReportAt: PHASE_REPORTER_GATE_AT,
+    lastServedAt: PHASE_REPORTER_GATE_AT,
+  }));
+  assert.equal(beforePhase.allowed, true);
+  assert.deepEqual(beforePhase.notices.map((notice) => notice.code), ["contribution_warning"]);
+
+  // Phase reached, but there is nothing to ration: throttling here would free capacity for nobody.
+  const healthyPool = evaluateFetchPolicy(inputs({
+    ...light,
+    hasHealthyUpload: false,
+    poolScarce: false,
+    lastServedAt: PHASE_COOLDOWN_AT,
+  }));
+  assert.equal(healthyPool.allowed, true);
+  assert.deepEqual(healthyPool.notices.map((notice) => notice.code), ["contribution_warning"]);
+});
+
+test("a scarce pool rate-limits whoever draws on it without supplying it", () => {
+  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, activeUsers: 10 };
+  const held = evaluateFetchPolicy(inputs({
+    ...light,
+    hasHealthyUpload: false,
+    lastServedAt: at(PHASE_COOLDOWN_AT, -10),
+  }));
+  assert.equal(held.allowed, false);
+  assert.equal(held.reason, "contribution_cooldown");
+  assert.equal(held.retry_after_seconds, (PREMIUM_RATIO_COOLDOWN_MINUTES - 10) * 60);
+  assert.equal(held.notices.at(-1).code, "contribution_cooldown");
+
+  // A rate limit, not a lockout: the wait elapses and they are served like anyone else.
+  const elapsed = evaluateFetchPolicy(inputs({
+    ...light,
+    hasHealthyUpload: false,
+    lastServedAt: at(PHASE_COOLDOWN_AT, -(PREMIUM_RATIO_COOLDOWN_MINUTES + 1)),
+  }));
+  assert.equal(elapsed.allowed, true);
+
+  // And never a first-fetch lockout for somebody the pool has never served.
+  assert.equal(evaluateFetchPolicy(inputs({ ...light, hasHealthyUpload: false, lastServedAt: null })).allowed, true);
+});
+
+test("supplying the pool costs nothing in standing, however much you then consume", () => {
+  const result = evaluateFetchPolicy(inputs({ hasHealthyUpload: true, lastServedAt: at(PHASE_COOLDOWN_AT, -10) }));
+  // Over-share still holds them -- but by the demand rule, with no word about contribution.
+  assert.equal(result.reason, "demand_share_cooldown");
+  assert.ok(!result.notices.some((notice) => notice.code.startsWith("contribution")));
+});
+
+test("an over-share non-contributor is told about the share, and only that", () => {
+  // Both rules would fire. The share is the one costing the pool tokens today, and two toasts naming
+  // two different remedies for one held fetch is how a warning gets dismissed unread.
+  const result = evaluateFetchPolicy(inputs({
+    hasHealthyUpload: false,
+    lastServedAt: at(PHASE_COOLDOWN_AT, -10),
+  }));
+  assert.equal(result.reason, "demand_share_cooldown");
+  assert.deepEqual(
+    result.notices.map((notice) => notice.code),
+    ["premium_ratio_warning", "demand_share_cooldown"]
+  );
+});
+
+test("the contribution notice says what counts as supplying the pool", () => {
+  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, activeUsers: 10 };
+  const warning = evaluateFetchPolicy(inputs({
+    ...light, hasHealthyUpload: false, poolScarce: false, lastServedAt: PHASE_COOLDOWN_AT,
+  })).notices[0];
+  const cooldown = evaluateFetchPolicy(inputs({
+    ...light, hasHealthyUpload: false, lastServedAt: at(PHASE_COOLDOWN_AT, -1),
+  })).notices.at(-1);
+  // Both must name the one action that lifts this, or the rule cannot be complied with.
+  for (const [label, notice] of [["warning", warning], ["cooldown", cooldown]]) {
+    assert.match(notice.message, /Codex/, `${label} does not say what to contribute`);
+    assert.equal(notice.repeat_seconds, NOTICE_REPEAT_SECONDS, `${label} would nag on every 15-minute run`);
+  }
+  // The cooldown copy must not read as a ban: they keep working on the account in hand.
+  assert.match(cooldown.message, new RegExp(`${PREMIUM_RATIO_COOLDOWN_MINUTES} 分钟`));
+  assert.match(warning.message, new RegExp(PHASE_COOLDOWN_AT.slice(0, 10)));
 });
