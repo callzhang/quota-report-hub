@@ -417,3 +417,37 @@ test("nobody is held back when there is nobody to be fair to", () => {
     assert.equal(result.allowed, true, `${activeUsers} active users must not trigger a fair-share hold`);
   }
 });
+
+test("the cooldown releases itself, and says so", () => {
+  const servedAt = "2026-09-21T10:00:00.000Z";
+  const at = (minutes) => evaluateFetchPolicy(inputs({
+    now: new Date(Date.parse(servedAt) + minutes * 60 * 1000),
+    lastServedAt: servedAt,
+  }));
+
+  // A rate limit, not a ban: the wait counts down and clears on its own.
+  assert.equal(at(1).allowed, false);
+  assert.equal(at(PREMIUM_RATIO_COOLDOWN_MINUTES - 1).allowed, false);
+  assert.ok(at(1).retry_after_seconds > at(PREMIUM_RATIO_COOLDOWN_MINUTES - 1).retry_after_seconds);
+  assert.equal(at(PREMIUM_RATIO_COOLDOWN_MINUTES).allowed, true, "the hold must lift on its own");
+  assert.equal(at(PREMIUM_RATIO_COOLDOWN_MINUTES).reason, null);
+
+  // And the person reading the toast has to be able to tell that without asking anyone.
+  const message = at(1).notices.find((notice) => notice.code === "demand_share_cooldown").message;
+  assert.match(message, new RegExp(`${PREMIUM_RATIO_COOLDOWN_MINUTES} 分钟`), "names the bound on the wait");
+  assert.match(message, /自动恢复/, "says the hold lifts by itself");
+  assert.match(message, /不是封禁/, "distinguishes a rate limit from a ban");
+  // The client re-shows a cached notice for hours, so a live countdown in the text would be stale
+  // by the time most people read it. The exact wait travels in retry_after_seconds instead.
+  assert.doesNotMatch(message, /还需|剩余/, "no countdown baked into cached text");
+});
+
+test("only the cooldown notice claims the pool is short, because only then is it", () => {
+  const shared = { premiumCost: 0, totalCost: 90, teamCost: 100, activeUsers: 10, lastServedAt: PHASE_RATIO_COOLDOWN_AT };
+  const text = (poolScarce) => {
+    const result = evaluateFetchPolicy(inputs({ ...shared, poolScarce }));
+    return result.notices.find((notice) => notice.code.startsWith("demand_share")).message;
+  };
+  assert.match(text(true), /供不应求/);
+  assert.doesNotMatch(text(false), /当前供不应求/, "a healthy pool must not be described as short");
+});
