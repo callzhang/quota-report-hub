@@ -375,6 +375,49 @@ Report silence therefore only ever produces a *notice*. Only an outdated (or abs
 produces a refusal, and the fix — letting `self_update_skill()` run — is available whether or not the
 hub is serving that user.
 
+### What usage costs, and who gets held back
+
+Usage is priced from the vendors' public rate cards (`lib/model-tiers.js`), not from a hand-tuned
+weighting. Only the RATIOS matter: the pool runs on subscriptions, but OpenAI's own price-cut notice
+says the Terra/Luna reductions "are also reflected in how usage is counted against paid
+subscriptions when using Codex and ChatGPT Work" -- subscription credit burn tracks API pricing.
+Standard rates only; Sol's >20% discount expires around November 2026 and a long-lived rationing
+mechanism must not drift with a three-month promotion.
+
+The previous formula weighted output at 1x input. Every rate card puts it at **5-6x**, so output was
+systematically under-counted -- and that error had a direction: it under-weighted agent fleets and
+over-weighted long-context replay, the exact opposite of what the mechanism is for.
+
+A model the pool does not pay for -- somebody's own DeepSeek key, a self-hosted Qwen -- costs zero
+and adds nothing to demand. That is the point, not a loophole: moving work off the pool is the
+behaviour rationing exists to encourage. Unrecognised models *within* a pooled family
+(`gpt-`, `claude-`, `codex-`) are charged that family's top rate, so a new flagship cannot read as
+free before somebody prices it.
+
+**Premium share only ever advises.** It is a proxy for "you are expensive", and once usage is priced
+there is no reason to enforce a proxy instead of the thing itself -- a user at 90% premium on a tiny
+volume costs the pool nothing. The list is now a blacklist: missing from it costs a hint, not a
+refusal. What the share is still good for is naming the one concrete action that makes somebody
+cheaper.
+
+**Refusal targets the real failure**, and needs both halves:
+
+1. the pool is projected to run dry (see scarcity, below), **and**
+2. this user's share of total team spend exceeds `min(2.5 / active_users, 50%)`
+
+Either alone is not worth throttling anyone over: a shortage nobody is driving needs more accounts,
+not less work, and a heavy user during abundance is just somebody getting their job done. A share of
+team demand needs no threshold in dollars and rescales itself as the team and pool change size.
+
+Two guards on that line. The **ceiling** exists because `2.5 / active_users` passes 100% below three
+users, which would make the rule unreachable exactly when one person IS the shortage. The **minimum
+of three active users** exists because fair share presupposes somebody to be fair to -- holding one
+of two people back frees capacity for nobody, drains the pool at the same rate, and only stops work
+sooner.
+
+Measured on 2026-08-26 across 17 active users (line at 14.7%): it holds shawn.hou at 46.1%, derek at
+29.3%, and solutions at 14.8%, and touches nobody else.
+
 ### Scarcity: the cooldown only bites when there is something to ration
 
 Throttling during abundance is pure friction -- nobody gains from slowing a heavy user while there is

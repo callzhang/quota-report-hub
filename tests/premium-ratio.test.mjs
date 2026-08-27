@@ -2,30 +2,42 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { isPremiumModel, STANDARD_MODEL_IDS, PREMIUM_MODEL_IDS, SUGGESTED_STANDARD_MODEL_IDS } from "../lib/model-tiers.js";
+import {
+  isPremiumModel,
+  modelCost,
+  modelPrice,
+  pricedModelIds,
+  PREMIUM_MODEL_IDS,
+  SUGGESTED_STANDARD_MODEL_IDS,
+} from "../lib/model-tiers.js";
 import {
   PHASE_RATIO_COOLDOWN_AT,
   PHASE_REPORTER_GATE_AT,
   PREMIUM_RATIO_COOLDOWN_MINUTES,
-  PREMIUM_RATIO_MIN_WEIGHTED_TOKENS,
+  PREMIUM_RATIO_MIN_COST,
+  DEMAND_SHARE_TOLERANCE,
+  DEMAND_SHARE_CEILING,
+  DEMAND_SHARE_MIN_ACTIVE_USERS,
   NOTICE_REPEAT_SECONDS,
   PREMIUM_RATIO_THRESHOLD,
   compareVersions,
   evaluateFetchPolicy,
-  weightedTokens,
 } from "../lib/premium-ratio.js";
 
-const BIG = PREMIUM_RATIO_MIN_WEIGHTED_TOKENS * 10;
+const BIG = PREMIUM_RATIO_MIN_COST * 10;
 
 function inputs(overrides = {}) {
   return {
     now: new Date(PHASE_RATIO_COOLDOWN_AT),
     lastReportAt: PHASE_RATIO_COOLDOWN_AT,
     requestClientVersion: "2.0.0",
-    premiumWeighted: BIG * 0.9,
-    totalWeighted: BIG,
+    premiumCost: BIG * 0.9,
+    totalCost: BIG,
+    // One user carrying the whole team's spend: far over any fair share.
+    teamCost: BIG,
+    activeUsers: 10,
     lastServedAt: null,
-    // Most of these exercise the cooldown, which now only bites while the pool is actually scarce.
+    // Most of these exercise the cooldown, which only bites while the pool is actually scarce.
     poolScarce: true,
     ...overrides,
   };
@@ -35,25 +47,56 @@ function at(iso, minutesAfter) {
   return new Date(Date.parse(iso) + minutesAfter * 60 * 1000).toISOString();
 }
 
-test("unknown models count as premium so a new release cannot open a silent loophole", () => {
+test("premium is a blacklist, because it only ever drives a hint", () => {
   for (const modelId of PREMIUM_MODEL_IDS) assert.equal(isPremiumModel(modelId), true, modelId);
-  for (const modelId of STANDARD_MODEL_IDS) assert.equal(isPremiumModel(modelId), false, modelId);
-  assert.equal(isPremiumModel("gpt-7-whatever-ships-next"), true);
-  assert.equal(isPremiumModel("GPT-5.6-SOL"), true);
-  assert.equal(isPremiumModel("  gpt-5.5  "), false);
+  assert.equal(isPremiumModel("gpt-5.6-terra"), false);
+  assert.equal(isPremiumModel("GPT-5.6-SOL"), true, "case must not matter");
+  assert.equal(isPremiumModel("  claude-opus-5  "), true, "whitespace must not matter");
+  // A model nobody has classified misses a hint, not a refusal -- cost decides who is held back.
+  assert.equal(isPremiumModel("gpt-7-whatever-ships-next"), false);
 });
 
-test("replayed context is discounted to a tenth for both providers", () => {
-  // Codex folds cache_read into input_tokens; Claude reports it alongside. Both must reduce to
-  // the same weighting of fresh input, or the ratio would mean different things per provider.
-  const codex = weightedTokens({
-    provider: "codex", input_tokens: 1000, cache_read_tokens: 800, cache_write_tokens: 0, output_tokens: 100,
+test("models the pool does not pay for cost nothing, and unpriced pooled models cost the most", () => {
+  const counters = { input_tokens: 1e6, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0 };
+  // Somebody's own API key or a self-hosted box drains no pooled account, so it adds no demand.
+  for (const offPool of ["deepseek-v4-pro", "qwen3.8-27b", "llama-4"]) {
+    assert.equal(modelPrice(offPool), null, offPool);
+    assert.equal(modelCost(offPool, counters), 0, offPool);
+  }
+  // But a new model in a live pooled family must not read as free just because nobody priced it.
+  const unpriced = modelCost("gpt-5.9-nova", counters);
+  const dearest = Math.max(...pricedModelIds().filter((id) => id.startsWith("gpt-")).map((id) => modelCost(id, counters)));
+  assert.equal(unpriced, dearest, "an unrecognised pooled model is charged its family's top rate");
+});
+
+test("output is priced far above input, as every rate card has it", () => {
+  const million = (field) => ({
+    input_tokens: field === "input" ? 1e6 : 0,
+    output_tokens: field === "output" ? 1e6 : 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
   });
-  const claude = weightedTokens({
-    provider: "claude", input_tokens: 200, cache_read_tokens: 800, cache_write_tokens: 0, output_tokens: 100,
-  });
-  assert.equal(codex, 200 + 80 + 100);
-  assert.equal(claude, codex);
+  for (const modelId of ["gpt-5.6-sol", "gpt-5.6-terra", "claude-opus-5", "claude-sonnet-5"]) {
+    const ratio = modelCost(modelId, million("output")) / modelCost(modelId, million("input"));
+    assert.ok(ratio >= 5, `${modelId} output/input was ${ratio}, expected >= 5`);
+  }
+});
+
+test("the models the notices recommend are cheaper than every premium model", () => {
+  const counters = { input_tokens: 1e6, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 1e5 };
+  const dearestSuggested = Math.max(...SUGGESTED_STANDARD_MODEL_IDS.map((id) => modelCost(id, counters)));
+  const cheapestPremium = Math.min(...PREMIUM_MODEL_IDS.map((id) => modelCost(id, counters)));
+  assert.ok(dearestSuggested < cheapestPremium, "advice that costs as much as the problem is not advice");
+});
+
+test("replayed context is discounted to a tenth, as the rate cards price it", () => {
+  // Cached input is a tenth of fresh input on every vendor's card. That discount is what keeps a
+  // long conversation from being punished for replaying its own context on every turn.
+  for (const modelId of ["gpt-5.6-sol", "gpt-5.6-terra", "claude-opus-5"]) {
+    const fresh = modelCost(modelId, { input_tokens: 1e6, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0 });
+    const replayed = modelCost(modelId, { input_tokens: 1e6, cache_read_tokens: 1e6, cache_write_tokens: 0, output_tokens: 0 });
+    assert.ok(Math.abs(replayed / fresh - 0.1) < 1e-9, `${modelId} replay discount was ${replayed / fresh}`);
+  }
 });
 
 test("phase 1 warns about a high premium share but refuses nothing", () => {
@@ -94,8 +137,10 @@ test("a current client that has simply been idle is left alone entirely", () => 
   const result = evaluateFetchPolicy(inputs({
     lastReportAt: null,
     lastNewAccountAt: null,
-    premiumWeighted: 0,
-    totalWeighted: 0,
+    premiumCost: 0,
+    totalCost: 0,
+    teamCost: 0,
+    activeUsers: 0,
   }));
   assert.equal(result.allowed, true);
   assert.deepEqual(result.notices, []);
@@ -106,8 +151,8 @@ test("a fresh install is served before it has any usage to report", () => {
     now: new Date(PHASE_RATIO_COOLDOWN_AT),
     requestClientVersion: "2.0.0",
     lastReportAt: null,
-    premiumWeighted: 0,
-    totalWeighted: 0,
+    premiumCost: 0,
+    totalCost: 0,
     lastServedAt: null,
   });
   assert.equal(result.allowed, true);
@@ -124,12 +169,12 @@ test("phase 2 does not yet cool down an over-share user whose meter is on", () =
   assert.equal(result.notices[0].code, "premium_ratio_warning");
 });
 
-test("phase 3 cools down an over-share user and reports the exact wait", () => {
+test("phase 3 cools down a user driving a shortage, and reports the exact wait", () => {
   const result = evaluateFetchPolicy(inputs({
     lastServedAt: at(PHASE_RATIO_COOLDOWN_AT, -10),
   }));
   assert.equal(result.allowed, false);
-  assert.equal(result.reason, "premium_ratio_cooldown");
+  assert.equal(result.reason, "demand_share_cooldown");
   assert.equal(result.retry_after_seconds, (PREMIUM_RATIO_COOLDOWN_MINUTES - 10) * 60);
 });
 
@@ -140,23 +185,43 @@ test("phase 3 serves again once the cooldown has elapsed", () => {
   assert.equal(result.allowed, true);
 });
 
-test("a share at or below the threshold is never cooled down", () => {
+test("a user inside their fair share is never cooled down, however scarce the pool", () => {
+  // Ten active users, tolerance 2.5, so the line is 25% of team spend. This user is at 20% and
+  // spends every cent of it on premium models -- expensive taste is not the offence, driving the
+  // shortage is. They get the advisory hint and nothing else.
   const result = evaluateFetchPolicy(inputs({
-    premiumWeighted: BIG * PREMIUM_RATIO_THRESHOLD,
+    premiumCost: BIG * 0.2,
+    totalCost: BIG * 0.2,
+    teamCost: BIG,
+    activeUsers: 10,
     lastServedAt: PHASE_RATIO_COOLDOWN_AT,
   }));
   assert.equal(result.allowed, true);
-  assert.deepEqual(result.notices, []);
+  assert.deepEqual(result.notices.map((notice) => notice.code), ["premium_ratio_warning"]);
 });
 
-test("a user below the volume floor is not judged on a noisy share", () => {
+test("the fair-share line scales with how many people are actually drawing on the pool", () => {
+  const share = (activeUsers) => evaluateFetchPolicy(inputs({
+    premiumCost: 0, totalCost: BIG * 0.2, teamCost: BIG, activeUsers,
+    lastServedAt: PHASE_RATIO_COOLDOWN_AT,
+  }));
+  // At 20% of team spend: fine among 10 people (line 25%), too much among 20 (line 12.5%).
+  assert.equal(share(10).allowed, true);
+  assert.equal(share(20).allowed, false);
+  assert.equal(share(20).reason, "demand_share_cooldown");
+  assert.equal(DEMAND_SHARE_TOLERANCE, 2.5, "the tolerance the lines above assume");
+});
+
+test("a user below the spend floor is not judged on a noisy share", () => {
   const result = evaluateFetchPolicy(inputs({
-    premiumWeighted: PREMIUM_RATIO_MIN_WEIGHTED_TOKENS - 1,
-    totalWeighted: PREMIUM_RATIO_MIN_WEIGHTED_TOKENS - 1,
+    premiumCost: PREMIUM_RATIO_MIN_COST * 0.99,
+    totalCost: PREMIUM_RATIO_MIN_COST * 0.99,
+    teamCost: BIG * 100,
+    activeUsers: 10,
     lastServedAt: PHASE_RATIO_COOLDOWN_AT,
   }));
   assert.equal(result.allowed, true);
-  assert.equal(result.premium_share, null);
+  assert.equal(result.premium_share, null, "a few cents of usage says nothing about habits");
   assert.deepEqual(result.notices, []);
 });
 
@@ -188,7 +253,7 @@ test("the models the notice recommends are themselves non-premium", () => {
 });
 
 test("both ratio notices name the models on each side of the line", () => {
-  const shared = { premiumWeighted: BIG * 0.9, totalWeighted: BIG, lastServedAt: null };
+  const shared = { premiumCost: BIG * 0.9, totalCost: BIG, lastServedAt: null };
   const warning = evaluateFetchPolicy({ ...inputs(shared), now: new Date(PHASE_REPORTER_GATE_AT) });
   const cooldown = evaluateFetchPolicy({ ...inputs(shared), now: new Date(PHASE_RATIO_COOLDOWN_AT) });
   for (const [label, result] of [["warning", warning], ["cooldown", cooldown]]) {
@@ -208,8 +273,8 @@ test("unreported consumption is measured as a debt from the last new account, no
   const base = {
     now: new Date(PHASE_REPORTER_GATE_AT),
     requestClientVersion: "2.0.0",
-    premiumWeighted: 0,
-    totalWeighted: 0,
+    premiumCost: 0,
+    totalCost: 0,
     lastServedAt: null,
   };
   const hoursBefore = (count) =>
@@ -251,8 +316,8 @@ test("the hub sets the repeat interval rather than the client compiling one in",
     requestClientVersion: "2.0.0",
     lastNewAccountAt: "2026-08-20T00:00:00.000Z",
     lastReportAt: null,
-    premiumWeighted: BIG * 0.9,
-    totalWeighted: BIG,
+    premiumCost: BIG * 0.9,
+    totalCost: BIG,
     lastServedAt: null,
   });
   assert.equal(result.allowed, true, "before the gate date this only warns");
@@ -269,8 +334,8 @@ test("debt stops growing the moment a user goes dormant", () => {
   // not a running clock. This is the whole reason dormancy is harmless: an idle month adds nothing.
   const base = {
     requestClientVersion: "2.0.0",
-    premiumWeighted: 0,
-    totalWeighted: 0,
+    premiumCost: 0,
+    totalCost: 0,
     lastServedAt: null,
     lastReportAt: "2026-06-01T00:00:00.000Z",
     lastNewAccountAt: "2026-06-01T01:00:00.000Z",   // reported, then served an hour later
@@ -288,8 +353,8 @@ test("a single report clears the debt on the very next fetch", () => {
   const base = {
     now,
     requestClientVersion: "2.0.0",
-    premiumWeighted: 0,
-    totalWeighted: 0,
+    premiumCost: 0,
+    totalCost: 0,
     lastServedAt: null,
     lastNewAccountAt: servedAt,
   };
@@ -315,7 +380,7 @@ test("the cooldown holds fire while the pool has room, but the warning still goe
 
   const scarce = evaluateFetchPolicy({ ...shared, poolScarce: true });
   assert.equal(scarce.allowed, false);
-  assert.equal(scarce.reason, "premium_ratio_cooldown");
+  assert.equal(scarce.reason, "demand_share_cooldown");
 });
 
 test("scarcity never excuses an unmetered client", () => {
@@ -324,8 +389,8 @@ test("scarcity never excuses an unmetered client", () => {
   // users still have no measurable share and the cooldown cannot reach them.
   const base = {
     now: new Date(PHASE_RATIO_COOLDOWN_AT),
-    premiumWeighted: 0,
-    totalWeighted: 0,
+    premiumCost: 0,
+    totalCost: 0,
     lastServedAt: null,
     lastNewAccountAt: "2026-09-01T00:00:00.000Z",
     lastReportAt: null,
@@ -337,5 +402,31 @@ test("scarcity never excuses an unmetered client", () => {
   for (const poolScarce of [true, false]) {
     const result = evaluateFetchPolicy({ ...base, requestClientVersion: "1.0.0", poolScarce, lastNewAccountAt: null });
     assert.equal(result.reason, "reporter_upgrade_required", `poolScarce=${poolScarce}`);
+  }
+});
+
+test("the fair-share line never rises above the ceiling, however few people are active", () => {
+  // K/headcount passes 100% below three active users, which would make the rule unreachable exactly
+  // when one person IS the shortage. Two users, one burning 60% of the pool: still held.
+  const at = (share, activeUsers) => evaluateFetchPolicy(inputs({
+    premiumCost: 0, totalCost: BIG * share, teamCost: BIG, activeUsers,
+    lastServedAt: PHASE_RATIO_COOLDOWN_AT,
+  }));
+  assert.equal(DEMAND_SHARE_CEILING, 0.5, "the ceiling the lines below assume");
+  // Three active users: the per-head line would be 83%, so the ceiling is what binds.
+  assert.equal(at(0.6, 3).allowed, false);
+  assert.equal(at(0.6, 3).reason, "demand_share_cooldown");
+  assert.equal(at(0.4, 3).allowed, true);
+});
+
+test("nobody is held back when there is nobody to be fair to", () => {
+  // Freeing capacity for an empty room drains the pool just as fast and only stops work sooner.
+  // A shortage one person drives alone calls for more accounts, not for throttling the only user.
+  for (let activeUsers = 0; activeUsers < DEMAND_SHARE_MIN_ACTIVE_USERS; activeUsers += 1) {
+    const result = evaluateFetchPolicy(inputs({
+      premiumCost: 0, totalCost: BIG, teamCost: BIG, activeUsers,
+      lastServedAt: PHASE_RATIO_COOLDOWN_AT,
+    }));
+    assert.equal(result.allowed, true, `${activeUsers} active users must not trigger a fair-share hold`);
   }
 });

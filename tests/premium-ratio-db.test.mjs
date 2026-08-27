@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { weightedTokens } from "../lib/premium-ratio.js";
+import { isPremiumModel, modelCost } from "../lib/model-tiers.js";
 
 async function loadDb() {
   const tempDir = mkdtempSync(join(tmpdir(), "qrh-premium-ratio-test-"));
@@ -49,15 +49,18 @@ function row(overrides = {}) {
   };
 }
 
-test("fetchPolicyInputs splits weighted usage into premium and total", async () => {
+test("fetchPolicyInputs prices usage and splits it into premium and total", async () => {
   const { mod, cleanup } = await loadDb();
   try {
     const rows = [
       row(),
       row({ model_id: "gpt-5.5", bucket_start: "2026-09-21T00:15:00.000Z" }),
-      // A model the tier table has never seen counts as premium: guessing "cheap" would open a
-      // loophole that stays open until somebody notices the bill.
+      // A model in a pooled family that nobody has priced yet. It is charged the family's top rate
+      // so it cannot read as free, but it is NOT premium: premium is a blacklist now, and missing
+      // from it costs a hint rather than a refusal.
       row({ model_id: "gpt-9.9-unreleased", bucket_start: "2026-09-21T00:30:00.000Z" }),
+      // Off-pool: somebody's own key, so it drains no pooled account and adds no demand at all.
+      row({ model_id: "deepseek-v4-pro", bucket_start: "2026-09-21T00:45:00.000Z" }),
     ];
     await mod.ingestTokenUsageBatch({
       hubUserEmail: "Heavy@Example.com",
@@ -73,13 +76,15 @@ test("fetchPolicyInputs splits weighted usage into premium and total", async () 
       since: "2026-09-14T00:00:00.000Z",
     });
 
-    const expectedTotal = rows.reduce((sum, item) => sum + weightedTokens(item), 0);
+    const expectedTotal = rows.reduce((sum, item) => sum + modelCost(item.model_id, item), 0);
     const expectedPremium = rows
-      .filter((item) => item.model_id !== "gpt-5.5")
-      .reduce((sum, item) => sum + weightedTokens(item), 0);
+      .filter((item) => isPremiumModel(item.model_id))
+      .reduce((sum, item) => sum + modelCost(item.model_id, item), 0);
+    assert.ok(expectedPremium > 0 && expectedPremium < expectedTotal, "the fixture must exercise both sides");
+    assert.equal(modelCost("deepseek-v4-pro", row()), 0, "off-pool usage must not enter either total");
 
-    assert.equal(inputs.totalWeighted, expectedTotal);
-    assert.equal(inputs.premiumWeighted, expectedPremium);
+    assert.equal(inputs.totalCost, expectedTotal);
+    assert.equal(inputs.premiumCost, expectedPremium);
     assert.equal(inputs.lastReportAt, "2026-09-21T01:00:00.000Z");
     assert.equal(inputs.clientVersion, "2.1.0");
   } finally {
@@ -101,8 +106,8 @@ test("fetchPolicyInputs excludes buckets outside the rolling window", async () =
       email: "heavy@example.com",
       since: "2026-09-14T00:00:00.000Z",
     });
-    assert.equal(inputs.totalWeighted, 0);
-    assert.equal(inputs.premiumWeighted, 0);
+    assert.equal(inputs.totalCost, 0);
+    assert.equal(inputs.premiumCost, 0);
   } finally {
     cleanup();
   }
@@ -123,7 +128,7 @@ test("only a real serve starts the cooldown clock", async () => {
 
     await mod.recordAuthPoolFetch({
       requesterEmail: "heavy@example.com", source: "codex",
-      servedEntry: null, reason: "premium_ratio_cooldown",
+      servedEntry: null, reason: "demand_share_cooldown",
     });
     const afterBlock = await mod.fetchPolicyInputs({
       email: "heavy@example.com", since: "2026-09-14T00:00:00.000Z",

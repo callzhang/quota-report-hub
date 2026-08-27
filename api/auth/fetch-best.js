@@ -100,6 +100,7 @@ export default async function handler(req, res) {
       reason: policy.reason,
       retry_after_seconds: policy.retry_after_seconds,
       premium_share: policy.premium_share,
+      demand_share: policy.demand_share,
       notices: policy.notices,
       message: policy.notices[0]?.message || null,
     }, authContext)));
@@ -176,6 +177,7 @@ export default async function handler(req, res) {
           disabled_refresh_token: disabledRefreshToken,
           notices: policy.notices,
           premium_share: policy.premium_share,
+      demand_share: policy.demand_share,
           refreshed_current: true,
           replacement: {
             source: sameEntry.source,
@@ -294,6 +296,7 @@ export default async function handler(req, res) {
       disabled_refresh_token: atOnlyMode,
       notices: policy.notices,
       premium_share: policy.premium_share,
+      demand_share: policy.demand_share,
       replacement: {
         source: entry.source,
         account_id: entry.account_id,

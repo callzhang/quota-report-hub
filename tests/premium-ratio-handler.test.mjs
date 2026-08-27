@@ -74,13 +74,13 @@ function quarterHoursAgo(count) {
   return new Date(Math.floor(ms / (15 * 60 * 1000)) * 15 * 60 * 1000).toISOString();
 }
 
-async function seedUsage(email, modelId, batchId) {
+async function seedUsage(email, modelId, batchId, { heavy = false } = {}) {
   await db.ingestTokenUsageBatch({
     hubUserEmail: email,
     installationId: "install-1",
     batchId,
     clientVersion: "2.0.0",
-    rows: [usageRow(quarterHoursAgo(1), modelId), usageRow(quarterHoursAgo(2), modelId)],
+    rows: Array.from({ length: heavy ? 40 : 1 }, (_, index) => usageRow(quarterHoursAgo(index + 1), modelId)),
     receivedAt: new Date().toISOString(),
   });
 }
@@ -108,6 +108,14 @@ async function seedServe(email) {
   });
 }
 
+// Fair share presupposes a team. Without colleagues in the window the rule stands down, so these
+// tests seed a realistic set of small consumers once, up front.
+test("seed a team of ordinary consumers", async () => {
+  for (let index = 0; index < 6; index += 1) {
+    await seedUsage(`colleague${index}@stardust.ai`, "gpt-5.5", `batch-colleague-${index}`);
+  }
+});
+
 test("reporter gate refuses an outdated client and names the fix", async () => {
   const { token } = await db.issueApiToken("silent@stardust.ai");
   const payload = await call(token, { source: "codex", client_version: "1.0.0" });
@@ -130,22 +138,22 @@ test("a reporting client below the share threshold passes both gates", async () 
   await seedUsage(email, "gpt-5.5", "batch-light");
   const payload = await call(token);
   assert.notEqual(payload.reason, "reporter_upgrade_required");
-  assert.notEqual(payload.reason, "premium_ratio_cooldown");
+  assert.notEqual(payload.reason, "demand_share_cooldown");
   assert.deepEqual(payload.notices, []);
 });
 
-test("cooldown holds an over-share user, and a refused attempt does not extend the wait", async () => {
+test("cooldown holds a user driving a shortage, and a refused attempt does not extend the wait", async () => {
   const email = "heavy@stardust.ai";
   const { token } = await db.issueApiToken(email);
-  await seedUsage(email, "gpt-5.6-sol", "batch-heavy");
+  await seedUsage(email, "gpt-5.6-sol", "batch-heavy", { heavy: true });
   await seedServe(email);
   await seedScarcePool(true);
 
   const first = await call(token);
-  assert.equal(first.reason, "premium_ratio_cooldown");
+  assert.equal(first.reason, "demand_share_cooldown");
   assert.equal(first.replacement, null);
   assert.ok(first.retry_after_seconds > 0);
-  assert.ok(first.premium_share > 0.5);
+  assert.ok(first.demand_share > 0.25, "this user is the entire team's spend");
 
   const second = await call(token);
   assert.ok(
@@ -157,15 +165,15 @@ test("cooldown holds an over-share user, and a refused attempt does not extend t
 test("the kill switch stops refusals without silencing the warning", async () => {
   const email = "heavy2@stardust.ai";
   const { token } = await db.issueApiToken(email);
-  await seedUsage(email, "gpt-5.6-sol", "batch-heavy2");
+  await seedUsage(email, "gpt-5.6-sol", "batch-heavy2", { heavy: true });
   await seedServe(email);
   await seedScarcePool(true);
   await db.setFeatureFlag("premium_ratio_enforcement", false, "test");
   try {
     const payload = await call(token);
-    assert.notEqual(payload.reason, "premium_ratio_cooldown");
+    assert.notEqual(payload.reason, "demand_share_cooldown");
     assert.ok(
-      payload.notices.some((notice) => notice.code === "premium_ratio_cooldown"),
+      payload.notices.some((notice) => notice.code === "demand_share_cooldown"),
       "disabling enforcement must not also disable the warning",
     );
   } finally {
@@ -176,14 +184,14 @@ test("the kill switch stops refusals without silencing the warning", async () =>
 test("an over-share user is only warned while the pool has room to spare", async () => {
   const email = "heavy3@stardust.ai";
   const { token } = await db.issueApiToken(email);
-  await seedUsage(email, "gpt-5.6-sol", "batch-heavy3");
+  await seedUsage(email, "gpt-5.6-sol", "batch-heavy3", { heavy: true });
   await seedServe(email);
   await seedScarcePool(false);
 
   const payload = await call(token);
-  assert.notEqual(payload.reason, "premium_ratio_cooldown", "abundance must not throttle anyone");
+  assert.notEqual(payload.reason, "demand_share_cooldown", "abundance must not throttle anyone");
   assert.ok(
-    payload.notices.some((notice) => notice.code === "premium_ratio_warning"),
+    payload.notices.some((notice) => notice.code === "demand_share_warning"),
     "the warning still goes out, so habits can change before the pool tightens",
   );
 });
