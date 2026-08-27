@@ -2,6 +2,13 @@
 
 Minimal Vercel app that stores encrypted Codex and Claude auth snapshots, issues per-user access tokens by company email, and serves a dashboard plus source-aware auth-pool APIs for local quota guards.
 
+## Documentation
+
+- **[SYSTEM_DESIGN.md](SYSTEM_DESIGN.md)** — how the whole system works, component by component, with the reasoning behind each load-bearing decision. **The reference for any change to this repo.**
+- [PRODUCT_DESIGN.md](PRODUCT_DESIGN.md) — what it is for and why it behaves this way.
+- [AUTH_TOKENS.md](AUTH_TOKENS.md) — how Codex and Claude credentials are stored, refreshed, rotated, and how they die.
+- [AGENTS.md](AGENTS.md) — working rules for anyone (human or agent) writing code here.
+
 ## Team token usage analytics
 
 The Hub has an independent `token-usage.html` page for authenticated team members. It defaults to the previous seven days, hourly buckets, grouping by Hub user, and the Total counter. Queries can filter by time, Hub user, provider (`codex` or `claude`), model account, and the raw provider model name, then group by Hub user, provider, model account, or model. Per-user totals are shown in Breakdown rather than a duplicate side panel. The page uses only `GET /api/token-usage-query` and caches each exact query for five minutes per login session.

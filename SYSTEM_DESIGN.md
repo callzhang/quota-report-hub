@@ -1,6 +1,38 @@
 # System Design — quota-report-hub
 
-> **Scope.** This document is the technical "how it's built" companion to [`PRODUCT_DESIGN.md`](PRODUCT_DESIGN.md) (the "why/what"). It is derived from a line-by-line read of the codebase as of 2026-06-14 and cites `file:line` for the load-bearing claims. Where behavior is subtle or surprising, it is called out explicitly (see [§14 Sharp Edges](#14-sharp-edges--known-issues)).
+> **Scope.** This document is the technical "how it's built" companion to [`PRODUCT_DESIGN.md`](PRODUCT_DESIGN.md) (the "why/what"). It records the behaviour of every component and the reasoning behind the load-bearing decisions, and cites `file:line` for claims worth checking. Where behaviour is subtle or surprising, it is called out explicitly (see [§14 Sharp Edges](#14-sharp-edges--known-issues)).
+>
+> **This is the reference for all development in this repo** ([`AGENTS.md`](AGENTS.md)). Read the
+> section covering the area you are about to change *before* changing it, and update this document
+> in the same commit as any change to behaviour it describes. A section that no longer matches the
+> code is worse than a missing one: the whole point is that a reader can trust it without re-deriving
+> it from 20k lines. `file:line` citations drift as code moves — treat the surrounding prose as the
+> claim and the citation as a hint.
+>
+> Last full reconciliation with the code: **2026-08-27**.
+
+## Contents
+
+| § | Section |
+|---|---|
+| [1](#1-what-the-system-is) | What the system is — the four tiers and the diagram |
+| [2](#2-glossary) | Glossary |
+| [3](#3-component-local-client-quota-guard) | Local client (the quota guard) |
+| [4](#4-data-model) | Data model — Turso tables, Tigris blobs |
+| [5](#5-encryption--storage-layering) | Encryption and storage layering |
+| [6](#6-component-serverless-api) | Serverless API — endpoints, fetch-best, identity, availability, data router, ingest |
+| [7](#7-component-worker) | Worker — probe/refresh loop |
+| [8](#8-ops-scripts) | Ops scripts |
+| [9](#9-the-disabled_refresh_token-mechanism) | The `disabled_refresh_token` mechanism |
+| [9b](#9b-the-premium-share-gate-libpremium-ratiojs) | Fetch policy: reporting, demand share, supply, scarcity, phases |
+| [10](#10-selection-algorithm) | Selection algorithm |
+| [11](#11-token-refresh-architecture) | Token-refresh architecture |
+| [12](#12-observability) | Observability |
+| [13](#13-configuration) | Configuration |
+| [14](#14-sharp-edges--known-issues) | Sharp edges and known issues |
+| [15](#15-end-to-end-flow-recap) | End-to-end flow recap |
+| [16](#16-token-usage-pipeline) | Token usage pipeline (collector → ingest → query → retention) |
+| [17](#17-repo-layout-tests-and-deploy) | Repo layout, tests, deploy |
 
 ---
 
@@ -165,7 +197,7 @@ Single module-load client (`lib/db.js:15-18`); schema created lazily + memoized 
 - Key layout: `auth-pool/<source>/<accountId>/<sessionId|default>/<digest>.json`, each part URL-encoded (`:24-32`).
 - Stores the same `{encrypted_auth_json, iv, auth_tag}` GCM envelope the DB would have held inline.
 
-**Live state (2026-06-14):** 28/28 entries are on object storage, 0 inline — migration complete (see `scripts/migrate_auth_blobs_to_object_storage.mjs`, [§8.3](#83-blob-migration)). The DB row keeps only metadata + `auth_blob_key`; the worker fetches+decrypts the blob only at the moment it actually probes/refreshes, so **storage location is orthogonal to the probe/refresh logic**.
+**Live state (verified 2026-06-14, unchanged since):** all entries are on object storage, none inline — migration complete (see `scripts/migrate_auth_blobs_to_object_storage.mjs`, [§8.3](#83-blob-migration)). The DB row keeps only metadata + `auth_blob_key`; the worker fetches+decrypts the blob only at the moment it actually probes/refreshes, so **storage location is orthogonal to the probe/refresh logic**.
 
 ---
 
@@ -206,11 +238,24 @@ All handlers are Vercel functions; most require a Bearer token via `authenticate
 | `/api/status` | any | Bearer | Dashboard dataset |
 | `/api/status-revision` | any | Scoped `qrr.` ticket | Singleton dashboard revision only |
 | `/api/quota-history` | GET | Bearer | Exact-account quota history, bounded to the preceding 24 hours and 96 chronological safe points |
+| `/api/token-usage` | POST | Bearer | Ingest one receipt-gated usage batch ([§16](#16-token-usage-pipeline)) |
+| `/api/token-usage-query` | GET | Bearer | Bounded usage read model: totals, trend, breakdown, reporter freshness |
+| `/api/cron/token-usage-retention` | GET/POST | **`CRON_SECRET`** | Daily compaction of 15-minute detail into `token_usage_daily` |
 | `/api/users` | any | Bearer | Users + fetch-log audit |
 
-`vercel.json`: platform cron only calls `/api/cron/invalidated-auth-notifications` daily at `0 17 * * *` UTC. Vercel Hobby does not support 15-minute cron jobs, so the *probe* worker stays in GitHub Actions. `/api/cron/probe-auth-pool` remains available for manual or external stale-snapshot dispatch when called with `CRON_SECRET`.
+The last four are not separate functions: they are `vercel.json` rewrites onto `/api/data?route=…`
+([§6.5](#65-the-data-router-apidatajs)).
 
-### 6.1 fetch-best (the borrow path) — `api/auth/fetch-best.js`
+`vercel.json` pins all functions to `pdx1` (same region as the Turso primary, [§1](#1-what-the-system-is)),
+gives the five heavy handlers `maxDuration: 30`, and runs two platform crons: invalidated-auth
+notifications at `0 17 * * *` UTC and token-usage retention at `30 18 * * *` UTC. Vercel Hobby does
+not support 15-minute cron jobs, so the *probe* worker stays in GitHub Actions;
+`/api/cron/probe-auth-pool` remains available for manual or external stale-snapshot dispatch when
+called with `CRON_SECRET`.
+
+### 6.1 fetch-best (the borrow path)
+
+Code: `api/auth/fetch-best.js`.
 Three branches, in order:
 1. **Policy gate** ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)): refusals for an outdated reporter, unreported consumption, an over-fair-share user during scarcity, or a non-contributor during scarcity. All are cooldowns or fixable states, never lockouts, and the `repair_auth` handback stays open through all of them.
 2. **`refresh_current` mode** (`:93-142`): when `refresh_current && current_account_id`, fetch the same account's pooled blob and only return it if its AT is genuinely fresh (`accessTokenMsUntilExpiry === null || > 5 min`); otherwise fall through to a normal replacement (so an owner can't dead-lock on its own stale copy).
@@ -251,6 +296,59 @@ Each availability result includes its next time-derived transition. While visibl
 
 History is excluded from `/api/status`. The browser requests it only when an account dialog opens, caches the result for five minutes within the current authentication-session generation, and deduplicates concurrent requests for the same account. Changing or clearing the session invalidates the cache key.
 
+### 6.5 The data router (`api/data.js`)
+
+Four endpoints share one function. `routeDataRequest` reads `?route=` (set by the `vercel.json`
+rewrites, so callers still use the clean paths), looks the handler up in a fixed map, strips the
+`route` parameter back off `req.url` so each handler parses its own query normally, and 404s an
+unknown route. The handlers themselves live in `lib/data-api.js` and take an injectable `deps`
+object — that is what lets the API tests drive them without a database or a clock.
+
+Why one function: Vercel's plan caps the number of deployed functions, and these four are the
+cheapest to co-locate (three are read-only or cron, none is on the auth hot path). The cost is that
+they share a cold start and a `maxDuration`.
+
+Each handler enforces its own method (`405` with an `Allow` header), its own auth (Bearer for
+ingest/query, `CRON_SECRET` for retention), and its own error mapping: `TokenUsageValidationError`
+→ its `statusCode` (default 400), a duplicate batch id with a different payload → **409**
+`token_usage_batch_conflict`, an unbounded query → **422** `query_too_broad`, anything else →
+`sendServiceUnavailable` (503, internals never echoed).
+
+### 6.6 Quota ingest and report merge
+
+Two modules decide what a quota report means, and both are shared by every writer so the rules
+cannot drift between the client path and the worker path.
+
+**`lib/quota-ingest.js` — acceptance.** `ingestClientQuota` stamps `report_origin:"client"` and a
+reporter identity, then applies one gate: `codexClientPayloadAccepted` requires a *complete* weekly
+window (`remaining_percent` **and** `reset_at`) or a hard invalidation. Codex has no live 5-hour
+window any more, so weekly completeness is the whole test; Claude reports are not gated here. An
+unacceptable payload is not an error — it returns `{ok:true, ignored:true}` and the caller decides
+the HTTP status. This is the same predicate the guard mirrors locally as
+`quota_payload_is_reportable`, so a report that would be discarded is never sent
+([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)).
+
+`ingestReporterHeartbeat` is deliberately far cheaper to satisfy: a heartbeat carries no quota
+numbers, so there is nothing to validate and nothing it can corrupt. The only hard requirement is a
+reporter identity, and the error string is truncated to 500 characters.
+
+**`lib/reports.js` — sanitize, merge, present.** `sanitizeReport` normalizes an incoming report
+(sources, statuses, window shapes, timestamps, `captured_at` per window). `mergeLatestReport` is the
+one that carries the sharp rules:
+
+- A hard invalidation that is **older** than a stored report with complete windows is dropped — a
+  late-arriving failure must not bury fresher good evidence.
+- A hard invalidation or an ineligible plan keeps the previous windows as *stale* evidence
+  (`windows_stale`) instead of blanking the account, so the dashboard can still show what was last
+  true.
+- Otherwise the newer report wins per window, and each window keeps its own `captured_at`, which is
+  never overwritten by a newer row-level `reported_at`
+  ([§6.4](#64-availability-read-model-and-lazy-history)).
+
+`statusPayload` / `authPoolStatusPayload` assemble the dashboard dataset from entries, reports and
+invalidation state; `lib/account-availability.js` then reduces each account to the single lifecycle
+state the table renders.
+
 ---
 
 ## 7. Component: Worker
@@ -267,7 +365,7 @@ Code: `scripts/probe_auth_pool_worker.mjs`, spawning `scripts/probe_{codex,claud
 
 > **Why dedupe before refresh** (`probe_auth_pool_worker.mjs` dedupe comment): multiple sessions of one account each hold an RT from a different rotation generation. Centrally refreshing more than one replays a superseded RT → the provider revokes the whole family. The worker only ever refreshes the canonical session.
 
-### 7.2 Per-entry processing (`processAuthPoolEntry`) — the per-cycle decision
+### 7.2 Per-entry processing (`processAuthPoolEntry`)
 Each cycle decides, **per entry and independently**, whether to probe and whether to refresh:
 
 - **Probe selectivity** (`probeSkipReason`): skip the cloud probe when the client already reported fresh quota (`fresh_client_quota_report`) **or** a client re-uploaded within `PROBE_STALE_MS = 1 h` (`recently_updated`) — *unless* there's no prior report (a brand-new entry is always probed for a baseline). Skipping avoids aging a fresh token and cuts load.
@@ -296,6 +394,26 @@ Reads `.env.local` if env unset, then: (1) **abuse scan** over `authPoolQuotaLat
 
 ### 8.3 Blob migration
 `migrate_auth_blobs_to_object_storage.mjs`: three modes (`scan` / `write-only` / `apply`). Per row it writes the envelope to Tigris, **round-trip verifies** (`readAuthBlob` must equal what was written), then in `apply` mode nulls the inline columns under an **optimistic-concurrency guard** (the UPDATE's WHERE re-checks the exact old ciphertext and `rowsAffected===1`, else throws). Backs up candidates to JSONL first.
+
+---
+
+### 8.4 check_reporter_uptake.mjs
+Answers one question before the reporter gate's phase date fires: *who would it refuse right now?*
+It reads `client_version` from `auth_pool_user_fetch_stats` — **not** `token_usage_reporter_state`,
+which only ever sees clients that already report usage and therefore excludes exactly the population
+at risk ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)).
+
+### 8.5 purge_contaminated_usage.py
+Removes usage buckets recording physically impossible volumes (the compaction-as-reset bug in old
+collectors re-emitted whole session cumulatives as fresh usage; one pass removed 79 rows holding 86%
+of all recorded volume). Backs up before deleting, supports `--dry-run`, and talks to Turso over its
+HTTP API rather than `@libsql/client` because this host resolves the Turso name into Tailscale's
+intercepted range, which curl and urllib traverse but node's TLS stack does not.
+
+### 8.6 deploy_vercel.py / start_frontend.mjs
+`deploy_vercel.py` wraps the Vercel CLI for production/preview/development deploys and env
+management. `start_frontend.mjs` serves the static dashboards locally on `FRONTEND_PORT`
+(default 6088, `127.0.0.1` only).
 
 ---
 
@@ -506,7 +624,9 @@ Clients surface notices through `notify_hub_notices()` (`quota_guard.py`), once 
 6 hours. The guard runs every 15 minutes; a toast on every run would train people to dismiss it
 without reading, which is the opposite of what a warning is for.
 
-## 10. Selection algorithm (`pickBestAuthPoolCandidate`, `lib/auth-pool.js:260-312`)
+## 10. Selection algorithm
+
+Code: `pickBestAuthPoolCandidate`, `lib/auth-pool.js:260-312`.
 
 For a borrow request, candidates are filtered then ranked:
 
@@ -568,7 +688,7 @@ Facts surfaced during the read that future maintainers should know:
 1. **`authPoolEntry()` never returns `auth_expires_at`** — both SELECT projections omit the column while the row mapper reads `row.auth_expires_at`, so it comes back `undefined` on that path (`lib/db.js:889-960`). Other readers (`authPoolEntries`, `getInvalidatedUploaderEntry`) do select it. Not a crash; just unavailable through that one accessor.
 2. **No HTTP-method guards** on `/api/status`, `/api/users`, and GET `/api/admin/flags` (they accept any method). Low risk but inconsistent with the POST endpoints' 405s.
 3. **`/api/auth/delete` has no owner check** — any authenticated company user can delete any pool entry. Acceptable for a trusted team; worth gating if the trust boundary widens.
-4. **`index.html` does not HTML-escape server-supplied strings** (`item.error`, emails, requester fields) while `users.html` does — a stored-XSS surface on the main dashboard if any of those fields become attacker-influenced.
+4. **Dashboard escaping is now uniform** — `index.html`, `users.html` and `token-usage.html` all run server-supplied strings (`item.error`, emails, requester fields) through `escapeHtml`. This was a real stored-XSS surface on the main dashboard and is fixed; the rule to keep is that *every* interpolation of a server string into markup goes through `escapeHtml`.
 5. **`fetch-best.js` is misleadingly named** — it holds RT-stripping/repair helpers, *not* the borrower selection logic. Selection is `pickBestAuthPoolCandidate` in `lib/auth-pool.js` (reached via `lib/db.js bestAuthPoolEntry`).
 6. **Two refreshers exist** — the worker (central, server-side, under the flag) and the client's own Claude AT refresh (`ensure_fresh_claude_access_token`). They don't conflict because under the flag the client strips its RT and stops self-refreshing the shared credential.
 7. **Probe schedule is unreliable** — never assume 15 min. Thresholds (`REFRESH_THRESHOLD_MS`, `PROBE_STALE_MS`) are tuned against the real worst-case gap, and the named constants make them a one-line tune.
@@ -589,3 +709,139 @@ Facts surfaced during the read that future maintainers should know:
 **Daily:** notify latest uploaders of auths hard-dead ≥24 h.
 
 **Admin:** flip `disabled_refresh_token` on the dashboard to switch the whole pool between full-credential distribution and hub-sole-refresher AT-only distribution.
+
+---
+
+## 16. Token usage pipeline
+
+An isolated read model. Nothing here feeds auth selection, quota availability, or the dashboard's
+account states — the only place usage numbers cross over is the fetch policy's cost arithmetic
+([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)), and that reads the same stored aggregates
+everyone else does. No parser output contains conversation content.
+
+### 16.1 Client collector (`skills/quota-reporter/scripts/token_usage_*.py`)
+
+Each installation owns a private SQLite checkpoint at `~/.agents/auth/token-usage.sqlite3` (`0600`,
+`token_usage_state.py`). The first run fixes a **72-hour backfill cutoff** so a machine with years of
+transcripts does not upload its history. Subsequent runs:
+
+1. `discover_changed_files` — stat the Codex session roots and `~/.claude/projects`, keep files whose
+   size or mtime moved past the acknowledged byte offset.
+2. Parse forward from that offset (`token_usage_parsers.py`):
+   - **Codex** reads the structural `session_meta` / `turn_context` / cumulative `token_count`
+     fields. Canonical numeric fingerprints drop copied parent history, and a counter that goes
+     *backwards* starts a new non-negative epoch rather than emitting a negative delta.
+   - **Claude** keys on assistant message id, raw model, timestamp and final usage counters; a
+     repeated record contributes only the positive difference.
+3. Bucket each event into a 15-minute `bucket_start`, attribute it to an account
+   (`account_for_event`, [§16.2](#162-account-attribution)), and aggregate — at most
+   `MAX_AGGREGATE_ROWS = 400` rows per batch, inside a **10-second cycle budget**.
+4. Upload, then commit. The proposed file/counter/fingerprint checkpoint is written locally **only
+   after the server acknowledges**, and a retry re-sends the same `batch_id` with the same payload.
+
+### 16.2 Account attribution
+
+Two cases, and the second is deliberately approximate:
+
+- **Automatic guard switch** — before installing a new credential the guard inserts a *prepared
+  boundary*, reads the installed account back, then finalizes or cancels it. Collector events are
+  split at finalized boundaries, so tokens land on the account that actually served them.
+- **Manual switch** — there is no boundary to split on, so events read in that cycle are attributed
+  to the account observed during the report.
+
+This is a usage read model, not a billing ledger, and the doc says so on purpose: precision beyond
+"which account was in use this cycle" would require instrumenting the provider CLIs.
+
+### 16.3 Ingest (`POST /api/token-usage` → `ingestTokenUsageBatch`)
+
+Exactly-once by receipt, in **one batch**: insert a `token_usage_batch_receipts` row keyed
+`(hub_user_email, installation_id, batch_id)` carrying a digest of the payload, then apply every
+aggregate row and the reporter-state update **guarded on that receipt existing with the same digest
+and `applied_at IS NULL`**, then mark it applied. Consequences:
+
+- A retry of the same batch re-inserts nothing (the receipt exists and is applied) — the counters do
+  not double.
+- The same `batch_id` with a *different* payload has a different digest, so no row applies and the
+  API answers **409 `token_usage_batch_conflict`** rather than silently mixing two payloads.
+- Counters accumulate with `ON CONFLICT … DO UPDATE SET x = x + excluded.x` per
+  `(hub_user_email, provider, model_account_id, model_id, bucket_start)`.
+- `token_usage_reporter_state` keeps the **maximum** `last_reported_at` and the reporting
+  `client_version` — the version the reporter gate reads only for display; the gate itself judges the
+  version carried on the fetch-best request ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)).
+
+Validation lives in `lib/token-usage.js` (`normalizeTokenUsageBatch`): canonical quarter-hour buckets
+inside the accepted window, known providers, non-negative safe counters, Codex cache/reasoning as
+subsets of the total, Claude totals that include input/output/cache-read/cache-write, and no unknown
+fields — a malformed batch is rejected, never partially stored.
+
+### 16.4 Query (`GET /api/token-usage-query`)
+
+`parseTokenUsageQuery` bounds every request (detail is capped at `TOKEN_USAGE_DETAIL_DAYS = 90`;
+trend at 2000 points; breakdown at 500 rows) and rejects an unbounded one with **422
+`query_too_broad`**. Hourly and shorter ranges read `token_usage_15m`; daily ranges read
+`token_usage_daily`. The response carries only totals, trend, breakdown and reporter freshness.
+
+Deliberately **never selected**: installation ids, batch ids, payload digests, file paths, logical
+record ids, fingerprints. Read-only analytics requests also skip schema creation on cold start, and
+the API-token lookup plus its `last_used_at` touch share one round trip before the bounded analytics
+batch.
+
+The page (`token-usage.html`) defaults to 7 days / hour / Hub user / Total and makes one lazy
+authenticated query. Results are cached five minutes keyed by exact query **plus auth generation**,
+concurrent identical requests are deduplicated, and a token rotation moves the successful result to
+the new generation so a stale old-token response cannot clear a newer login. Charts preserve
+missing-bucket gaps rather than interpolating, and expose exact values to keyboard and screen reader.
+
+### 16.5 Retention (`/api/cron/token-usage-retention`, daily `30 18 * * *` UTC)
+
+`compactTokenUsage` moves at most **seven** UTC days older than the 90-day boundary into
+`token_usage_daily` atomically per run, deletes the compacted detail, and prunes old receipts. A
+failed daily aggregation leaves that day's detail untouched — the compaction is all-or-nothing per
+day, so a partial run can only ever be retried, never lose rows.
+
+---
+
+## 17. Repo layout, tests, and deploy
+
+### 17.1 Layout
+
+| Path | What lives there |
+|---|---|
+| `api/**` | Vercel function entrypoints. Thin: auth, method check, delegate to `lib/`. |
+| `lib/**` | All server logic. Pure modules where possible so tests need no database or clock. |
+| `scripts/*.mjs`, `scripts/*.py` | Worker and ops scripts ([§7](#7-component-worker), [§8](#8-ops-scripts)). |
+| `skills/quota-reporter/**` | The local client, its installer, and its own docs. Self-updates from `main`. |
+| `*.html` | Static dashboards: `index.html` (accounts), `users.html` (members + fetch audit), `token-usage.html`, `login.html`. |
+| `tests/*.test.mjs` | Server tests, `node --test`. |
+| `tests/*_test.py`, `tests/test_*.py` | Client tests, pytest. |
+| `docs/superpowers/{plans,specs}` | Per-change design notes, kept for the reasoning trail. |
+
+### 17.2 Tests
+
+```bash
+npm test              # node --test over tests/*.test.mjs
+python3 -m pytest tests -q
+```
+
+Both suites must pass before a commit. Conventions that make them worth having:
+
+- **The policy layer is pure.** `evaluateFetchPolicy` takes every input — including `now` — as an
+  argument, so the whole gate is tested without a database or a clock, and phase dates are reached by
+  passing a date rather than by waiting.
+- **Handler tests share one database per file.** `api/**` imports `lib/db.js` *without* a cache-
+  busting query, so the handler binds to the single unqueried module instance. A test that seeds
+  through a separately cache-busted copy writes to a different database than the handler reads. Set
+  the env and import once at the top of the file (see `tests/premium-ratio-handler.test.mjs`).
+- **Order matters in those files.** They share state, so a test that needs an empty pool has to run
+  before whatever seeds it.
+- **Every bug fix ships a regression test** that fails before the fix and passes after.
+
+### 17.3 Deploy
+
+Push to `main` deploys the API and dashboards through Vercel (`scripts/deploy_vercel.py` wraps the
+CLI for manual or preview deploys). The worker deploys with the repo: GitHub Actions reads
+`.github/workflows/probe-auth-pool.yml` from `main`. Clients self-update from `main` on their next
+15-minute run, which is why a client-visible protocol change must stay backward-compatible for at
+least one cycle, and why enforcement of anything client-side is put behind a phase date rather than
+shipped hot ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)).
+
