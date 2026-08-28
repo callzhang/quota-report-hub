@@ -503,16 +503,20 @@ that goes to premium models, and leaves absolute volume unlimited.
 
 ### The metric
 
-`weightedTokens()` normalises fresh input across providers (Codex folds `cache_read` into
-`input_tokens`; Claude reports it alongside) and discounts replayed context to a tenth. The same
-weight applies to numerator and denominator, so a long session neither earns nor loses headroom.
-`WEIGHTED_TOKENS_SQL` is the SQL twin, kept in the same module so the two cannot drift; a test
-asserts they agree on the same rows.
+`modelCost(modelId, counters)` (`lib/model-tiers.js`) prices usage from a per-model **rate card**
+rather than counting tokens: fresh input (`input_tokens − cache_read_tokens`), cache reads, cache
+writes and output are each charged at their own per-million rate. `modelCostSql()` — exported as
+`MODEL_COST_SQL` — is the SQL twin of that arithmetic, kept so the gate and any dashboard cannot
+drift. `premiumShare({ premiumCost, totalCost })` is then simply `premiumCost / totalCost`.
 
-Premium membership is an allow-list of NON-premium models (`lib/model-tiers.js`). An unrecognised
-model id counts as premium: a model the hub has never seen is more likely to be a new flagship than
-a new budget tier, and guessing "cheap" opens a loophole that stays open until somebody reads the
-bill. Guessing "premium" costs one line and a complaint.
+Unknown ids are still priced by family prefix (`gpt-`, `claude-`, `codex-` fall back to a
+representative model's card). Only something with no card at all returns `null`, so callers can tell
+"the pool does not pay for this" from "priced at zero".
+
+`PREMIUM_MODEL_IDS` is a **blacklist**, not an allow-list of cheap models, so an unrecognised id is
+**not** premium. That is deliberate now that the list only drives a notice and never a refusal: a
+miss costs one missing hint instead of a wrongly throttled user. **Cost, not membership, decides who
+gets held back.**
 
 ### Where the gate sits
 

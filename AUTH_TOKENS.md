@@ -5,6 +5,20 @@
 > here are grounded in code (`lib/token-refresh.js`, `lib/auth-pool.js`, `lib/fetch-best.js`,
 > `scripts/probe_auth_pool_worker.mjs`, `skills/quota-reporter/scripts/*`) and in live debugging.
 
+| Section | What it answers |
+|---|---|
+| [0. TL;DR — the rules that matter](#0-tldr--the-rules-that-matter) | the six rules; read these even if you read nothing else |
+| [1. Codex auth](#1-codex-auth) | storage, the two JWTs, why codex rarely refreshes |
+| [2. Claude auth](#2-claude-auth) | four stores — the one that wins is not the obvious one |
+| [3. The refresh-token rotation death spiral](#3-the-refresh-token-rotation-death-spiral) | rotation, two custodians, and what was ruled out |
+| [3.5 Refreshing REVOKES the access tokens already issued (measured 2026-08-28)](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28) | **a refresh revokes access tokens already issued** — the rule most things got wrong |
+| [4. `disabled_refresh_token` mode (centralized refresh + AT-only distribution)](#4-disabled_refresh_token-mode-centralized-refresh--at-only-distribution) | AT-only distribution when the hub is sole refresher |
+| [5. Hub central refresh (the worker)](#5-hub-central-refresh-the-worker) | the worker: proactive refresh + lazy probe |
+| [6. Failure modes & invariants (and the fixes)](#6-failure-modes--invariants-and-the-fixes) | every failure seen, its cause, and its fix |
+| [7. Claude Desktop vs the CLI](#7-claude-desktop-vs-the-cli) | the two lanes, and who actually holds the credential |
+| [8. Quota probing (how each source is measured)](#8-quota-probing-how-each-source-is-measured) | how quota is measured per source |
+| [9. Key code map](#9-key-code-map) | where each concern lives in code |
+
 ---
 
 ## 0. TL;DR — the rules that matter
@@ -30,13 +44,12 @@
 5. **AT expiry ≠ death.** An expired access token is normal and refreshable. Death is an **RT-class**
    error (`token_invalidated` / `401 unauthorized` / `authentication_error`) — the RT itself is gone and
    only an **owner re-login** can recover it; central refresh cannot.
-6. **A refresh REVOKES the access tokens already issued for that grant** — immediately, and regardless of
-   their `expiresAt`. This is not textbook OAuth rotation (which spares outstanding ATs) and it is the
-   single most misleading thing about this system: measured, a live AT went `200` → `401 OAuth access
-   token has been revoked` within one guard cycle of the hub refreshing that grant
-   ([§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28)). So **whoever
-   refreshes must hand the new AT to everyone still using the old one**, or it kills them. `expiresAt`
-   describes when the token *would* expire, not how long it will work.
+6. **A refresh REVOKES the access tokens already issued for that grant**, immediately, whatever their
+   `expiresAt`. Not textbook rotation, and the most misleading property here: measured, a live AT went
+   `200` → `401 OAuth access token has been revoked` one guard cycle after the hub refreshed that grant
+   ([§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28)). Two rules follow:
+   **whoever refreshes must hand the new AT to everyone still using the old one**, and `expiresAt` is an
+   upper bound, never proof a token still works.
 
 ---
 
@@ -74,19 +87,27 @@
 
 ## 2. Claude auth
 
-### Storage — there are THREE separate stores
+### Storage — four stores, and the one that wins is not the obvious one
 | Store | Path / service | Owner |
 |---|---|---|
-| **macOS keychain** | service `Claude Code-credentials`, account `$USER` | terminal/CLI Claude Code **and the quota guard** |
-| **File** | `~/.claude/.credentials.json` | fallback for the CLI/guard (non-darwin primary) |
-| **Claude Desktop** | claude.ai session cookie (`sessionKey`) in `~/Library/Application Support/Claude/Cookies`, encrypted by keychain `Claude Safe Storage` | **Claude Desktop only** — a *separate* web-session auth, not OAuth (see [§7](#7-claude-desktop-vs-the-cli)) |
+| **Encrypted token cache** ← *source of truth* | `oauth:tokenCacheV2` (older: `oauth:tokenCache`) inside `~/Library/Application Support/Claude/config.json`, encrypted with the `Claude Safe Storage` keychain key | **Claude.app** — modern Claude Code's real OAuth record. Holds one entry per `client_id` + scope set |
+| **macOS keychain** | service `Claude Code-credentials`, account `$USER` | older Claude Code builds **and the quota guard** |
+| **File** | `~/.claude/.credentials.json` | fallback for the CLI/guard (non-darwin primary); often absent on macOS |
+| **Claude Desktop web session** | claude.ai session cookie (`sessionKey`) in `~/Library/Application Support/Claude/Cookies` | **Claude Desktop only** — a *separate* web-session auth, not OAuth ([§7](#7-claude-desktop-vs-the-cli)) |
 
-- On **macOS the read order is keychain-first** (`read_claude_oauth_credentials`,
-  [quota_reporters.py](skills/quota-reporter/scripts/quota_reporters.py)); the keychain is the source of truth, the file is a
-  fallback that can go stale. Writes are keychain-first too, with a read-back verification to avoid a
-  known hex-corruption logout bug.
-- **Desktop is a different auth system** (claude.ai cookie session — see [§7](#7-claude-desktop-vs-the-cli)). A stripped/garbage keychain RT does
-  **not** affect Desktop, and Desktop does **not** touch the keychain / OAuth tokens.
+- **Read order on macOS is token-cache first**, then keychain, then file (`read_claude_oauth_credentials`,
+  [quota_reporters.py](skills/quota-reporter/scripts/quota_reporters.py)). A write that skips the cache is therefore
+  **shadowed**: it returns success and changes nothing. That is not hypothetical — the guard wrote the
+  cache in zero places until 2026-08-28, so every fetched or replacement AT was discarded on arrival
+  ([§6](#6-failure-modes--invariants-and-the-fixes)). Write through `install_claude_credentials`, which
+  writes all stores and reads back.
+- **The cache holds several entries per client id**, one per scope set. Anything that must reach "the"
+  credential — a strip in particular — has to cover every entry for the hub's `client_id`, or a sibling
+  keeps a rotatable RT.
+- **Two different things are both called "desktop".** The claude.ai *cookie session* really is separate
+  and unaffected by a stripped keychain RT. But the OAuth *token cache* above lives in Claude.app's own
+  config, and every Claude Code session runs as a child of the Claude.app process — so the app's process
+  tree is very much in the OAuth path ([§7](#7-claude-desktop-vs-the-cli)).
 
 ### Credential shape
 - `credentials.claudeAiOauth = { accessToken, refreshToken, expiresAt (ms epoch), subscriptionType }`.
@@ -96,11 +117,9 @@
   claiming 30 days routinely dies in minutes. `accessTokenMsUntilExpiry(authJson, "claude")` reads
   `expiresAt - now` and is therefore an **upper bound**, not a prediction; anything that must know
   whether a token still works has to probe it.
-- Observed lifetimes: a CLI-minted token claims **30 days**; a hub refresh returns `expires_in` 28800
-  (**8 h**). The scope set looked like the difference and `6e08c8f` acted on it, but refreshing with
-  the credential's own scopes changed nothing once deployed — see
-  [§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28) point 3 before
-  drawing any conclusion from these numbers.
+- Observed lifetimes: a CLI-minted token claims **30 days**, a hub refresh returns `expires_in` 28800
+  (**8 h**). Scope looked like the cause and is not — the correction and what to check instead are in
+  [§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28) point 3.
 - The pool blob is wrapped as schema `claude_credentials_v1` (`build_claude_auth_blob`), carrying
   `credentials`, `account_id`, `session_id`, `auth_last_refresh`, `claude_cli_state`.
 
@@ -227,30 +246,6 @@ in-memory copy of the RT the hub had already spent at 23:14. So a spent RT is no
 Not always accepted either: `refresh_token_rejected` has fired 136 times in the guard log. Treat it as a
 race window, not a rule.
 
-### Who actually holds the credential (the codex `app-server` analogue)
-
-The Claude token cache lives in **`~/Library/Application Support/Claude/config.json`** — Claude.app's
-config, encrypted with the `Claude Safe Storage` keychain key — **not** under `~/.claude/`. The holder
-is the Claude.app process itself, and every Claude Code session on the machine is its child:
-
-```
-PID 20350  /Applications/Claude.app/Contents/MacOS/Claude       (observed up 1d3h)
-   └─ claude --output-format stream-json ...                    (ppid 20350)
-```
-
-This is the claude-side counterpart of codex's app-server daemon, with one asymmetry that matters:
-**there is no `daemon restart`.** codex exposes `codex app-server daemon restart` and the guard already
-calls it (`stale_codex_app_server_for_auth` → `app_server_started_before_auth`). `claude --help` offers
-`auth` / `gateway` / `mcp` / `setup-token` and nothing equivalent, so the only lever is quitting and
-relaunching Claude.app — which kills every session it hosts. The guard cannot do this surgically, which
-is why the fix has to work without it.
-
-> **Reopened:** [§3](#3-the-refresh-token-rotation-death-spiral) struck out "the Claude Desktop app's
-> `host-auth-refresh`" as *not* a death-spiral source. That correction no longer holds: the token cache
-> lives in the desktop app's config and is rewritten while it runs. Whether the writer is the desktop
-> app itself or a CLI session it hosts is still unresolved — both sit in the same process tree and both
-> survive a strip — but "the desktop app is unrelated" is withdrawn.
-
 ---
 
 ## 4. `disabled_refresh_token` mode (centralized refresh + AT-only distribution)
@@ -370,6 +365,35 @@ blanks are rejected. The earlier "do NOT pool a desktop-used account" rule reste
 > strip-guards let the empty value overwrite the real pooled RT (fixed `4b9b49f`). (B) was what kept
 > leizhang specifically dying after (A) was fixed. The evidence that cracked it: the pooled blob literally
 > had `refreshToken=""` with `isStrippedRefreshToken=false`.
+
+### Who actually holds the credential (the codex `app-server` analogue)
+
+The OAuth token cache lives in **Claude.app's own config** ([§2](#2-claude-auth)), and every Claude Code
+session on the machine runs as a child of the Claude.app process:
+
+```
+PID 20350  /Applications/Claude.app/Contents/MacOS/Claude       (observed up 1d3h)
+   └─ claude --output-format stream-json ...                    (ppid 20350)
+```
+
+So Claude.app is the claude-side counterpart of codex's app-server daemon — with one asymmetry that
+decides what fixes are even possible: **there is no `daemon restart`.** codex exposes
+`codex app-server daemon restart` and the guard already calls it (`stale_codex_app_server_for_auth` →
+`app_server_started_before_auth`). `claude --help` offers `auth` / `gateway` / `mcp` / `setup-token` and
+nothing equivalent, so the only lever is quitting and relaunching Claude.app, which kills every session
+it hosts. The guard cannot do that surgically, so **the fix has to work without it**.
+
+This matters because a running process keeps its refresh token in memory. A strip rewrites the stores,
+not the process — observed: a real RT was back in the cache **10 s** after a verified strip, because the
+hub's refresh had revoked the app's access token and its next call hit a 401. The re-mint is
+**401-triggered, not timed**: once the upload hands the fresh AT back ([§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28)),
+the app never sees the 401 and the machine stays AT-only.
+
+> **Reopened:** [§3](#3-the-refresh-token-rotation-death-spiral) struck out "the Claude Desktop app's
+> `host-auth-refresh`" as *not* a death-spiral source. That correction no longer holds: the OAuth token
+> cache lives in the desktop app's config and is rewritten while it runs. Whether the writer is the
+> desktop app itself or a CLI session it hosts is unresolved — both sit in the same process tree and
+> both survive a strip — but "the desktop app is unrelated" is withdrawn.
 
 ---
 
