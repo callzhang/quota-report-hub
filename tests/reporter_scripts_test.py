@@ -5433,7 +5433,12 @@ class AtOnlyLocalSyncTests(unittest.TestCase):
             "email": "x@stardust.ai",
             "credentials": {"claudeAiOauth": {"refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "accessToken": "AT"}},
         })
-        with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})):
+        # strip_local_claude_refresh_token must be mocked: the at-only branch calls it for real, and
+        # it writes EVERY local credential store — including this developer's actual macOS keychain,
+        # which is how a run of this suite once replaced a live credential with `accessToken: "AT"`
+        # and left `claude auth status` reporting loggedIn=false.
+        with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})), \
+             mock.patch.object(quota_reporters, "strip_local_claude_refresh_token", return_value={"stripped": True}):
             with mock.patch.object(quota_reporters, "sync_current_auth_pool_entry") as upload:
                 result = quota_reporters.sync_current_claude_auth_pool(
                     "https://hub", "tok", claude_home=Path("/tmp/x"), known_auth_path=Path("/tmp/known.json")
