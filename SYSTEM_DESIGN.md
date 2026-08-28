@@ -170,9 +170,13 @@ Replace when the source is hard-invalidated. Neither `maybe_replace_*` gates the
   reported success.
 - **Proactive same-account refresh**: `fetched_auth_near_expiry` returns true when state is `fetched_from_auth_pool` and the local AT is within `AT_NEAR_EXPIRY_SKEW_SECONDS = 20 min` of expiry; the guard then calls `fetch-best` with `refresh_current=True` to mint a fresh AT for the *same* account before the dead placeholder RT is ever needed (`:2017-2060`).
   ⚠️ This trigger reads `expiresAt`, which is an upper bound rather than a lifetime
-  ([§11](#11-token-refresh-architecture)) — it cannot see a revocation. The backstop for a token
-  revoked early is the error-driven path: the probe fails, `source_needs_replacement` fires, and the
-  guard fetches a replacement.
+  ([§11](#11-token-refresh-architecture)) — it cannot see a revocation. The backstop is the rejection
+  path: an AT-only client whose probe 401s reports
+  `claude access token rejected (at-only; hub holds the RT)`, `needs_fresh_access_token` routes it to
+  the same `refresh_current` fetch, and it is **not** hard invalidation. A client holding only a
+  placeholder RT cannot distinguish a dead credential from a refused request, so it does not get to
+  declare the account dead — only `auth_rejected`, where a real RT was presented and refused, does
+  that ([`AUTH_TOKENS.md` §6](AUTH_TOKENS.md)).
 
 ### 3.6 Token handling
 - One personal **auth-pool user token** (issued per company email) is the Bearer for all hub calls and also unlocks the dashboard.

@@ -1674,9 +1674,74 @@ Reading additional input from stdin...
                                     payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=Path(backoff_dir) / "b.json")
 
         self.assertEqual(payload["status"], "error")
-        self.assertEqual(payload["error"], "claude auth invalid (authentication_error)")
+        # No usable refresh token locally, so this client cannot tell a dead credential from a
+        # rejected request and must not hard-invalidate the account for everyone.
+        self.assertEqual(payload["error"], quota_reporters.CLAUDE_AT_ONLY_TOKEN_REJECTED)
         self.assertEqual(payload["usage_summary"]["quota_source"], "unavailable")
         self.assertEqual(payload["usage_summary"]["oauth_usage_probe"]["status_code"], 401)
+
+    def test_probe_claude_401_with_a_real_rt_still_hard_invalidates(self):
+        """The AT-only softening must not swallow the real signal: a client that HOLDS a refresh
+        token and still gets a 401 has evidence the credential itself is gone."""
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
+            stderr="",
+        )
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+             mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
+             mock.patch("quota_reporters.read_claude_oauth_credentials",
+                        return_value=({"claudeAiOauth": {"subscriptionType": "max", "refreshToken": "sk-ant-ort01-REAL"}}, "token_cache_v2")), \
+             mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"captured_at": "2026-04-22T08:00:00Z", "rate_limits": None}), \
+             mock.patch("quota_reporters.probe_claude_rate_limits",
+                        return_value={"available": False, "windows": {"5h": None, "1week": None},
+                                      "status_code": 401, "api_error": "Invalid authentication credentials"}), \
+             mock.patch("quota_reporters.read_claude_stats", return_value=None):
+            with tempfile.TemporaryDirectory() as backoff_dir:
+                payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=Path(backoff_dir) / "b.json")
+        self.assertEqual(payload["error"], "claude auth invalid (authentication_error)")
+
+    def test_probe_claude_401_with_a_placeholder_rt_is_not_hard_invalidation(self):
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
+            stderr="",
+        )
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+             mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
+             mock.patch("quota_reporters.read_claude_oauth_credentials",
+                        return_value=({"claudeAiOauth": {"subscriptionType": "max",
+                                                         "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}, "token_cache_v2")), \
+             mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"captured_at": "2026-04-22T08:00:00Z", "rate_limits": None}), \
+             mock.patch("quota_reporters.probe_claude_rate_limits",
+                        return_value={"available": False, "windows": {"5h": None, "1week": None},
+                                      "status_code": 401, "api_error": "Invalid authentication credentials"}), \
+             mock.patch("quota_reporters.read_claude_stats", return_value=None):
+            with tempfile.TemporaryDirectory() as backoff_dir:
+                payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=Path(backoff_dir) / "b.json")
+        self.assertEqual(payload["error"], quota_reporters.CLAUDE_AT_ONLY_TOKEN_REJECTED)
+        self.assertFalse(quota_guard.is_hard_invalidated(payload))
+        self.assertTrue(quota_guard.needs_fresh_access_token(payload))
+
+    def test_probe_claude_401_after_a_rejected_refresh_is_still_refresh_token_rejected(self):
+        """auth_rejected is the one thing that DOES prove death, and it outranks the AT-only rule."""
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(returncode=0, stdout="Email: leizhang0121@gmail.com\n", stderr="")
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+             mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
+             mock.patch("quota_reporters.read_claude_oauth_credentials",
+                        return_value=({"claudeAiOauth": {"refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}, "token_cache_v2")), \
+             mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"captured_at": "2026-04-22T08:00:00Z", "rate_limits": None}), \
+             mock.patch("quota_reporters.probe_claude_rate_limits",
+                        return_value={"available": False, "windows": {"5h": None, "1week": None},
+                                      "status_code": 401, "token_refresh": {"status": "auth_rejected"}}), \
+             mock.patch("quota_reporters.read_claude_stats", return_value=None):
+            with tempfile.TemporaryDirectory() as backoff_dir:
+                payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=Path(backoff_dir) / "b.json")
+        self.assertEqual(payload["error"], "refresh_token_rejected")
+        self.assertTrue(quota_guard.is_hard_invalidated(payload))
 
     def test_probe_claude_without_email_uses_single_missing_email_id(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
@@ -5593,6 +5658,29 @@ class Phase2NearExpiryTests(unittest.TestCase):
                     threshold_percent=20.0, weekly_threshold_percent=5.0)
         fb.assert_called_once()
         self.assertTrue(fb.call_args.kwargs["refresh_current"])
+
+    def test_maybe_replace_claude_at_only_rejection_asks_to_refresh_the_same_account(self):
+        """A rejected AT-only token must fetch with refresh_current=True: this account needs a fresh
+        access token, not somebody else's credential. refresh_current also engages the
+        different-account guard, so the hub cannot swap a healthy owned account onto a borrowed one."""
+        config = {"auth_pool_url": "https://hub", "auth_pool_user_token": "tok"}
+        payload = {
+            "account_id": "claude-mine@example.com",
+            "email": "mine@example.com",
+            "status": "error",
+            "error": quota_reporters.CLAUDE_AT_ONLY_TOKEN_REJECTED,
+            "windows": {"5h": None, "1week": None},
+        }
+        with mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None), \
+             mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=False), \
+             mock.patch.object(quota_guard, "fetch_best_auth", return_value={"replacement": None, "repair_auth": None}) as fb:
+            result = quota_guard.maybe_replace_claude_auth(
+                config, payload, Path("/tmp/x"), Path("/tmp/known.json"),
+                threshold_percent=20.0, weekly_threshold_percent=5.0)
+        fb.assert_called_once()
+        self.assertTrue(fb.call_args.kwargs["refresh_current"])
+        self.assertEqual(fb.call_args.kwargs["current_account_id"], "claude-mine@example.com")
+        self.assertTrue(result["ok"])
 
     def test_maybe_replace_codex_stays_healthy_when_not_near_expiry(self):
         config = {"auth_pool_url": "https://hub", "auth_pool_user_token": "tok"}

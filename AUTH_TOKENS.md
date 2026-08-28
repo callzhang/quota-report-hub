@@ -296,13 +296,22 @@ Default OFF → deploys are inert until an admin flips it.
 | **Replacement silently ineffective on macOS** | Claude replacement install wrote `~/.claude/.credentials.json` only; macOS reads keychain-first → write shadowed → "replaced" every cycle | Claude replacement now writes **keychain-first** (file fallback), mirroring the repair path |
 | **Replacement STILL silently ineffective** | The keychain-first fix was one layer short: modern Claude Code keeps its OAuth record in the encrypted **token cache**, which `read_claude_oauth_credentials` reads FIRST — so a keychain+file install is shadowed by the cache. The guard wrote the token cache in **zero** places, so every fetched AT was discarded on arrival | `install_claude_credentials` writes the cache, keychain and file, then **reads back** and reports `shadowed_by_<store>` when the install did not take |
 | **Uploader left holding a revoked AT** | `/api/auth/upload` refreshes to verify, revoking the uploader's own access token ([§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28)); the response returned metadata only, then the client stripped its RT | Upload returns `refreshed_auth_json` (AT-only); the client installs it **before** the strip |
+| **One transient 401 killed a working account** | An AT-only client that got a 401 reported `claude auth invalid (authentication_error)` — hard invalidation. But it holds a placeholder RT, so it can never reach the `transient_error` branch that was supposed to spare it: every 401 looked terminal. Observed 2026-08-28 08:11 — the entry was marked dead and refused to borrowers while the very same token returned 200 on both `/api/oauth/profile` and `/api/oauth/usage` | An AT-only client now reports `claude access token rejected (at-only; hub holds the RT)`, which is **not** a hard-invalidation string. It routes to `refresh_current` — a fresh AT for the same account from the hub, the only party holding a real RT and therefore the only one that can prove death (via `auth_rejected`) |
 | **Strip only cosmetic** | The strip rewrote the single highest-scored token-cache entry; sibling entries for the same client id kept real RTs, and a write returning `True` was taken as proof | `strip_claude_token_cache_refresh_tokens` strips **every** hub-client entry; `claude_stores_with_real_refresh_token` read-back gates the `fetched_from_auth_pool` claim and reports `strip_not_sticking` |
 | **Healthy account swapped to a borrowed one** | In `refresh_current` mode (healthy, just needs an AT) the hub fell through to a *different* account when it couldn't refresh in place; the guard installed it → churn + "switched to X" toasts | Guard **declines a different-account replacement in `refresh_current` mode** (`kept_current_refresh_deferred`) — only same-account refreshes are accepted; genuinely quota-low/dead accounts still fail over via the `source_needs_replacement` path |
 | **Owner dead-locked on a stale copy** | `refresh_current` returned the owner's own stale AT | Server checks `accessTokenMsUntilExpiry > 5 min`; otherwise falls through to a real replacement (for genuinely dead accounts) |
 
 Hard-invalidation error strings (RT-class death; needs owner re-login):
 `auth invalidated (token_invalidated)`, `auth failed (401 unauthorized)`,
-`claude auth invalid (authentication_error)`, `claude auth email unavailable`.
+`claude auth invalid (authentication_error)`, `claude auth email unavailable`,
+`refresh_token_rejected`. The set lives in `AUTH_INVALIDATION_ERRORS`
+([lib/auth-status.js](lib/auth-status.js)) and `is_hard_invalidated` (guard) and must stay in sync.
+
+**Deliberately NOT in that set:** `claude access token rejected (at-only; hub holds the RT)`. Only a
+party that can *attempt the refresh* has evidence of RT-class death. An AT-only client holds a
+placeholder, so its 401 means "get me a fresh access token", never "this account is dead" — it routes
+to `refresh_current` instead. Hard invalidation from a client is reserved for `auth_rejected`, where a
+real RT was actually presented and refused.
 
 Abuse-class errors (a *different* risk unique to shared-AT mode — provider pushback): `429`, `403`,
 rate-limit / suspend / ban / abuse. Watched separately (`lib/abuse-errors.js`, `assess_health.mjs` exit 3).

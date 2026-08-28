@@ -56,6 +56,11 @@ CLAUDE_LOGGED_OUT_ERROR = "claude auth status reported loggedIn=false"
 # (the hub would reject it anyway, and it must not overwrite the real shared refresh token).
 STRIPPED_CODEX_REFRESH_TOKEN = "rt.1." + "A" * 32
 STRIPPED_CLAUDE_REFRESH_TOKEN = "disabled-by-hub-refresh-token"
+# A 401 seen by an AT-only client proves the ACCESS token stopped working — never that the credential
+# family died. The client holds a placeholder RT, so it cannot even attempt the refresh that would
+# tell the two apart; the hub holds the real RT and is the only party that can. Reporting this as
+# `claude auth invalid (authentication_error)` hard-invalidated healthy accounts on one transient 401.
+CLAUDE_AT_ONLY_TOKEN_REJECTED = "claude access token rejected (at-only; hub holds the RT)"
 # /api/oauth/usage rate-limits the polling itself (429 + a long Retry-After). Persist a
 # backoff deadline so we don't hammer it every 15-minute guard run, and stay polite even
 # after a 200 by not re-polling more often than this.
@@ -2127,8 +2132,16 @@ def probe_claude(
         # token was rejected outright. A transient refresh failure (network/5xx) is not
         # proof the account died, so don't hard-invalidate it then.
         refresh_status = (oauth_usage_probe.get("token_refresh") or {}).get("status")
+        local_rt = (oauth or {}).get("refreshToken")
+        at_only = not local_rt or not str(local_rt).strip() or local_rt == STRIPPED_CLAUDE_REFRESH_TOKEN
         if refresh_status == "auth_rejected":
             auth_error = "refresh_token_rejected"
+        elif at_only:
+            # AT-only: this client has no refresh token to test, so it cannot distinguish a dead
+            # credential from a request that was simply rejected. It reports "my access token
+            # stopped working" and the guard asks the hub — the only holder of the real RT — for a
+            # fresh one for the SAME account. Hard-invalidating here marked working accounts dead.
+            auth_error = CLAUDE_AT_ONLY_TOKEN_REJECTED
         elif refresh_status != "transient_error":
             auth_error = "claude auth invalid (authentication_error)"
     summary = summarize_claude_stats(stats)

@@ -48,6 +48,7 @@ from quota_reporters import (
     fetch_auth_pool_status,
     seed_guidance_lines,
     fetch_best_auth,
+    CLAUDE_AT_ONLY_TOKEN_REJECTED,
     fetched_auth_near_expiry,
     install_claude_credentials,
     iso_now,
@@ -279,6 +280,15 @@ def is_hard_invalidated(payload: dict) -> bool:
         "claude auth email unavailable",
         CLAUDE_LOGGED_OUT_ERROR,
     }
+
+
+def needs_fresh_access_token(payload: dict) -> bool:
+    """An AT-only client whose access token was rejected. NOT hard invalidation: it has no refresh
+    token to test, so it cannot know whether the credential died or the request was simply refused.
+    The recovery is the same one a near-expiry AT gets — ask the hub, which holds the real RT, to
+    refresh THIS account. Deliberately absent from is_hard_invalidated so a transient 401 can no
+    longer mark a working account dead for every borrower."""
+    return payload.get("status") == "error" and payload.get("error") == CLAUDE_AT_ONLY_TOKEN_REJECTED
 
 
 def refresh_token_rejected(payload: dict) -> bool:
@@ -1567,7 +1577,11 @@ def maybe_replace_claude_auth(
     # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
     refresh_current = False
     if not source_needs_replacement(payload, threshold_percent, weekly_threshold_percent):
-        if fetched_auth_near_expiry("claude", known_auth_path, claude_home=claude_home):
+        # A rejected AT-only access token wants the same treatment as a near-expiry one: a fresh AT
+        # for THIS account, not somebody else's credential. refresh_current also engages the
+        # different-account guard below, so a hub that cannot refresh in place is declined rather
+        # than swapping a healthy owned account onto a borrowed one.
+        if needs_fresh_access_token(payload) or fetched_auth_near_expiry("claude", known_auth_path, claude_home=claude_home):
             refresh_current = True
         else:
             # A probe that failed for a reason other than a dead credential (no binary, a timeout)
