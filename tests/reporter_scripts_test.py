@@ -2282,6 +2282,28 @@ Reading additional input from stdin...
             "claude auth pool not configured (run install_quota_guard.py)",
         )
 
+    def test_auth_pool_sync_line_names_the_failure_reason(self):
+        """A bare "failed" is unreadable in the guard log — it was the single most common claude
+        state there while telling nobody what went wrong."""
+        line = quota_guard.format_auth_pool_sync(
+            {
+                "codex": {"ok": True, "uploaded": True},
+                "claude": {"ok": False, "uploaded": False, "reason": "upload_auth_pool_entry_failed",
+                           "entry": {"ok": False, "error": "http 502"}},
+            }
+        )
+        self.assertEqual(line, "codex uploaded; claude failed (upload_auth_pool_entry_failed: http 502)")
+
+    def test_auth_pool_sync_line_flags_a_strip_that_did_not_take(self):
+        line = quota_guard.format_auth_pool_sync(
+            {
+                "codex": {"ok": True, "uploaded": True, "local_refresh_token_stripped": {"stripped": True}},
+                "claude": {"ok": True, "uploaded": True, "local_refresh_token_stripped": {
+                    "stripped": False, "reason": "strip_not_sticking", "unstripped_stores": ["token_cache_v2"]}},
+            }
+        )
+        self.assertEqual(line, "codex uploaded; claude uploaded [local RT still live: token_cache_v2]")
+
     def test_current_codex_payload_persists_same_account_refresh_and_strips_secret(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
@@ -2631,9 +2653,11 @@ Reading additional input from stdin...
         self.assertFalse(fetch_best.call_args.kwargs["refresh_current"])
         write_known.assert_called_once()
 
-    def test_maybe_replace_claude_auth_writes_replacement_to_keychain_on_darwin(self):
-        # On macOS Claude reads the keychain BEFORE the file, so a genuine replacement must be
-        # written keychain-first; a file-only write would be shadowed and never take effect.
+    def test_maybe_replace_claude_auth_installs_replacement_into_every_store(self):
+        # Modern Claude Code keeps its OAuth record in the encrypted token cache and
+        # read_claude_oauth_credentials reads that FIRST, so a keychain-or-file-only install is
+        # shadowed by the cache and the replacement never takes effect. The install must go
+        # through install_claude_credentials, which writes the cache too.
         with tempfile.TemporaryDirectory() as temp_dir:
             claude_home = Path(temp_dir) / ".claude"
             claude_home.mkdir(parents=True)
@@ -2655,7 +2679,7 @@ Reading additional input from stdin...
                     "replacement": {"account_id": "claude-other@example.com", "email": "other@example.com", "auth_json": replacement_blob},
                 }):
                     with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
-                        with mock.patch.object(quota_guard, "write_claude_keychain_credentials", return_value=True) as wkc:
+                        with mock.patch.object(quota_guard, "install_claude_credentials", return_value={"installed": True, "active_store": "token_cache_v2"}) as install:
                             with mock.patch.object(quota_guard, "claude_auth_blob_metadata", return_value={"digest": "d", "account_id": "claude-other@example.com", "auth_last_refresh": "2026-06-15T00:00:00Z"}):
                                 with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "d"}):
                                     result = quota_guard.maybe_replace_claude_auth(
@@ -2664,9 +2688,7 @@ Reading additional input from stdin...
                                     )
 
         self.assertTrue(result["replaced"])
-        # replacement credentials went to the keychain, and the file was NOT written (keychain won)
-        wkc.assert_called_once_with({"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}})
-        self.assertFalse((claude_home / ".credentials.json").exists())
+        install.assert_called_once_with({"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}}, claude_home)
 
     def test_cli_auth_seed_state_codex(self):
         with tempfile.TemporaryDirectory() as d:
@@ -5501,11 +5523,25 @@ class Phase4StripLocalRtTests(unittest.TestCase):
 
     def test_strip_local_claude_refresh_token(self):
         creds = {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "REAL"}}
+        persisted = {"keychain": True, "file": False, "token_cache": False, "verified": True, "unstripped_stores": []}
         with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "keychain")):
-            with mock.patch.object(quota_reporters, "strip_claude_refresh_token_from_all_stores", return_value={"keychain": True, "file": False, "token_cache": False}) as persist:
+            with mock.patch.object(quota_reporters, "strip_claude_refresh_token_from_all_stores", return_value=persisted) as persist:
                 result = quota_reporters.strip_local_claude_refresh_token(Path("/x"))
         self.assertTrue(result["stripped"])
         self.assertEqual(persist.call_args.args[0]["claudeAiOauth"]["refreshToken"], "REAL")
+
+    def test_strip_local_claude_refresh_token_reports_a_strip_that_did_not_take(self):
+        """A write returning True is not proof. If a real RT survives the read-back the strip must
+        report failure, so the caller does not mark this machine AT-only while it can still refresh."""
+        creds = {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "REAL"}}
+        persisted = {"keychain": True, "token_cache": True, "file": False,
+                     "verified": False, "unstripped_stores": ["token_cache_v2"]}
+        with mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "token_cache_v2")), \
+             mock.patch.object(quota_reporters, "strip_claude_refresh_token_from_all_stores", return_value=persisted):
+            result = quota_reporters.strip_local_claude_refresh_token(Path("/x"))
+        self.assertFalse(result["stripped"])
+        self.assertEqual(result["reason"], "strip_not_sticking")
+        self.assertEqual(result["unstripped_stores"], ["token_cache_v2"])
 
     def test_strip_local_claude_refresh_token_strips_all_macos_stores(self):
         creds = {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "REAL"}}
@@ -5515,18 +5551,52 @@ class Phase4StripLocalRtTests(unittest.TestCase):
             (claude_home / ".credentials.json").write_text(json.dumps(creds), encoding="utf-8")
             with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
                  mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=(creds, "token_cache_v2")), \
-                 mock.patch.object(quota_reporters, "write_claude_token_cache_credentials", return_value=True) as write_cache, \
+                 mock.patch.object(quota_reporters, "strip_claude_token_cache_refresh_tokens", return_value={"written": True, "reason": None, "stripped_entries": 1}) as strip_cache, \
+                 mock.patch.object(quota_reporters, "claude_stores_with_real_refresh_token", return_value=[]), \
                  mock.patch.object(quota_reporters, "write_claude_keychain_credentials", return_value=True) as write_keychain, \
                  mock.patch.object(quota_reporters, "write_claude_credentials_file", return_value=True) as write_file:
                 result = quota_reporters.strip_local_claude_refresh_token(claude_home)
         self.assertTrue(result["stripped"])
-        cache_sources = [call.args[2] for call in write_cache.call_args_list]
-        self.assertEqual(cache_sources, ["token_cache_v2", "token_cache"])
-        for call in write_cache.call_args_list:
-            self.assertEqual(call.args[0]["claudeAiOauth"]["refreshToken"], quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN)
-            self.assertEqual(call.args[0]["claudeAiOauth"]["accessToken"], "AT")
+        cache_fields = [call.args[1] for call in strip_cache.call_args_list]
+        self.assertEqual(cache_fields, ["oauth:tokenCacheV2", "oauth:tokenCache"])
         self.assertEqual(write_keychain.call_args.args[0]["claudeAiOauth"]["refreshToken"], quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN)
         self.assertEqual(write_file.call_args.args[0]["claudeAiOauth"]["refreshToken"], quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN)
+
+    def test_strip_claude_token_cache_strips_every_hub_client_entry(self):
+        """The cache holds one entry per scope set. Stripping only the highest-scored one leaves a
+        sibling with a real RT — a second custodian that rotates the pooled family."""
+        client = quota_reporters.CLAUDE_OAUTH_CLIENT_ID
+        cache = {
+            f"{client}:https://api.anthropic.com:user:inference user:profile": {"token": "AT1", "refreshToken": "REAL1"},
+            f"{client}:https://api.anthropic.com:user:inference": {"token": "AT2", "refreshToken": "REAL2"},
+            "other-client-id:https://api.anthropic.com:user:profile": {"token": "AT3", "refreshToken": "REAL3"},
+        }
+        written = {}
+
+        def fake_encrypt(payload, secret):
+            written.update(payload)
+            return "ENCODED"
+
+        with tempfile.TemporaryDirectory() as d:
+            claude_home = Path(d) / ".claude"
+            claude_home.mkdir(parents=True)
+            config = claude_home / "config.json"
+            config.write_text(json.dumps({"oauth:tokenCacheV2": "BLOB"}), encoding="utf-8")
+            with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+                 mock.patch.object(quota_reporters, "claude_application_config_path", return_value=config), \
+                 mock.patch.object(quota_reporters, "read_claude_safe_storage_secret", return_value=b"s"), \
+                 mock.patch.object(quota_reporters, "decrypt_claude_safe_storage_json", return_value=cache), \
+                 mock.patch.object(quota_reporters, "encrypt_claude_safe_storage_json", side_effect=fake_encrypt):
+                outcome = quota_reporters.strip_claude_token_cache_refresh_tokens(claude_home, "oauth:tokenCacheV2")
+
+        self.assertTrue(outcome["written"])
+        self.assertEqual(outcome["stripped_entries"], 2)
+        hub_entries = [v for k, v in written.items() if k.startswith(client + ":")]
+        self.assertTrue(all(e["refreshToken"] == quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN for e in hub_entries))
+        # A different OAuth client owns a different token family — leave it alone.
+        self.assertEqual(written["other-client-id:https://api.anthropic.com:user:profile"]["refreshToken"], "REAL3")
+        # The access token in the cache is what Claude Code is using right now; do not swap it.
+        self.assertEqual(written[f"{client}:https://api.anthropic.com:user:inference"]["token"], "AT2")
 
     def test_sync_codex_strips_rt_after_upload_when_flag_on(self):
         with tempfile.TemporaryDirectory() as d:
@@ -5567,15 +5637,91 @@ class Phase4StripLocalRtTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             known = Path(d) / "known.json"
             known.write_text(json.dumps({"sources": {"claude": {"state_source": "owner_local", "account_id": "claude-x@stardust.ai"}}}), encoding="utf-8")
+            refreshed = json.dumps({"credentials": {"claudeAiOauth": {
+                "accessToken": "NEW_AT", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}})
             with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})), \
                  mock.patch.object(quota_reporters, "sync_current_auth_pool_entry",
-                                   return_value={"ok": True, "uploaded": True, "disabled_refresh_token": True}), \
+                                   return_value={"ok": True, "uploaded": True, "disabled_refresh_token": True,
+                                                 "refreshed_auth_json": refreshed}), \
+                 mock.patch.object(quota_reporters, "install_claude_credentials", return_value={"installed": True}), \
                  mock.patch.object(quota_reporters, "strip_local_claude_refresh_token", return_value={"stripped": True}) as strip:
                 result = quota_reporters.sync_current_claude_auth_pool(
                     "https://hub", "tok", claude_home=Path(d) / ".claude", known_auth_path=known)
             self.assertTrue(result["local_refresh_token_stripped"]["stripped"])
             strip.assert_called_once()
             self.assertEqual(json.loads(known.read_text(encoding="utf-8"))["sources"]["claude"]["state_source"], "fetched_from_auth_pool")
+
+    def test_sync_claude_installs_the_hub_refreshed_at_before_stripping(self):
+        """The hub refreshes the blob to verify it, which revokes the AT this machine is running on.
+        Install the returned AT-only blob FIRST; stripping first leaves a revoked token and a
+        placeholder RT — dead, and unable to refresh its way out."""
+        blob = json.dumps({
+            "schema": "claude_credentials_v1",
+            "account_id": "claude-x@stardust.ai",
+            "credentials": {"claudeAiOauth": {"accessToken": "OLD_AT", "refreshToken": "REAL"}},
+        })
+        refreshed = json.dumps({
+            "schema": "claude_credentials_v1",
+            "account_id": "claude-x@stardust.ai",
+            "credentials": {"claudeAiOauth": {"accessToken": "NEW_AT",
+                                              "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}},
+        })
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            known = Path(d) / "known.json"
+            known.write_text(json.dumps({"sources": {"claude": {"state_source": "owner_local", "account_id": "claude-x@stardust.ai"}}}), encoding="utf-8")
+            with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})), \
+                 mock.patch.object(quota_reporters, "sync_current_auth_pool_entry",
+                                   return_value={"ok": True, "uploaded": True,
+                                                 "entry": {"disabled_refresh_token": True,
+                                                           "refreshed_auth_json": refreshed}}), \
+                 mock.patch.object(quota_reporters, "install_claude_credentials",
+                                   side_effect=lambda c, h: calls.append(("install", c)) or {"installed": True}), \
+                 mock.patch.object(quota_reporters, "strip_local_claude_refresh_token",
+                                   side_effect=lambda h: calls.append(("strip", None)) or {"stripped": True}):
+                result = quota_reporters.sync_current_claude_auth_pool(
+                    "https://hub", "tok", claude_home=Path(d) / ".claude", known_auth_path=known)
+
+        self.assertTrue(result["refreshed_auth_installed"]["installed"])
+        self.assertEqual([name for name, _ in calls], ["install", "strip"])
+        self.assertEqual(calls[0][1]["claudeAiOauth"]["accessToken"], "NEW_AT")
+
+    def test_sync_claude_reports_when_the_hub_returns_no_refreshed_auth(self):
+        blob = json.dumps({
+            "schema": "claude_credentials_v1",
+            "account_id": "claude-x@stardust.ai",
+            "credentials": {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "REAL"}},
+        })
+        with tempfile.TemporaryDirectory() as d:
+            known = Path(d) / "known.json"
+            known.write_text(json.dumps({"sources": {"claude": {"state_source": "owner_local"}}}), encoding="utf-8")
+            with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})), \
+                 mock.patch.object(quota_reporters, "sync_current_auth_pool_entry",
+                                   return_value={"ok": True, "uploaded": True, "disabled_refresh_token": True}), \
+                 mock.patch.object(quota_reporters, "strip_local_claude_refresh_token", return_value={"stripped": True}):
+                result = quota_reporters.sync_current_claude_auth_pool(
+                    "https://hub", "tok", claude_home=Path(d) / ".claude", known_auth_path=known)
+        self.assertEqual(result["refreshed_auth_installed"]["reason"], "hub_returned_no_refreshed_auth")
+        # ...and it must NOT strip: the hub's verification refresh already revoked the token we hold,
+        # so removing the RT too would take away the only way back. This interlock is what makes the
+        # rollout order (hub before clients) not matter.
+        self.assertEqual(result["local_refresh_token_stripped"]["reason"], "strip_withheld_no_working_at")
+
+    def test_install_claude_credentials_reports_a_write_the_token_cache_shadows(self):
+        """Every write can return True while the cache keeps answering with the old token — that is
+        how the guard "installed" a fetched AT every cycle and nothing ever changed."""
+        creds = {"claudeAiOauth": {"accessToken": "NEW_AT", "refreshToken": "X"}}
+        stale = ({"claudeAiOauth": {"accessToken": "OLD_AT"}}, "token_cache_v2")
+        with tempfile.TemporaryDirectory() as d:
+            claude_home = Path(d) / ".claude"
+            claude_home.mkdir(parents=True)
+            with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+                 mock.patch.object(quota_reporters, "write_claude_token_cache_credentials", return_value=True), \
+                 mock.patch.object(quota_reporters, "write_claude_keychain_credentials", return_value=True), \
+                 mock.patch.object(quota_reporters, "read_claude_oauth_credentials", return_value=stale):
+                result = quota_reporters.install_claude_credentials(creds, claude_home)
+        self.assertFalse(result["installed"])
+        self.assertEqual(result["reason"], "shadowed_by_token_cache_v2")
 
     def test_sync_claude_at_only_still_strips_backup_stores(self):
         blob = json.dumps({

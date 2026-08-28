@@ -30,6 +30,13 @@
 5. **AT expiry ≠ death.** An expired access token is normal and refreshable. Death is an **RT-class**
    error (`token_invalidated` / `401 unauthorized` / `authentication_error`) — the RT itself is gone and
    only an **owner re-login** can recover it; central refresh cannot.
+6. **A refresh REVOKES the access tokens already issued for that grant** — immediately, and regardless of
+   their `expiresAt`. This is not textbook OAuth rotation (which spares outstanding ATs) and it is the
+   single most misleading thing about this system: measured, a live AT went `200` → `401 OAuth access
+   token has been revoked` within one guard cycle of the hub refreshing that grant
+   ([§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28)). So **whoever
+   refreshes must hand the new AT to everyone still using the old one**, or it kills them. `expiresAt`
+   describes when the token *would* expire, not how long it will work.
 
 ---
 
@@ -170,6 +177,73 @@ and the `ok:true` cloud tests genuinely burned the owner's keychain RT by consum
 
 ---
 
+## 3.5 Refreshing REVOKES the access tokens already issued (measured 2026-08-28)
+
+Textbook OAuth rotation invalidates the **refresh** token and leaves outstanding access tokens alone
+until they expire. **This provider does not.** A successful refresh revokes every access token
+previously issued for that grant, immediately.
+
+Measured with a pinned access token re-probed against the read-only `/api/oauth/profile` (no refresh,
+no rotation, nothing consumed):
+
+| Time (UTC) | Event | Pinned AT |
+|---|---|---|
+| 23:01:51 | Claude Code mints the token; `expiresAt` claims **30 days** | — |
+| 23:04:06 | probe | **200 alive** |
+| 23:14:51 | guard uploads the real RT; `/api/auth/upload` refreshes it to verify (hub records `auth_expires_at` = upload + 8 h) | — |
+| 23:19:07 | probe | **401 `OAuth access token has been revoked`** |
+
+Three consequences, all of which had been misread before this was measured:
+
+1. **`expiresAt` is not the lifetime.** The 30-day value is real but almost never reached — the token
+   is revoked by the next refresh of the grant long before it expires. Any logic that decides "is this
+   token still good?" from `expiresAt` alone (e.g. `fetched_auth_near_expiry`) is reading a number that
+   does not describe reality.
+2. **Verifying an upload kills the uploader.** `/api/auth/upload` refreshes to verify, which revokes
+   the access token the uploading machine is still running on. The response used to carry metadata
+   only, so the client then stripped its RT and was left with a revoked AT and a placeholder RT: dead,
+   and unable to refresh its way out. The response now returns `refreshed_auth_json` (AT-only, via
+   `stripRefreshToken`) and the client installs it **before** stripping.
+3. **The 8-hour AT vs the 30-day AT is a scope artefact, and it is already fixed in code.** The
+   measurements above were taken against a hub that still asked for `user:inference` alone
+   (`expires_in: 28800`), while the CLI's own scope set mints 30-day tokens on the same `client_id`.
+   `6e08c8f` made the refresh use the credential's own scopes with a narrow fallback — but every 8 h
+   value recorded on 2026-08-27/28 predates that reaching production, so treat a fresh `expires_in`
+   of 28800 as a signal the deploy has not landed. Either way this is an optimisation (fewer
+   rotations = fewer revocations), **not** the failure: revocation-on-refresh happens at any lifetime.
+
+**The refresh token is more forgiving than the access token.** At 23:19 the local stores held only the
+placeholder, yet at 00:39 the machine produced a brand-new AT+RT — a live process refreshed using an
+in-memory copy of the RT the hub had already spent at 23:14. So a spent RT is not always hard-invalidated.
+Not always accepted either: `refresh_token_rejected` has fired 136 times in the guard log. Treat it as a
+race window, not a rule.
+
+### Who actually holds the credential (the codex `app-server` analogue)
+
+The Claude token cache lives in **`~/Library/Application Support/Claude/config.json`** — Claude.app's
+config, encrypted with the `Claude Safe Storage` keychain key — **not** under `~/.claude/`. The holder
+is the Claude.app process itself, and every Claude Code session on the machine is its child:
+
+```
+PID 20350  /Applications/Claude.app/Contents/MacOS/Claude       (observed up 1d3h)
+   └─ claude --output-format stream-json ...                    (ppid 20350)
+```
+
+This is the claude-side counterpart of codex's app-server daemon, with one asymmetry that matters:
+**there is no `daemon restart`.** codex exposes `codex app-server daemon restart` and the guard already
+calls it (`stale_codex_app_server_for_auth` → `app_server_started_before_auth`). `claude --help` offers
+`auth` / `gateway` / `mcp` / `setup-token` and nothing equivalent, so the only lever is quitting and
+relaunching Claude.app — which kills every session it hosts. The guard cannot do this surgically, which
+is why the fix has to work without it.
+
+> **Reopened:** [§3](#3-the-refresh-token-rotation-death-spiral) struck out "the Claude Desktop app's
+> `host-auth-refresh`" as *not* a death-spiral source. That correction no longer holds: the token cache
+> lives in the desktop app's config and is rewritten while it runs. Whether the writer is the desktop
+> app itself or a CLI session it hosts is still unresolved — both sit in the same process tree and both
+> survive a strip — but "the desktop app is unrelated" is withdrawn.
+
+---
+
 ## 4. `disabled_refresh_token` mode (centralized refresh + AT-only distribution)
 
 Admin kill-switch flag (dashboard toggle, `ADMIN_EMAIL`-gated). When ON, the hub becomes the **sole
@@ -216,6 +290,9 @@ Default OFF → deploys are inert until an admin flips it.
 | **Multi-session replay** | One account had N pool sessions (different RT generations); the worker refreshed >1 in a run → reuse → family revoked | **Single entry per account**: `dedupeEntriesByAccount` (per-run, refresh only the canonical/freshest), `upsertAuthPoolEntry` delete-other-sessions on upload, one-shot `collapseAuthPoolSessions()` |
 | **Overlapping-run replay** | Two worker runs (cron + manual dispatch) each snapshot the pool at start and both refresh the same RT → reuse → revoked | GitHub Actions **`concurrency` group** on `probe-auth-pool.yml` (`cancel-in-progress: false`) → runs serialize, next starts on a fresh snapshot |
 | **Replacement silently ineffective on macOS** | Claude replacement install wrote `~/.claude/.credentials.json` only; macOS reads keychain-first → write shadowed → "replaced" every cycle | Claude replacement now writes **keychain-first** (file fallback), mirroring the repair path |
+| **Replacement STILL silently ineffective** | The keychain-first fix was one layer short: modern Claude Code keeps its OAuth record in the encrypted **token cache**, which `read_claude_oauth_credentials` reads FIRST — so a keychain+file install is shadowed by the cache. The guard wrote the token cache in **zero** places, so every fetched AT was discarded on arrival | `install_claude_credentials` writes the cache, keychain and file, then **reads back** and reports `shadowed_by_<store>` when the install did not take |
+| **Uploader left holding a revoked AT** | `/api/auth/upload` refreshes to verify, revoking the uploader's own access token ([§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28)); the response returned metadata only, then the client stripped its RT | Upload returns `refreshed_auth_json` (AT-only); the client installs it **before** the strip |
+| **Strip only cosmetic** | The strip rewrote the single highest-scored token-cache entry; sibling entries for the same client id kept real RTs, and a write returning `True` was taken as proof | `strip_claude_token_cache_refresh_tokens` strips **every** hub-client entry; `claude_stores_with_real_refresh_token` read-back gates the `fetched_from_auth_pool` claim and reports `strip_not_sticking` |
 | **Healthy account swapped to a borrowed one** | In `refresh_current` mode (healthy, just needs an AT) the hub fell through to a *different* account when it couldn't refresh in place; the guard installed it → churn + "switched to X" toasts | Guard **declines a different-account replacement in `refresh_current` mode** (`kept_current_refresh_deferred`) — only same-account refreshes are accepted; genuinely quota-low/dead accounts still fail over via the `source_needs_replacement` path |
 | **Owner dead-locked on a stale copy** | `refresh_current` returned the owner's own stale AT | Server checks `accessTokenMsUntilExpiry > 5 min`; otherwise falls through to a real replacement (for genuinely dead accounts) |
 
@@ -319,6 +396,9 @@ blanks are rejected. The earlier "do NOT pool a desktop-used account" rule reste
 | Provider refresh calls + classification (400/401 = RT dead) | `refreshClaudeToken` / `refreshCodexToken` / `postRefresh` — [lib/token-refresh.js](lib/token-refresh.js) |
 | Apply a refresh result back into a blob | `applyRefreshToBlob` — [lib/token-refresh.js](lib/token-refresh.js) |
 | Strip / detect placeholder RTs | `stripRefreshToken` / `isStrippedRefreshToken` — [lib/fetch-best.js](lib/fetch-best.js) |
+| Strip every local store + read-back | `strip_claude_token_cache_refresh_tokens` / `claude_stores_with_real_refresh_token` — [quota_reporters.py](skills/quota-reporter/scripts/quota_reporters.py) |
+| Install a credential into every store + read-back | `install_claude_credentials` — [quota_reporters.py](skills/quota-reporter/scripts/quota_reporters.py) |
+| Hand the refreshed AT back to the uploader | `refreshed_auth_json` — [api/auth/upload.js](api/auth/upload.js) / `install_uploaded_claude_refresh` (client) |
 | Derive pool identity (account_id, email, digest, expiry) | `deriveAuthPoolEntry` — [lib/auth-pool.js](lib/auth-pool.js) |
 | Worker proactive refresh + lazy probe | `refreshEntryIfNeeded` / `probeSkipReason` — [scripts/probe_auth_pool_worker.mjs](scripts/probe_auth_pool_worker.mjs) |
 | Single-entry-per-account collapse | `dedupeEntriesByAccount` (worker) + `upsertAuthPoolEntry` / `collapseAuthPoolSessions` — [lib/db.js](lib/db.js) |

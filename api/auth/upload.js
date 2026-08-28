@@ -2,6 +2,7 @@ import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
 import { dbConfigured, getFeatureFlag, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../../lib/db.js";
 import { ingestClientQuota } from "../../lib/quota-ingest.js";
+import { stripRefreshToken } from "../../lib/fetch-best.js";
 import { verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
 
@@ -104,6 +105,25 @@ export default async function handler(req, res) {
   // Surface the flag so a client that just uploaded its real RT knows to go AT-only locally
   // (Phase 4): strip its own refresh token once the hub holds it.
   const disabledRefreshToken = await getFeatureFlag("disabled_refresh_token", false);
+
+  // Hand the refreshed access token back to the uploader.
+  //
+  // Refreshing here rotates the grant, and this provider REVOKES every access token it previously
+  // issued for that grant (measured: a live AT went 200 -> 401 "OAuth access token has been
+  // revoked" within one guard cycle of an upload). So the moment we refresh, the uploader's own
+  // access token is dead. Before this, the response carried metadata only: the client then stripped
+  // its refresh token and was left holding a revoked AT plus a placeholder RT — unable to work and
+  // unable to recover. Returning the AT-only blob lets it install a working token in the same cycle
+  // as the strip. The refresh token is stripped out: the hub stays the sole refresher.
+  let refreshedAuthJson = null;
+  if (refreshVerification.ok && disabledRefreshToken) {
+    try {
+      refreshedAuthJson = stripRefreshToken(authJson, source);
+    } catch (error) {
+      console.error("upload: could not build AT-only blob for uploader:", error?.message || error);
+    }
+  }
+
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(withTokenUpgrade({
@@ -112,5 +132,6 @@ export default async function handler(req, res) {
     disabled_refresh_token: disabledRefreshToken,
     quota_ingested: quotaIngested,
     refresh_validity: refreshVerification.ok ? "confirmed" : "unverified",
+    refreshed_auth_json: refreshedAuthJson,
   }, authContext)));
 }

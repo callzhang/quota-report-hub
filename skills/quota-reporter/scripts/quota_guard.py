@@ -48,6 +48,7 @@ from quota_reporters import (
     seed_guidance_lines,
     fetch_best_auth,
     fetched_auth_near_expiry,
+    install_claude_credentials,
     iso_now,
     load_config,
     post_auth_pool_quota,
@@ -1582,15 +1583,12 @@ def maybe_replace_claude_auth(
         except Exception:
             return {"ok": True, "replaced": False, "reason": "repair_auth_unparseable", "triggered_by": ["claude"]}
         repair_credentials = repair_blob.get("credentials")
+        # Write EVERY store, cache included. read_claude_oauth_credentials prefers the encrypted
+        # token cache on darwin, so a keychain-or-file-only install is shadowed by whatever the
+        # cache still holds: the write succeeds, nothing changes, and the guard reinstalls the same
+        # credential every cycle. (The guard wrote the token cache nowhere before this.)
         def write_repair_credentials():
-            wrote_keychain = False
-            if platform.system().lower() == "darwin":
-                wrote_keychain = write_claude_keychain_credentials(repair_credentials)
-            if not wrote_keychain:
-                credentials_path = claude_home / ".credentials.json"
-                credentials_path.parent.mkdir(parents=True, exist_ok=True)
-                credentials_path.write_text(json.dumps(repair_credentials, indent=2) + "\n", encoding="utf-8")
-                credentials_path.chmod(0o600)
+            install_claude_credentials(repair_credentials, claude_home)
 
         repair_account_id = repair_auth.get("account_id")
         install_auth_with_usage_boundary(
@@ -1639,19 +1637,12 @@ def maybe_replace_claude_auth(
 
     blob = json.loads(replacement["auth_json"])
     replacement_credentials = blob["credentials"]
-    # Write keychain-first on macOS: Claude (and our own reader) read the keychain BEFORE the file
-    # there, so a file-only write is shadowed by the existing keychain credential — the replacement
-    # would never take effect, and the guard would "replace" again every cycle. Mirror the
-    # repair-auth path above (keychain-first, file as fallback).
+    # Write every store, cache included. The keychain-first note this comment used to carry was one
+    # layer out of date: modern Claude Code keeps its OAuth record in the encrypted token cache and
+    # read_claude_oauth_credentials reads that FIRST, so a keychain+file install is shadowed by the
+    # cache and the replacement never takes effect.
     def write_replacement_credentials():
-        wrote_keychain = False
-        if platform.system().lower() == "darwin":
-            wrote_keychain = write_claude_keychain_credentials(replacement_credentials)
-        if not wrote_keychain:
-            credentials_path = claude_home / ".credentials.json"
-            credentials_path.parent.mkdir(parents=True, exist_ok=True)
-            credentials_path.write_text(json.dumps(replacement_credentials, indent=2) + "\n", encoding="utf-8")
-            credentials_path.chmod(0o600)
+        install_claude_credentials(replacement_credentials, claude_home)
 
     replacement_account_id = replacement.get("account_id")
     install_auth_with_usage_boundary(
@@ -1770,6 +1761,17 @@ def format_source_summary(source_label: str, payload: dict | None, quota_report:
     return " | ".join(parts)
 
 
+def format_strip_warning(result: dict) -> str:
+    """Surface a Phase-4 strip that did not take. Silence here is how the upload -> strip ->
+    Claude Code rewrites a real RT -> upload loop stayed invisible: every cycle looked like a
+    clean "uploaded" while the machine kept rotating the pooled token family."""
+    strip = result.get("local_refresh_token_stripped") or {}
+    if not strip or strip.get("stripped"):
+        return ""
+    stores = ", ".join(strip.get("unstripped_stores") or [])
+    return f" [local RT still live: {stores or strip.get('reason') or 'unknown'}]"
+
+
 def format_auth_pool_sync(sync_result: dict | None) -> str:
     sync_result = sync_result or {}
     parts = []
@@ -1779,13 +1781,17 @@ def format_auth_pool_sync(sync_result: dict | None) -> str:
             parts.append(f"{source} {AUTH_POOL_MISSING_CONFIG_TEXT}")
             continue
         if result.get("uploaded"):
-            parts.append(f"{source} uploaded")
+            parts.append(f"{source} uploaded{format_strip_warning(result)}")
         elif result.get("ok") is False:
-            parts.append(f"{source} failed")
+            # "failed" with no reason is unreadable in the log — carry the reason and, when the
+            # failure came from an HTTP call, the nested error with it.
+            reason = result.get("reason") or "unknown"
+            detail = (result.get("entry") or result.get("delete_result") or {}).get("error")
+            parts.append(f"{source} failed ({reason}{': ' + str(detail)[:120] if detail else ''})")
         elif result.get("reason") == "missing_auth_pool_config":
             parts.append(f"{source} {AUTH_POOL_MISSING_CONFIG_TEXT}")
         else:
-            parts.append(f"{source} {result.get('reason') or 'ok'}")
+            parts.append(f"{source} {result.get('reason') or 'ok'}{format_strip_warning(result)}")
     return "; ".join(parts)
 
 

@@ -1136,6 +1136,160 @@ def write_claude_token_cache_credentials(credentials: dict, claude_home: Path, s
     return check_source == source and check_oauth.get("accessToken") == oauth.get("accessToken") and check_oauth.get("refreshToken") == oauth.get("refreshToken")
 
 
+def install_claude_credentials(credentials: dict, claude_home: Path = CLAUDE_HOME) -> dict:
+    """Write a Claude OAuth credential into every store Claude Code might read, and verify.
+
+    read_claude_oauth_credentials prefers the encrypted token cache on darwin (modern Claude Code's
+    source of truth), so a keychain-or-file install is SHADOWED by whatever the cache still holds:
+    the write returns True, nothing changes, and the caller "installs" the same credential again
+    every cycle. Write the cache too, then read back and report which store actually answers.
+    """
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    written = {"token_cache_v2": False, "token_cache": False, "keychain": False, "file": False}
+    if not oauth.get("accessToken"):
+        return {"installed": False, "reason": "no_access_token", "written": written, "active_store": None}
+
+    if sys.platform == "darwin":
+        written["token_cache_v2"] = write_claude_token_cache_credentials(credentials, claude_home, "token_cache_v2")
+        written["token_cache"] = write_claude_token_cache_credentials(credentials, claude_home, "token_cache")
+        written["keychain"] = write_claude_keychain_credentials(credentials)
+        if (claude_home / ".credentials.json").exists():
+            written["file"] = write_claude_credentials_file(credentials, claude_home)
+    else:
+        written["file"] = write_claude_credentials_file(credentials, claude_home)
+        written["keychain"] = write_claude_keychain_credentials(credentials)
+
+    active_credentials, active_store = read_claude_oauth_credentials(claude_home)
+    active_token = ((active_credentials or {}).get("claudeAiOauth") or {}).get("accessToken")
+    installed = bool(active_token) and active_token == oauth.get("accessToken")
+    result = {"installed": installed, "written": written, "active_store": active_store}
+    if not installed:
+        result["reason"] = "shadowed_by_" + str(active_store)
+    return result
+
+
+def count_claude_token_cache_real_refresh_tokens(claude_home: Path, field: str) -> int:
+    """How many entries of one encrypted cache still hold a rotatable hub-client refresh token."""
+    if sys.platform != "darwin":
+        return 0
+    config_path = claude_application_config_path(claude_home)
+    if not config_path.exists():
+        return 0
+    config = read_json(config_path)
+    if not isinstance(config, dict) or not isinstance(config.get(field), str):
+        return 0
+    secret = read_claude_safe_storage_secret()
+    if not secret:
+        return 0
+    cache = decrypt_claude_safe_storage_json(config[field], secret)
+    if not isinstance(cache, dict):
+        return 0
+    prefix = CLAUDE_OAUTH_CLIENT_ID + ":"
+    total = 0
+    for cache_key, entry in cache.items():
+        if not isinstance(cache_key, str) or not isinstance(entry, dict):
+            continue
+        if not cache_key.startswith(prefix):
+            continue
+        refresh_token = entry.get("refreshToken")
+        if refresh_token and refresh_token != STRIPPED_CLAUDE_REFRESH_TOKEN:
+            total += 1
+    return total
+
+
+def strip_claude_token_cache_refresh_tokens(claude_home: Path, field: str) -> dict:
+    """Replace the refresh token in EVERY hub-client entry of one encrypted token cache.
+
+    write_claude_token_cache_credentials only rewrites the single highest-scored entry, but the
+    cache routinely holds more than one entry for the hub's client id (one per scope set / base
+    URL). An unstripped sibling still carries a real refresh token, which makes this machine a
+    second custodian that rotates the pooled family out from under the hub — the exact death
+    spiral AUTH_TOKENS.md section 3 describes. Strip them all, or the strip is cosmetic.
+
+    Entries belonging to a different client id own a different token family and are left alone.
+    Only the refresh token is touched; the access token in the cache is whatever Claude Code is
+    using right now and must not be swapped underneath it.
+    """
+    outcome = {"written": False, "reason": None, "stripped_entries": 0}
+    if sys.platform != "darwin":
+        outcome["reason"] = "unavailable"
+        return outcome
+    config_path = claude_application_config_path(claude_home)
+    if not config_path.exists():
+        outcome["reason"] = "no_config"
+        return outcome
+    config = read_json(config_path)
+    if not isinstance(config, dict) or not isinstance(config.get(field), str):
+        outcome["reason"] = "no_field"
+        return outcome
+    secret = read_claude_safe_storage_secret()
+    if not secret:
+        outcome["reason"] = "no_secret"
+        return outcome
+    cache = decrypt_claude_safe_storage_json(config[field], secret)
+    if not isinstance(cache, dict):
+        outcome["reason"] = "undecryptable"
+        return outcome
+
+    prefix = CLAUDE_OAUTH_CLIENT_ID + ":"
+    for cache_key, entry in cache.items():
+        if not isinstance(cache_key, str) or not isinstance(entry, dict):
+            continue
+        if not cache_key.startswith(prefix):
+            continue
+        refresh_token = entry.get("refreshToken")
+        if not refresh_token or refresh_token == STRIPPED_CLAUDE_REFRESH_TOKEN:
+            continue
+        entry["refreshToken"] = STRIPPED_CLAUDE_REFRESH_TOKEN
+        cache[cache_key] = entry
+        outcome["stripped_entries"] += 1
+    if not outcome["stripped_entries"]:
+        outcome["reason"] = "nothing_to_strip"
+        return outcome
+
+    encoded = encrypt_claude_safe_storage_json(cache, secret)
+    if not encoded:
+        outcome["reason"] = "encrypt_failed"
+        return outcome
+    config[field] = encoded
+    tmp_path = config_path.with_name(config_path.name + ".tmp")
+    try:
+        tmp_path.write_text(json.dumps(config, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(config_path)
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+        outcome["reason"] = "write_failed"
+        return outcome
+    outcome["written"] = True
+    return outcome
+
+
+def claude_stores_with_real_refresh_token(claude_home: Path = CLAUDE_HOME) -> list[str]:
+    """Every local store that still holds a rotatable (non-placeholder) Claude refresh token.
+
+    This is the read-back the strip needs: a store left holding a real RT can refresh, and one
+    refresh is enough to orphan whichever custodian holds the older generation.
+    """
+    def _is_real(refresh_token) -> bool:
+        return bool(refresh_token) and refresh_token != STRIPPED_CLAUDE_REFRESH_TOKEN
+
+    found = []
+    if sys.platform == "darwin":
+        for field in CLAUDE_TOKEN_CACHE_FIELDS:
+            if count_claude_token_cache_real_refresh_tokens(claude_home, field):
+                found.append("token_cache_v2" if field.endswith("V2") else "token_cache")
+        keychain = read_claude_keychain_credentials()
+        if _is_real(((keychain or {}).get("claudeAiOauth") or {}).get("refreshToken")):
+            found.append("keychain")
+    credentials = read_claude_credentials(claude_home)
+    if _is_real(((credentials or {}).get("claudeAiOauth") or {}).get("refreshToken")):
+        found.append("credentials_file")
+    return found
+
+
 def read_claude_oauth_credentials(claude_home: Path = CLAUDE_HOME) -> tuple[dict | None, str]:
     # On macOS the encrypted token cache is modern Claude Code's source of truth. A ~/.claude/.credentials.json can
     # linger and go stale (e.g. a past file-fallback write or a Phase-4 strip that landed in the
@@ -1310,15 +1464,28 @@ def strip_claude_refresh_token_from_all_stores(credentials: dict, claude_home: P
 
     written = {"keychain": False, "token_cache": False, "token_cache_v2": False, "file": False}
     if sys.platform == "darwin":
-        written["token_cache_v2"] = write_claude_token_cache_credentials(stripped, claude_home, "token_cache_v2")
-        written["token_cache"] = write_claude_token_cache_credentials(stripped, claude_home, "token_cache")
+        # Strip every hub-client entry in each cache, not just the highest-scored one — a sibling
+        # entry left holding a real RT is a second custodian and rotates the pooled family.
+        caches = {
+            field: strip_claude_token_cache_refresh_tokens(claude_home, field)
+            for field in CLAUDE_TOKEN_CACHE_FIELDS
+        }
+        written["cache_detail"] = caches
+        written["token_cache_v2"] = bool(caches.get("oauth:tokenCacheV2", {}).get("written"))
+        written["token_cache"] = bool(written["token_cache_v2"] or caches.get("oauth:tokenCache", {}).get("written"))
         written["keychain"] = write_claude_keychain_credentials(stripped)
         if (claude_home / ".credentials.json").exists():
             written["file"] = write_claude_credentials_file(stripped, claude_home)
     else:
         written["file"] = write_claude_credentials_file(stripped, claude_home)
         written["keychain"] = write_claude_keychain_credentials(stripped)
-    written["token_cache"] = bool(written["token_cache"] or written["token_cache_v2"])
+
+    # Read back. A write returning True is not proof the store is AT-only: Claude Code holds its
+    # credentials in memory and rewrites the cache on its own refresh, so a strip can be undone
+    # seconds after it lands. Report what is still rotatable instead of assuming success.
+    remaining = claude_stores_with_real_refresh_token(claude_home)
+    written["unstripped_stores"] = remaining
+    written["verified"] = not remaining
     return written
 
 
@@ -2626,10 +2793,16 @@ def strip_local_claude_refresh_token(claude_home: Path = CLAUDE_HOME) -> dict:
         return {"stripped": False, "reason": "no_credentials"}
     already_stripped = oauth.get("refreshToken") == STRIPPED_CLAUDE_REFRESH_TOKEN
     written = strip_claude_refresh_token_from_all_stores(credentials, claude_home)
-    stripped = bool(written.get("keychain") or written.get("token_cache") or written.get("file"))
+    # "stripped" means the local stores are AT-only NOW, verified by read-back — not merely that a
+    # write returned True. Callers gate `fetched_from_auth_pool` on this, and claiming AT-only while
+    # a real RT survives is what lets both custodians rotate each other out.
+    stripped = bool(written.get("verified"))
     result = {"stripped": stripped, "persisted": written, "source": source}
-    if already_stripped:
-        result["reason"] = "already_stripped" if stripped else "already_stripped_not_persisted"
+    if not stripped:
+        result["reason"] = "strip_not_sticking"
+        result["unstripped_stores"] = written.get("unstripped_stores") or []
+    elif already_stripped:
+        result["reason"] = "already_stripped"
     return result
 
 
@@ -2658,6 +2831,38 @@ def upload_reported_disabled_refresh_token(sync_result: dict) -> bool:
     if bool(sync_result.get("disabled_refresh_token")):
         return True
     return bool((sync_result.get("entry") or {}).get("disabled_refresh_token"))
+
+
+def uploaded_refreshed_auth_json(sync_result: dict) -> str | None:
+    """The AT-only blob /api/auth/upload hands back after it refreshed our upload.
+
+    Mirrors upload_reported_disabled_refresh_token's lookup: the field is top level in the HTTP
+    response, which the sync result nests under "entry"."""
+    direct = sync_result.get("refreshed_auth_json")
+    if isinstance(direct, str) and direct:
+        return direct
+    nested = (sync_result.get("entry") or {}).get("refreshed_auth_json")
+    return nested if isinstance(nested, str) and nested else None
+
+
+def install_uploaded_claude_refresh(sync_result: dict, claude_home: Path) -> dict:
+    """Install the access token the hub minted while verifying our upload.
+
+    Verifying an upload means refreshing it, and this provider revokes every access token it
+    previously issued for that grant. So by the time the upload returns, the token this machine is
+    still using is already dead. Installing the returned AT-only blob here — before the strip —
+    is what keeps the machine working without giving it a refresh token back.
+    """
+    blob_text = uploaded_refreshed_auth_json(sync_result)
+    if not blob_text:
+        return {"installed": False, "reason": "hub_returned_no_refreshed_auth"}
+    try:
+        credentials = (json.loads(blob_text) or {}).get("credentials")
+    except Exception:
+        return {"installed": False, "reason": "unparseable_refreshed_auth"}
+    if not isinstance(credentials, dict) or not (credentials.get("claudeAiOauth") or {}).get("accessToken"):
+        return {"installed": False, "reason": "refreshed_auth_missing_access_token"}
+    return install_claude_credentials(credentials, claude_home)
 
 
 def sync_current_codex_auth_pool(
@@ -2734,6 +2939,24 @@ def sync_current_claude_auth_pool(
     # mode, strip the local RT so this owner also runs AT-only and mark it fetched so the
     # near-expiry path keeps its AT fresh.
     if result.get("uploaded") and upload_reported_disabled_refresh_token(result):
+        # Order matters: install first, strip second. The hub refreshed this blob to verify it,
+        # which revoked the access token we are still running on. Stripping before installing is
+        # what left this machine holding a revoked AT and a placeholder RT — dead, and unable to
+        # refresh its way out.
+        installed = install_uploaded_claude_refresh(result, claude_home)
+        result["refreshed_auth_installed"] = installed
+        if not installed.get("installed"):
+            # Safety interlock: never strip without a working access token in hand. An older hub
+            # returns no refreshed blob, and a cache that shadows the install leaves the old token
+            # in place — in both cases the token we hold was just revoked by the hub's verification
+            # refresh, so stripping would take away the only way back. Keep the RT and retry next
+            # cycle; a machine that can still refresh is recoverable, one that cannot is not.
+            result["local_refresh_token_stripped"] = {
+                "stripped": False,
+                "reason": "strip_withheld_no_working_at",
+                "install": installed,
+            }
+            return result
         strip = strip_local_claude_refresh_token(claude_home)
         result["local_refresh_token_stripped"] = strip
         if strip.get("stripped"):
