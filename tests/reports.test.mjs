@@ -632,6 +632,87 @@ test("mergeLatestReport still ignores a stale CLIENT invalidation with no centra
   assert.equal(mergeLatestReport(previous, incoming).status, "ok");
 });
 
+const CENTRAL_REJECTION = {
+  source: "claude",
+  report_origin: "worker",
+  hostname: "worker",
+  reporter_name: "worker",
+  reported_at: "2026-08-28T18:20:00Z",
+  account_id: "claude-qpt0311@uw.edu",
+  auth_last_refresh: "1785000000000",
+  status: "error",
+  error: "refresh_token_rejected",
+  windows: { "5h": null, "1week": null },
+  usage_summary: { central_refresh: { attempted: true, ok: false, auth_rejected: true, status: 400 } },
+};
+
+const HEALTHY_CLIENT = {
+  source: "claude",
+  report_origin: "client",
+  hostname: "someones-mac",
+  reporter_name: "peitong.qi@someones-mac",
+  reported_at: "2026-08-28T18:25:00Z",
+  account_id: "claude-qpt0311@uw.edu",
+  auth_last_refresh: "1787900000000",
+  status: "ok",
+  windows: {
+    "5h": { used_percent: 10, remaining_percent: 90, reset_at: "2026-08-28T23:00:00Z" },
+    "1week": { used_percent: 20, remaining_percent: 80, reset_at: "2026-09-02T23:00:00Z" },
+  },
+};
+
+test("a client's healthy probe cannot clear a standing central-refresh rejection", () => {
+  // The client proves its OWN credential works. The pooled blob is a different credential, and only
+  // the worker ever presents it. Overwriting the rejection here is what kept a month-dead entry in
+  // rotation to borrowers.
+  const merged = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), sanitizeReport(HEALTHY_CLIENT));
+
+  assert.equal(merged.status, "error");
+  assert.equal(merged.error, "refresh_token_rejected");
+  // fresh quota and timestamps still move, so the entry does not look silent
+  assert.equal(merged.reported_at, "2026-08-28T18:25:00Z");
+  assert.equal(merged.windows["5h"].remaining_percent, 90);
+  // the evidence is carried forward so the next client report is held off too
+  assert.equal(merged.usage_summary.central_refresh.auth_rejected, true);
+});
+
+test("a verified upload clears a standing central-refresh rejection", () => {
+  const upload = sanitizeReport({
+    ...HEALTHY_CLIENT,
+    usage_summary: { token_refresh: { status: "refreshed", source: "upload" } },
+  });
+
+  const merged = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), upload);
+
+  assert.equal(merged.status, "ok");
+  assert.equal(merged.error, null);
+});
+
+test("a successful central refresh clears a standing central-refresh rejection", () => {
+  const recovered = sanitizeReport({
+    ...HEALTHY_CLIENT,
+    report_origin: "worker",
+    usage_summary: { central_refresh: { attempted: true, ok: true } },
+  });
+
+  assert.equal(mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), recovered).status, "ok");
+});
+
+test("a standing rejection never resolves to ok when another error arrives", () => {
+  // The pooled-RT rejection deliberately outranks a client-side error here: both keep the entry out
+  // of rotation, and refresh_token_rejected is the one that names what the owner has to do.
+  const worse = sanitizeReport({
+    ...HEALTHY_CLIENT,
+    status: "error",
+    error: "claude auth email unavailable",
+    windows: { "5h": null, "1week": null },
+  });
+
+  const merged = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), worse);
+  assert.equal(merged.status, "error");
+  assert.equal(merged.error, "refresh_token_rejected");
+});
+
 test("mergeLatestReport keeps good client codex quota when a newer worker soft-fails", () => {
   const previous = sanitizeReport({
     source: "codex",

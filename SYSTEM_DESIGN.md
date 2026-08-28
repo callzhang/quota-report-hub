@@ -486,6 +486,15 @@ client INSTALLS it  ──►  then strips its local RT  ──►  state = fetc
 RT truly dead (revoked elsewhere) ──► hard-dead ──► repair-handback ──► latest uploader re-login
 ```
 
+**Who may declare the pooled credential dead.** Only the worker ever presents the pooled refresh
+token, so only its `central_refresh.auth_rejected` is evidence about the blob the pool hands out. A
+client's healthy probe describes the credential on *that machine*, which may never have been
+uploaded. `mergeLatestReport` therefore keeps a standing central-refresh rejection until something
+proves the pooled blob itself works — a verified upload (`token_refresh.source === "upload"`) or a
+successful central refresh. Symmetrically, an AT-only client's 401 is not allowed to declare death
+either ([§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)): it holds a placeholder RT
+and has nothing to present. Evidence follows whoever holds the refresh token.
+
 **Safety properties.** Because borrowers can't refresh, they can't cause cascade. The unique *new* risk is many machines sharing one AT → provider abuse pushback; this is monitored separately ([§8.1](#81-assess_healthmjs), abuse-class scan). Observed data: 0 abuse-class errors; all failures are RT-class.
 
 The flag defaults OFF (`getFeatureFlag("disabled_refresh_token", false)`), so deploys are inert until an admin flips it on the dashboard.
