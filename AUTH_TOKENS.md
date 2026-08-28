@@ -204,13 +204,17 @@ Three consequences, all of which had been misread before this was measured:
    only, so the client then stripped its RT and was left with a revoked AT and a placeholder RT: dead,
    and unable to refresh its way out. The response now returns `refreshed_auth_json` (AT-only, via
    `stripRefreshToken`) and the client installs it **before** stripping.
-3. **The 8-hour AT vs the 30-day AT is a scope artefact, and it is already fixed in code.** The
-   measurements above were taken against a hub that still asked for `user:inference` alone
-   (`expires_in: 28800`), while the CLI's own scope set mints 30-day tokens on the same `client_id`.
-   `6e08c8f` made the refresh use the credential's own scopes with a narrow fallback — but every 8 h
-   value recorded on 2026-08-27/28 predates that reaching production, so treat a fresh `expires_in`
-   of 28800 as a signal the deploy has not landed. Either way this is an optimisation (fewer
-   rotations = fewer revocations), **not** the failure: revocation-on-refresh happens at any lifetime.
+3. **The 8-hour AT is NOT explained by scope — that hypothesis is falsified.** The obvious story was
+   that the hub asked for `user:inference` alone (`expires_in: 28800`) while the CLI's own scope set
+   mints 30-day tokens on the same `client_id`. `6e08c8f` made the refresh use the credential's own
+   scopes with a narrow fallback. **Deployed 2026-08-28 06:2x UTC; the two uploads that followed still
+   produced pool access tokens with a lifetime of exactly 8.00 h.** So either the provider rejects the
+   wide scope on a *refresh* grant and the fallback fires every time, or scope does not determine the
+   lifetime of a refresh-minted AT at all. The `token_refresh` telemetry
+   (`requested_scope` / `granted_scope` / `expires_in`, [lib/token-refresh.js](lib/token-refresh.js))
+   distinguishes those two, but it lands in Vercel runtime logs and has not been read yet — **do that
+   before touching scope again.** Either way this was never the failure: revocation-on-refresh happens
+   at any lifetime.
 
 **The refresh token is more forgiving than the access token.** At 23:19 the local stores held only the
 placeholder, yet at 00:39 the machine produced a brand-new AT+RT — a live process refreshed using an
