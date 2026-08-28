@@ -90,12 +90,17 @@
 
 ### Credential shape
 - `credentials.claudeAiOauth = { accessToken, refreshToken, expiresAt (ms epoch), subscriptionType }`.
-- AT lifetime depends on the **scope the refresh asked for** (measured 2026-08-27, same `client_id`):
-  `user:inference` alone returns `expires_in` 28800 (**8 h**); the CLI's own scope set returns a
-  **30-day** token. The blob records what it was granted in `credentials.claudeAiOauth.scopes`, and
-  the hub refreshes with those, so a pooled claude AT normally lives ~30 days, not 8 hours. Either
-  way `expiresAt` is real and `accessTokenMsUntilExpiry(authJson, "claude")` reads `expiresAt - now`
-  directly.
+- **`expiresAt` is not the token's real lifetime.** A refresh on the grant revokes every access token
+  already issued for it, whatever their stated expiry
+  ([§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28)) — so a token
+  claiming 30 days routinely dies in minutes. `accessTokenMsUntilExpiry(authJson, "claude")` reads
+  `expiresAt - now` and is therefore an **upper bound**, not a prediction; anything that must know
+  whether a token still works has to probe it.
+- Observed lifetimes: a CLI-minted token claims **30 days**; a hub refresh returns `expires_in` 28800
+  (**8 h**). The scope set looked like the difference and `6e08c8f` acted on it, but refreshing with
+  the credential's own scopes changed nothing once deployed — see
+  [§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28) point 3 before
+  drawing any conclusion from these numbers.
 - The pool blob is wrapped as schema `claude_credentials_v1` (`build_claude_auth_blob`), carrying
   `credentials`, `account_id`, `session_id`, `auth_last_refresh`, `claude_cli_state`.
 
@@ -125,8 +130,8 @@ Any time **more than one independent custodian** refreshes the same account, the
 out. Sources of "more than one custodian" observed in this project:
 - The same account logged into **multiple machines**, each with a real RT (the original motivation).
 - **Multiple pool sessions** of one account (different `session_id`), each a different RT generation —
-  the worker refreshing >1 in a run = replay (fixed, [§6](#6-failure-modes--invariants)).
-- **Two overlapping worker runs** both refreshing the same entry (fixed, [§6](#6-failure-modes--invariants)).
+  the worker refreshing >1 in a run = replay (fixed, [§6](#6-failure-modes--invariants-and-the-fixes)).
+- **Two overlapping worker runs** both refreshing the same entry (fixed, [§6](#6-failure-modes--invariants-and-the-fixes)).
 - ~~The Claude Desktop app's `host-auth-refresh`~~ **(corrected — NOT a death-spiral source).** The desktop
   app does **not** refresh/rotate the pooled OAuth family (earlier drafts wrongly listed it here; the CLI RT
   refreshes fine with the app open). Its real, *separate* harm was blanking the keychain RT, which used to
@@ -360,7 +365,7 @@ blanks are rejected. The earlier "do NOT pool a desktop-used account" rule reste
 > **datacenter-IP binding** (refuted — a valid RT refreshes from residential, AWS, and Azure alike), and
 > the **"Desktop host-auth-refresh revokes the OAuth family"** theory (refuted — the CLI RT refreshes fine
 > with the app open). Two *real* bugs were behind it: **(A)** the hub dropping its own rotated RT and
-> replaying the spent one (`auth_last_refresh` not advancing, [§6](#6-failure-modes--invariants), fixed
+> replaying the spent one (`auth_last_refresh` not advancing, [§6](#6-failure-modes--invariants-and-the-fixes), fixed
 > `bd96ae0`), and **(B)** the **empty-RT wipe** above — the desktop blanks the keychain RT and the
 > strip-guards let the empty value overwrite the real pooled RT (fixed `4b9b49f`). (B) was what kept
 > leizhang specifically dying after (A) was fixed. The evidence that cracked it: the pooled blob literally

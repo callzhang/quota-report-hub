@@ -145,9 +145,34 @@ Replace when the source is hard-invalidated or status≠ok. For Codex, quota-bas
 ### 3.5 `disabled_refresh_token` client behavior (Phase-4 strip)
 - Placeholder RTs: codex `"rt.1."+"A"*32`, claude `"disabled-by-hub-refresh-token"` (`quota_reporters.py:43-47`).
 - `auth_json_is_stripped` short-circuits `sync_current_*` so AT-only auths are **never re-uploaded** (`:2000-2012, 2134-2174`).
-- After a successful upload whose response says `disabled_refresh_token:true`, the client calls `strip_local_{codex,claude}_refresh_token` to overwrite its own local RT with the placeholder and records state `fetched_from_auth_pool` (`:2146-2192`). From then on it behaves like a borrower: it relies on the hub for fresh ATs.
-- Claude strip writes the placeholder to every local store that can later shadow the hub (macOS tokenCacheV2/tokenCache, keychain, and an existing `.credentials.json`; file/keychain on non-macOS). If the active Claude auth is already AT-only, the guard still runs this backup-store cleanup while continuing to skip uploads.
+- After a successful upload whose response says `disabled_refresh_token:true`, the claude client
+  **installs first and strips second**. Verifying the upload means refreshing it, which revokes the
+  access token this machine is still running on ([§11](#11-token-refresh-architecture)), so the
+  response carries `refreshed_auth_json` (AT-only) and `install_uploaded_claude_refresh` installs it
+  before `strip_local_claude_refresh_token` runs. Only then is state recorded as
+  `fetched_from_auth_pool`. Stripping first is what used to leave a machine holding a revoked AT and
+  a placeholder RT: unable to work and unable to refresh its way out.
+- **Interlock**: if no working AT is in hand — an older hub returned nothing, or the install was
+  shadowed — the strip is **withheld** (`strip_withheld_no_working_at`) and the real RT is kept for
+  the next cycle. A machine that can still refresh is recoverable; one that cannot is not. This also
+  means hub and clients can roll out in either order.
+- Claude strip writes the placeholder to **every hub-client entry** of each local store that can
+  shadow the hub (macOS tokenCacheV2/tokenCache, keychain, an existing `.credentials.json`), not just
+  the highest-scored cache entry — the cache holds one entry per scope set, and an unstripped sibling
+  is still a rotatable RT. `claude_stores_with_real_refresh_token` then **reads back**: `stripped`
+  means verified AT-only, not "a write returned true". If the active Claude auth is already AT-only,
+  the guard still runs this backup-store cleanup while continuing to skip uploads.
+- **Installing must reach the token cache.** `read_claude_oauth_credentials` prefers Claude.app's
+  encrypted token cache on darwin, so a keychain-or-file write is silently shadowed by it.
+  `install_claude_credentials` writes cache, keychain and file, reads back, and reports
+  `shadowed_by_<store>` when the install did not take. Before this the guard wrote that cache in
+  **zero** places and every fetched or replacement AT was discarded on arrival while the code
+  reported success.
 - **Proactive same-account refresh**: `fetched_auth_near_expiry` returns true when state is `fetched_from_auth_pool` and the local AT is within `AT_NEAR_EXPIRY_SKEW_SECONDS = 20 min` of expiry; the guard then calls `fetch-best` with `refresh_current=True` to mint a fresh AT for the *same* account before the dead placeholder RT is ever needed (`:2017-2060`).
+  ⚠️ This trigger reads `expiresAt`, which is an upper bound rather than a lifetime
+  ([§11](#11-token-refresh-architecture)) — it cannot see a revocation. The backstop for a token
+  revoked early is the error-driven path: the probe fails, `source_needs_replacement` fires, and the
+  guard fetches a replacement.
 
 ### 3.6 Token handling
 - One personal **auth-pool user token** (issued per company email) is the Bearer for all hub calls and also unlocks the dashboard.
@@ -421,23 +446,40 @@ management. `start_frontend.mjs` serves the static dashboards locally on `FRONTE
 
 **Problem.** Rotating OAuth refresh tokens: each refresh returns a *new* RT and invalidates the old one. Share one full credential across N machines and every machine's refresh orphans the others' RTs — a cascading death spiral that empties the pool.
 
+**And a second, sharper edge:** a refresh also **revokes the access tokens already issued** for that grant ([§11](#11-token-refresh-architecture)). So refreshing does not merely orphan other custodians' *refresh* tokens at some future point — it kills whatever they are using **right now**. Any component that refreshes owes the new AT to everyone still holding the old one, in the same operation.
+
 **Solution (flag ON).** The hub becomes the single point of refresh:
 1. **Serve AT-only** — `fetch-best` strips the RT to a placeholder before serving ([§6.1](#61-fetch-best-the-borrow-path)). Borrowers can use the AT but cannot rotate the shared RT.
 2. **Reject stripped-RT uploads** — the poison guard ([§6.2](#62-stripped-rt-poison-guard)) keeps the real RT in the pool intact.
-3. **Uploader goes AT-only too** — after uploading its real RT, that client's guard strips its own local RT (Phase-4, [§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)) and thereafter relies on the hub.
+3. **Uploader goes AT-only too** — the upload response carries `refreshed_auth_json` (the AT the hub's verification refresh just minted, RT stripped); the client installs that, *then* strips its own local RT (Phase-4, [§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)), and thereafter relies on the hub. Without the handback the verification refresh would revoke the uploader's own access token and the strip would remove its only way back.
 4. **Hub refreshes centrally** — the worker proactively refreshes near-expiry ATs ([§7.2](#72-per-entry-processing-processauthpoolentry)) and clients pull fresh ATs via `refresh_current`.
 
 **Lifecycle of one account under the flag:**
 
 ```
-client uploads full auth ──► pool stores real RT ──► client strips local RT (AT-only)
-        │                                                      │
-        ▼                                                      ▼
- borrowers fetch AT-only ◄── hub central-refresh (T-1h) ◄── worker probes + refreshes
-        │                                                      │
-   AT near expiry ──► refresh_current ──► hub serves fresh AT ─┘
-        │
-   RT truly dead (revoked elsewhere) ──► hard-dead ──► repair-handback ──► latest uploader re-login
+client uploads full auth
+      │
+      ▼
+hub verifies it by REFRESHING  ──►  pool stores the new real RT
+      │   (this revokes the access token the uploader is still using)
+      ▼
+response carries refreshed_auth_json (AT-only)
+      │
+      ▼
+client INSTALLS it  ──►  then strips its local RT  ──►  state = fetched_from_auth_pool
+      │                       │
+      │                       └─ no working AT in hand ──► strip WITHHELD, real RT kept for next cycle
+      ▼
+    ┌─────────────────────── steady state, AT-only ───────────────────────┐
+    │                                                                     │
+    │  worker probes + central-refreshes (T-1h) ──► borrowers fetch AT-only│
+    │                                                                     │
+    │  local AT near expiry ──► refresh_current ──► hub serves a fresh AT  │
+    │  local AT revoked early ──► probe fails ──► source_needs_replacement │
+    └─────────────────────────────────────────────────────────────────────┘
+      │
+      ▼
+RT truly dead (revoked elsewhere) ──► hard-dead ──► repair-handback ──► latest uploader re-login
 ```
 
 **Safety properties.** Because borrowers can't refresh, they can't cause cascade. The unique *new* risk is many machines sharing one AT → provider abuse pushback; this is monitored separately ([§8.1](#81-assess_healthmjs), abuse-class scan). Observed data: 0 abuse-class errors; all failures are RT-class.
@@ -642,14 +684,21 @@ For a borrow request, candidates are filtered then ranked:
 
 `lib/token-refresh.js` is the server-side refresher (hub is sole refresher under the flag):
 - **Endpoints**: Claude `platform.claude.com/v1/oauth/token` (client `9d1c…`); Codex `auth.openai.com/oauth/token` (client `app_EMoam…`, no scope) (`:5-10`).
-- **Claude scope decides AT lifetime.** `user:inference` alone mints an 8-hour access token; the
-  CLI's own scope set mints a 30-day one on the same `client_id` (measured 2026-08-27,
-  [`AUTH_TOKENS.md` §2](AUTH_TOKENS.md)). An 8-hour token makes the pool rotate ~90x more often, and
-  every rotation is a chance to orphan a custodian ([§9](#9-the-disabled_refresh_token-mechanism)),
-  so `refreshClaudeToken` asks for the scopes the stored blob was actually granted
-  (`claudeScopesFromAuthBlob`) and retries once with the narrow set only if the provider rejects
-  them — a rejected refresh does not consume the RT, so that retry cannot orphan the grant. Codex
-  sends no scope.
+- **A refresh revokes the access tokens already issued for that grant.** Not textbook rotation, and
+  the single most misleading property of this system: a live AT went `200` → `401 OAuth access token
+  has been revoked` within one guard cycle of the hub refreshing that grant, 30 days before its
+  stated expiry ([`AUTH_TOKENS.md` §3.5](AUTH_TOKENS.md)). Whoever refreshes therefore **must hand
+  the new AT to everyone still using the old one** — which is why `/api/auth/upload` returns
+  `refreshed_auth_json` ([§9](#9-the-disabled_refresh_token-mechanism)).
+- **Claude scope was believed to decide AT lifetime; it does not.** `user:inference` alone returns
+  `expires_in` 28800 while the CLI's own scope set claims 30 days on the same `client_id`, so
+  `6e08c8f` made `refreshClaudeToken` ask for the scopes the stored blob was granted
+  (`claudeScopesFromAuthBlob`), retrying once with the narrow set if the provider rejects them (a
+  rejected refresh does not consume the RT, so the retry cannot orphan the grant). **Deployed
+  2026-08-28; the two uploads that followed still minted 8.00 h pool tokens.** Either the wide scope
+  is rejected every time and the fallback fires, or scope is not the lever — the `logRefreshOutcome`
+  telemetry below distinguishes them and has not been read yet. Do that before changing scope again.
+  Codex sends no scope.
 - **Every refresh logs one line** (`logRefreshOutcome`): source, attempt, requested scope, granted
   scope, `expires_in`, status, rejection. Stored expiry mirrors only show the result after the fact;
   this is what makes "which scope buys which lifetime" answerable from the Vercel and Actions logs.
@@ -657,7 +706,9 @@ For a borrow request, candidates are filtered then ranked:
 - **Classification** (`postRefresh` `:12-39`): HTTP 400/401 → `auth_rejected` (RT dead, latest uploader must re-login); anything else (network, 5xx, 200-without-token) → transient.
 - **`applyRefreshToBlob`**: per-source field updates that preserve unrelated sections (e.g. claude `mcpOAuth`); sets `expiresAt`/`last_refresh`.
 - **`accessTokenMsUntilExpiry`** — the crux of selectivity:
-  - **Claude**: `credentials.claudeAiOauth.expiresAt` (real, AT ~8 h).
+  - **Claude**: `credentials.claudeAiOauth.expiresAt` — an **upper bound, not a lifetime**. The token
+    is usually revoked by the next refresh of the grant long before this, so treat a comfortable
+    margin here as "not yet expired", never as "still works".
   - **Codex**: decode the **access_token JWT** `exp` (real ~**10-day** lifetime), falling back to the `id_token` JWT (~1 h, identity only) **only** if the access_token isn't a decodable JWT (`:105-122`).
 
 **Why one T-1h threshold for both** (today's unification): the worker decides which accounts to refresh each cycle by comparing `accessTokenMsUntilExpiry` to `REFRESH_THRESHOLD_MS = 1 h`. Codex's 10-day AT means proactive refresh almost never fires on a healthy codex account (it's effectively claude-driven), but unifying the code path removes per-source special-casing. The threshold is sized against the worst worker gap (~110 min); the backstops for a missed window are client re-upload + the `refresh_current` AT-freshness fallback.
