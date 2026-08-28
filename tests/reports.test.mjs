@@ -557,6 +557,81 @@ test("mergeLatestReport ignores invalidation from older auth refresh than curren
   assert.equal(merged.windows["1week"].remaining_percent, 80);
 });
 
+test("mergeLatestReport accepts a central-refresh rejection even when the client's auth looks fresher", () => {
+  // The worker reports the POOLED blob's auth_last_refresh. A client that keeps its own credential
+  // fresh without re-uploading always looks newer, so the freshness guard discarded the one verdict
+  // that actually presented the pooled refresh token to the provider — leaving a dead credential
+  // marked ok and still served to borrowers. Observed on claude-qpt0311@uw.edu for a month.
+  const previous = sanitizeReport({
+    source: "claude",
+    report_origin: "client",
+    hostname: "someones-mac",
+    reporter_name: "peitong.qi@someones-mac",
+    reported_at: "2026-08-28T18:15:26Z",
+    account_id: "claude-qpt0311@uw.edu",
+    auth_last_refresh: "1787900000000",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 10, remaining_percent: 90, reset_at: "2026-08-28T23:00:00Z" },
+      "1week": { used_percent: 20, remaining_percent: 80, reset_at: "2026-09-02T23:00:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "claude",
+    report_origin: "worker",
+    hostname: "worker",
+    reporter_name: "worker",
+    reported_at: "2026-08-28T18:20:00Z",
+    account_id: "claude-qpt0311@uw.edu",
+    auth_last_refresh: "1785000000000", // the month-old pooled blob — deliberately "older"
+    status: "error",
+    error: "refresh_token_rejected",
+    windows: { "5h": null, "1week": null },
+    usage_summary: { central_refresh: { attempted: true, ok: false, auth_rejected: true, status: 400 } },
+  });
+
+  const merged = mergeLatestReport(previous, incoming);
+
+  assert.equal(merged.status, "error");
+  assert.equal(merged.error, "refresh_token_rejected");
+  // the client's quota is still carried forward, just marked stale
+  assert.equal(merged.windows["5h"].remaining_percent, 90);
+  assert.equal(merged.windows_stale, true);
+});
+
+// Uses claude's ms-epoch auth_last_refresh on purpose: Date.parse returns NaN for it, so before the
+// numeric branch in reportAuthRefreshMs this guard could never fire for claude and this test failed.
+test("mergeLatestReport still ignores a stale CLIENT invalidation with no central-refresh evidence (ms-epoch auth_last_refresh)", () => {
+  const previous = sanitizeReport({
+    source: "claude",
+    report_origin: "client",
+    reporter_name: "a",
+    hostname: "a",
+    reported_at: "2026-08-28T18:15:00Z",
+    account_id: "claude-x@example.com",
+    auth_last_refresh: "1787900000000",
+    status: "ok",
+    windows: {
+      "5h": { used_percent: 10, remaining_percent: 90, reset_at: "2026-08-28T23:00:00Z" },
+      "1week": { used_percent: 20, remaining_percent: 80, reset_at: "2026-09-02T23:00:00Z" },
+    },
+  });
+  const incoming = sanitizeReport({
+    source: "claude",
+    report_origin: "client",
+    reporter_name: "b",
+    hostname: "b",
+    reported_at: "2026-08-28T18:20:00Z",
+    account_id: "claude-x@example.com",
+    auth_last_refresh: "1785000000000",
+    status: "error",
+    error: "claude auth invalid (authentication_error)",
+    windows: { "5h": null, "1week": null },
+  });
+
+  assert.equal(mergeLatestReport(previous, incoming).status, "ok");
+});
+
 test("mergeLatestReport keeps good client codex quota when a newer worker soft-fails", () => {
   const previous = sanitizeReport({
     source: "codex",
