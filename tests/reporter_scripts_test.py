@@ -1690,6 +1690,33 @@ Reading additional input from stdin...
 
         self.assertEqual(payload["account_id"], "claude-email-missing")
 
+    def test_probe_claude_reports_nonzero_exit_with_logged_out_json_as_the_logged_out_error(self):
+        # Regression: `claude auth status` exits nonzero when it is not logged in and still prints
+        # its JSON. Reporting that as an opaque command failure put a raw JSON blob in `error` --
+        # which reached the owner's toast verbatim -- and gave the rotation rule nothing to match,
+        # so an expired AT-only credential could never trigger a fetch.
+        logged_out = '{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}'
+        auth_json = mock.Mock(returncode=1, stdout=logged_out, stderr="")
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json]):
+                payload = probe_claude(Path("/tmp/claude-home"))
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], quota_reporters.CLAUDE_LOGGED_OUT_ERROR)
+        self.assertEqual(payload["account_id"], "claude-auth-unavailable")
+        self.assertTrue(quota_guard.is_hard_invalidated(payload))
+
+    def test_probe_claude_keeps_unparseable_nonzero_output_as_the_raw_failure(self):
+        # The other half of the same branch: output that is not the CLI's answer stays a failure to
+        # ask, and must not be laundered into "not logged in".
+        auth_json = mock.Mock(returncode=1, stdout="", stderr="dyld: library not loaded")
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json]):
+                payload = probe_claude(Path("/tmp/claude-home"))
+
+        self.assertEqual(payload["error"], "dyld: library not loaded")
+        self.assertFalse(quota_guard.is_hard_invalidated(payload))
+
     def test_probe_claude_falls_back_to_cli_state_oauth_email(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
         auth_text = mock.Mock(returncode=0, stdout="Auth token: ANTHROPIC_AUTH_TOKEN\nAnthropic base URL: https://open.bigmodel.cn/api/anthropic\n", stderr="")
@@ -2652,6 +2679,75 @@ Reading additional input from stdin...
         fetch_best.assert_called_once()
         self.assertFalse(fetch_best.call_args.kwargs["refresh_current"])
         write_known.assert_called_once()
+
+    def test_maybe_replace_claude_auth_fetches_when_the_probe_says_logged_out(self):
+        # Regression: maybe_replace_claude_auth used to return missing_stable_claude_auth for any
+        # payload whose status was not "ok", which skipped the only call to /api/auth/fetch-best.
+        # A hub-fetched Claude credential is AT-only, so a machine whose access token died could not
+        # refresh its own way out and could not be handed a new one either -- it just went blind
+        # until a human re-logged in. The Codex path has no such gate.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            claude_home.mkdir(parents=True)
+            known_auth_path = Path(temp_dir) / "known_auth.json"
+            config = {"auth_pool_url": "https://quota-report-hub.vercel.app", "auth_pool_user_token": "qrp_token"}
+            logged_out_payload = {
+                "account_id": "claude-auth-unavailable",
+                "email": None,
+                "status": "error",
+                "error": quota_reporters.CLAUDE_LOGGED_OUT_ERROR,
+                "windows": {},
+            }
+            replacement_blob = json.dumps({
+                "schema": "claude_credentials_v1",
+                "account_id": "claude-other@example.com",
+                "credentials": {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}},
+            })
+            with mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None):
+                with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                    "replacement": {"account_id": "claude-other@example.com", "email": "other@example.com", "auth_json": replacement_blob},
+                }) as fetch:
+                    with mock.patch.object(quota_guard, "install_claude_credentials", return_value={"installed": True, "active_store": "token_cache_v2"}):
+                        with mock.patch.object(quota_guard, "claude_auth_blob_metadata", return_value={"digest": "d", "account_id": "claude-other@example.com", "auth_last_refresh": "2026-08-28T00:00:00Z"}):
+                            with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "d"}):
+                                result = quota_guard.maybe_replace_claude_auth(
+                                    config, logged_out_payload, claude_home, known_auth_path,
+                                    threshold_percent=20.0, weekly_threshold_percent=5.0,
+                                )
+
+        fetch.assert_called_once()
+        # A failure placeholder is not a pool account: telling the hub we hold one would have it
+        # reason about -- and repair -- an account that does not exist.
+        self.assertIsNone(fetch.call_args.kwargs["current_account_id"])
+        self.assertTrue(result["replaced"])
+        self.assertEqual(result["to_account_id"], "claude-other@example.com")
+
+    def test_maybe_replace_claude_auth_does_not_borrow_when_the_probe_could_not_ask(self):
+        # The gate removal must not turn every probe hiccup into a borrowed account: a missing
+        # binary says nothing about the credential's health, so nothing is fetched -- and the run
+        # log must not call it "healthy" either.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            claude_home.mkdir(parents=True)
+            known_auth_path = Path(temp_dir) / "known_auth.json"
+            config = {"auth_pool_url": "https://quota-report-hub.vercel.app", "auth_pool_user_token": "qrp_token"}
+            payload = {
+                "account_id": "claude-missing-binary",
+                "email": None,
+                "status": "error",
+                "error": "claude command not found",
+                "windows": {},
+            }
+            with mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None):
+                with mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=False):
+                    with mock.patch.object(quota_guard, "fetch_best_auth") as fetch:
+                        result = quota_guard.maybe_replace_claude_auth(
+                            config, payload, claude_home, known_auth_path,
+                            threshold_percent=20.0, weekly_threshold_percent=5.0,
+                        )
+
+        fetch.assert_not_called()
+        self.assertEqual(result["reason"], "probe_unavailable")
 
     def test_maybe_replace_claude_auth_installs_replacement_into_every_store(self):
         # Modern Claude Code keeps its OAuth record in the encrypted token cache and

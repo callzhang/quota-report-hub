@@ -33,6 +33,7 @@ from install_quota_guard import (
 )
 from quota_reporters import (
     CLAUDE_HOME,
+    CLAUDE_LOGGED_OUT_ERROR,
     CLIENT_VERSION,
     KNOWN_AUTH_PATH,
     SEED_STATE_NOT_LOGGED_IN,
@@ -276,6 +277,7 @@ def is_hard_invalidated(payload: dict) -> bool:
         "refresh_token_rejected",
         "claude auth invalid (authentication_error)",
         "claude auth email unavailable",
+        CLAUDE_LOGGED_OUT_ERROR,
     }
 
 
@@ -1545,22 +1547,38 @@ def maybe_replace_claude_auth(
             "reason": "unsupported_custom_provider",
             "triggered_by": [],
         }
-    if not current_claude_payload or current_claude_payload.get("status") != "ok":
-        return {"ok": True, "replaced": False, "reason": "missing_stable_claude_auth", "triggered_by": []}
-
-    current_account_id = current_claude_payload.get("account_id")
+    # No health gate here, deliberately -- the Codex path has none either, and a failed probe is
+    # exactly when a fetch matters most. A hub-fetched Claude credential is AT-only
+    # (SYSTEM_DESIGN.md 9), so once its access token dies this machine cannot refresh its own way
+    # out; gating the only call to /api/auth/fetch-best on a healthy probe made every
+    # hard-invalidated Claude state unrecoverable and made the Claude strings in
+    # is_hard_invalidated dead code -- the machine stayed blind for as long as it took a human to
+    # re-login. source_needs_replacement is the rotation rule for both sources; let it decide.
+    payload = current_claude_payload or {}
+    # Only an email-derived id names a real pool account. The probe's failure placeholders
+    # ("claude-auth-unavailable" and friends) name none, and claiming to hold one would have the hub
+    # reason about -- and hand back a repair_auth for -- an account that does not exist.
+    current_account_id = payload.get("account_id") if payload.get("email") else None
     current_quota = {
-        "five_h_remaining_percent": remaining_percent(current_claude_payload, "5h"),
-        "one_week_remaining_percent": remaining_percent(current_claude_payload, "1week"),
+        "five_h_remaining_percent": remaining_percent(payload, "5h"),
+        "one_week_remaining_percent": remaining_percent(payload, "1week"),
     }
     # Quota-low (or invalidated) triggers a normal replacement; a healthy-but-near-expiry
     # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
     refresh_current = False
-    if not source_needs_replacement(current_claude_payload, threshold_percent, weekly_threshold_percent):
+    if not source_needs_replacement(payload, threshold_percent, weekly_threshold_percent):
         if fetched_auth_near_expiry("claude", known_auth_path, claude_home=claude_home):
             refresh_current = True
         else:
-            return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
+            # A probe that failed for a reason other than a dead credential (no binary, a timeout)
+            # is no evidence the account is unhealthy, and borrowing someone else's on it would be
+            # wrong -- but it is not "healthy" either, and the run log has to say which it was.
+            return {
+                "ok": True,
+                "replaced": False,
+                "reason": "healthy" if payload.get("status") == "ok" else "probe_unavailable",
+                "triggered_by": [],
+            }
 
     result = fetch_best_auth(
         config["auth_pool_url"],
@@ -1569,7 +1587,7 @@ def maybe_replace_claude_auth(
         current_account_id=current_account_id,
         current_quota=current_quota,
         exclude_account_ids=[],
-        requester_id=current_claude_payload.get("reporter_name") if current_claude_payload else None,
+        requester_id=payload.get("reporter_name"),
         refresh_current=refresh_current,
     )
     notify_hub_notices(result)

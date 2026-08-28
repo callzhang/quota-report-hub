@@ -47,6 +47,10 @@ CLAUDE_OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CLAUDE_OAUTH_USER_AGENT = "claude-cli (quota-reporter)"
 CLAUDE_TOKEN_REFRESH_SKEW_MS = 120_000
+# The single value meaning "the CLI answered, and there is no usable credential". Both probe_claude
+# branches emit it -- exit-zero-with-loggedIn-false, and the nonzero exit the CLI uses for the same
+# state -- so the rotation rule has one value to match instead of two shapes of free text.
+CLAUDE_LOGGED_OUT_ERROR = "claude auth status reported loggedIn=false"
 # Placeholder refresh tokens the hub serves in disabled_refresh_token mode (must match the hub's
 # lib/fetch-best.js). A local auth carrying one of these is access-token-only: never re-upload it
 # (the hub would reject it anyway, and it must not overwrite the real shared refresh token).
@@ -2040,12 +2044,23 @@ def probe_claude(
             "usage_summary": None,
         }
     if auth_result.returncode != 0:
+        # `claude auth status` exits nonzero exactly when it is not logged in, and still prints its
+        # normal JSON on stdout. That is the CLI answering the question, not failing to be asked.
+        # Collapsing it into an opaque command failure buried the answer in a raw JSON blob -- which
+        # then reached the owner's desktop toast verbatim -- and left the rotation rule with nothing
+        # to match, so a dead AT-only credential could never trigger a fetch (SYSTEM_DESIGN.md 3.4).
+        try:
+            logged_out = json.loads(auth_result.stdout).get("loggedIn") is False
+        except Exception:
+            logged_out = False
         return {
             **base,
             "account_id": "claude-auth-unavailable",
             "plan_name": None,
             "status": "error",
-            "error": (auth_result.stderr.strip() or auth_result.stdout.strip() or "claude auth status failed")[:1200],
+            "error": CLAUDE_LOGGED_OUT_ERROR
+            if logged_out
+            else (auth_result.stderr.strip() or auth_result.stdout.strip() or "claude auth status failed")[:1200],
             "usage_summary": None,
         }
 
@@ -2131,7 +2146,7 @@ def probe_claude(
             if auth_status.get("loggedIn") and auth_text_details.get("email")
             else "claude auth email unavailable"
             if auth_status.get("loggedIn")
-            else "claude auth status reported loggedIn=false"
+            else CLAUDE_LOGGED_OUT_ERROR
         ),
         "windows": windows,
         "usage_summary": compact_claude_usage_summary(
