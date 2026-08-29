@@ -1687,6 +1687,41 @@ Reading additional input from stdin...
         self.assertEqual(payload["usage_summary"]["quota_source"], "unavailable")
         self.assertEqual(payload["usage_summary"]["oauth_usage_probe"]["status_code"], 401)
 
+    def test_auth_status_retries_once_after_a_timeout(self):
+        """The call is slow cold and fast warm, and blew past even a 30s ceiling. One retry lands on
+        the warm path instead of losing the whole run to probe_unavailable."""
+        warm = mock.Mock(returncode=0, stdout='{"loggedIn": true}', stderr="")
+        with mock.patch("quota_reporters.subprocess.run",
+                        side_effect=[subprocess.TimeoutExpired(cmd=["claude"], timeout=30), warm]) as run:
+            out = quota_reporters.run_claude_auth_status_command("/bin/claude", ["auth", "status"])
+        self.assertIs(out, warm)
+        self.assertEqual(run.call_count, 2)
+
+    def test_auth_status_gives_up_after_the_retry_also_times_out(self):
+        with mock.patch("quota_reporters.subprocess.run",
+                        side_effect=subprocess.TimeoutExpired(cmd=["claude"], timeout=30)) as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                quota_reporters.run_claude_auth_status_command("/bin/claude", ["auth", "status"])
+        self.assertEqual(run.call_count, 2)
+
+    def test_probe_claude_survives_a_text_variant_timeout(self):
+        """`auth status --text` had no timeout handling, so a slow call raised straight out of
+        probe_claude as an opaque probe failure — discarding the answer `auth status` already gave."""
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        timeout = subprocess.TimeoutExpired(cmd=["claude", "auth", "status", "--text"], timeout=30)
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+             mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, timeout, timeout]), \
+             mock.patch("quota_reporters.read_claude_oauth_credentials",
+                        return_value=({"claudeAiOauth": {"accessToken": "AT", "refreshToken": "R"}}, "token_cache_v2")), \
+             mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None), \
+             mock.patch("quota_reporters.probe_claude_rate_limits", return_value={"available": False, "windows": {"5h": None, "1week": None}}), \
+             mock.patch("quota_reporters.read_claude_stats", return_value=None):
+            with tempfile.TemporaryDirectory() as d:
+                payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=Path(d) / "b.json")
+        # it reports a reason the rotation rule understands instead of an opaque command failure
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], "claude auth email unavailable")
+
     def test_probe_claude_401_with_a_real_rt_still_hard_invalidates(self):
         """The AT-only softening must not swallow the real signal: a client that HOLDS a refresh
         token and still gets a 401 has evidence the credential itself is gone."""

@@ -2029,6 +2029,32 @@ def write_claude_usage_backoff(
         pass
 
 
+def run_claude_auth_status_command(claude_executable: str, args: list[str]):
+    """Run a `claude auth status` variant, retrying once on timeout.
+
+    The call is slow cold and fast warm — measured on one machine at 10.66s then 1.43s then 0.57s,
+    and separately 7.09s then 2.96s — and it occasionally blows past any fixed ceiling: raising the
+    timeout from 10s to 30s did not stop it losing. Losing costs the entire run, not just the quota
+    reading: probe_claude bails, the guard reports `probe_unavailable`, it makes no rotation
+    decision, and the account's quota goes stale on the dashboard until the next cycle. The retry
+    costs a few seconds and lands on the warm path, which is the one that has never been slow.
+    """
+    last_timeout = None
+    for _ in range(2):
+        try:
+            return subprocess.run(
+                [claude_executable, *args],
+                env=clean_claude_env(),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as error:
+            last_timeout = error
+    raise last_timeout
+
+
 def probe_claude(
     claude_home: Path = CLAUDE_HOME,
     claude_bin: str | None = None,
@@ -2060,14 +2086,7 @@ def probe_claude(
         }
 
     try:
-        auth_result = subprocess.run(
-            [claude_executable, "auth", "status"],
-            env=clean_claude_env(),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS,
-        )
+        auth_result = run_claude_auth_status_command(claude_executable, ["auth", "status"])
     except subprocess.TimeoutExpired:
         return {
             **base,
@@ -2099,15 +2118,16 @@ def probe_claude(
         }
 
     auth_status = json.loads(auth_result.stdout)
-    auth_text_result = subprocess.run(
-        [claude_executable, "auth", "status", "--text"],
-        env=clean_claude_env(),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS,
-    )
-    auth_text_details = parse_claude_auth_status_text(auth_text_result.stdout if auth_text_result.returncode == 0 else "")
+    # Degrade, don't explode. This call had no timeout handling at all, so a slow `--text` raised
+    # straight out of probe_claude as an opaque "claude probe failed: TimeoutExpired" — losing the
+    # run even though `auth status` above had already answered. Empty details fall through to the
+    # existing "claude auth email unavailable" path, which the rotation rule understands.
+    try:
+        auth_text_result = run_claude_auth_status_command(claude_executable, ["auth", "status", "--text"])
+        auth_text_stdout = auth_text_result.stdout if auth_text_result.returncode == 0 else ""
+    except subprocess.TimeoutExpired:
+        auth_text_stdout = ""
+    auth_text_details = parse_claude_auth_status_text(auth_text_stdout)
     cli_state = read_claude_cli_state(claude_home)
     oauth_account = (cli_state or {}).get("oauthAccount") if isinstance(cli_state, dict) else None
     if not auth_text_details.get("email") and isinstance(oauth_account, dict) and oauth_account.get("emailAddress"):
