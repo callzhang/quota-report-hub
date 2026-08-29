@@ -177,6 +177,10 @@ Replace when the source is hard-invalidated. Neither `maybe_replace_*` gates the
   **zero** places and every fetched or replacement AT was discarded on arrival while the code
   reported success.
 - **Proactive same-account refresh**: `fetched_auth_near_expiry` returns true when state is `fetched_from_auth_pool` and the local AT is within `AT_NEAR_EXPIRY_SKEW_SECONDS = 20 min` of expiry; the guard then calls `fetch-best` with `refresh_current=True` to mint a fresh AT for the *same* account before the dead placeholder RT is ever needed (`:2017-2060`).
+  The deferral that protects a healthy account from being swapped onto a borrowed one
+  (`kept_current_refresh_deferred`) is lifted by `current_auth_cannot_wait` once the token has been
+  refused or has under one guard cycle of life: it is only defensible while the current credential
+  still works, and deferring past that point trades churn for an outage.
   ⚠️ This trigger reads `expiresAt`, which is an upper bound rather than a lifetime
   ([§11](#11-token-refresh-architecture)) — it cannot see a revocation. The backstop is the rejection
   path: an AT-only client whose probe 401s reports

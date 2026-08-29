@@ -5659,6 +5659,60 @@ class Phase2NearExpiryTests(unittest.TestCase):
         fb.assert_called_once()
         self.assertTrue(fb.call_args.kwargs["refresh_current"])
 
+    def test_maybe_replace_claude_takes_a_borrowed_account_rather_than_sit_on_a_dead_token(self):
+        """The different-account deferral is justified only while the current token still has life.
+        A rejected AT-only token has none, and deferring every cycle is what kept this machine on a
+        401 for 80 minutes: refresh_current declines the borrowed account, the hub cannot refresh the
+        dead one in place, and nothing ever escalates."""
+        config = {"auth_pool_url": "https://hub", "auth_pool_user_token": "tok"}
+        payload = {
+            "account_id": "claude-mine@example.com",
+            "email": "mine@example.com",
+            "status": "error",
+            "error": quota_reporters.CLAUDE_AT_ONLY_TOKEN_REJECTED,
+            "windows": {"5h": None, "1week": None},
+        }
+        replacement_blob = json.dumps({
+            "schema": "claude_credentials_v1",
+            "account_id": "claude-other@example.com",
+            "credentials": {"claudeAiOauth": {"accessToken": "BORROWED_AT", "refreshToken": "RT"}},
+        })
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None), \
+                 mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=False), \
+                 mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                     "replacement": {"account_id": "claude-other@example.com", "email": "other@example.com",
+                                     "auth_json": replacement_blob}}), \
+                 mock.patch.object(quota_guard, "install_claude_credentials", return_value={"installed": True}), \
+                 mock.patch.object(quota_guard, "claude_auth_blob_metadata", return_value={
+                     "digest": "d", "account_id": "claude-other@example.com", "auth_last_refresh": "1"}), \
+                 mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "d"}):
+                result = quota_guard.maybe_replace_claude_auth(
+                    config, payload, Path(d) / ".claude", Path(d) / "known.json",
+                    threshold_percent=20.0, weekly_threshold_percent=5.0)
+        self.assertTrue(result["replaced"])
+        self.assertNotEqual(result.get("reason"), "kept_current_refresh_deferred")
+
+    def test_maybe_replace_claude_still_defers_while_the_token_has_life(self):
+        """A merely near-expiry token is still usable, so the churn guard must still hold: do not
+        swap a healthy owned account onto a borrowed one just because the hub could not refresh yet."""
+        config = {"auth_pool_url": "https://hub", "auth_pool_user_token": "tok"}
+        payload = {
+            "account_id": "claude-mine@example.com",
+            "email": "mine@example.com",
+            "status": "ok",
+            "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 90}},
+        }
+        with mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None), \
+             mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=True), \
+             mock.patch.object(quota_guard, "local_access_token_seconds_left", return_value=18 * 60), \
+             mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                 "replacement": {"account_id": "claude-other@example.com", "auth_json": "{}"}}):
+            result = quota_guard.maybe_replace_claude_auth(
+                config, payload, Path("/tmp/x"), Path("/tmp/known.json"),
+                threshold_percent=20.0, weekly_threshold_percent=5.0)
+        self.assertEqual(result["reason"], "kept_current_refresh_deferred")
+
     def test_maybe_replace_claude_at_only_rejection_asks_to_refresh_the_same_account(self):
         """A rejected AT-only token must fetch with refresh_current=True: this account needs a fresh
         access token, not somebody else's credential. refresh_current also engages the

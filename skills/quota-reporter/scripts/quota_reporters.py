@@ -2762,6 +2762,21 @@ def _local_access_token_expiry_epoch(source: str, *, codex_auth_path: Path | Non
     return None
 
 
+def local_access_token_seconds_left(
+    source: str,
+    *,
+    codex_auth_path: Path | None = None,
+    claude_home: Path | None = None,
+    now: float | None = None,
+) -> float | None:
+    """Seconds until the local access token expires (negative once past), or None if unknown."""
+    expiry = _local_access_token_expiry_epoch(source, codex_auth_path=codex_auth_path, claude_home=claude_home)
+    if expiry is None:
+        return None
+    now = now if now is not None else datetime.now(timezone.utc).timestamp()
+    return expiry - now
+
+
 def fetched_auth_near_expiry(
     source: str,
     known_auth_path: Path = KNOWN_AUTH_PATH,

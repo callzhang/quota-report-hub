@@ -51,6 +51,7 @@ from quota_reporters import (
     CLAUDE_AT_ONLY_TOKEN_REJECTED,
     fetched_auth_near_expiry,
     install_claude_credentials,
+    local_access_token_seconds_left,
     iso_now,
     load_config,
     post_auth_pool_quota,
@@ -280,6 +281,26 @@ def is_hard_invalidated(payload: dict) -> bool:
         "claude auth email unavailable",
         CLAUDE_LOGGED_OUT_ERROR,
     }
+
+
+# One guard cycle. Below this the deferral in maybe_replace_claude_auth cannot be retried before the
+# token dies, so waiting for an in-place refresh that is not coming just buys an outage.
+DEFER_MIN_ACCESS_TOKEN_SECONDS = 15 * 60
+
+
+def current_auth_cannot_wait(payload: dict, *, claude_home=None, now: float | None = None) -> bool:
+    """True when keeping the current credential another cycle risks going dark.
+
+    Either the access token was just refused, or it expires before the next guard run. The
+    different-account deferral below is justified only while the current token still has life —
+    its own comment says so — and routing a rejected AT-only token into refresh_current made that
+    premise false: every cycle deferred, nothing refreshed, and the machine sat on a dead token for
+    80 minutes before anything escalated.
+    """
+    if needs_fresh_access_token(payload):
+        return True
+    seconds_left = local_access_token_seconds_left("claude", claude_home=claude_home, now=now)
+    return seconds_left is not None and seconds_left < DEFER_MIN_ACCESS_TOKEN_SECONDS
 
 
 def needs_fresh_access_token(payload: dict) -> bool:
@@ -1664,7 +1685,11 @@ def maybe_replace_claude_auth(
     # invalidated accounts take the source_needs_replacement path (refresh_current=False) and are
     # still replaced/repaired. This prevents endless "switched to <pool account>" churn on a machine
     # whose own healthy account is host-managed (e.g. Claude Desktop) and can't be refreshed in place.
-    if refresh_current and replacement.get("account_id") != current_account_id:
+    if (
+        refresh_current
+        and replacement.get("account_id") != current_account_id
+        and not current_auth_cannot_wait(payload, claude_home=claude_home)
+    ):
         return {"ok": True, "replaced": False, "reason": "kept_current_refresh_deferred", "triggered_by": ["claude"], "account_id": current_account_id}
 
     blob = json.loads(replacement["auth_json"])
