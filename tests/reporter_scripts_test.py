@@ -1463,13 +1463,20 @@ Reading additional input from stdin...
     def test_run_claude_status_returns_timeout_instead_of_hanging(self):
         with mock.patch(
             "quota_reporters.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["claude", "-p", "/status"], timeout=10),
+            side_effect=subprocess.TimeoutExpired(
+                cmd=["claude", "-p", "/status"],
+                timeout=quota_reporters.CLAUDE_STATUS_TIMEOUT_SECONDS,
+            ),
         ):
             status = run_claude_status("claude")
 
         self.assertFalse(status["available"])
         self.assertIsNone(status["exit_code"])
-        self.assertEqual(status["text"], "/status timed out after 10s")
+        # read the constant rather than hardcoding it: the timeout was raised from 10s after a cold
+        # `claude auth status` was measured at 10.66s, losing the race and blinding the guard
+        self.assertEqual(
+            status["text"], f"/status timed out after {quota_reporters.CLAUDE_STATUS_TIMEOUT_SECONDS}s"
+        )
 
     def test_read_claude_keychain_credentials_returns_none_off_darwin(self):
         with mock.patch("quota_reporters.sys.platform", "linux"):

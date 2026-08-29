@@ -66,8 +66,14 @@ CLAUDE_AT_ONLY_TOKEN_REJECTED = "claude access token rejected (at-only; hub hold
 # after a 200 by not re-polling more often than this.
 CLAUDE_USAGE_BACKOFF_PATH = AUTH_STATE_DIR / "claude-usage-backoff.json"
 CLAUDE_USAGE_MIN_INTERVAL_SECONDS = 1800
-CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS = 10
-CLAUDE_STATUS_TIMEOUT_SECONDS = 10
+# `claude auth status` is fast once warm and slow on the first call after an idle stretch — measured
+# 10.66s / 1.43s / 0.57s back to back on 2026-08-29. At 10s the cold call lands right on the line, and
+# losing that race costs the whole run: the probe reports `claude-auth-timeout`, the guard goes
+# `probe_unavailable`, and it makes no rotation decision at all until the next cycle. It had already
+# done so 235 times in this machine's log. The cost of waiting is bounded and only paid when something
+# is genuinely wrong, so give the cold call room.
+CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS = 30
+CLAUDE_STATUS_TIMEOUT_SECONDS = 30
 CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
