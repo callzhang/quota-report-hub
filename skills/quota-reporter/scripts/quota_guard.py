@@ -52,6 +52,7 @@ from quota_reporters import (
     fetched_auth_near_expiry,
     install_claude_credentials,
     local_access_token_seconds_left,
+    restart_claude_app_if_idle,
     iso_now,
     load_config,
     post_auth_pool_quota,
@@ -2152,6 +2153,18 @@ def run_guard(args: argparse.Namespace) -> dict:
                         probed_payload=claude_payload,
                         quota_payload=without_sensitive_refresh_capture(claude_payload),
                     ),
+                ),
+            )
+            # A strip only rewrites the stores; the running app keeps its refresh token in memory and
+            # writes it back later (measured: stores stayed clean 2h52m, then the app restored a real
+            # RT and re-minted). Only a restart clears that, and only while no session would die with
+            # it — there is no `app-server daemon restart` on the claude side. Opt-in, and it declines
+            # unless the strip has already landed.
+            claude_app_restart = run_guard_step(
+                "claude_app_restart_failed",
+                lambda: restart_claude_app_if_idle(
+                    args.claude_home,
+                    enabled=bool(config.get("restart_claude_app_when_idle")),
                 ),
             )
 

@@ -15,6 +15,7 @@ import re
 import shutil
 import socket
 import subprocess
+import time
 import sys
 import tempfile
 import urllib.error
@@ -2027,6 +2028,102 @@ def write_claude_usage_backoff(
         path.write_text(json.dumps(state) + "\n", encoding="utf-8")
     except Exception:
         pass
+
+
+CLAUDE_APP_BINARY = "/Applications/Claude.app/Contents/MacOS/Claude"
+# Claude Code sessions run from a versioned copy under Application Support, as grandchildren of the
+# app (app -> Contents/Helpers/disclaimer -> claude). Matching the session binary's path is what
+# distinguishes "someone is working" from "the app is merely open".
+CLAUDE_CODE_SESSION_MARKER = "/claude-code/"
+CLAUDE_CODE_SESSION_BINARY_SUFFIX = "/claude.app/Contents/MacOS/claude"
+CLAUDE_APP_DISCLAIMER_HELPER = "/Applications/Claude.app/Contents/Helpers/disclaimer"
+CLAUDE_APP_QUIT_TIMEOUT_SECONDS = 20
+
+
+def _running_command_lines() -> list[str]:
+    try:
+        result = subprocess.run(["ps", "-eo", "command"], capture_output=True, text=True, timeout=15)
+    except Exception:
+        return []
+    return result.stdout.splitlines() if result.returncode == 0 else []
+
+
+def claude_app_is_running(command_lines: list[str] | None = None) -> bool:
+    lines = _running_command_lines() if command_lines is None else command_lines
+    return any(line.startswith(CLAUDE_APP_BINARY) for line in lines)
+
+
+def claude_code_session_count(command_lines: list[str] | None = None) -> int:
+    """How many Claude Code sessions the app is currently hosting.
+
+    Zero is the only safe moment to restart it: quitting takes every hosted session down with it,
+    and unlike codex there is no `app-server daemon restart` that could spare them.
+    """
+    lines = _running_command_lines() if command_lines is None else command_lines
+    total = 0
+    for line in lines:
+        # The app wraps each session in a `Helpers/disclaimer -- <session binary>` process, so the
+        # session path appears on two lines and a naive substring match double-counts. Skip the
+        # wrapper by prefix; do NOT try to isolate the executable by splitting on whitespace — these
+        # paths contain spaces ("Application Support"), and doing that silently matched nothing,
+        # reported zero sessions, and let a restart fire with five sessions live.
+        if line.startswith(CLAUDE_APP_DISCLAIMER_HELPER):
+            continue
+        if CLAUDE_CODE_SESSION_MARKER in line and CLAUDE_CODE_SESSION_BINARY_SUFFIX in line:
+            total += 1
+    return total
+
+
+def restart_claude_app_if_idle(claude_home: Path = CLAUDE_HOME, *, enabled: bool = False) -> dict:
+    """Restart Claude.app, but only while it is hosting no sessions.
+
+    A strip only rewrites the stores. The running app keeps its refresh token in memory and writes
+    it back later — measured 2026-08-29: after a verified strip the stores stayed clean for 2h52m
+    and then the app restored a real RT and re-minted from it. Nothing on disk can prevent that; the
+    memory has to go. Restarting is the only lever, and it is safe exactly when no session would die
+    with it.
+
+    Caller must have stripped first, so the app reloads placeholders and has nothing to refresh with.
+    Opt-in (`enabled`): quitting a desktop app out from under someone is not a default.
+    """
+    if sys.platform != "darwin":
+        return {"restarted": False, "reason": "unavailable"}
+    if not enabled:
+        return {"restarted": False, "reason": "not_enabled"}
+    lines = _running_command_lines()
+    # Refuse on absence of evidence, not just on evidence of absence. An unreadable process list
+    # must never look like "nobody is working" — that inversion is exactly how a detection bug came
+    # within one failed AppleScript of taking five live sessions down.
+    if not lines:
+        return {"restarted": False, "reason": "process_list_unavailable"}
+    if not claude_app_is_running(lines):
+        return {"restarted": False, "reason": "app_not_running"}
+    sessions = claude_code_session_count(lines)
+    if sessions:
+        return {"restarted": False, "reason": "sessions_active", "sessions": sessions}
+    still_live = claude_stores_with_real_refresh_token(claude_home)
+    if still_live:
+        return {"restarted": False, "reason": "strip_first", "stores_with_real_rt": still_live}
+
+    try:
+        subprocess.run(["osascript", "-e", 'quit app "Claude"'], capture_output=True, text=True, timeout=30)
+    except Exception as error:
+        return {"restarted": False, "reason": "quit_failed", "error": str(error)[:200]}
+
+    deadline = time.time() + CLAUDE_APP_QUIT_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        if not claude_app_is_running():
+            break
+        time.sleep(1)
+    else:
+        return {"restarted": False, "reason": "quit_timed_out"}
+
+    try:
+        subprocess.run(["open", "-a", "Claude"], capture_output=True, text=True, timeout=30)
+    except Exception as error:
+        # It is quit and did not come back. Say so loudly: the machine is now without the app.
+        return {"restarted": False, "reason": "relaunch_failed", "error": str(error)[:200]}
+    return {"restarted": True, "sessions": 0}
 
 
 def run_claude_auth_status_command(claude_executable: str, args: list[str]):

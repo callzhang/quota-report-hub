@@ -176,6 +176,17 @@ Replace when the source is hard-invalidated. Neither `maybe_replace_*` gates the
   `shadowed_by_<store>` when the install did not take. Before this the guard wrote that cache in
   **zero** places and every fetched or replacement AT was discarded on arrival while the code
   reported success.
+- **Restarting Claude.app when it is idle** (`restart_claude_app_if_idle`, opt-in via
+  `restart_claude_app_when_idle`). A strip only rewrites the stores; the running app keeps its
+  refresh token in memory and writes it back later — measured 2026-08-29, the stores stayed clean for
+  2h52m and then the app restored a real RT and re-minted from it. Nothing on disk prevents that, and
+  unlike codex there is no `app-server daemon restart` that could spare hosted sessions, so the only
+  safe moment is when it is hosting none. Session detection counts the versioned session binary under
+  Application Support and skips the `Helpers/disclaimer` wrapper that repeats the same path; it must
+  not isolate the executable by splitting on whitespace, because those paths contain spaces and doing
+  so matched nothing, reported zero sessions, and let a restart fire with five live. The call refuses
+  on absence of evidence — an unreadable process list, or a strip that has not landed yet — never
+  only on evidence of absence.
 - **Proactive same-account refresh**: `fetched_auth_near_expiry` returns true when state is `fetched_from_auth_pool` and the local AT is within `AT_NEAR_EXPIRY_SKEW_SECONDS = 20 min` of expiry; the guard then calls `fetch-best` with `refresh_current=True` to mint a fresh AT for the *same* account before the dead placeholder RT is ever needed (`:2017-2060`).
   The deferral that protects a healthy account from being swapped onto a borrowed one
   (`kept_current_refresh_deferred`) is lifted by `current_auth_cannot_wait` once the token has been

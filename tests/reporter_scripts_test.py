@@ -1687,6 +1687,57 @@ Reading additional input from stdin...
         self.assertEqual(payload["usage_summary"]["quota_source"], "unavailable")
         self.assertEqual(payload["usage_summary"]["oauth_usage_probe"]["status_code"], 401)
 
+    SESSION_LINE = '/Users/d/Library/Application Support/Claude/claude-code/2.1.247/claude.app/Contents/MacOS/claude --resume=x'
+    WRAPPER_LINE = '/Applications/Claude.app/Contents/Helpers/disclaimer -- /Users/d/Library/Application Support/Claude/claude-code/2.1.247/claude.app/Contents/MacOS/claude --resume=x'
+    APP_LINE = '/Applications/Claude.app/Contents/MacOS/Claude'
+
+    def test_session_count_ignores_the_wrapper_and_survives_spaces_in_the_path(self):
+        """Both regressions in one test. The wrapper repeats the session path, so a naive substring
+        match counts every session twice; and the path contains spaces ("Application Support"), so
+        isolating the executable with split(" ")[0] matches nothing — which reported ZERO sessions
+        and let a restart fire with five live."""
+        lines = [self.APP_LINE, self.WRAPPER_LINE, self.SESSION_LINE, self.WRAPPER_LINE, self.SESSION_LINE]
+        self.assertEqual(quota_reporters.claude_code_session_count(lines), 2)
+        self.assertTrue(quota_reporters.claude_app_is_running(lines))
+
+    def test_restart_refuses_while_any_session_is_live(self):
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "_running_command_lines",
+                               return_value=[self.APP_LINE, self.SESSION_LINE]), \
+             mock.patch.object(quota_reporters.subprocess, "run") as run:
+            out = quota_reporters.restart_claude_app_if_idle(enabled=True)
+        self.assertEqual(out["reason"], "sessions_active")
+        run.assert_not_called()          # nothing destructive may be attempted
+
+    def test_restart_refuses_when_the_process_list_cannot_be_read(self):
+        """Absence of evidence is not evidence of absence: an unreadable process list must not look
+        like an idle machine."""
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "_running_command_lines", return_value=[]), \
+             mock.patch.object(quota_reporters.subprocess, "run") as run:
+            out = quota_reporters.restart_claude_app_if_idle(enabled=True)
+        self.assertEqual(out["reason"], "process_list_unavailable")
+        run.assert_not_called()
+
+    def test_restart_is_opt_in(self):
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "_running_command_lines") as lines, \
+             mock.patch.object(quota_reporters.subprocess, "run") as run:
+            out = quota_reporters.restart_claude_app_if_idle()
+        self.assertEqual(out["reason"], "not_enabled")
+        lines.assert_not_called()
+        run.assert_not_called()
+
+    def test_restart_refuses_until_the_strip_has_landed(self):
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "_running_command_lines", return_value=[self.APP_LINE]), \
+             mock.patch.object(quota_reporters, "claude_stores_with_real_refresh_token",
+                               return_value=["token_cache_v2"]), \
+             mock.patch.object(quota_reporters.subprocess, "run") as run:
+            out = quota_reporters.restart_claude_app_if_idle(enabled=True)
+        self.assertEqual(out["reason"], "strip_first")
+        run.assert_not_called()
+
     def test_auth_status_retries_once_after_a_timeout(self):
         """The call is slow cold and fast warm, and blew past even a 30s ceiling. One retry lands on
         the warm path instead of losing the whole run to probe_unavailable."""
