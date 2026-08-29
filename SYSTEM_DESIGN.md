@@ -164,7 +164,7 @@ Replace when the source is hard-invalidated. Neither `maybe_replace_*` gates the
   shadowed — the strip is **withheld** (`strip_withheld_no_working_at`) and the real RT is kept for
   the next cycle. A machine that can still refresh is recoverable; one that cannot is not. This also
   means hub and clients can roll out in either order.
-- Claude strip writes the placeholder to **every hub-client entry** of each local store that can
+- Claude strip writes the placeholder to **every inference-capable grant** in each local store that can
   shadow the hub (macOS tokenCacheV2/tokenCache, keychain, an existing `.credentials.json`), not just
   the highest-scored cache entry — the cache holds one entry per scope set, and an unstripped sibling
   is still a rotatable RT. `claude_stores_with_real_refresh_token` then **reads back**: `stripped`

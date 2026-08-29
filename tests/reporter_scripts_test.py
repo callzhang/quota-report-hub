@@ -5594,6 +5594,54 @@ class AtOnlyLocalSyncTests(unittest.TestCase):
             self.assertEqual(result["reason"], "local_auth_is_at_only")
             upload.assert_not_called()
 
+    def test_cache_entry_membership_follows_inference_scope_not_client_id(self):
+        """The strip used to filter on the hub's client id. A second grant on the same account with
+        user:inference kept a real RT and Claude.app re-minted from it within minutes — measured
+        2026-08-29, and stripping that grant stopped it. Membership is the capability, not the id."""
+        hub = quota_reporters.CLAUDE_OAUTH_CLIENT_ID
+        base = quota_reporters.CLAUDE_DEFAULT_BASE_URL
+
+        # the hub's own grant: always in, whatever its scopes
+        self.assertTrue(quota_reporters.claude_cache_entry_can_mint_inference(f"{hub}:{base}:user:profile"))
+        # a DIFFERENT client that can still run inference on this account: in
+        self.assertTrue(quota_reporters.claude_cache_entry_can_mint_inference(
+            f"a473d7bb-x:{base}:user:inference user:profile user:sessions:claude_code"))
+        # a different client with no inference capability: left alone
+        self.assertFalse(quota_reporters.claude_cache_entry_can_mint_inference(f"a473d7bb-x:{base}:user:profile"))
+        self.assertFalse(quota_reporters.claude_cache_entry_can_mint_inference("not-a-key"))
+        self.assertFalse(quota_reporters.claude_cache_entry_can_mint_inference(None))
+
+    def test_strip_covers_another_clients_inference_grant_and_spares_profile_only(self):
+        hub = quota_reporters.CLAUDE_OAUTH_CLIENT_ID
+        base = quota_reporters.CLAUDE_DEFAULT_BASE_URL
+        cache = {
+            f"{hub}:{base}:user:inference user:profile": {"token": "AT1", "refreshToken": "REAL_HUB"},
+            f"other-client:{base}:user:inference user:sessions:claude_code": {"token": "AT2", "refreshToken": "REAL_OTHER"},
+            f"other-client:{base}:user:profile": {"token": "AT3", "refreshToken": "REAL_PROFILE"},
+        }
+        written = {}
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d) / ".claude"
+            home.mkdir(parents=True)
+            cfg = quota_reporters.claude_application_config_path(home)
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text(json.dumps({"oauth:tokenCacheV2": "ENC"}), encoding="utf-8")
+            with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+                 mock.patch.object(quota_reporters, "read_claude_safe_storage_secret", return_value=b"k"), \
+                 mock.patch.object(quota_reporters, "decrypt_claude_safe_storage_json", return_value=cache), \
+                 mock.patch.object(quota_reporters, "encrypt_claude_safe_storage_json",
+                                   side_effect=lambda c, s: written.update(c) or "ENC2"):
+                out = quota_reporters.strip_claude_token_cache_refresh_tokens(home, "oauth:tokenCacheV2")
+
+        self.assertEqual(out["stripped_entries"], 2)
+        ph = quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN
+        self.assertEqual(written[f"{hub}:{base}:user:inference user:profile"]["refreshToken"], ph)
+        self.assertEqual(written[f"other-client:{base}:user:inference user:sessions:claude_code"]["refreshToken"], ph)
+        # profile-only belongs to another desktop feature; stripping it buys nothing
+        self.assertEqual(written[f"other-client:{base}:user:profile"]["refreshToken"], "REAL_PROFILE")
+        # access tokens are never swapped underneath a running Claude Code
+        self.assertEqual(written[f"{hub}:{base}:user:inference user:profile"]["token"], "AT1")
+
     def test_sync_claude_skips_at_only_local_auth(self):
         blob = json.dumps({
             "schema": "claude_credentials_v1",

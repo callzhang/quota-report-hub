@@ -1183,8 +1183,32 @@ def install_claude_credentials(credentials: dict, claude_home: Path = CLAUDE_HOM
     return result
 
 
+def claude_cache_entry_can_mint_inference(cache_key: str) -> bool:
+    """Whether this cache entry's grant can mint an inference-capable credential for the account.
+
+    Rotating ANY such grant revokes the access tokens the provider already issued for it — including
+    the one the hub is handing out to borrowers. So every grant that can do inference has to go
+    AT-only, not just the hub's own client id.
+
+    Measured 2026-08-29: with only the hub client stripped, Claude.app re-minted within minutes and
+    rotated 9-10 times in two hours, because a SECOND grant on the same account (client `a473d7bb`,
+    scopes `user:inference user:profile user:sessions:claude_code`) kept a real refresh token that
+    the client-id filter never touched. Stripping that grant too stopped it dead: 0 re-mints and 0
+    rotations across 60 samples spanning a full guard cycle.
+
+    Grants with no inference scope (a profile-only one, say) cannot mint a credential that competes
+    with the pool. They belong to other desktop features, so leave them alone — stripping them buys
+    nothing and can break something we do not own.
+    """
+    if not isinstance(cache_key, str):
+        return False
+    if cache_key.startswith(CLAUDE_OAUTH_CLIENT_ID + ":"):
+        return True
+    return "user:inference" in claude_token_cache_scopes(cache_key)
+
+
 def count_claude_token_cache_real_refresh_tokens(claude_home: Path, field: str) -> int:
-    """How many entries of one encrypted cache still hold a rotatable hub-client refresh token."""
+    """How many entries of one encrypted cache still hold a rotatable inference-capable refresh token."""
     if sys.platform != "darwin":
         return 0
     config_path = claude_application_config_path(claude_home)
@@ -1199,12 +1223,11 @@ def count_claude_token_cache_real_refresh_tokens(claude_home: Path, field: str) 
     cache = decrypt_claude_safe_storage_json(config[field], secret)
     if not isinstance(cache, dict):
         return 0
-    prefix = CLAUDE_OAUTH_CLIENT_ID + ":"
     total = 0
     for cache_key, entry in cache.items():
         if not isinstance(cache_key, str) or not isinstance(entry, dict):
             continue
-        if not cache_key.startswith(prefix):
+        if not claude_cache_entry_can_mint_inference(cache_key):
             continue
         refresh_token = entry.get("refreshToken")
         if refresh_token and refresh_token != STRIPPED_CLAUDE_REFRESH_TOKEN:
@@ -1213,7 +1236,7 @@ def count_claude_token_cache_real_refresh_tokens(claude_home: Path, field: str) 
 
 
 def strip_claude_token_cache_refresh_tokens(claude_home: Path, field: str) -> dict:
-    """Replace the refresh token in EVERY hub-client entry of one encrypted token cache.
+    """Replace the refresh token in EVERY inference-capable entry of one encrypted token cache.
 
     write_claude_token_cache_credentials only rewrites the single highest-scored entry, but the
     cache routinely holds more than one entry for the hub's client id (one per scope set / base
@@ -1221,7 +1244,8 @@ def strip_claude_token_cache_refresh_tokens(claude_home: Path, field: str) -> di
     second custodian that rotates the pooled family out from under the hub — the exact death
     spiral AUTH_TOKENS.md section 3 describes. Strip them all, or the strip is cosmetic.
 
-    Entries belonging to a different client id own a different token family and are left alone.
+    Membership is decided by `claude_cache_entry_can_mint_inference`, not by client id: a different
+    client's grant on the same account rotates the same family and re-mints just as effectively.
     Only the refresh token is touched; the access token in the cache is whatever Claude Code is
     using right now and must not be swapped underneath it.
     """
@@ -1246,11 +1270,10 @@ def strip_claude_token_cache_refresh_tokens(claude_home: Path, field: str) -> di
         outcome["reason"] = "undecryptable"
         return outcome
 
-    prefix = CLAUDE_OAUTH_CLIENT_ID + ":"
     for cache_key, entry in cache.items():
         if not isinstance(cache_key, str) or not isinstance(entry, dict):
             continue
-        if not cache_key.startswith(prefix):
+        if not claude_cache_entry_can_mint_inference(cache_key):
             continue
         refresh_token = entry.get("refreshToken")
         if not refresh_token or refresh_token == STRIPPED_CLAUDE_REFRESH_TOKEN:
