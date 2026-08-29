@@ -18,6 +18,38 @@ import { scarcityFromState } from "../../lib/pool-scarcity.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
 import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 
+// The codex CLI/app decide locally when to self-refresh based on id_token's ~1h exp, not
+// access_token's ~10-day one. A pooled/AT-only borrower holds a stripped placeholder
+// refresh_token, so once id_token goes stale their own refresh attempt always 400s even though
+// access_token is still valid for days. This applies just as much to an account a caller is
+// freshly switched onto as to one it already holds — the pool can easily be holding an entry
+// whose id_token went stale hours or days ago because nothing had asked for it since. Do a real
+// upstream refresh in place (using the real RT this hub holds server-side) and persist it,
+// instead of handing out an id_token-expired blob that will 400 the moment the client relies on
+// it. Returns { authJson, deadRefreshToken } — deadRefreshToken means the real RT was rejected,
+// so this account can't self-heal even though its access_token still looks fresh.
+async function ensureCodexIdTokenFresh(authJson, entryMeta) {
+  const idMsLeft = codexIdTokenMsUntilExpiry(authJson);
+  const atMsLeft = accessTokenMsUntilExpiry(authJson, "codex");
+  const idStale = idMsLeft !== null && idMsLeft <= 5 * 60 * 1000;
+  const atFresh = atMsLeft !== null && atMsLeft > 5 * 60 * 1000;
+  if (!idStale || !atFresh) {
+    return { authJson, deadRefreshToken: false };
+  }
+  const refreshed = await verifyAndRefreshAuthBlob(authJson, "codex");
+  if (refreshed.ok) {
+    await upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: refreshed.auth_json,
+      uploader_email: entryMeta.uploader_email || null,
+      reporter_name: entryMeta.reporter_name || "api-refresh-current",
+      hostname: entryMeta.hostname || "api-refresh-current",
+    });
+    return { authJson: refreshed.auth_json, deadRefreshToken: false };
+  }
+  return { authJson, deadRefreshToken: Boolean(refreshed.auth_rejected) };
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.statusCode = 405;
@@ -116,38 +148,10 @@ export default async function handler(req, res) {
     if (sameEntry) {
       let sameAuthJson = await decryptAuthJson(sameEntry);
       let idTokenRefreshDead = false;
-      // The codex CLI/app decide locally when to self-refresh based on id_token's ~1h exp, not
-      // access_token's ~10-day one. A pooled/AT-only borrower holds a stripped placeholder
-      // refresh_token, so once id_token goes stale their own refresh attempt always 400s even
-      // though access_token is still valid for days. When the caller is asking specifically
-      // because it is near-expiry, and id_token is what's actually stale, do a real upstream
-      // refresh now (using the real RT this hub holds server-side) and persist it, instead of
-      // silently re-serving the same id_token-expired blob every time.
       if (source === "codex") {
-        const idMsLeft = codexIdTokenMsUntilExpiry(sameAuthJson);
-        const atMsLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
-        const idStale = idMsLeft !== null && idMsLeft <= 5 * 60 * 1000;
-        const atFresh = atMsLeft !== null && atMsLeft > 5 * 60 * 1000;
-        if (idStale && atFresh) {
-          const refreshed = await verifyAndRefreshAuthBlob(sameAuthJson, source);
-          if (refreshed.ok) {
-            await upsertAuthPoolEntry({
-              source,
-              auth_json: refreshed.auth_json,
-              uploader_email: sameEntry.uploader_email || null,
-              reporter_name: sameEntry.reporter_name || "api-refresh-current",
-              hostname: sameEntry.hostname || "api-refresh-current",
-            });
-            sameAuthJson = refreshed.auth_json;
-          } else if (refreshed.auth_rejected) {
-            // The real RT is dead — this account can't self-heal even though its access_token
-            // still looks fresh. Don't strand the caller on a copy that will 400 every hour;
-            // fall through to a normal replacement (a different healthy account) below.
-            idTokenRefreshDead = true;
-          }
-          // A transient (non-rejected) failure just falls through to the staleness check below
-          // with the original blob — still usable via access_token for now.
-        }
+        const ensured = await ensureCodexIdTokenFresh(sameAuthJson, sameEntry);
+        sameAuthJson = ensured.authJson;
+        idTokenRefreshDead = ensured.deadRefreshToken;
       }
       // Only hand the same account back if the pooled copy has a genuinely fresh access token.
       // If its AT is already (near) expired — the worker hasn't written a refreshed copy, or every
@@ -294,10 +298,19 @@ export default async function handler(req, res) {
     clientVersion: requestClientVersion,
   });
 
+  // A freshly-selected entry can just as easily have a stale id_token as the one being refreshed
+  // above — nothing serves this account until now, so nothing has kept its id_token fresh either.
+  // Best-effort: still serve what we have if the real RT turns out to be dead here (a borrowed,
+  // near-expiry-id_token credential beats leaving the caller with nothing).
+  let entryAuthJson = entry.auth_json;
+  if (entry.source === "codex") {
+    entryAuthJson = (await ensureCodexIdTokenFresh(entryAuthJson, entry)).authJson;
+  }
+
   // When disabled_refresh_token is on, strip the refresh token so the borrower can use the access
   // token but cannot rotate the shared refresh token (the hub refreshes centrally).
   const atOnlyMode = await getFeatureFlag("disabled_refresh_token", false);
-  const servedAuthJson = atOnlyMode ? stripRefreshToken(entry.auth_json, entry.source) : entry.auth_json;
+  const servedAuthJson = atOnlyMode ? stripRefreshToken(entryAuthJson, entry.source) : entryAuthJson;
 
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");

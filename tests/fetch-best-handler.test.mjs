@@ -374,5 +374,95 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     } finally {
       globalThis.fetch = originalFetch;
     }
+
+    // Phase 4: a caller freshly switched onto a pool account (never held it before, so
+    // refresh_current is not in play) can be handed an entry whose id_token went stale long ago
+    // simply because nothing had asked for it since — the account's access_token can still look
+    // fine for days. Reproduces the case measured live: quota_guard switched from a
+    // quota-exhausted account onto a healthy-by-quota pool account whose id_token had already
+    // been expired for hours, and the codex CLI/app began failing their own self-refresh ("400
+    // Bad Request: Invalid refresh token") immediately, despite the switch itself having
+    // "worked". Reuses this test's own db/handler for the same reason Phase 3 does (see above).
+    {
+      const switchedAccountId = "switched@stardust.ai";
+
+      // access_token still has ~10 days left; id_token (what codex actually self-refreshes on)
+      // expired 10 hours ago — nothing has served this account since, so nothing kept it fresh.
+      await db.upsertAuthPoolEntry({
+        source: "codex",
+        auth_json: JSON.stringify({
+          last_refresh: "2026-05-06T00:00:00Z",
+          tokens: {
+            account_id: "switched-provider",
+            id_token: jwt({ email: switchedAccountId, exp: Math.floor((now - 10 * 60 * 60 * 1000) / 1000) }),
+            access_token: jwt({ exp: Math.floor((now + 10 * 24 * 60 * 60 * 1000) / 1000) }),
+            refresh_token: "rt.1.REAL-" + switchedAccountId,
+          },
+        }),
+        uploader_email: "derek@stardust.ai",
+        reporter_name: "derek@mac",
+        hostname: "mac",
+      });
+      await db.upsertAuthPoolQuota({
+        source: "codex",
+        hostname: "github-actions",
+        reporter_name: "worker",
+        reported_at: new Date().toISOString(),
+        account_id: switchedAccountId,
+        email: switchedAccountId,
+        plan_name: "Team",
+        status: "ok",
+        windows: {
+          "5h": { used_percent: 20, remaining_percent: 80, reset_at: "2099-05-06T07:00:00Z" },
+          "1week": { used_percent: 10, remaining_percent: 90, reset_at: "2099-05-13T02:00:00Z" },
+        },
+      });
+
+      const originalFetch2 = globalThis.fetch;
+      let refreshCalled2 = false;
+      globalThis.fetch = async (url, opts) => {
+        refreshCalled2 = true;
+        assert.match(String(url), /auth\.openai\.com\/oauth\/token/);
+        const body = JSON.parse(opts.body);
+        assert.equal(body.refresh_token, "rt.1.REAL-" + switchedAccountId, "must use the real server-held RT, not a placeholder");
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              access_token: jwt({ exp: Math.floor((now + 10 * 24 * 60 * 60 * 1000) / 1000) }),
+              id_token: jwt({ email: switchedAccountId, exp: Math.floor((now + 60 * 60 * 1000) / 1000) }),
+              refresh_token: "rt.1.REAL-ROTATED-" + switchedAccountId,
+              expires_in: 864000,
+            };
+          },
+        };
+      };
+
+      try {
+        // No current_account_id match / no refresh_current — a fresh switch onto the pool,
+        // exercising bestAuthPoolEntry's normal serve path, not the same-account refresh path.
+        const switchedReq = mockJsonRequest({
+          token,
+          body: { source: "codex", requester_id: "derek@mac", current_account_id: "exhausted@stardust.ai" },
+        });
+        const switchedRes = mockResponse();
+        await handler(switchedReq, switchedRes);
+        const switchedPayload = JSON.parse(switchedRes.body);
+
+        assert.equal(refreshCalled2, true, "must refresh id_token even on a freshly-switched-to account");
+        assert.equal(switchedRes.statusCode, 200);
+        assert.equal(switchedPayload.replacement.account_id, switchedAccountId);
+
+        const switchedServed = JSON.parse(switchedPayload.replacement.auth_json);
+        assert.ok(jwtExp(switchedServed.tokens.id_token) * 1000 > now, "served id_token must be freshly minted, not the stale original");
+
+        const switchedPersistedEntry = await db.authPoolEntry("codex", switchedAccountId);
+        const switchedPersisted = JSON.parse(await decryptAuthJson(switchedPersistedEntry));
+        assert.ok(jwtExp(switchedPersisted.tokens.id_token) * 1000 > now, "the pool entry itself must be persisted with the refreshed id_token");
+      } finally {
+        globalThis.fetch = originalFetch2;
+      }
+    }
   });
 });
