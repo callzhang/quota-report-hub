@@ -145,6 +145,14 @@ Replace when the source is hard-invalidated. Neither `maybe_replace_*` gates the
 ### 3.5 `disabled_refresh_token` client behavior (Phase-4 strip)
 - Placeholder RTs: codex `"rt.1."+"A"*32`, claude `"disabled-by-hub-refresh-token"` (`quota_reporters.py:43-47`).
 - `auth_json_is_stripped` short-circuits `sync_current_*` so AT-only auths are **never re-uploaded** (`:2000-2012, 2134-2174`).
+- **Both sources install first and strip second.** For codex the payoff is different from claude's:
+  the verification refresh mints a new access_token *and* a new ~1-hour `id_token`, and the codex CLI
+  times its own refresh off the **id_token**, not the access_token ([§11](#11-token-refresh-architecture)).
+  An AT-only codex client left holding its pre-upload id_token starts failing its own refresh within
+  the hour even though its access token is good for days. Note the codex strip then reports
+  `already_stripped` — the installed blob is AT-only already — so the `fetched_from_auth_pool`
+  transition treats that as success; gating it on `stripped:true` alone would strand the machine in
+  `owner_local`, where the near-expiry refresh never runs.
 - After a successful upload whose response says `disabled_refresh_token:true`, the claude client
   **installs first and strips second**. Verifying the upload means refreshing it, which revokes the
   access token this machine is still running on ([§11](#11-token-refresh-architecture)), so the

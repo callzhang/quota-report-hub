@@ -5793,14 +5793,41 @@ class Phase4StripLocalRtTests(unittest.TestCase):
             auth.write_text(json.dumps({"tokens": {"access_token": "AT", "refresh_token": "rt.1.REAL", "account_id": "x"}}), encoding="utf-8")
             known = Path(d) / "known.json"
             known.write_text(json.dumps({"sources": {"codex": {"state_source": "owner_local", "account_id": "x"}}}), encoding="utf-8")
+            refreshed = json.dumps({"tokens": {"access_token": "NEW_AT", "id_token": "FRESH_ID",
+                                               "refresh_token": quota_reporters.STRIPPED_CODEX_REFRESH_TOKEN,
+                                               "account_id": "x"}})
+            with mock.patch.object(quota_reporters, "auth_metadata", return_value=self.META):
+                with mock.patch.object(quota_reporters, "sync_current_auth_pool_entry",
+                                       return_value={"ok": True, "uploaded": True,
+                                                     "entry": {"disabled_refresh_token": True,
+                                                               "refreshed_auth_json": refreshed}}):
+                    result = quota_reporters.sync_current_codex_auth_pool(
+                        "https://hub", "tok", auth_path=auth, known_auth_path=known)
+            self.assertTrue(result["refreshed_auth_installed"]["installed"])
+            # the hub's fresh id_token is what the codex CLI reads to time its own refresh
+            self.assertEqual(json.loads(auth.read_text(encoding="utf-8"))["tokens"]["id_token"], "FRESH_ID")
+            # The installed blob is already AT-only, so the strip reports "already_stripped". What
+            # matters is that no real RT remains and the machine is marked pool-fetched — without
+            # that state the near-expiry refresh never runs for it.
+            self.assertEqual(json.loads(auth.read_text(encoding="utf-8"))["tokens"]["refresh_token"], quota_reporters.STRIPPED_CODEX_REFRESH_TOKEN)
+            self.assertEqual(json.loads(known.read_text(encoding="utf-8"))["sources"]["codex"]["state_source"], "fetched_from_auth_pool")
+
+    def test_sync_codex_withholds_the_strip_when_the_hub_returns_nothing(self):
+        """Same interlock as claude: an older hub sends no refreshed blob, and stripping anyway would
+        leave this machine AT-only on a credential the hub's verification refresh just rotated."""
+        with tempfile.TemporaryDirectory() as d:
+            auth = Path(d) / "auth.json"
+            auth.write_text(json.dumps({"tokens": {"access_token": "AT", "refresh_token": "rt.1.REAL", "account_id": "x"}}), encoding="utf-8")
+            known = Path(d) / "known.json"
+            known.write_text(json.dumps({"sources": {"codex": {"state_source": "owner_local", "account_id": "x"}}}), encoding="utf-8")
             with mock.patch.object(quota_reporters, "auth_metadata", return_value=self.META):
                 with mock.patch.object(quota_reporters, "sync_current_auth_pool_entry",
                                        return_value={"ok": True, "uploaded": True, "entry": {"disabled_refresh_token": True}}):
                     result = quota_reporters.sync_current_codex_auth_pool(
                         "https://hub", "tok", auth_path=auth, known_auth_path=known)
-            self.assertTrue(result["local_refresh_token_stripped"]["stripped"])
-            self.assertEqual(json.loads(auth.read_text(encoding="utf-8"))["tokens"]["refresh_token"], quota_reporters.STRIPPED_CODEX_REFRESH_TOKEN)
-            self.assertEqual(json.loads(known.read_text(encoding="utf-8"))["sources"]["codex"]["state_source"], "fetched_from_auth_pool")
+            self.assertEqual(result["local_refresh_token_stripped"]["reason"], "strip_withheld_no_working_at")
+            # the real RT is kept, so the machine can still refresh its way out next cycle
+            self.assertEqual(json.loads(auth.read_text(encoding="utf-8"))["tokens"]["refresh_token"], "rt.1.REAL")
 
     def test_sync_codex_does_not_strip_when_flag_off(self):
         with tempfile.TemporaryDirectory() as d:

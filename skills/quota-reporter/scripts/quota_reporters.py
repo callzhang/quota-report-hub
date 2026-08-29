@@ -2893,6 +2893,39 @@ def install_uploaded_claude_refresh(sync_result: dict, claude_home: Path) -> dic
     return install_claude_credentials(credentials, claude_home)
 
 
+def install_uploaded_codex_refresh(sync_result: dict, auth_path: Path) -> dict:
+    """Install the codex credential the hub minted while verifying our upload.
+
+    The hub verifies by refreshing, which mints a new access_token AND a new ~1-hour id_token. The
+    codex CLI decides when to self-refresh from the **id_token's** expiry, not the access_token's, so
+    an AT-only client left holding the pre-upload id_token starts failing its own refresh ("Invalid
+    refresh token") within the hour even though its access token is good for days. Installing the
+    returned blob hands it the fresh id_token too. Mirrors the claude path: install, then strip.
+    """
+    blob_text = uploaded_refreshed_auth_json(sync_result)
+    if not blob_text:
+        return {"installed": False, "reason": "hub_returned_no_refreshed_auth"}
+    try:
+        blob = json.loads(blob_text)
+    except Exception:
+        return {"installed": False, "reason": "unparseable_refreshed_auth"}
+    if not isinstance(blob.get("tokens"), dict) or not blob["tokens"].get("access_token"):
+        return {"installed": False, "reason": "refreshed_auth_missing_access_token"}
+    try:
+        tmp_path = auth_path.with_name(auth_path.name + ".tmp")
+        tmp_path.write_text(json.dumps(blob), encoding="utf-8")
+        tmp_path.chmod(0o600)
+        tmp_path.replace(auth_path)
+    except Exception as error:
+        return {"installed": False, "reason": "write_failed", "error": str(error)[:200]}
+    try:
+        written = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"installed": False, "reason": "unreadable_after_write"}
+    installed = (written.get("tokens") or {}).get("access_token") == blob["tokens"]["access_token"]
+    return {"installed": installed} if installed else {"installed": False, "reason": "readback_mismatch"}
+
+
 def sync_current_codex_auth_pool(
     auth_pool_url: str,
     auth_pool_user_token: str,
@@ -2921,9 +2954,28 @@ def sync_current_codex_auth_pool(
     # mode, strip the local RT so this owner also runs AT-only — its CLI can no longer rotate
     # the shared RT — and mark it fetched so the near-expiry path keeps its AT fresh.
     if result.get("uploaded") and upload_reported_disabled_refresh_token(result):
+        # Install before stripping, as claude does. The hub's verification refresh rotated this
+        # grant; the returned blob carries the access_token and the fresh ~1-hour id_token it minted,
+        # and the id_token is what the codex CLI reads to decide when to refresh itself.
+        installed = install_uploaded_codex_refresh(result, auth_path)
+        result["refreshed_auth_installed"] = installed
+        if not installed.get("installed"):
+            # Same interlock as claude: never strip without a working credential in hand. An older
+            # hub returns nothing here, and a failed write must not leave this machine AT-only on a
+            # credential the hub just rotated away from.
+            result["local_refresh_token_stripped"] = {
+                "stripped": False,
+                "reason": "strip_withheld_no_working_at",
+                "install": installed,
+            }
+            return result
         strip = strip_local_codex_refresh_token(auth_path)
         result["local_refresh_token_stripped"] = strip
-        if strip.get("stripped"):
+        # The blob we just installed is already AT-only, so this strip is normally a no-op reporting
+        # "already_stripped" — which is success, not failure. Gating the state transition on
+        # stripped=True alone would leave the machine permanently in owner_local and the near-expiry
+        # refresh (which requires fetched_from_auth_pool) would never run for it.
+        if strip.get("stripped") or strip.get("reason") == "already_stripped":
             set_known_auth_state_source("codex", known_auth_path, "fetched_from_auth_pool")
     return result
 
