@@ -3,7 +3,7 @@ import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../.
 import { dbConfigured, getFeatureFlag, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../../lib/db.js";
 import { ingestClientQuota } from "../../lib/quota-ingest.js";
 import { stripRefreshToken } from "../../lib/fetch-best.js";
-import { verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
+import { probeClaudeAccessToken, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
 
 export default async function handler(req, res) {
@@ -43,9 +43,30 @@ export default async function handler(req, res) {
   }
 
   const source = String(body.source);
-  const refreshVerification = ["claude", "codex"].includes(source)
+
+  // Claude uploads are verified by PROBING the access token, not by spending the refresh token.
+  //
+  // Verifying by refresh cost more than it proved. The refresh revokes the access tokens already
+  // issued for the grant, so every upload killed the uploader's own credential; the desktop app then
+  // re-minted from its session key and the guard uploaded that, which is another unverified refresh
+  // token, which triggered another refresh — a loop that ran ten times a day and revoked the pooled
+  // token borrowers were holding on each pass.
+  //
+  // A live access token is already evidence the refresh token beside it is unspent: nothing can have
+  // refreshed this grant since, or the access token would be dead. Codex keeps the refresh-verify —
+  // its client cannot re-mint, so there is no loop to break, and its hourly id_token renewal needs
+  // the rotation anyway.
+  const probeClaude = source === "claude";
+  const accessProbe = probeClaude ? await probeClaudeAccessToken(body.auth_json) : null;
+  if (accessProbe?.rejected) {
+    res.statusCode = 422;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: false, error: "access_token_rejected", status: accessProbe.status }));
+    return;
+  }
+  const refreshVerification = !probeClaude && ["claude", "codex"].includes(source)
     ? await verifyAndRefreshAuthBlob(body.auth_json, source)
-    : { ok: false, attempted: false, reason: "unsupported_source" };
+    : { ok: false, attempted: false, reason: probeClaude ? "claude_probed_not_refreshed" : "unsupported_source" };
 
   if (refreshVerification.attempted && !refreshVerification.ok) {
     res.statusCode = refreshVerification.auth_rejected ? 422 : 503;
@@ -131,7 +152,13 @@ export default async function handler(req, res) {
     entry,
     disabled_refresh_token: disabledRefreshToken,
     quota_ingested: quotaIngested,
-    refresh_validity: refreshVerification.ok ? "confirmed" : "unverified",
+    refresh_validity: refreshVerification.ok ? "confirmed" : accessProbe?.ok ? "access_token_live" : "unverified",
     refreshed_auth_json: refreshedAuthJson,
+    // "Your credential is untouched and still works, so you may go AT-only without waiting for a
+    // replacement." The client's interlock refuses to strip unless it has a working token in hand;
+    // when we refresh we owe it one, but when we only probe, the token it already holds IS the
+    // working one. Without this the interlock would (correctly, on its old premise) keep the real
+    // refresh token forever and AT-only mode would never engage.
+    local_auth_untouched: Boolean(probeClaude && accessProbe?.ok),
   }, authContext)));
 }

@@ -478,8 +478,18 @@ management. `start_frontend.mjs` serves the static dashboards locally on `FRONTE
 **Solution (flag ON).** The hub becomes the single point of refresh:
 1. **Serve AT-only** — `fetch-best` strips the RT to a placeholder before serving ([§6.1](#61-fetch-best-the-borrow-path)). Borrowers can use the AT but cannot rotate the shared RT.
 2. **Reject stripped-RT uploads** — the poison guard ([§6.2](#62-stripped-rt-poison-guard)) keeps the real RT in the pool intact.
-3. **Uploader goes AT-only too** — the upload response carries `refreshed_auth_json` (the AT the hub's verification refresh just minted, RT stripped); the client installs that, *then* strips its own local RT (Phase-4, [§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)), and thereafter relies on the hub. Without the handback the verification refresh would revoke the uploader's own access token and the strip would remove its only way back.
-4. **Hub refreshes centrally** — the worker proactively refreshes near-expiry ATs ([§7.2](#72-per-entry-processing-processauthpoolentry)) and clients pull fresh ATs via `refresh_current`.
+3. **Uploads are verified by probing, not by refreshing (claude).** A refresh proves the refresh
+   token works but revokes the access tokens already issued, so verifying an upload destroyed what
+   the uploader was using and drove it to re-mint — the loop in
+   [`AUTH_TOKENS.md` §6](AUTH_TOKENS.md). `probeClaudeAccessToken` asks the profile endpoint instead:
+   a live access token is itself evidence the refresh token is unspent, since only a refresh could
+   have spent it and that would have killed the access token. The response sets
+   `local_auth_untouched` and the client strips immediately. The gap this leaves — a session revoked
+   out-of-band kills refresh tokens while issued access tokens live on — costs borrowers nothing,
+   because they consume access tokens; the dead refresh token surfaces at the first renewal that
+   needs it. Codex still verifies by refreshing.
+4. **Uploader goes AT-only too** — the upload response carries `refreshed_auth_json` (the AT the hub's verification refresh just minted, RT stripped); the client installs that, *then* strips its own local RT (Phase-4, [§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)), and thereafter relies on the hub. Without the handback the verification refresh would revoke the uploader's own access token and the strip would remove its only way back.
+5. **Hub refreshes centrally** — the worker proactively refreshes near-expiry ATs ([§7.2](#72-per-entry-processing-processauthpoolentry)) and clients pull fresh ATs via `refresh_current`.
 
 **Lifecycle of one account under the flag:**
 

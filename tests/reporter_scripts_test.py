@@ -6131,6 +6131,37 @@ class Phase4StripLocalRtTests(unittest.TestCase):
         self.assertEqual([name for name, _ in calls], ["install", "strip"])
         self.assertEqual(calls[0][1]["claudeAiOauth"]["accessToken"], "NEW_AT")
 
+    def test_sync_claude_strips_immediately_when_the_hub_only_probed(self):
+        """The hub now verifies claude uploads by probing the access token, so nothing was rotated
+        and the credential we hold is still live. The interlock exists because a refresh revokes what
+        we hold and the hub then owes us a replacement; on this path it owes us nothing, and refusing
+        to strip would leave the machine a second custodian forever."""
+        blob = json.dumps({
+            "schema": "claude_credentials_v1",
+            "account_id": "claude-x@stardust.ai",
+            "credentials": {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "REAL"}},
+        })
+        with tempfile.TemporaryDirectory() as d:
+            known = Path(d) / "known.json"
+            known.write_text(json.dumps({"sources": {"claude": {"state_source": "owner_local"}}}), encoding="utf-8")
+            with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})), \
+                 mock.patch.object(quota_reporters, "sync_current_auth_pool_entry",
+                                   return_value={"ok": True, "uploaded": True,
+                                                 "entry": {"disabled_refresh_token": True,
+                                                           "local_auth_untouched": True}}), \
+                 mock.patch.object(quota_reporters, "install_claude_credentials") as install, \
+                 mock.patch.object(quota_reporters, "strip_local_claude_refresh_token",
+                                   return_value={"stripped": True}) as strip:
+                result = quota_reporters.sync_current_claude_auth_pool(
+                    "https://hub", "tok", claude_home=Path(d) / ".claude", known_auth_path=known)
+
+            strip.assert_called_once()
+            install.assert_not_called()      # nothing to install; ours is the working token
+            self.assertTrue(result["local_refresh_token_stripped"]["stripped"])
+            self.assertEqual(result["refreshed_auth_installed"]["reason"], "not_needed_hub_did_not_refresh")
+            self.assertEqual(json.loads(known.read_text(encoding="utf-8"))["sources"]["claude"]["state_source"],
+                             "fetched_from_auth_pool")
+
     def test_sync_claude_reports_when_the_hub_returns_no_refreshed_auth(self):
         blob = json.dumps({
             "schema": "claude_credentials_v1",

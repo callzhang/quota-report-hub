@@ -3060,6 +3060,19 @@ def uploaded_refreshed_auth_json(sync_result: dict) -> str | None:
     return nested if isinstance(nested, str) and nested else None
 
 
+def upload_reported_local_auth_untouched(sync_result: dict) -> bool:
+    """The hub verified our upload by PROBING the access token instead of refreshing it.
+
+    Nothing was rotated, so the credential this machine is holding is still the live one and there
+    is no replacement to wait for. Stripping is safe immediately — the interlock's premise (the hub
+    just revoked what we hold, so it owes us a token) does not apply on this path.
+    """
+    direct = sync_result.get("local_auth_untouched")
+    if isinstance(direct, bool):
+        return direct
+    return bool((sync_result.get("entry") or {}).get("local_auth_untouched"))
+
+
 def install_uploaded_claude_refresh(sync_result: dict, claude_home: Path) -> dict:
     """Install the access token the hub minted while verifying our upload.
 
@@ -3210,9 +3223,11 @@ def sync_current_claude_auth_pool(
         # which revoked the access token we are still running on. Stripping before installing is
         # what left this machine holding a revoked AT and a placeholder RT — dead, and unable to
         # refresh its way out.
-        installed = install_uploaded_claude_refresh(result, claude_home)
+        untouched = upload_reported_local_auth_untouched(result)
+        installed = {"installed": False, "reason": "not_needed_hub_did_not_refresh"} if untouched \
+            else install_uploaded_claude_refresh(result, claude_home)
         result["refreshed_auth_installed"] = installed
-        if not installed.get("installed"):
+        if not untouched and not installed.get("installed"):
             # Safety interlock: never strip without a working access token in hand. An older hub
             # returns no refreshed blob, and a cache that shadows the install leaves the old token
             # in place — in both cases the token we hold was just revoked by the hub's verification
