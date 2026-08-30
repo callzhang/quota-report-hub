@@ -1807,9 +1807,9 @@ Reading additional input from stdin...
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["error"], "claude auth email unavailable")
 
-    def test_probe_claude_401_with_a_real_rt_still_hard_invalidates(self):
-        """The AT-only softening must not swallow the real signal: a client that HOLDS a refresh
-        token and still gets a 401 has evidence the credential itself is gone."""
+    def test_probe_claude_401_hard_invalidates_only_for_the_credential_s_owner(self):
+        """The softening must not swallow the real signal: a machine whose claude credential IS the
+        pooled one (state_source `owner_local`) does have evidence when it takes a 401."""
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
         auth_text = mock.Mock(
             returncode=0,
@@ -1820,6 +1820,7 @@ Reading additional input from stdin...
              mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
              mock.patch("quota_reporters.read_claude_oauth_credentials",
                         return_value=({"claudeAiOauth": {"subscriptionType": "max", "refreshToken": "sk-ant-ort01-REAL"}}, "token_cache_v2")), \
+             mock.patch("quota_reporters.claude_client_owns_the_pooled_credential", return_value=True), \
              mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"captured_at": "2026-04-22T08:00:00Z", "rate_limits": None}), \
              mock.patch("quota_reporters.probe_claude_rate_limits",
                         return_value={"available": False, "windows": {"5h": None, "1week": None},
@@ -1841,6 +1842,7 @@ Reading additional input from stdin...
              mock.patch("quota_reporters.read_claude_oauth_credentials",
                         return_value=({"claudeAiOauth": {"subscriptionType": "max",
                                                          "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}, "token_cache_v2")), \
+             mock.patch("quota_reporters.claude_client_owns_the_pooled_credential", return_value=False), \
              mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"captured_at": "2026-04-22T08:00:00Z", "rate_limits": None}), \
              mock.patch("quota_reporters.probe_claude_rate_limits",
                         return_value={"available": False, "windows": {"5h": None, "1week": None},
@@ -1852,6 +1854,40 @@ Reading additional input from stdin...
         self.assertFalse(quota_guard.is_hard_invalidated(payload))
         self.assertTrue(quota_guard.needs_fresh_access_token(payload))
 
+    def test_probe_claude_401_does_not_condemn_when_a_participant_holds_its_OWN_grant(self):
+        """The regression this rule exists for. On claude the desktop app mints its own grant from
+        the session key, so a participant machine routinely holds a REAL refresh token belonging to
+        a different grant than the pooled one. Observed 2026-08-30 18:43: such a machine took a 401
+        and marked the entry auth-invalid while the pooled copy was fine (+7.75h), refusing borrowers
+        until it self-healed. Holding a refresh token is not the same as holding THE refresh token."""
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(returncode=0, stdout="Email: leizhang0121@gmail.com\n", stderr="")
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+             mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
+             mock.patch("quota_reporters.read_claude_oauth_credentials",
+                        return_value=({"claudeAiOauth": {"refreshToken": "sk-ant-ort01-APP_MINTED"}}, "token_cache_v2")), \
+             mock.patch("quota_reporters.claude_client_owns_the_pooled_credential", return_value=False), \
+             mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"captured_at": "2026-04-22T08:00:00Z", "rate_limits": None}), \
+             mock.patch("quota_reporters.probe_claude_rate_limits",
+                        return_value={"available": False, "windows": {"5h": None, "1week": None},
+                                      "status_code": 401, "api_error": "Invalid authentication credentials"}), \
+             mock.patch("quota_reporters.read_claude_stats", return_value=None):
+            with tempfile.TemporaryDirectory() as backoff_dir:
+                payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=Path(backoff_dir) / "b.json")
+        self.assertEqual(payload["error"], quota_reporters.CLAUDE_AT_ONLY_TOKEN_REJECTED)
+        self.assertFalse(quota_guard.is_hard_invalidated(payload))
+        self.assertTrue(quota_guard.needs_fresh_access_token(payload))
+
+    def test_provenance_reads_state_source_not_the_presence_of_a_refresh_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            k = Path(d) / "known.json"
+            k.write_text(json.dumps({"sources": {"claude": {"state_source": "owner_local"}}}), encoding="utf-8")
+            self.assertTrue(quota_reporters.claude_client_owns_the_pooled_credential(k))
+            k.write_text(json.dumps({"sources": {"claude": {"state_source": "fetched_from_auth_pool"}}}), encoding="utf-8")
+            self.assertFalse(quota_reporters.claude_client_owns_the_pooled_credential(k))
+            k.write_text(json.dumps({"sources": {}}), encoding="utf-8")
+            self.assertFalse(quota_reporters.claude_client_owns_the_pooled_credential(k))
+
     def test_probe_claude_401_after_a_rejected_refresh_is_still_refresh_token_rejected(self):
         """auth_rejected is the one thing that DOES prove death, and it outranks the AT-only rule."""
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
@@ -1860,6 +1896,7 @@ Reading additional input from stdin...
              mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
              mock.patch("quota_reporters.read_claude_oauth_credentials",
                         return_value=({"claudeAiOauth": {"refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}, "token_cache_v2")), \
+             mock.patch("quota_reporters.claude_client_owns_the_pooled_credential", return_value=False), \
              mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"captured_at": "2026-04-22T08:00:00Z", "rate_limits": None}), \
              mock.patch("quota_reporters.probe_claude_rate_limits",
                         return_value={"available": False, "windows": {"5h": None, "1week": None},

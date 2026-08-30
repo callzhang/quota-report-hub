@@ -2304,15 +2304,17 @@ def probe_claude(
         # token was rejected outright. A transient refresh failure (network/5xx) is not
         # proof the account died, so don't hard-invalidate it then.
         refresh_status = (oauth_usage_probe.get("token_refresh") or {}).get("status")
-        local_rt = (oauth or {}).get("refreshToken")
-        at_only = not local_rt or not str(local_rt).strip() or local_rt == STRIPPED_CLAUDE_REFRESH_TOKEN
+        # Authority to condemn the account requires holding the credential the POOL holds — which is
+        # a question about provenance, not about whether some refresh token is present.
+        owns_pooled = claude_client_owns_the_pooled_credential()
         if refresh_status == "auth_rejected":
             auth_error = "refresh_token_rejected"
-        elif at_only:
-            # AT-only: this client has no refresh token to test, so it cannot distinguish a dead
-            # credential from a request that was simply rejected. It reports "my access token
-            # stopped working" and the guard asks the hub — the only holder of the real RT — for a
-            # fresh one for the SAME account. Hard-invalidating here marked working accounts dead.
+        elif not owns_pooled:
+            # A participant, not the owner. Whatever it holds — a token the hub served, or one the
+            # desktop app minted from its session key — it cannot distinguish a dead credential from
+            # a request that was simply refused. It reports "my access token stopped working" and the
+            # guard asks the hub, the only holder of the real RT, for a fresh one for the SAME
+            # account. Condemning from here marked working accounts dead and refused borrowers.
             auth_error = CLAUDE_AT_ONLY_TOKEN_REJECTED
         elif refresh_status != "transient_error":
             auth_error = "claude auth invalid (authentication_error)"
@@ -2947,6 +2949,29 @@ def local_access_token_seconds_left(
         return None
     now = now if now is not None else datetime.now(timezone.utc).timestamp()
     return expiry - now
+
+
+def claude_client_owns_the_pooled_credential(known_auth_path: Path = KNOWN_AUTH_PATH) -> bool:
+    """Whether this machine's claude credential IS the one the pool holds.
+
+    Only then is a 401 here evidence about the pooled credential. `state_source`, not the presence
+    of a refresh token, is what answers this:
+
+      owner_local              this credential is ours, we uploaded it, nothing has replaced it —
+                               a rejection here really is a rejection of what the pool serves
+      fetched_from_auth_pool   we are a participant. What we hold may be a token the hub served, or
+                               one the desktop app minted for itself from its session key — a
+                               DIFFERENT grant that says nothing about the pooled one
+
+    The earlier test — "do I have a real refresh token?" — got the converse wrong. Holding a real RT
+    does not make it the pool's RT, and on claude the app routinely mints its own. Observed
+    2026-08-30 18:43: a machine in fetched_from_auth_pool holding an app-minted RT took a 401 and
+    marked the entry `claude auth invalid (authentication_error)` while the pooled credential was
+    fine (+7.75 h). It self-healed, but borrowers were refused in that window.
+    """
+    state = read_known_auth_state(known_auth_path)
+    source_state = (state.get("sources") or {}).get("claude") or {}
+    return source_state.get("state_source") == "owner_local"
 
 
 def fetched_auth_near_expiry(

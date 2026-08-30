@@ -416,10 +416,22 @@ Hard-invalidation error strings (RT-class death; needs owner re-login):
 ([lib/auth-status.js](lib/auth-status.js)) and `is_hard_invalidated` (guard) and must stay in sync.
 
 **Deliberately NOT in that set:** `claude access token rejected (at-only; hub holds the RT)`. Only a
-party that can *attempt the refresh* has evidence of RT-class death. An AT-only client holds a
-placeholder, so its 401 means "get me a fresh access token", never "this account is dead" — it routes
-to `refresh_current` instead. Hard invalidation from a client is reserved for `auth_rejected`, where a
-real RT was actually presented and refused.
+party holding **the pooled credential** has evidence of RT-class death. Its 401 means "get me a fresh
+access token", never "this account is dead" — it routes to `refresh_current` instead. Hard
+invalidation from a client is reserved for `auth_rejected`, where a real RT was actually presented and
+refused.
+
+The test for that is **provenance, not possession** (`claude_client_owns_the_pooled_credential`):
+`state_source == "owner_local"` means this credential is ours and unreplaced, so a rejection here
+really is a rejection of what the pool serves. `fetched_from_auth_pool` means we are a participant,
+and what we hold may be a token the hub served *or one the desktop app minted for itself from its
+session key* — a different grant entirely.
+
+The first version of this rule asked "do I have a real refresh token?" and got the converse wrong:
+holding a real RT does not make it the pool's RT, and on claude the app mints its own routinely.
+Observed 2026-08-30 18:43 — a participant machine holding an app-minted RT took a 401 and marked the
+entry `claude auth invalid (authentication_error)` while the pooled credential was fine (+7.75 h),
+refusing borrowers until it self-healed.
 
 Abuse-class errors (a *different* risk unique to shared-AT mode — provider pushback): `429`, `403`,
 rate-limit / suspend / ban / abuse. Watched separately (`lib/abuse-errors.js`, `assess_health.mjs` exit 3).
