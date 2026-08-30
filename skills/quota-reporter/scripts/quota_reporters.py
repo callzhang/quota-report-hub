@@ -74,6 +74,11 @@ CLAUDE_USAGE_MIN_INTERVAL_SECONDS = 1800
 # done so 235 times in this machine's log. The cost of waiting is bounded and only paid when something
 # is genuinely wrong, so give the cold call room.
 CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS = 30
+# Ceiling for ALL `claude auth status` calls in one probe combined. Without it the per-call retry
+# compounds to 120s (2 calls x 2 attempts x 30s), and the guard runs claude and codex in the same
+# process — codex's id_token renewal has only a five-minute margin over the 15-minute cycle, so a
+# slow claude probe spends headroom that is not its own.
+CLAUDE_AUTH_STATUS_TOTAL_BUDGET_SECONDS = 60
 CLAUDE_STATUS_TIMEOUT_SECONDS = 30
 CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_API_KEY",
@@ -2126,18 +2131,37 @@ def restart_claude_app_if_idle(claude_home: Path = CLAUDE_HOME, *, enabled: bool
     return {"restarted": True, "sessions": 0}
 
 
-def run_claude_auth_status_command(claude_executable: str, args: list[str]):
-    """Run a `claude auth status` variant, retrying once on timeout.
+def claude_auth_status_deadline(now: float | None = None) -> float:
+    """A monotonic deadline shared by every `claude auth status` call in ONE probe."""
+    return (now if now is not None else time.monotonic()) + CLAUDE_AUTH_STATUS_TOTAL_BUDGET_SECONDS
+
+
+def run_claude_auth_status_command(claude_executable: str, args: list[str], deadline: float | None = None):
+    """Run a `claude auth status` variant, retrying once on timeout, inside a shared budget.
 
     The call is slow cold and fast warm — measured on one machine at 10.66s then 1.43s then 0.57s,
     and separately 7.09s then 2.96s — and it occasionally blows past any fixed ceiling: raising the
     timeout from 10s to 30s did not stop it losing. Losing costs the entire run, not just the quota
-    reading: probe_claude bails, the guard reports `probe_unavailable`, it makes no rotation
-    decision, and the account's quota goes stale on the dashboard until the next cycle. The retry
-    costs a few seconds and lands on the warm path, which is the one that has never been slow.
+    reading: probe_claude bails, the guard reports `probe_unavailable`, and it makes no rotation
+    decision. The retry costs a few seconds and lands on the warm path, which has never been slow.
+
+    But per-call retries compound. probe_claude makes two of these calls, so 30s x 2 retries x 2
+    calls put the worst case at 120s — and a guard run that long is not free to anyone: codex's
+    renewal rides in the same process, and its id_token trigger only clears the 15-minute cycle by
+    five minutes. One slow claude probe could push the whole run past codex's margin. So the calls
+    share ONE budget: whatever is left is all the next attempt gets, and once it is gone the probe
+    fails fast instead of spending someone else's headroom.
     """
     last_timeout = None
     for _ in range(2):
+        timeout = CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise last_timeout or subprocess.TimeoutExpired(
+                    cmd=[claude_executable, *args], timeout=CLAUDE_AUTH_STATUS_TOTAL_BUDGET_SECONDS
+                )
+            timeout = min(timeout, remaining)
         try:
             return subprocess.run(
                 [claude_executable, *args],
@@ -2145,7 +2169,7 @@ def run_claude_auth_status_command(claude_executable: str, args: list[str]):
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS,
+                timeout=timeout,
             )
         except subprocess.TimeoutExpired as error:
             last_timeout = error
@@ -2159,6 +2183,8 @@ def probe_claude(
     usage_backoff_path: Path = CLAUDE_USAGE_BACKOFF_PATH,
 ) -> dict:
     claude_executable = discover_claude_executable(claude_bin)
+    # One budget for both `claude auth status` calls below, so a slow probe cannot eat the whole run.
+    status_deadline = claude_auth_status_deadline()
     base = {
         "source": "claude",
         "hostname": socket.gethostname(),
@@ -2183,7 +2209,7 @@ def probe_claude(
         }
 
     try:
-        auth_result = run_claude_auth_status_command(claude_executable, ["auth", "status"])
+        auth_result = run_claude_auth_status_command(claude_executable, ["auth", "status"], deadline=status_deadline)
     except subprocess.TimeoutExpired:
         return {
             **base,
@@ -2220,7 +2246,7 @@ def probe_claude(
     # run even though `auth status` above had already answered. Empty details fall through to the
     # existing "claude auth email unavailable" path, which the rotation rule understands.
     try:
-        auth_text_result = run_claude_auth_status_command(claude_executable, ["auth", "status", "--text"])
+        auth_text_result = run_claude_auth_status_command(claude_executable, ["auth", "status", "--text"], deadline=status_deadline)
         auth_text_stdout = auth_text_result.stdout if auth_text_result.returncode == 0 else ""
     except subprocess.TimeoutExpired:
         auth_text_stdout = ""

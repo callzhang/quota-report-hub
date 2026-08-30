@@ -287,6 +287,26 @@ caller's hands.
 A gap can only open when the hub rotates a grant while its user is not looking. Codex's hourly clock
 means someone is almost always looking.
 
+### The margin is thinner than it looks, and claude spends it
+
+Codex's trigger fires at 20 minutes left against a 15-minute guard cycle — a five-minute margin, and
+only if the run actually happens. A run that dies takes the margin with it, and the likeliest way for
+one to die is the **claude** probe: `claude auth status` is slow cold, and per-call retries used to
+compound to 120 s (2 calls x 2 attempts x 30 s). claude and codex share one guard process, so a slow
+claude probe spends codex's headroom. `CLAUDE_AUTH_STATUS_TOTAL_BUDGET_SECONDS` (60 s) now caps all
+of those calls together.
+
+Worth being precise about why codex survives anyway: **not** the five-minute margin, which one lost
+run erases. An expired id_token is simply harmless — measured 2026-08-30 with id_token 2.2 minutes
+past expiry, a placeholder refresh token, and a valid access token: `/v1/me` returned **200** and
+`codex login status` returned **rc=0, "Logged in using ChatGPT"**. The API never sees the id_token
+([§1](#1-codex-auth)), and the CLI does not refuse to work without a fresh one. (This contradicts the
+older note that a stale id_token makes an AT-only client's own refresh fail; that failure, if it is
+real, is not on this path.)
+
+Claude has neither cushion: its trigger reads an `expiresAt` that never arrives, and its access token
+going invalid is an immediate 401.
+
 ### What claude can and cannot copy
 
 - **Cannot:** the super key. It belongs to the desktop app, and it is why a claude client answers a

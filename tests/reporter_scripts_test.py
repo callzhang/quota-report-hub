@@ -1738,6 +1738,40 @@ Reading additional input from stdin...
         self.assertEqual(out["reason"], "strip_first")
         run.assert_not_called()
 
+    def test_auth_status_calls_share_one_budget_and_fail_fast_once_it_is_gone(self):
+        """Per-call retries compound: 2 calls x 2 attempts x 30s = 120s worst case. The guard runs
+        claude and codex in one process and codex's id_token trigger clears the 15-minute cycle by
+        only five minutes, so an over-long claude probe spends headroom that is not its own."""
+        import time as _time
+        with mock.patch.object(quota_reporters.subprocess, "run") as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                quota_reporters.run_claude_auth_status_command(
+                    "claude", ["auth", "status"], deadline=_time.monotonic() - 1
+                )
+        run.assert_not_called()   # budget gone -> do not even start the process
+
+    def test_auth_status_caps_a_single_attempt_at_the_remaining_budget(self):
+        import time as _time
+        seen = []
+
+        def fake_run(cmd, **kw):
+            seen.append(kw.get("timeout"))
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get("timeout"))
+
+        with mock.patch.object(quota_reporters.subprocess, "run", side_effect=fake_run):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                quota_reporters.run_claude_auth_status_command(
+                    "claude", ["auth", "status"], deadline=_time.monotonic() + 4
+                )
+        # never asks for more than what is left, and never more than the per-call ceiling
+        self.assertTrue(seen and all(t <= 4.01 for t in seen), seen)
+        self.assertTrue(all(t <= quota_reporters.CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS for t in seen), seen)
+
+    def test_auth_status_without_a_deadline_keeps_the_plain_per_call_timeout(self):
+        with mock.patch.object(quota_reporters.subprocess, "run", return_value=mock.Mock(returncode=0)) as run:
+            quota_reporters.run_claude_auth_status_command("claude", ["auth", "status"])
+        self.assertEqual(run.call_args.kwargs["timeout"], quota_reporters.CLAUDE_AUTH_STATUS_TIMEOUT_SECONDS)
+
     def test_auth_status_retries_once_after_a_timeout(self):
         """The call is slow cold and fast warm, and blew past even a 30s ceiling. One retry lands on
         the warm path instead of losing the whole run to probe_unavailable."""
