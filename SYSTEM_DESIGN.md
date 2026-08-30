@@ -749,7 +749,7 @@ For a borrow request, candidates are filtered then ranked:
   - **Claude**: `credentials.claudeAiOauth.expiresAt` — an **upper bound, not a lifetime**. The token
     is usually revoked by the next refresh of the grant long before this, so treat a comfortable
     margin here as "not yet expired", never as "still works".
-  - **Codex**: decode the **access_token JWT** `exp` (real ~**10-day** lifetime), falling back to the `id_token` JWT (~1 h, identity only) **only** if the access_token isn't a decodable JWT (`:105-122`).
+  - **Codex**: decode the **access_token JWT** `exp` (real ~**10-day** lifetime), falling back to the `id_token` JWT (~1 h, identity only) **only** if the access_token isn't a decodable JWT (`:105-122`). The id_token is also what makes codex's refresh *client-initiated* — the CLI refreshes on its hourly schedule, so `fetch-best` refreshes and delivers in the same request and no exposure window opens. Claude has no such clock, which is the structural reason its rotations turn into outages ([`AUTH_TOKENS.md` §3.6](AUTH_TOKENS.md)).
 
 **Why one T-1h threshold for both** (today's unification): the worker decides which accounts to refresh each cycle by comparing `accessTokenMsUntilExpiry` to `REFRESH_THRESHOLD_MS = 1 h`. Codex's 10-day AT means proactive refresh almost never fires on a healthy codex account (it's effectively claude-driven), but unifying the code path removes per-source special-casing. The threshold is sized against the worst worker gap (~110 min); the backstops for a missed window are client re-upload + the `refresh_current` AT-freshness fallback.
 

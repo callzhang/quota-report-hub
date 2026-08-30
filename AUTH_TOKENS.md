@@ -12,6 +12,7 @@
 | [2. Claude auth](#2-claude-auth) | four stores — the one that wins is not the obvious one |
 | [3. The refresh-token rotation death spiral](#3-the-refresh-token-rotation-death-spiral) | rotation, two custodians, and what was ruled out |
 | [3.5 Refreshing REVOKES the access tokens already issued (measured 2026-08-28)](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28) | **a refresh revokes access tokens already issued** — the rule most things got wrong |
+| [3.6 Why codex never goes dark and claude does: who opens the conversation](#36-why-codex-never-goes-dark-and-claude-does-who-opens-the-conversation) | the initiator decides whether there is a gap at all |
 | [4. `disabled_refresh_token` mode (centralized refresh + AT-only distribution)](#4-disabled_refresh_token-mode-centralized-refresh--at-only-distribution) | AT-only distribution when the hub is sole refresher |
 | [5. Hub central refresh (the worker)](#5-hub-central-refresh-the-worker) | the worker: proactive refresh + lazy probe |
 | [6. Failure modes & invariants (and the fixes)](#6-failure-modes--invariants-and-the-fixes) | every failure seen, its cause, and its fix |
@@ -61,7 +62,13 @@
 
 ### The two JWTs (critical, easy to get wrong)
 - **`access_token`** — a JWT with `exp` **~10 days**. This is the *real* access-token lifetime and what the API uses.
-- **`id_token`** — a JWT with `exp` **~1 hour**. Identity only; does **not** reflect the access token's life.
+- **`id_token`** — a JWT with `exp` **~1 hour**. Identity only; does **not** reflect the access token's
+  life. `aud` is the CLIENT (`app_EMoam…`), not the API, so the API never sees it and an expired one
+  cannot break an API call. It answers a different question — "is this login session still good?" —
+  which is why it is short where the access token is long. Its real job here is to be **the alarm
+  clock**: the codex CLI refreshes on the id_token's schedule, hours before the access token is at
+  risk, and that is what keeps codex from ever going dark
+  ([§3.6](#36-why-codex-never-goes-dark-and-claude-does-who-opens-the-conversation)).
 - ⚠️ Pitfall: reading the codex AT lifetime from `id_token` (~1h) gives a wildly wrong "codex AT dies hourly"
   picture. Always decode **`access_token`** for AT expiry. `accessTokenMsUntilExpiry(authJson, "codex")`
   ([lib/token-refresh.js](lib/token-refresh.js)) decodes the access_token JWT `exp`, falling back to id_token
@@ -247,6 +254,48 @@ placeholder, yet at 00:39 the machine produced a brand-new AT+RT — a live proc
 in-memory copy of the RT the hub had already spent at 23:14. So a spent RT is not always hard-invalidated.
 Not always accepted either: `refresh_token_rejected` has fired 136 times in the guard log. Treat it as a
 race window, not a rule.
+
+---
+
+## 3.6 Why codex never goes dark and claude does: who opens the conversation
+
+Both sources rotate about ten times a day. Codex has had zero outages; claude had two this week, each
+ending with its owner logging back in by hand. The difference is not the provider's generosity — it is
+**which side initiates the refresh**, and everything else follows from that.
+
+### The mechanism, side by side
+
+| | **Codex** | **Claude** |
+|---|---|---|
+| Refresh trigger | client's **`id_token`, ~1 h** — a clock | client's `expiresAt`, nominally 30 days |
+| Does that clock ring? | every hour, while the AT still has ~10 days | **never** — the token is *revoked*, not expired, so the deadline it watches never arrives |
+| Who opens the conversation | **the client**, on schedule | **the hub**, on upload-verify or worker cron |
+| Refresh and delivery | the **same request**: `fetch-best` refreshes and hands the result back in one call | separate: the hub refreshes, the client finds out later |
+| Exposure window | **zero** | until the client next probes — one guard cycle, or longer |
+| Can the client re-mint on its own? | **no** — no super key, so it waits | **yes** — the desktop session key ([§7](#7-claude-desktop-vs-the-cli)) |
+
+### Why zero, and not "one guard cycle"
+
+The intuition that an AT-only codex client must go dark for up to a guard cycle after a central
+refresh is right — *if* the hub refreshes on its own. It does not get the chance. Observed
+2026-08-30: the client asked at 18:28:10 because its id_token was near expiry, `fetch-best` took the
+`refreshed_current` path, and the hub refreshed **inside that request** and returned the result.
+Local `last_refresh` and the pool's `auth_last_refresh` match to the millisecond
+(`17:40:12.928`) — one operation, not two. The old token dies at the instant the new one lands in the
+caller's hands.
+
+A gap can only open when the hub rotates a grant while its user is not looking. Codex's hourly clock
+means someone is almost always looking.
+
+### What claude can and cannot copy
+
+- **Cannot:** the super key. It belongs to the desktop app, and it is why a claude client answers a
+  revoked token by minting its own instead of waiting ([§3.5](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28)).
+- **Cannot:** a longer AT, or the provider's revoke-on-refresh behaviour.
+- **Can:** make the client the initiator. Claude has no `id_token`, but it does not need one — the hub
+  knows its own rotation schedule, and a client that asks "is the credential I hold still the one you
+  are serving?" every cycle costs a digest comparison and consumes nothing. Whoever asks first turns
+  refresh-and-deliver into a single atomic step, which is the whole of codex's advantage.
 
 ---
 
