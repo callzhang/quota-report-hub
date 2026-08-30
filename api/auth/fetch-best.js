@@ -30,9 +30,19 @@ const REFRESH_CURRENT_MIN_LIFETIME_MS = 45 * 60 * 1000;
 // freshly switched onto as to one it already holds — the pool can easily be holding an entry
 // whose id_token went stale hours or days ago because nothing had asked for it since. Do a real
 // upstream refresh in place (using the real RT this hub holds server-side) and persist it,
-// instead of handing out an id_token-expired blob that will 400 the moment the client relies on
-// it. Returns { authJson, deadRefreshToken } — deadRefreshToken means the real RT was rejected,
-// so this account can't self-heal even though its access_token still looks fresh.
+// instead of handing out a blob whose id_token went stale. Returns { authJson, deadRefreshToken } —
+// deadRefreshToken means the real RT was rejected, so this account can't self-heal even though its
+// access_token still looks fresh.
+//
+// Measured 2026-08-30, correcting what this comment used to claim ("will 400 the moment the client
+// relies on it"): with an id_token 6 minutes past expiry, a placeholder refresh token and a valid
+// access token, `codex exec` completed a real inference — rc=0, a correct reply, 10,870 tokens
+// billed — and `/v1/me` and `codex login status` both succeeded. A stale id_token breaks nothing on
+// the inference path; the API never sees it (its `aud` is the client). So this refresh is
+// PRECAUTIONARY, not load-bearing, and the hourly cadence it implies is more than the evidence
+// requires. Left in place deliberately: codex has zero outages and the churn it causes is harmless
+// (its client cannot re-mint, so there is no tug-of-war to start). Do not cite it as proof that a
+// fresh id_token is required.
 async function ensureCodexIdTokenFresh(authJson, entryMeta) {
   const idMsLeft = codexIdTokenMsUntilExpiry(authJson);
   const atMsLeft = accessTokenMsUntilExpiry(authJson, "codex");

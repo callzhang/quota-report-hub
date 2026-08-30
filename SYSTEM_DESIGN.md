@@ -187,6 +187,13 @@ Replace when the source is hard-invalidated. Neither `maybe_replace_*` gates the
   so matched nothing, reported zero sessions, and let a restart fire with five live. The call refuses
   on absence of evidence — an unreadable process list, or a strip that has not landed yet — never
   only on evidence of absence.
+- **Refresh on demand, not on a clock.** Every refresh spends a single-use token and revokes the
+  access tokens already issued for that grant, so a timer pays that cost on every tick whether or not
+  anything is wrong. A 401 is the one signal that is never a false alarm and arrives exactly when
+  renewal is worth its cost. Measured for codex: an id_token 6 minutes past expiry still completed a
+  real `codex exec` inference (rc=0, 10,870 tokens billed), so even its hourly cadence exceeds what
+  the evidence requires — left as-is only because it is harmless there
+  ([`AUTH_TOKENS.md` §3.6](AUTH_TOKENS.md)).
 - **Proactive same-account refresh**: `fetched_auth_near_expiry` returns true when state is `fetched_from_auth_pool` and the local AT is within `AT_NEAR_EXPIRY_SKEW_SECONDS = 20 min` of expiry; the guard then calls `fetch-best` with `refresh_current=True` to mint a fresh AT for the *same* account before the dead placeholder RT is ever needed (`:2017-2060`).
   The deferral that protects a healthy account from being swapped onto a borrowed one
   (`kept_current_refresh_deferred`) is lifted by `current_auth_cannot_wait` once the token has been

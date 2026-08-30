@@ -307,6 +307,38 @@ real, is not on this path.)
 Claude has neither cushion: its trigger reads an `expiresAt` that never arrives, and its access token
 going invalid is an immediate 401.
 
+### Refresh on demand, not on a clock
+
+Codex renews hourly because its id_token expires hourly. That cadence turns out to be **more than
+the evidence requires**. Measured 2026-08-30 in an isolated `CODEX_HOME`, with an id_token 6 minutes
+past expiry, a placeholder refresh token, and a valid access token:
+
+| Operation | Result |
+|---|---|
+| `/v1/me` (direct API) | **200** |
+| `codex login status` | **rc=0**, "Logged in using ChatGPT" |
+| `codex exec` — a real inference | **rc=0**, correct reply, **10,870 tokens billed** |
+
+A stale id_token breaks nothing, including the inference path. The API never sees it — its `aud` is
+the client, not the API ([§1](#1-codex-auth)). (Bounded claim: 6 minutes of staleness, three
+operations. It does not prove an id_token is never needed for anything.)
+
+So the rule this project settles on is **refresh on demand, not on a clock**:
+
+- **Do not** renew pre-emptively on a timer. Every refresh spends a single-use token and revokes the
+  access tokens already issued for the grant — a cost paid on every tick, whether or not anything was
+  wrong.
+- **Do** renew the moment a credential is actually refused. A 401 is the only signal that is never a
+  false alarm, and it arrives exactly when renewal is worth its cost.
+- The claude client already works this way: an AT-only 401 reports
+  `claude access token rejected (at-only; hub holds the RT)`, `needs_fresh_access_token` routes it to
+  `refresh_current`, and the hub refreshes in place and hands the result back
+  ([§6](#6-failure-modes--invariants-and-the-fixes)). What was missing was not the trigger but the
+  hub honouring it — `refresh_current` used to serve without refreshing.
+- Codex's hourly cadence is left alone: it costs nothing visible (its client cannot re-mint, so
+  rotations start no tug-of-war) and codex has had zero outages. Changing a healthy system to match a
+  principle is not worth the risk.
+
 ### What claude can and cannot copy
 
 - **Cannot:** the super key. It belongs to the desktop app, and it is why a claude client answers a
