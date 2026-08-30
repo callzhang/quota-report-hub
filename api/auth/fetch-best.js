@@ -18,6 +18,11 @@ import { scarcityFromState } from "../../lib/pool-scarcity.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
 import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 
+// The client trips refresh_current at T-20min. Anything at or below this is not worth serving back
+// to it — by the time it installs the copy, the copy is expiring too. Sized above the client's
+// trigger so the answer is always a token the client can actually work with.
+const REFRESH_CURRENT_MIN_LIFETIME_MS = 45 * 60 * 1000;
+
 // The codex CLI/app decide locally when to self-refresh based on id_token's ~1h exp, not
 // access_token's ~10-day one. A pooled/AT-only borrower holds a stripped placeholder
 // refresh_token, so once id_token goes stale their own refresh attempt always 400s even though
@@ -153,12 +158,34 @@ export default async function handler(req, res) {
         sameAuthJson = ensured.authJson;
         idTokenRefreshDead = ensured.deadRefreshToken;
       }
-      // Only hand the same account back if the pooled copy has a genuinely fresh access token.
-      // If its AT is already (near) expired — the worker hasn't written a refreshed copy, or every
-      // entry for this account is stale — returning it leaves the owner stuck on a copy as dead as
-      // its local one. In that case fall through to a normal replacement (a different healthy
-      // account) so the owner keeps working instead of dead-locking on its own account.
-      const msLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
+      // The client only asks for refresh_current when its OWN access token is nearly gone, so
+      // serving the pooled copy as-is is only useful if that copy is meaningfully fresher. It
+      // usually is not: both sides hold the same token until the worker happens to rotate it. This
+      // path used to just serve, on the assumption the worker had kept the pool fresh — measured
+      // twice (2026-08-29 and 08-30), it had not, the client reinstalled its own dying token, and
+      // the machine went 401 for 45-120 minutes until its owner re-logged in by hand.
+      //
+      // So refresh HERE when the pooled copy cannot outlive the client's need. The hub holds the
+      // real refresh token; this is precisely the moment it exists for.
+      let msLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
+      if (!idTokenRefreshDead && msLeft !== null && msLeft <= REFRESH_CURRENT_MIN_LIFETIME_MS) {
+        const refreshed = await verifyAndRefreshAuthBlob(sameAuthJson, source);
+        if (refreshed.ok) {
+          sameAuthJson = refreshed.auth_json;
+          msLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
+          await upsertAuthPoolEntry({
+            source,
+            auth_json: sameAuthJson,
+            uploader_email: sameEntry.uploader_email || null,
+            // a rotation write-back, not a new upload: keep the original owner's machine on it
+            reporter_name: sameEntry.reporter_name || "hub@refresh-current",
+            hostname: sameEntry.hostname || "hub",
+          });
+        } else if (refreshed.auth_rejected) {
+          // the pooled refresh token is dead; a different account is the only way to keep working
+          idTokenRefreshDead = true;
+        }
+      }
       if (!idTokenRefreshDead && (msLeft === null || msLeft > 5 * 60 * 1000)) {
         const disabledRefreshToken = await getFeatureFlag("disabled_refresh_token", false);
         const servedAuthJson = disabledRefreshToken ? stripRefreshToken(sameAuthJson, source) : sameAuthJson;
