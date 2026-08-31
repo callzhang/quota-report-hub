@@ -676,6 +676,48 @@ test("a client's healthy probe cannot clear a standing central-refresh rejection
   assert.equal(merged.usage_summary.central_refresh.auth_rejected, true);
 });
 
+test("a rejection survives an unrelated report in between — the regression that put a month-dead credential back in rotation", () => {
+  // The rule used to read the marker off `previous`, so it only held while consecutive reports
+  // carried it. One report that neither rejects nor clears erased the evidence, and the next
+  // client "ok" sailed through. claude-qpt0311@uw.edu came back `ok` on 2026-08-31 with a pooled
+  // access token 782 hours expired, re-entering rotation and resetting its owner's clock.
+  const neutral = sanitizeReport({
+    ...HEALTHY_CLIENT,
+    report_origin: "worker",
+    reported_at: "2026-08-28T18:22:00Z",
+    status: "error",
+    error: "probe skipped",
+    windows: { "5h": null, "1week": null },
+    usage_summary: { skipped_cloud_probe: true },        // neither rejection nor clearance
+  });
+
+  const afterNeutral = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), neutral);
+  // the verdict AND the evidence must both still be there, or the next merge is blind
+  assert.equal(afterNeutral.error, "refresh_token_rejected");
+  assert.equal(afterNeutral.usage_summary.central_refresh.auth_rejected, true);
+
+  // ...so the client "ok" that follows still cannot resolve it
+  const afterClient = mergeLatestReport(sanitizeReport(afterNeutral), sanitizeReport(HEALTHY_CLIENT));
+  assert.equal(afterClient.status, "error");
+  assert.equal(afterClient.error, "refresh_token_rejected");
+  assert.equal(afterClient.usage_summary.central_refresh.auth_rejected, true);
+});
+
+test("the sticky rejection still yields to real proof about the pooled blob", () => {
+  // three neutral reports deep, an upload still clears it
+  let cur = sanitizeReport(CENTRAL_REJECTION);
+  for (let i = 0; i < 3; i += 1) {
+    cur = sanitizeReport(mergeLatestReport(cur, sanitizeReport({ ...HEALTHY_CLIENT, reported_at: `2026-08-28T18:3${i}:00Z` })));
+  }
+  assert.equal(cur.error, "refresh_token_rejected");
+
+  const upload = sanitizeReport({
+    ...HEALTHY_CLIENT,
+    usage_summary: { token_refresh: { status: "refreshed", source: "upload" } },
+  });
+  assert.equal(mergeLatestReport(cur, upload).status, "ok");
+});
+
 test("a verified upload clears a standing central-refresh rejection", () => {
   const upload = sanitizeReport({
     ...HEALTHY_CLIENT,
