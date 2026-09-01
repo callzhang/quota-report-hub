@@ -147,7 +147,7 @@ The guard then:
 - updates Codex and Claude entries in `~/.agents/auth/known_auth.json`
 - reuploads current auths so a missing cloud entry can recover automatically
 - probes current live Codex and Claude auth and quota
-- if Codex is below `5%` in `1week`, calls `/api/auth/fetch-best` for a strictly better Codex auth; legacy Codex `5H` does not trigger rotation
+- if Codex is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` for a strictly better Codex auth; the `5H` rule applies only when the probe reports a `5H` window (Plus-tier accounts still have one; tiers without a 5-hour limit report none and rotate on `1week` alone)
 - resolves the Claude CLI binary from common non-interactive locations such as `~/.local/bin`, `/opt/homebrew/bin`, and `/usr/local/bin` before relying on `PATH`
 - may push stable local Claude quota snapshots back to the hub when available
 - for Claude, the local probe reads the statusline snapshot first, then falls back to the OAuth usage API when the statusline has no quota windows; successful usage windows are cached during the endpoint polling backoff and reused only until their provider reset time, so alternating guard runs do not fall back to `n/a`
@@ -155,7 +155,7 @@ The guard then:
 - if Claude is below `20%` in `5H` or below `5%` in `1week`, calls `/api/auth/fetch-best` with `source + current local account + current local quota`
 - ordinary probe errors and unavailable quota snapshots do not trigger auth replacement; replacement requires a real low-quota window or a hard auth invalidation
 - only accepts a server response when it contains a strictly better replacement from that same source
-- for Claude, the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
+- the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`; a Codex candidate without a `5H` window is held to the `1week` threshold only
 - if the server returns `repair_auth`, the guard installs that auth instead of a shared replacement so the uploader can re-login and refresh their own invalidated auth
 - only replaces local source credentials when the fetched auth is different from what is already installed
 - after a Codex write, or when a manual login makes `auth.json` newer than the running app-server, invokes only `codex app-server daemon restart`; an unmanaged app-server returns `unmanaged_app_server_not_restarted` and is left running

@@ -31,7 +31,7 @@ The hub and local guard remain source-aware:
 
 - Codex auths only compete with other Codex auths
 - Claude auths only compete with other Claude auths
-- Codex live quota is weekly only; any old 5H value is legacy metadata and should not drive rotation or dashboard freshness
+- Codex live quota is judged per reported window: Plus-tier accounts still meter a 5H window and rotate below 20%, while tiers without a 5-hour limit report no 5H window and rotate on the weekly window alone
 - Codex cloud identities are normalized to the lowercased email when available, so Team users do not collide on a shared provider-side UUID
 - CLI/probe startup errors and quota-unavailable snapshots do not drive replacement; the guard rotates only on confirmed low quota or hard auth invalidation
 

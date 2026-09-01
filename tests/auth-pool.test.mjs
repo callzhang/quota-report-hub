@@ -267,7 +267,7 @@ test("pickBestAuthPoolCandidate spreads fetches across similarly strong accounts
   assert.equal(candidate.entry.account_id, "cool");
 });
 
-test("pickBestAuthPoolCandidate ranks codex candidates by weekly quota, not 5H headroom", () => {
+test("pickBestAuthPoolCandidate weighs codex 5H headroom alongside weekly quota", () => {
   const reports = [
     {
       source: "codex",
@@ -307,7 +307,9 @@ test("pickBestAuthPoolCandidate ranks codex candidates by weekly quota, not 5H h
     now: "2026-04-22T08:30:00Z",
   });
 
-  assert.equal(candidate.entry.account_id, "marginal");
+  // marginal's 5h=25% caps its quota weight below hot's min(98, 70), so hot carries the fetch
+  // despite marginal's better weekly window.
+  assert.equal(candidate.entry.account_id, "hot");
 });
 
 test("pickBestAuthPoolCandidate lets high-quota accounts carry proportionally more fetches", () => {
@@ -404,7 +406,7 @@ test("pickBestAuthPoolCandidate returns null when no candidate beats current quo
     source: "codex",
     current_account_id: "current",
     current_quota: {
-      five_h_remaining_percent: 20,
+      five_h_remaining_percent: 95,
       one_week_remaining_percent: 50,
     },
     now: "2026-04-22T08:30:00Z",
@@ -463,6 +465,66 @@ test("pickBestAuthPoolCandidate ignores better codex 5H when weekly quota is wor
     current_account_id: "current",
     current_quota: {
       five_h_remaining_percent: 20,
+      one_week_remaining_percent: 50,
+    },
+    now: "2026-04-22T08:30:00Z",
+  });
+
+  assert.equal(candidate, null);
+});
+
+test("pickBestAuthPoolCandidate withholds codex candidates below the 5H share threshold", () => {
+  // Plus-tier Codex accounts still meter a 5h window; sharing one that is nearly drained just
+  // burns the requester's fetch on an account about to trip its own rotation.
+  const reports = [
+    {
+      source: "codex",
+      account_id: "drained-5h",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 10 },
+        "1week": { remaining_percent: 90 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+  ];
+  const pool = [{ account_id: "drained-5h" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: 0,
+      one_week_remaining_percent: 0,
+    },
+    now: "2026-04-22T08:30:00Z",
+  });
+
+  assert.equal(candidate, null);
+});
+
+test("pickBestAuthPoolCandidate treats a codex current without a 5H window as unconstrained", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "worse-weekly",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 95 },
+        "1week": { remaining_percent: 45 },
+      },
+      reported_at: "2026-04-22T08:02:00Z",
+    },
+  ];
+  const pool = [{ account_id: "worse-weekly" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: {
+      five_h_remaining_percent: -1,
       one_week_remaining_percent: 50,
     },
     now: "2026-04-22T08:30:00Z",

@@ -179,8 +179,7 @@ If a request presents an older hub-signed token, the server can verify the embed
   - only compares candidates from the same source
   - excludes the current local account
   - excludes hard-invalidated accounts
-  - for Codex, excludes accounts whose `1week` remaining quota is below the share threshold, and only considers candidates whose `1week` is strictly better than the current local `1week`
-  - for Claude, excludes accounts with insufficient `5H` or `1week` quota and compares candidates against both current windows
+  - excludes accounts with insufficient `5H` or `1week` quota and compares candidates against both current windows; for Codex, an absent `5H` window (tiers without a 5-hour limit) counts as unconstrained rather than exhausted — Plus-tier Codex accounts still meter a `5H` window and are held to its threshold
   - weights selection by remaining quota using requester-specific deterministic weighted sampling with a softened quota weight, plus a small active-assignment penalty, then returns the lowest projected load
   - treats each machine's latest fetch result as an active assignment, so a shared auth remains load-bearing until that machine fetches a different auth
   - also treats each machine's latest quota report as active-assignment evidence, so machines that keep using an auth without fetching again still count against that auth's load
@@ -301,8 +300,9 @@ The local rotation condition is:
 
 Currently “unhealthy” means:
 
-- for Codex: current `1week remaining` is below `5%`
-- for Claude: current `5H remaining` is below `20%`, or current `1week remaining` is below `5%`
+- current `5H remaining` is below `20%` (when the probe reports a `5H` window — Plus-tier Codex
+  accounts still have one; Codex tiers without a 5-hour limit simply report none)
+- or current `1week remaining` is below `5%`
 - or current auth is hard-invalidated
 
 When the trigger fires, the machine calls `/api/auth/fetch-best` with:
@@ -317,13 +317,12 @@ The server returns:
 - a better auth when one exists
 - otherwise `replacement: null`
 
-- Codex `1week < 5%`
-- Claude `5H < 20%` or `1week < 5%`
+- `5H < 20%` (when a `5H` window is reported) or `1week < 5%`
 
 But rotation only proceeds when the candidate is truly better:
 
-- Codex candidate `1week > current 1week` and meets the weekly share threshold
-- Claude candidate beats the current `5H × 1week` product and meets both share thresholds
+- the candidate beats the current `5H × 1week` product and meets both share thresholds, where a
+  missing Codex `5H` window (either side) counts as unconstrained
 
 This prevents useless swaps where the relevant source quota would regress.
 
@@ -333,8 +332,9 @@ Cloud fetch selection compares against the caller's current local quota:
 
 - exclude hard-invalidated accounts
 - exclude unusable accounts
-- for Codex, keep candidates whose weekly quota beats the caller and rank weekly-first with load balancing
-- for Claude, keep candidates that satisfy both window thresholds and rank by the existing double-window quota/load rule
+- keep candidates that satisfy both window thresholds and rank by the double-window quota/load rule;
+  a Codex candidate without a `5H` window is judged on `1week` alone (Codex tie-breaking stays
+  weekly-first, Claude stays `5H`-first)
 
 ### Cloud Deduplication Rule
 

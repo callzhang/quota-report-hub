@@ -223,13 +223,38 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       },
     },
     {
-      name: "Codex ignores an expired legacy five-hour window",
+      name: "Codex with an expired five-hour window waits for a fresh snapshot",
       item: {
         source: "codex",
         reported_at: "2026-08-08T07:24:12Z",
         display_windows: {
           "5h": window(0, "2026-08-08T07:30:26Z", "quota_window_expired"),
           "1week": window(6, "2026-08-15T00:00:00Z"),
+        },
+      },
+      expected: { state: "waiting_for_new_quota", currently_usable: false, reason: "quota_window_expired" },
+    },
+    {
+      name: "Codex five-hour quota below the rotation threshold is low quota",
+      item: {
+        source: "codex",
+        effective_status: "ok",
+        reported_at: "2026-08-08T07:24:12Z",
+        display_windows: {
+          "5h": window(12, "2026-08-08T09:00:00Z"),
+          "1week": window(70, "2026-08-15T00:00:00Z"),
+        },
+      },
+      expected: { state: "low_quota", currently_usable: false, reason: "below_rotation_threshold" },
+    },
+    {
+      name: "Codex without a five-hour window is judged on weekly quota alone",
+      item: {
+        source: "codex",
+        effective_status: "ok",
+        reported_at: "2026-08-08T07:24:12Z",
+        display_windows: {
+          "1week": window(70, "2026-08-15T00:00:00Z"),
         },
       },
       expected: { state: "available", currently_usable: true, reason: "meets_rotation_threshold" },

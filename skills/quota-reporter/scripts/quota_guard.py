@@ -327,10 +327,11 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
         return True
     if payload.get("status") != "ok":
         return False
+    # Both sources use the same rule: each window the probe actually saw is held to its threshold,
+    # and an absent window (Codex tiers without a 5h limit) simply does not constrain. Plus-tier
+    # Codex accounts still meter a 5h window, so it must keep triggering rotation.
     five_hour_remaining = remaining_percent(payload, "5h")
     weekly_remaining = remaining_percent(payload, "1week")
-    if payload.get("source") == "codex":
-        return weekly_remaining >= 0 and weekly_remaining < weekly_threshold_percent
     if five_hour_remaining < 0 and weekly_remaining < 0:
         return False
     if five_hour_remaining >= 0 and five_hour_remaining < threshold_percent:

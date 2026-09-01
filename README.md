@@ -136,8 +136,7 @@ Important runtime notes:
 - each run self-updates the installed skill from `https://github.com/callzhang/quota-report-hub` before probing, unless `--skip-self-update` is passed for debugging
 - each machine stores only one local state file: `~/.agents/auth/known_auth.json`
 - the local guard probes current local Codex and Claude auth and quota
-- if Codex has less than `5%` remaining in `1week`, the machine asks the cloud auth pool for a better Codex auth; Codex `5H` is legacy metadata and does not trigger rotation
-- if Claude has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better Claude auth
+- if Codex or Claude has less than `20%` remaining in the `5H` window, or less than `5%` remaining in the `1week` window, the machine asks the cloud auth pool for a better auth of that source; each rule applies only to a window the probe actually reported — Plus-tier Codex accounts still meter a `5H` window, while Codex tiers without a 5-hour limit report none and rotate on `1week` alone
 - the request to `/api/auth/fetch-best` includes:
   - `source`
   - the current local `account_id`
@@ -145,8 +144,7 @@ Important runtime notes:
   - the current local `1week remaining percent`
   - a local `requester_id` such as `user@hostname`, so machines sharing the same hub token are still spread across different replacement auths
 - the server only returns a replacement when it is strictly better than the current local auth for that same source
-- for Codex, the server only shares candidates whose `1week` remaining quota is at least `5%`, and ranks them by weekly quota plus load balancing
-- for Claude, the server still requires candidates to have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`
+- the server requires candidates to have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`; a Codex candidate without a `5H` window is held to the `1week` threshold only
 - replacement selection is weighted by remaining quota: the server uses requester-specific deterministic weighted sampling with a softened quota weight, plus a small active-assignment penalty, so high-quota accounts carry more load without taking nearly every request
 - the server also tracks active assignments by each machine's latest fetch event; an auth already installed on many machines is treated as loaded even if those machines have not fetched again within the last 5 hours
 - local upload is idempotent: even when `known_auth.json` records the same uploaded `account_id`, auth refresh time, and digest, the guard reuploads the current auth so a missing cloud entry can be restored automatically
@@ -217,7 +215,7 @@ Auth pool support:
 - A client can request the best currently usable auth from `/api/auth/fetch-best`, but it must send the same explicit `source`.
 - Contribution sets priority, not access. Anyone may fetch any supported source; a user with no healthy auth of their own in the pool is warned, and once the pool is projected to run dry they are rate-limited to one fetch per cooldown until they supply one. Candidate selection still stays source-specific, so Codex never receives Claude auth and Claude never receives Codex auth.
 - The dashboard API at `/api/status` also requires the same personal bearer token.
-- The selection logic only compares candidates within the same source and skips hard-invalidated auths. Codex selection is weekly-quota-first; Claude selection still uses both `5H` and `1week`.
+- The selection logic only compares candidates within the same source and skips hard-invalidated auths. Both sources are selected on `5H` and `1week` together; a Codex account without a `5H` window is judged on `1week` alone, and Codex ties break weekly-first.
 - Soft probe failures such as missing quota details can still contribute stale-but-last-known-good windows; hard token invalidations clear the old windows.
 - The auth pool requires server-side encryption plus Mailgun delivery for issuing personal user tokens.
 - The auth pool deduplicates by stable `source + account_id` and records the authenticated Hub account from the latest client upload in `uploader_email`. A newer `auth_last_refresh` replaces the stored auth; an identical auth still updates changed uploader/machine metadata without replacing the encrypted credential.

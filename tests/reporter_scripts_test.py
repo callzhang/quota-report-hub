@@ -2158,12 +2158,26 @@ Reading additional input from stdin...
             saved = json.loads(known_auth_path.read_text(encoding="utf-8"))
             self.assertIn("codex", saved["sources"])
 
-    def test_source_needs_replacement_ignores_codex_5h_when_weekly_is_healthy(self):
+    def test_source_needs_replacement_when_codex_5h_is_low(self):
+        # Plus-tier Codex accounts still meter a 5h window, so it must trigger rotation again.
         codex_payload = {
             "source": "codex",
             "status": "ok",
             "windows": {
                 "5h": {"remaining_percent": 12},
+                "1week": {"remaining_percent": 70},
+            },
+        }
+
+        self.assertTrue(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+
+    def test_source_needs_replacement_skips_codex_without_5h_window_when_weekly_is_healthy(self):
+        # Codex tiers without a 5h limit report no 5h window; only the weekly window constrains them.
+        codex_payload = {
+            "source": "codex",
+            "status": "ok",
+            "windows": {
+                "5h": None,
                 "1week": {"remaining_percent": 70},
             },
         }
