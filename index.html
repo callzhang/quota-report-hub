@@ -420,7 +420,10 @@
             <a href="./token-usage.html" style="color: var(--accent); border-bottom: 1px dashed var(--accent); text-decoration: none;">token usage →</a> ·
             <a href="./users.html" style="color: var(--accent); border-bottom: 1px dashed var(--accent); text-decoration: none;">users &amp; audit log →</a>
           </div>
-          <div id="viewer-chip" class="viewer-chip" hidden></div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <button id="notify-permission-button" type="button" class="button" hidden></button>
+            <div id="viewer-chip" class="viewer-chip" hidden></div>
+          </div>
         </div>
         <h1>Cloud Auth Pool</h1>
         <div class="meta" id="summary">Loading...</div>
@@ -523,6 +526,7 @@
       const archivedEmpty = document.getElementById("archived-empty");
       const authPanel = document.getElementById("auth-panel");
       const viewerChip = document.getElementById("viewer-chip");
+      const notifyPermissionButton = document.getElementById("notify-permission-button");
       const tokenInput = document.getElementById("token-input");
       const saveTokenButton = document.getElementById("save-token");
       const clearTokenButton = document.getElementById("clear-token");
@@ -767,14 +771,38 @@
         }
       }
 
+      function updateNotifyPermissionButtonState() {
+        if (typeof window === "undefined" || !("Notification" in window)) {
+          notifyPermissionButton.hidden = true;
+          return;
+        }
+        const permission = window.Notification.permission;
+        if (permission === "granted") {
+          notifyPermissionButton.hidden = true;
+          return;
+        }
+        notifyPermissionButton.hidden = false;
+        notifyPermissionButton.disabled = permission === "denied";
+        notifyPermissionButton.textContent = permission === "denied"
+          ? "🔕 Notifications blocked — allow in browser site settings"
+          : "🔔 Enable quota-full notifications";
+      }
+
       function requestQuotaFullNotificationPermission() {
+        // Chrome silently drops (never prompts for) a requestPermission() call that isn't
+        // triggered by a real user gesture like this button's click, so this must never run
+        // automatically at page load.
         if (typeof window === "undefined" || !("Notification" in window)) return;
-        if (window.Notification.permission !== "default") return;
         try {
           const result = window.Notification.requestPermission();
-          if (result && typeof result.catch === "function") result.catch(() => {});
+          if (result && typeof result.then === "function") {
+            result.then(updateNotifyPermissionButtonState, updateNotifyPermissionButtonState);
+          } else {
+            updateNotifyPermissionButtonState();
+          }
         } catch {
           // Older browsers may throw synchronously for unsupported usage; ignore.
+          updateNotifyPermissionButtonState();
         }
       }
 
@@ -1480,7 +1508,8 @@
         if (availabilityPopover.contains(event.target) || openAvailabilityTrigger.contains(event.target)) return;
         closeAvailabilityPopover();
       });
-      requestQuotaFullNotificationPermission();
+      notifyPermissionButton.addEventListener("click", requestQuotaFullNotificationPermission);
+      updateNotifyPermissionButtonState();
       load();
       async function checkDashboardRevision() {
         if (document.visibilityState !== "visible") {

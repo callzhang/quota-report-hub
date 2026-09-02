@@ -558,25 +558,83 @@ test("checkQuotaFullNotifications and requestQuotaFullNotificationPermission do 
   });
 });
 
-test("dashboard init requests notification permission when it is in the default state", async () => {
+test("dashboard init never requests notification permission automatically, regardless of current state", async () => {
+  for (const notificationPermission of ["default", "granted", "denied"]) {
+    const harness = await dashboardHarness(async (url) => {
+      if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+      throw new Error(`unexpected request ${url}`);
+    }, "old-token", { notificationPermission });
+
+    assert.equal(harness.getRequestPermissionCalls(), 0, `must not auto-request when starting as ${notificationPermission}`);
+  }
+});
+
+test("clicking the notify-permission button requests permission only when it is in the default state", async () => {
   const harness = await dashboardHarness(async (url) => {
     if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
     throw new Error(`unexpected request ${url}`);
   }, "old-token", { notificationPermission: "default" });
 
+  harness.element("notify-permission-button").listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+
   assert.equal(harness.getRequestPermissionCalls(), 1);
 });
 
-test("dashboard init does not request notification permission when already decided", async () => {
-  const grantedHarness = await dashboardHarness(async (url) => {
+test("notify-permission button is hidden once permission is already granted", async () => {
+  const harness = await dashboardHarness(async (url) => {
     if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
     throw new Error(`unexpected request ${url}`);
   }, "old-token", { notificationPermission: "granted" });
-  assert.equal(grantedHarness.getRequestPermissionCalls(), 0);
 
-  const deniedHarness = await dashboardHarness(async (url) => {
+  assert.equal(harness.element("notify-permission-button").hidden, true);
+});
+
+test("notify-permission button invites the user to enable notifications when permission is default", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  }, "old-token", { notificationPermission: "default" });
+
+  const button = harness.element("notify-permission-button");
+  assert.equal(button.hidden, false);
+  assert.equal(button.disabled, false);
+  assert.match(button.textContent, /Enable/);
+});
+
+test("notify-permission button explains and disables itself when permission is denied", async () => {
+  const harness = await dashboardHarness(async (url) => {
     if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
     throw new Error(`unexpected request ${url}`);
   }, "old-token", { notificationPermission: "denied" });
-  assert.equal(deniedHarness.getRequestPermissionCalls(), 0);
+
+  const button = harness.element("notify-permission-button");
+  assert.equal(button.hidden, false);
+  assert.equal(button.disabled, true);
+  assert.match(button.textContent, /blocked/);
+});
+
+test("notify-permission button stays hidden when the browser has no Notification API", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+
+  assert.equal(harness.element("notify-permission-button").hidden, true);
+});
+
+test("clicking the button after permission becomes granted hides it again", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  }, "old-token", { notificationPermission: "default" });
+
+  const button = harness.element("notify-permission-button");
+  assert.equal(button.hidden, false);
+
+  button.listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.getRequestPermissionCalls(), 1);
+  assert.equal(button.hidden, true, "the mock's requestPermission() always resolves to granted, so the button should re-hide itself");
 });
