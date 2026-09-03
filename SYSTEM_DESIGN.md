@@ -706,6 +706,9 @@ and during scarcity draws once per cooldown instead of every five minutes, keepi
 already in their hand and getting their own dead auth handed back to re-login -- which is precisely
 how somebody stops being a non-contributor.
 
+An exhausted account (`exhausted_until` set, no windows) still counts as a healthy contribution --
+being drained is what a shared account is for.
+
 **The reporting gate is deliberately NOT scarcity-gated.** It is a measurement precondition, not a
 rationing rule. Gating it would be self-defeating: nobody fixes their reporter during abundance, so
 when the pool does tighten those users still have no measurable share and the cooldown -- the actual
