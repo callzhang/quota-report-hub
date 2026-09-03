@@ -772,7 +772,7 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(report["windows"]["1week"]["remaining_percent"], 70.0)
         self.assertEqual(report["windows"]["1week"]["reset_in_seconds"], 3600)
 
-    def test_probe_codex_maps_usage_limit_event_to_zero_remaining_windows(self):
+    def test_probe_codex_reports_usage_limit_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text(
@@ -827,15 +827,12 @@ class ReporterScriptsTest(unittest.TestCase):
                     report = probe_codex(auth_path)
 
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["5h"]["used_percent"], 100.0)
+        self.assertIsNone(report["error"])
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertIsNone(report["windows"]["1week"])
+        self.assertIsNotNone(report["exhausted_until"])
+        self.assertEqual(report["exhausted_until"], report["usage_summary"]["next_retry_at"])
         self.assertEqual(report["usage_summary"]["credits"]["balance"], "0")
-        self.assertIsNotNone(report["windows"]["5h"]["reset_at"])
-        self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
-        self.assertIsInstance(report["windows"]["5h"]["reset_in_seconds"], int)
-        self.assertGreaterEqual(report["windows"]["5h"]["reset_in_seconds"], 0)
-        self.assertEqual(report["usage_summary"]["next_retry_at"], report["windows"]["5h"]["reset_at"])
 
     def test_probe_codex_does_not_create_zero_windows_without_reset_time(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -893,8 +890,9 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(report["windows"]["5h"])
         self.assertIsNone(report["windows"]["1week"])
         self.assertIsNone(report["usage_summary"]["next_retry_at"])
+        self.assertIsNone(report.get("exhausted_until"))
 
-    def test_probe_codex_maps_structured_reset_to_zero_remaining_windows(self):
+    def test_probe_codex_reports_structured_reset_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text(
@@ -946,13 +944,16 @@ class ReporterScriptsTest(unittest.TestCase):
                     report = probe_codex(auth_path)
 
         self.assertEqual(report["status"], "ok")
+        # Unlike the other exhaustion tests, this fixture's primary block carries a genuine
+        # used_percent measurement, so the 5h window is real (not fabricated) and must survive;
+        # only the unmeasured 1week window collapses to None.
+        self.assertIsNotNone(report["windows"]["5h"])
         self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["5h"]["reset_in_seconds"], 900)
-        self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
-        self.assertEqual(report["usage_summary"]["next_retry_at"], report["windows"]["5h"]["reset_at"])
+        self.assertIsNone(report["windows"]["1week"])
+        self.assertIsNotNone(report["exhausted_until"])
+        self.assertEqual(report["exhausted_until"], report["usage_summary"]["next_retry_at"])
 
-    def test_probe_codex_maps_rate_limited_exhausted_window_to_zero_remaining_windows(self):
+    def test_probe_codex_reports_rate_limited_exhaustion_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text(
@@ -1004,8 +1005,9 @@ class ReporterScriptsTest(unittest.TestCase):
                     report = probe_codex(auth_path)
 
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertIsNone(report["windows"]["1week"])
+        self.assertEqual(report["exhausted_until"], "2026-04-22T16:30:00Z")
         self.assertEqual(report["usage_summary"]["rate_limit_reached_type"], "rate_limited")
         self.assertEqual(report["usage_summary"]["next_retry_at"], "2026-04-22T16:30:00Z")
 
@@ -1065,7 +1067,7 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(report["windows"]["5h"])
         self.assertIsNone(report["windows"]["1week"])
 
-    def test_probe_codex_maps_partial_missing_window_usage_limit_to_zero_remaining_windows(self):
+    def test_probe_codex_reports_partial_missing_window_usage_limit_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text(
@@ -1118,10 +1120,13 @@ class ReporterScriptsTest(unittest.TestCase):
 
         self.assertEqual(report["status"], "ok")
         self.assertIsNone(report["error"])
+        # Same as the structured-reset case: primary carries a genuine used_percent measurement,
+        # so the 5h window is real even though it lacks its own reset time; 1week stays None.
+        self.assertIsNotNone(report["windows"]["5h"])
         self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
-        self.assertIsNotNone(report["windows"]["5h"]["reset_at"])
-        self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
+        self.assertIsNone(report["windows"]["1week"])
+        self.assertIsNotNone(report["exhausted_until"])
+        self.assertEqual(report["exhausted_until"], report["usage_summary"]["next_retry_at"])
 
     def test_probe_codex_does_not_treat_creditless_team_account_as_zero_remaining_without_usage_limit_signal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2360,6 +2365,27 @@ Reading additional input from stdin...
         }
 
         self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
+
+    def test_source_needs_replacement_triggers_on_exhausted_until(self):
+        # A codex limit-hit probe reports no windows at all -- exhausted_until is the only
+        # signal that the account is unusable, so its presence must trigger rotation on its own.
+        payload = {
+            "account_id": "acct-1",
+            "status": "ok",
+            "exhausted_until": "2026-09-07T05:26:08Z",
+            "windows": {"5h": None, "1week": None},
+        }
+        self.assertTrue(quota_guard.source_needs_replacement(payload, 20.0, 5.0))
+
+    def test_source_needs_replacement_still_ignores_windowless_healthy_payloads(self):
+        # Without exhausted_until, an all-None-windows payload stays the pre-existing "not
+        # constrained" case (e.g. Codex tiers that never meter a 5h window).
+        payload = {
+            "account_id": "acct-1",
+            "status": "ok",
+            "windows": {"5h": None, "1week": None},
+        }
+        self.assertFalse(quota_guard.source_needs_replacement(payload, 20.0, 5.0))
 
     def test_quota_payload_should_report_valid_windows_and_hard_invalidations_only(self):
         self.assertTrue(

@@ -884,10 +884,13 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
             "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
             "status": "ok",
             "error": None,
-            "windows": {
-                "5h": zero_remaining_window(300, reset_at=reset_at, reset_in_seconds=reset_in_seconds),
-                "1week": zero_remaining_window(10080, reset_at=reset_at, reset_in_seconds=reset_in_seconds),
-            },
+            # A limit-hit is account-level evidence ("unusable until T"), not a window
+            # measurement. Fabricating per-window zeros here is how a Pro account — which meters
+            # no 5h window at all — once carried a synthetic "5h 0%" five days past its reset and
+            # was locked out of pool selection at 96% weekly quota. Only genuinely measured
+            # windows are reported.
+            "exhausted_until": reset_at,
+            "windows": windows,
             "usage_summary": {
                 "credits": rate_limits.get("credits"),
                 "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
