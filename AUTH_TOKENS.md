@@ -136,6 +136,27 @@
 - Pool account id = **`claude-<email-lowercased>`** (the `claude-` prefix is added **client-side** in the
   reporter, e.g. `probe_claude` / `build_claude_auth_blob`; the server's `deriveClaudeAuthPoolEntry` takes
   `account_id` as-is).
+- ⚠️ **Identity and credential live in different files, and installing a credential moves only one of
+  them.** The email comes from `claude auth status --text`, falling back to `oauthAccount` in
+  `~/.claude.json`. `install_claude_credentials` writes the four *credential* stores ([§2](#2-claude-auth))
+  and touches neither. So installing a fetched credential swaps the token and leaves the identity
+  record naming whatever account was there before — the probe then reads quota through the new token
+  and the name off the old record.
+- Codex has no such split: its identity is read back out of `auth.json`, the same artifact the install
+  writes, so identity cannot drift from the credential. This failure mode is claude-only.
+- **The binding that fixes it**: every claude install records the SHA-256 of the access token it wrote
+  next to the account that token belongs to (`access_token_fingerprint` in
+  `~/.claude/quota-guard/known_auth.json`). `resolve_claude_installed_identity` matches that
+  fingerprint against the token now in place, so the reported identity is derived from the credential
+  rather than from a record that can go stale. No match means the machine is running a credential the
+  guard never installed — its own login — and the CLI's own answer stands.
+- **Measured (2026-08-25 → 09-03, `claude-qpt0311@uw.edu`)**: a borrower's guard was served
+  `claude-leizhang0121@gmail.com` 90+ times and reported it under `claude-qpt0311@uw.edu` every time —
+  same access token (identical `expiresAt` to the millisecond), same quota numbers, wrong account.
+  Three consequences, all from that one drift: the dashboard published one account's quota under
+  another's id; `qpt0311` looked alive for ten days while its own credential had been dead since
+  08-07; and because the guard kept self-reporting the broken account as current, it re-fetched a
+  replacement every ~17 minutes for ten days without ever converging.
 
 ### Refresh endpoint
 - `POST https://platform.claude.com/v1/oauth/token`, `client_id = 9d1c250a-e61b-44d9-88ed-5944d1962f5e`,
@@ -436,6 +457,17 @@ refusing borrowers until it self-healed.
 
 Abuse-class errors (a *different* risk unique to shared-AT mode — provider pushback): `429`, `403`,
 rate-limit / suspend / ban / abuse. Watched separately (`lib/abuse-errors.js`, `assess_health.mjs` exit 3).
+
+### The invalidation clock is part of the verdict, not a separate opinion
+
+`first_invalidated_at` (`auth_pool_invalidated_notifications`) is the *only* input to two rules: the
+48 h archive threshold and the 24 h owner-notification threshold. It therefore has to be written from
+the **merged** verdict, exactly like `status`/`error` — never from the report that happened to arrive
+last. Deciding it from the incoming report re-opened the sticky-rejection hole one layer below
+`mergeLatestReport`: every unrelated client `ok` DELETED the row and the next rejection recreated it
+with a fresh timestamp, so both clocks restarted every few minutes. A credential dead for weeks stayed
+permanently "just invalidated" — never archived, owner never mailed. Regression:
+[tests/invalidation-clock-db.test.mjs](tests/invalidation-clock-db.test.mjs).
 
 ---
 
