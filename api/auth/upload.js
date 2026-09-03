@@ -6,6 +6,32 @@ import { stripRefreshToken } from "../../lib/fetch-best.js";
 import { probeClaudeAccessToken, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
 
+// This write restates the SAME client observation that was just ingested (plus the refresh
+// bookkeeping). Omitting exhausted_until here would clear the just-stored deadline under the
+// per-report-evidence rule (sanitize always emits the key) — measured: ingest stored the
+// deadline, this upsert nulled it in the same request, and an exhausted account that uploaded
+// its auth went straight back into rotation.
+export function refreshVerificationQuotaReport({ source, entry, quotaPayload, reporterEmail }) {
+  return {
+    source,
+    account_id: entry.account_id,
+    email: entry.email,
+    name: entry.name,
+    plan_name: entry.plan_name,
+    auth_last_refresh: entry.auth_last_refresh,
+    status: "ok",
+    windows: quotaPayload?.windows || { "5h": null, "1week": null },
+    exhausted_until: quotaPayload?.exhausted_until ?? null,
+    usage_summary: {
+      ...(quotaPayload?.usage_summary || {}),
+      token_refresh: { status: "refreshed", source: "upload" },
+    },
+    report_origin: "client",
+    reporter_name: quotaPayload?.reporter_name || reporterEmail,
+    hostname: quotaPayload?.hostname || "upload",
+  };
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.statusCode = 405;
@@ -104,23 +130,14 @@ export default async function handler(req, res) {
   }
 
   if (refreshVerification.ok) {
-    await upsertAuthPoolQuota({
-      source,
-      account_id: entry.account_id,
-      email: entry.email,
-      name: entry.name,
-      plan_name: entry.plan_name,
-      auth_last_refresh: entry.auth_last_refresh,
-      status: "ok",
-      windows: body.quota_payload?.windows || { "5h": null, "1week": null },
-      usage_summary: {
-        ...(body.quota_payload?.usage_summary || {}),
-        token_refresh: { status: "refreshed", source: "upload" },
-      },
-      report_origin: "client",
-      reporter_name: body.quota_payload?.reporter_name || authContext.email,
-      hostname: body.quota_payload?.hostname || "upload",
-    });
+    await upsertAuthPoolQuota(
+      refreshVerificationQuotaReport({
+        source,
+        entry,
+        quotaPayload: body.quota_payload,
+        reporterEmail: authContext.email,
+      })
+    );
   }
 
   // Surface the flag so a client that just uploaded its real RT knows to go AT-only locally

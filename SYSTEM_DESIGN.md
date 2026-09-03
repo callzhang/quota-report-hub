@@ -409,7 +409,9 @@ one that carries the sharp rules:
   they are, instead of fabricating per-window zeros ([§10](#10-selection-algorithm)) (a report the
   merge *accepts* clears it; the two guard branches that discard an incoming report wholesale keep
   the previous value — coherent, since they drop the incoming report entirely, and the next accepted
-  report clears it within a client cycle).
+  report clears it within a client cycle). The refresh-verification upsert forwards the bundled
+  payload's `exhausted_until` — that write restates the same client observation, and omitting the
+  field would clear the just-ingested deadline under the per-report-evidence rule (§6.6).
 
 `statusPayload` / `authPoolStatusPayload` assemble the dashboard dataset from entries, reports and
 invalidation state; `lib/account-availability.js` then reduces each account to the single lifecycle
