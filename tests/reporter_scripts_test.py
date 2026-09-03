@@ -2431,6 +2431,16 @@ Reading additional input from stdin...
         }
         self.assertTrue(quota_guard.quota_payload_is_reportable("codex", payload))
 
+    def test_quota_payload_is_reportable_rejects_error_status_with_exhausted_until(self):
+        payload = {
+            "account_id": "acct-1",
+            "status": "error",
+            "error": "codex exec failed",
+            "exhausted_until": "2026-09-07T05:26:08Z",
+            "windows": {"5h": None, "1week": None},
+        }
+        self.assertFalse(quota_guard.quota_payload_is_reportable("codex", payload))
+
     def test_report_current_quota_to_auth_pool_posts_complete_codex_windows(self):
         payload = {
             "source": "codex",

@@ -398,7 +398,10 @@ def quota_payload_is_reportable(source: str, payload: dict | None) -> bool:
 
     Mirrors codexClientPayloadAccepted / ingestClientQuota in lib/quota-ingest.js -- posting a
     payload the hub will discard just burns a request. Accepted codex shapes: hard invalidation,
-    complete weekly window, confirmed out-of-credits, or exhausted_until.
+    complete weekly window, or exhausted_until. The confirmed out-of-credits clause below is a
+    deliberate client-side superset: the hub currently DISCARDS that shape (its zero windows carry
+    no reset_at), and fixing the out-of-credits reporting path is an explicit follow-up -- see the
+    plan's known follow-ups.
     """
     if source == "codex":
         if not payload or not payload.get("account_id"):
