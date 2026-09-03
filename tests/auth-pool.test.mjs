@@ -822,3 +822,58 @@ test("shouldReplaceAuthPoolEntry accepts newer refresh for same account", () => 
 
   assert.equal(shouldReplaceAuthPoolEntry(existing, incoming), true);
 });
+
+test("pickBestAuthPoolCandidate excludes an account exhausted until later than now", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "drained",
+      status: "ok",
+      error: null,
+      exhausted_until: "2026-09-07T05:26:08Z",
+      windows: { "5h": null, "1week": null },
+      reported_at: "2026-09-03T21:45:21Z",
+    },
+  ];
+  const pool = [{ account_id: "drained" }];
+  const options = {
+    source: "codex",
+    current_quota: { five_h_remaining_percent: 0, one_week_remaining_percent: 0 },
+    now: "2026-09-03T22:00:00Z",
+  };
+
+  assert.equal(pickBestAuthPoolCandidate(reports, pool, options), null);
+
+  // once the exhaustion deadline passes, the field is inert — but the account still has no
+  // windows, so it stays unshareable until a real measurement arrives
+  assert.equal(
+    pickBestAuthPoolCandidate(reports, pool, { ...options, now: "2026-09-07T06:00:00Z" }),
+    null
+  );
+});
+
+test("pickBestAuthPoolCandidate excludes an exhausted account even when stale windows look healthy", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "drained-with-windows",
+      status: "ok",
+      error: null,
+      exhausted_until: "2026-09-07T05:26:08Z",
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 96, reset_at: "2026-09-07T05:26:08Z" },
+      },
+      reported_at: "2026-09-03T21:45:21Z",
+    },
+  ];
+  const pool = [{ account_id: "drained-with-windows" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_quota: { five_h_remaining_percent: 0, one_week_remaining_percent: 0 },
+    now: "2026-09-03T22:00:00Z",
+  });
+
+  assert.equal(candidate, null);
+});

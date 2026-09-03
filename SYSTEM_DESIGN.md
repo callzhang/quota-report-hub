@@ -737,7 +737,12 @@ Code: `pickBestAuthPoolCandidate`, `lib/auth-pool.js:260-312`.
 
 For a borrow request, candidates are filtered then ranked:
 
-**Eligibility** (`:273-280`): same source; not excluded (incl. `current_account_id`); not `Free` plan and not hard-invalidated; report fresh (`reported_at` within `max_report_age_seconds`, default 3600 s). Both sources are held to the same thresholds, judged per window the report carries (5h ≥ 20%, weekly ≥ 5%), and must beat the requester's `5h × weekly` product — with a codex candidate's *missing* 5h window counting as unconstrained (higher codex tiers meter no 5-hour window), while a missing claude window means the quota is unknown and the account is not shareable.
+**Eligibility** (`:273-280`): same source; not excluded (incl. `current_account_id`); not `Free` plan and not hard-invalidated; report fresh (`reported_at` within `max_report_age_seconds`, default 3600 s).
+
+An account whose report carries `exhausted_until` later than now is excluded outright — a limit-hit
+probe measured it as unusable until then, whatever its (possibly carried-forward) windows claim.
+
+Both sources are held to the same thresholds, judged per window the report carries (5h ≥ 20%, weekly ≥ 5%), and must beat the requester's `5h × weekly` product — with a codex candidate's *missing* 5h window counting as unconstrained (higher codex tiers meter no 5-hour window), while a missing claude window means the quota is unknown and the account is not shareable.
 
 **Expired windows count as missing.** Every selection read of a window (`windowRemainingPercent`) drops a window whose `reset_at` is at or before the report's own `reported_at`: the provider has rolled that window over, so its stored numbers describe a spent period. The merge layer deliberately carries such windows forward for the dashboard's stale-evidence display ([§6.4](#64-availability-read-model-and-lazy-history)), so expiry is enforced here, at the decision boundary, not at merge. The forcing case (2026-09-03, codex `leizhang0121`): a Pro account's probes stopped reporting a 5h window on 08-29 — Pro no longer meters one — and the last synthesized "5h 0%" (a weekly-exhaustion pair from the client's `zero_remaining_window`) was carried five days past its reset, failing the 5h threshold while the live weekly window sat at 96%. A window without `reset_at` cannot be judged and keeps its value.
 
