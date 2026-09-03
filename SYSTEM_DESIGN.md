@@ -694,7 +694,8 @@ Every other rule here rations demand, and no amount of rationing puts a single p
 the pool -- when it runs dry the only remedy is another account in it. Supply therefore gets the same
 treatment demand does: `hasHealthyUpload` (one entry uploaded by this user that the pool can actually
 lend -- not a dead login, not a Free plan; a *drained* account still counts, since being drained is
-what a shared account is for) decides whether the same cooldown applies while the pool is scarce.
+what a shared account is for -- including one that reports only `exhausted_until` with no windows at
+all) decides whether the same cooldown applies while the pool is scarce.
 
 This is not payment for access, and the numbers are why it cannot be. Over 14 days to 2026-08-27,
 half the people who fetched had never supplied anything, but they accounted for 7.4% of priced spend
@@ -705,9 +706,6 @@ rule buys supply rather than saving demand: a non-contributor is warned while th
 and during scarcity draws once per cooldown instead of every five minutes, keeping the account
 already in their hand and getting their own dead auth handed back to re-login -- which is precisely
 how somebody stops being a non-contributor.
-
-An exhausted account (`exhausted_until` set, no windows) still counts as a healthy contribution --
-being drained is what a shared account is for.
 
 **The reporting gate is deliberately NOT scarcity-gated.** It is a measurement precondition, not a
 rationing rule. Gating it would be self-defeating: nobody fixes their reporter during abundance, so
