@@ -202,7 +202,7 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
 
 test("page exposes the complete query shell and reads only token usage", async () => {
   const html = await readFile(new URL("../token-usage.html", import.meta.url), "utf8");
-  assert.match(html, /href="\.\/"[^>]*>Accounts/);
+  assert.match(html, /href="\.\/#accounts"[^>]*>Accounts/);
   assert.match(html, /href="\.\/users\.html"[^>]*>Users/);
   for (const id of ["start", "end", "hub-user", "provider", "model-account", "model", "granularity", "group-by", "metric"]) {
     assert.match(html, new RegExp(`id="${id}"`));

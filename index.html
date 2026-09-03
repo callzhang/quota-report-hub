@@ -75,15 +75,7 @@
         white-space: nowrap;
       }
 
-      .admin-flag {
-        margin-top: 16px;
-        padding: 14px 16px;
-        border: 1px solid var(--line);
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.6);
-        display: grid;
-        gap: 8px;
-      }
+      .admin-flag { display: grid; gap: 8px; }
       .admin-flag-row { display: flex; align-items: center; gap: 14px; }
       .switch { position: relative; display: inline-block; width: 46px; height: 26px; flex: none; }
       .switch input { opacity: 0; width: 0; height: 0; }
@@ -167,6 +159,33 @@
       .section {
         margin-top: 18px;
         padding: 20px;
+      }
+
+      .tab-nav {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: 18px;
+      }
+      .tab-nav[hidden] { display: none; }
+      .tab-nav a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 40px;
+        padding: 8px 20px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        text-decoration: none;
+        font-weight: 600;
+        color: var(--muted);
+        background: var(--panel);
+        box-shadow: 0 8px 24px rgba(77, 58, 37, 0.05);
+      }
+      .tab-nav a:hover { color: var(--ink); }
+      .tab-nav a.active {
+        color: #fff8f0;
+        background: var(--accent);
+        border-color: transparent;
       }
 
       .auth-panel {
@@ -416,9 +435,7 @@
       <section class="hero">
         <div class="hero-top">
           <div class="meta">
-            Shared cloud auth pool for Codex and Claude accounts with worker probes and trusted local quota signals ·
-            <a href="./token-usage.html" style="color: var(--accent); border-bottom: 1px dashed var(--accent); text-decoration: none;">token usage →</a> ·
-            <a href="./users.html" style="color: var(--accent); border-bottom: 1px dashed var(--accent); text-decoration: none;">users &amp; audit log →</a>
+            Shared cloud auth pool for Codex and Claude accounts with worker probes and trusted local quota signals
           </div>
           <div style="display: flex; align-items: center; gap: 10px;">
             <button id="notify-permission-button" type="button" class="button" hidden></button>
@@ -428,21 +445,15 @@
         <h1>Cloud Auth Pool</h1>
         <div class="meta" id="summary">Loading...</div>
         <div class="cards" id="cards"></div>
-        <div id="admin-flag-panel" class="admin-flag" hidden>
-          <div class="admin-flag-row">
-            <label class="switch">
-              <input type="checkbox" id="flag-disabled-rt" />
-              <span class="slider"></span>
-            </label>
-            <div>
-              <strong id="flag-disabled-rt-label">Disable refresh-token distribution</strong>
-              <div class="meta" id="flag-disabled-rt-status">…</div>
-            </div>
-          </div>
-          <div class="meta wrap">Admin only · When ON, the hub stops handing out refresh tokens: borrowers receive access-token-only credentials and the hub refreshes them centrally, closing the shared-pool refresh-token death spiral. Toggle OFF to instantly revert to serving full credentials.</div>
-          <div class="meta wrap" id="flag-message"></div>
-        </div>
       </section>
+
+      <nav class="tab-nav" id="tab-nav" aria-label="Hub sections" hidden>
+        <a href="#accounts" data-tab="accounts">Accounts</a>
+        <a href="#devices" data-tab="devices">Devices</a>
+        <a href="./token-usage.html">Usages</a>
+        <a href="./users.html">Users</a>
+        <a href="#settings" data-tab="settings">Settings</a>
+      </nav>
 
       <section class="panel section auth-panel" id="auth-panel" hidden>
         <h2>Access Token</h2>
@@ -462,19 +473,41 @@
         <pre id="token-command" class="token-command mono" hidden></pre>
       </section>
 
-      <section class="panel section" id="health-section" hidden>
-        <h2>Pool health trend</h2>
-        <div class="meta">Per source, from each worker run (~15 min): how many pooled auths are healthy vs hard-dead (refresh token gone — needs the owner to re-login), and central-refresh outcomes. The death spiral is closed when hard-dead stops climbing.</div>
-        <div id="health-rows" class="health-rows"></div>
-      </section>
+      <div id="tab-panel-devices" hidden>
+        <section class="panel section" id="reporter-health-section" hidden>
+          <h2>Reporter health</h2>
+          <div class="meta">Every guard run heartbeats here, whether or not it produced a usable quota reading. That separates a machine that is off or asleep (<strong>silent</strong>) from one whose guard runs every 15 minutes but whose quota probe keeps failing (<strong>probe failing</strong>) — the latter reports no quota and never rotates, so without this it looks identical to silence.</div>
+          <div id="reporter-health-rows" class="reporter-rows"></div>
+          <div class="meta" id="reporter-health-summary"></div>
+        </section>
+        <div class="empty section" id="reporter-health-empty" hidden>No reporter heartbeats yet.</div>
+      </div>
 
-      <section class="panel section" id="reporter-health-section" hidden>
-        <h2>Reporter health</h2>
-        <div class="meta">Every guard run heartbeats here, whether or not it produced a usable quota reading. That separates a machine that is off or asleep (<strong>silent</strong>) from one whose guard runs every 15 minutes but whose quota probe keeps failing (<strong>probe failing</strong>) — the latter reports no quota and never rotates, so without this it looks identical to silence.</div>
-        <div id="reporter-health-rows" class="reporter-rows"></div>
-        <div class="meta" id="reporter-health-summary"></div>
-      </section>
+      <div id="tab-panel-settings" hidden>
+        <section class="panel section admin-flag" id="admin-flag-panel" hidden>
+          <div class="admin-flag-row">
+            <label class="switch">
+              <input type="checkbox" id="flag-disabled-rt" />
+              <span class="slider"></span>
+            </label>
+            <div>
+              <strong id="flag-disabled-rt-label">Disable refresh-token distribution</strong>
+              <div class="meta" id="flag-disabled-rt-status">…</div>
+            </div>
+          </div>
+          <div class="meta wrap">Admin only · When ON, the hub stops handing out refresh tokens: borrowers receive access-token-only credentials and the hub refreshes them centrally, closing the shared-pool refresh-token death spiral. Toggle OFF to instantly revert to serving full credentials.</div>
+          <div class="meta wrap" id="flag-message"></div>
+        </section>
 
+        <section class="panel section" id="health-section" hidden>
+          <h2>Pool health trend</h2>
+          <div class="meta">Per source, from each worker run (~15 min): how many pooled auths are healthy vs hard-dead (refresh token gone — needs the owner to re-login), and central-refresh outcomes. The death spiral is closed when hard-dead stops climbing.</div>
+          <div id="health-rows" class="health-rows"></div>
+        </section>
+        <div class="empty section" id="settings-empty" hidden>No settings are visible to your account.</div>
+      </div>
+
+      <div id="tab-panel-accounts" hidden>
       <section class="panel section">
         <h2>Cloud Auth Entries</h2>
         <div class="table-shell">
@@ -494,7 +527,6 @@
         </div>
         <div id="empty" class="empty" hidden>No reports yet.</div>
       </section>
-      <div id="availability-popover" class="availability-popover" role="dialog" aria-modal="false" aria-label="Account availability details" hidden></div>
 
       <section class="panel section">
         <h2>Archived Invalidated Auths</h2>
@@ -515,6 +547,8 @@
         </div>
         <div id="archived-empty" class="empty" hidden>No archived invalidated auths.</div>
       </section>
+      </div>
+      <div id="availability-popover" class="availability-popover" role="dialog" aria-modal="false" aria-label="Account availability details" hidden></div>
     </main>
 
     <script>
@@ -545,6 +579,9 @@
       const reporterHealthSection = document.getElementById("reporter-health-section");
       const reporterHealthRows = document.getElementById("reporter-health-rows");
       const reporterHealthSummary = document.getElementById("reporter-health-summary");
+      const reporterHealthEmpty = document.getElementById("reporter-health-empty");
+      const settingsEmpty = document.getElementById("settings-empty");
+      const tabNav = document.getElementById("tab-nav");
       const availabilityPopover = document.getElementById("availability-popover");
       const COOKIE_NAME = "quota_report_hub_token";
       const DASHBOARD_REFRESH_MS = 60 * 1000;
@@ -556,6 +593,8 @@
       const quotaHistoryRequests = new Map();
       const accountItems = new Map();
       const quotaFullNotifyState = new Map();
+      const TAB_IDS = ["accounts", "devices", "settings"];
+      let dashboardLocked = true;
       let currentToken = "";
       let authSessionGeneration = 0;
       let openAvailabilityTrigger = null;
@@ -618,12 +657,34 @@
         }[ch]));
       }
 
+      function activeTab() {
+        const hash = location.hash.slice(1);
+        return TAB_IDS.includes(hash) ? hash : "accounts";
+      }
+
+      function applyActiveTab() {
+        const active = activeTab();
+        tabNav.hidden = dashboardLocked;
+        for (const id of TAB_IDS) {
+          document.getElementById(`tab-panel-${id}`).hidden = dashboardLocked || id !== active;
+        }
+        for (const link of tabNav.querySelectorAll("a[data-tab]")) {
+          const selected = link.dataset.tab === active;
+          link.classList.toggle("active", selected);
+          if (selected) link.setAttribute("aria-current", "page");
+          else link.removeAttribute("aria-current");
+        }
+        closeAvailabilityPopover();
+      }
+
       function setAuthenticatedView(email) {
         authPanel.hidden = true;
         viewerChip.hidden = false;
         viewerChip.textContent = `Hello ${email}`;
         tokenCommand.hidden = true;
         tokenCommand.textContent = "";
+        dashboardLocked = false;
+        applyActiveTab();
       }
 
       function tokenRequestCommand(allowedDomain) {
@@ -659,6 +720,8 @@
         archivedEmpty.hidden = true;
         adminFlagPanel.hidden = true;
         healthSection.hidden = true;
+        dashboardLocked = true;
+        applyActiveTab();
       }
 
       function setStatusUnavailable(message) {
@@ -1258,6 +1321,7 @@
         setAuthenticatedView(payload.viewer_email || "unknown");
         renderAdminFlag(payload);
         renderHealthTrend(payload.health_history);
+        settingsEmpty.hidden = !(adminFlagPanel.hidden && healthSection.hidden);
         renderReporterHealth(payload.reporter_health);
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
         scheduleDashboardTransition(items);
@@ -1435,6 +1499,7 @@
 
       function renderReporterHealth(health) {
         const items = (health && health.items) || [];
+        reporterHealthEmpty.hidden = items.length !== 0;
         if (!items.length) { reporterHealthSection.hidden = true; return; }
         reporterHealthSection.hidden = false;
         // Healthy reporters are the boring majority; showing every one of them would bury the two
@@ -1509,6 +1574,7 @@
         closeAvailabilityPopover();
       });
       notifyPermissionButton.addEventListener("click", requestQuotaFullNotificationPermission);
+      window.addEventListener("hashchange", applyActiveTab);
       updateNotifyPermissionButtonState();
       load();
       async function checkDashboardRevision() {

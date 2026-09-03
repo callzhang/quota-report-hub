@@ -114,7 +114,7 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token", { notific
   }
   const context = vm.createContext({
     document,
-    location: { protocol: "https:", origin: "https://hub.example" },
+    location: { protocol: "https:", origin: "https://hub.example", hash: "" },
     localStorage: {
       getItem(key) { return storage.get(key) || null; },
       setItem(key, value) { storage.set(key, String(value)); },

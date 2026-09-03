@@ -168,6 +168,38 @@ test("login page automatically reuses an existing valid hub session", async () =
   assert.match(html, /location\.replace\(safeLoginDestination\(\)\)/);
 });
 
+test("all hub pages share the five-tab top navigation", async () => {
+  const [dashboard, usage, users] = await Promise.all([
+    readFile(new URL("../index.html", import.meta.url), "utf8"),
+    readFile(new URL("../token-usage.html", import.meta.url), "utf8"),
+    readFile(new URL("../users.html", import.meta.url), "utf8"),
+  ]);
+
+  for (const html of [dashboard, usage, users]) {
+    for (const label of ["Accounts", "Devices", "Usages", "Users", "Settings"]) {
+      assert.match(html, new RegExp(`>${label}</a>`));
+    }
+  }
+
+  // index.html switches its own three tabs by location hash
+  assert.match(dashboard, /<nav class="tab-nav" id="tab-nav"/);
+  assert.match(dashboard, /id="tab-panel-accounts"/);
+  assert.match(dashboard, /id="tab-panel-devices"/);
+  assert.match(dashboard, /id="tab-panel-settings"/);
+  assert.match(dashboard, /window\.addEventListener\("hashchange", applyActiveTab\)/);
+  assert.match(dashboard, /const TAB_IDS = \["accounts", "devices", "settings"\]/);
+  // the tab bar stays hidden while the dashboard is locked
+  assert.match(dashboard, /tabNav\.hidden = dashboardLocked/);
+
+  // sibling pages mark their own tab active and deep-link back into the hash tabs
+  assert.match(usage, /class="active" aria-current="page">Usages</);
+  assert.match(users, /class="active" aria-current="page">Users</);
+  for (const html of [usage, users]) {
+    assert.match(html, /href="\.\/#devices"/);
+    assert.match(html, /href="\.\/#settings"/);
+  }
+});
+
 test("accounts and users pages link to the independent token usage page", async () => {
   const [dashboard, users] = await Promise.all([
     readFile(new URL("../index.html", import.meta.url), "utf8"),

@@ -36,8 +36,15 @@
       .hero-top { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
       h1 { margin: 0; font: 52px/0.95 "Iowan Old Style", serif; }
       h2 { margin: 0 0 14px; font-size: 18px; }
-      .nav { display: flex; gap: 16px; flex-wrap: wrap; }
-      .nav a { color: var(--accent); text-decoration: none; border-bottom: 1px dashed var(--accent); }
+      .tab-nav { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+      .tab-nav a {
+        display: inline-flex; align-items: center; min-height: 40px; padding: 8px 20px;
+        border: 1px solid var(--line); border-radius: 999px; text-decoration: none;
+        font-weight: 600; color: var(--muted); background: var(--panel);
+        box-shadow: 0 8px 24px rgba(77, 58, 37, 0.05);
+      }
+      .tab-nav a:hover { color: var(--ink); }
+      .tab-nav a.active { color: #fff8f0; background: var(--accent); border-color: transparent; }
       .meta { color: var(--muted); }
       .panel { margin-top: 18px; padding: 20px; }
       .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; }
@@ -77,15 +84,19 @@
     <main>
       <section class="hero">
         <div class="hero-top">
-          <nav class="nav" aria-label="Hub pages">
-            <a href="./">Accounts</a>
-            <a href="./users.html">Users</a>
-          </nav>
+          <div class="meta">Team usage by Hub user, provider account, and raw model name. Data is collected every guard cycle.</div>
           <div id="viewer" class="meta"></div>
         </div>
         <h1>Token Usage</h1>
-        <div class="meta">Team usage by Hub user, provider account, and raw model name. Data is collected every guard cycle.</div>
       </section>
+
+      <nav class="tab-nav" aria-label="Hub sections">
+        <a href="./#accounts">Accounts</a>
+        <a href="./#devices">Devices</a>
+        <a class="active" aria-current="page">Usages</a>
+        <a href="./users.html">Users</a>
+        <a href="./#settings">Settings</a>
+      </nav>
 
       <section class="panel" aria-labelledby="filters-title">
         <h2 id="filters-title">Query</h2>

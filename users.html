@@ -63,12 +63,15 @@
         font-family: "Iowan Old Style", "Palatino Linotype", serif;
       }
 
-      .nav-links { display: flex; gap: 12px; }
-      .nav-links a {
-        color: var(--accent);
-        text-decoration: none;
-        border-bottom: 1px dashed var(--accent);
+      .tab-nav { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+      .tab-nav a {
+        display: inline-flex; align-items: center; min-height: 40px; padding: 8px 20px;
+        border: 1px solid var(--line); border-radius: 999px; text-decoration: none;
+        font-weight: 600; color: var(--muted); background: var(--panel);
+        box-shadow: 0 8px 24px rgba(77, 58, 37, 0.05);
       }
+      .tab-nav a:hover { color: var(--ink); }
+      .tab-nav a.active { color: #fff8f0; background: var(--accent); border-color: transparent; }
 
       .viewer-chip {
         display: inline-flex;
@@ -254,16 +257,21 @@
     <main>
       <section class="hero">
         <div class="hero-top">
-          <div class="meta">
-            Token holders and auth fetch audit log.
-            <span class="nav-links"><a href="./">← Accounts</a><a href="./token-usage.html">Token Usage</a></span>
-          </div>
+          <div class="meta">Token holders and auth fetch audit log.</div>
           <div id="viewer-chip" class="viewer-chip" hidden></div>
         </div>
         <h1>Users &amp; Audit</h1>
         <div class="meta" id="summary">Loading...</div>
         <div class="cards" id="cards"></div>
       </section>
+
+      <nav class="tab-nav" aria-label="Hub sections">
+        <a href="./#accounts">Accounts</a>
+        <a href="./#devices">Devices</a>
+        <a href="./token-usage.html">Usages</a>
+        <a class="active" aria-current="page">Users</a>
+        <a href="./#settings">Settings</a>
+      </nav>
 
       <section class="panel section auth-panel" id="auth-panel" hidden>
         <h2>Access Token</h2>

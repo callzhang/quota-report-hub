@@ -778,7 +778,8 @@ For a borrow request, candidates are filtered then ranked:
 
 - **`pool_health_snapshots`** — one row per source per worker run: `total, ok_count, hard_dead_count, other_err_count, central_refresh_{attempted,ok,rejected}`.
 - **Account availability** (`index.html`): one primary lifecycle state per account. Detailed probe/token/refresh evidence and the lazy 24-hour quota chart are secondary diagnostics, not peer status lines.
-- **Dashboard trend** (`index.html` `renderHealthTrend`): per-source healthy ratio, hard-dead count + trend badge, an SVG sparkline of the hard-dead series, and central-refresh outcomes. The framing: *the death spiral is closed when hard-dead stops climbing*.
+- **Dashboard trend** (`index.html` `renderHealthTrend`, on the Settings tab next to the `disabled_refresh_token` toggle): per-source healthy ratio, hard-dead count + trend badge, an SVG sparkline of the hard-dead series, and central-refresh outcomes. The framing: *the death spiral is closed when hard-dead stops climbing*.
+- **Reporter health** (`index.html` `renderReporterHealth`, the Devices tab): per-machine guard heartbeat states ([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)).
 - **`assess_health.mjs`** — CLI verdict + abuse scan ([§8.1](#81-assess_healthmjs)).
 - **`auth_pool_fetch_log`** — full borrow audit surfaced on `users.html`.
 
@@ -931,7 +932,7 @@ day, so a partial run can only ever be retried, never lose rows.
 | `lib/**` | All server logic. Pure modules where possible so tests need no database or clock. |
 | `scripts/*.mjs`, `scripts/*.py` | Worker and ops scripts ([§7](#7-component-worker), [§8](#8-ops-scripts)). |
 | `skills/quota-reporter/**` | The local client, its installer, and its own docs. Self-updates from `main`. |
-| `*.html` | Static dashboards: `index.html` (accounts), `users.html` (members + fetch audit), `token-usage.html`, `login.html`. |
+| `*.html` | Static dashboards: `index.html` (Accounts/Devices/Settings hash-switched tabs), `users.html` (members + fetch audit), `token-usage.html`, `login.html`. All three share one five-tab top nav (Accounts · Devices · Usages · Users · Settings); Usages and Users are separate pages, the other three are `index.html` tabs, so cross-page tab links use `./#devices`-style hashes. |
 | `tests/*.test.mjs` | Server tests, `node --test`. |
 | `tests/*_test.py`, `tests/test_*.py` | Client tests, pytest. |
 | `docs/superpowers/{plans,specs}` | Per-change design notes, kept for the reasoning trail. |
