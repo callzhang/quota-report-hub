@@ -200,7 +200,7 @@ If a request presents an older hub-signed token, the server can verify the embed
   - reads encrypted auth pool entries directly from Turso
   - decrypts every stored auth snapshot
   - probes Codex on the worker via the Codex CLI
-  - probes Claude on the worker via a headless Claude CLI session plus statusline snapshot
+  - probes Claude on the worker with `claude -p /usage`, spending no inference turn (plan B: the older interactive-session + statusline scrape, behind `--mode tui`)
   - only uploads Claude auths from machines that are using a direct Claude subscription; clients configured with custom `ANTHROPIC_*` provider settings are excluded from the cloud Claude pool because their active login path cannot be replayed reliably on the worker
   - the Claude worker uses a short statusline refresh interval so the snapshot is produced within the probe timeout instead of lagging behind the CLI session
   - writes every raw probe result to `auth_pool_quota_events`

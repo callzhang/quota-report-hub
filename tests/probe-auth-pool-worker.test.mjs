@@ -935,3 +935,40 @@ test("summarizePoolHealth aggregates per-source health and central-refresh outco
   assert.equal(health.claude.central_refresh_ok, 1);
   assert.equal(health.claude.central_refresh_rejected, 1);
 });
+
+test("probeClaudeAuthJson retires a rejected access token without shelling out to the CLI", async () => {
+  const { probeClaudeAuthJson } = await loadWorkerModule();
+  const authJsonText = JSON.stringify({ credentials: { claudeAiOauth: { accessToken: "dead-token" } } });
+  let seen = null;
+
+  // `claude -p /usage` exits 0 and prints its header for a rejected token, so the CLI can never be
+  // the source of this verdict. The OAuth profile endpoint's 401 is.
+  await assert.rejects(
+    () =>
+      probeClaudeAuthJson(authJsonText, {
+        probeAccessTokenImpl: async (text) => {
+          seen = text;
+          return { ok: false, status: 401, rejected: true };
+        },
+      }),
+    /^Error: claude auth invalid \(authentication_error\)$/
+  );
+  assert.equal(seen, authJsonText);
+});
+
+test("probeClaudeAuthJson does not retire an account when the token check itself fails", async () => {
+  const { probeClaudeAuthJson } = await loadWorkerModule();
+  const authJsonText = JSON.stringify({ credentials: { claudeAiOauth: { accessToken: "live-token" } } });
+  let spawned = false;
+
+  // A 5xx or a network blip is the endpoint having a bad day, not a dead account: the probe must
+  // still run and report on its own terms.
+  const error = await probeClaudeAuthJson(authJsonText, {
+    probeAccessTokenImpl: async () => {
+      spawned = true;
+      return { ok: false, status: null, reason: "fetch failed" };
+    },
+  }).then(() => null, (thrown) => thrown);
+  assert.equal(spawned, true);
+  assert.notEqual(error?.message, "claude auth invalid (authentication_error)");
+});

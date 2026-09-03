@@ -334,12 +334,35 @@ def claude_auth_blob_metadata(blob_text: str) -> dict:
     }
 
 
+# ~/.claude.json holds far more than onboarding state: the full project path list, MCP server
+# configs, userID, oauthAccount, remote-control flags, usage history. The pool only uploads it so a
+# cloud probe can start the CLI without hitting a setup wizard, so upload only that much. Mirrored
+# by CLI_STATE_ALLOWED_KEYS in scripts/probe_claude_auth_blob.py, which whitelists again on the way
+# in. Local callers of read_claude_cli_state() still see the whole file - identity resolution reads
+# oauthAccount from it.
+CLAUDE_CLI_STATE_UPLOAD_KEYS = (
+    "hasCompletedOnboarding",
+    "theme",
+    "installMethod",
+    "autoUpdates",
+    "numStartups",
+    "firstStartTime",
+)
+
+
 def read_claude_cli_state(claude_home: Path = CLAUDE_HOME) -> dict | None:
     state_path = claude_home.parent / ".claude.json"
     if not state_path.exists():
         return None
     payload = read_json(state_path)
     return payload if isinstance(payload, dict) else None
+
+
+def claude_cli_state_for_upload(cli_state: dict | None) -> dict | None:
+    """Strip the local-only parts of ~/.claude.json before it leaves this machine."""
+    if not isinstance(cli_state, dict):
+        return None
+    return {key: cli_state[key] for key in CLAUDE_CLI_STATE_UPLOAD_KEYS if key in cli_state}
 
 
 def read_claude_settings(claude_home: Path = CLAUDE_HOME) -> dict | None:
@@ -2405,7 +2428,7 @@ def build_claude_auth_blob(
             "auth_last_refresh": str(auth_last_refresh) if auth_last_refresh is not None else None,
             "credential_source": credential_source,
             "credentials": credentials,
-            "claude_cli_state": cli_state,
+            "claude_cli_state": claude_cli_state_for_upload(cli_state),
         },
         ensure_ascii=False,
     )
