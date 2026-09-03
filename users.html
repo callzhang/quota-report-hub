@@ -202,6 +202,19 @@
 
       .empty { color: var(--muted); }
 
+      /* display:flex would defeat the hidden attribute's UA display:none; keep the guard. */
+      .pagination[hidden] { display: none; }
+      .pagination {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-top: 14px;
+      }
+      .pager-actions { display: flex; align-items: center; gap: 10px; }
+      .pager-actions .button:disabled { cursor: default; opacity: 0.45; }
+
       .source-tag {
         display: inline-flex;
         align-items: center;
@@ -303,6 +316,14 @@
           </table>
         </div>
         <div id="users-empty" class="empty" hidden>No users yet.</div>
+        <div class="pagination" id="users-pagination" aria-label="Token holders pagination" hidden>
+          <span class="meta" data-range></span>
+          <div class="pager-actions">
+            <button type="button" class="button" data-page-prev aria-label="Previous token holders page">Previous</button>
+            <span class="meta" aria-live="polite" data-page-status></span>
+            <button type="button" class="button" data-page-next aria-label="Next token holders page">Next</button>
+          </div>
+        </div>
       </section>
 
       <section class="panel section">
@@ -323,6 +344,14 @@
           </table>
         </div>
         <div id="log-empty" class="empty" hidden>No fetch events yet.</div>
+        <div class="pagination" id="log-pagination" aria-label="Fetch log pagination" hidden>
+          <span class="meta" data-range></span>
+          <div class="pager-actions">
+            <button type="button" class="button" data-page-prev aria-label="Previous fetch log page">Previous</button>
+            <span class="meta" aria-live="polite" data-page-status></span>
+            <button type="button" class="button" data-page-next aria-label="Next fetch log page">Next</button>
+          </div>
+        </div>
       </section>
     </main>
 
@@ -343,8 +372,49 @@
       const tokenCommand = document.getElementById("token-command");
 
       const COOKIE_NAME = "quota_report_hub_token";
+      const PAGE_SIZE = 20;
       let currentToken = "";
       let viewerEmail = "";
+
+      // Rows arrive newest-first from the API (users by last_token_issued_at DESC, fetch log by
+      // fetched_at DESC); the pager only slices, so page 1 is always the most recent activity.
+      // The current page survives the 60s auto-refresh and is clamped when the data shrinks.
+      function createPager({ barId, tbody, emptyEl, renderRow }) {
+        const bar = document.getElementById(barId);
+        const range = bar.querySelector("[data-range]");
+        const status = bar.querySelector("[data-page-status]");
+        const prevButton = bar.querySelector("[data-page-prev]");
+        const nextButton = bar.querySelector("[data-page-next]");
+        let rows = [];
+        let page = 1;
+        function render() {
+          const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+          page = Math.min(Math.max(1, page), pageCount);
+          const startIndex = (page - 1) * PAGE_SIZE;
+          const pageRows = rows.slice(startIndex, startIndex + PAGE_SIZE);
+          tbody.innerHTML = pageRows.map(renderRow).join("");
+          bar.hidden = rows.length <= PAGE_SIZE;
+          range.textContent = rows.length ? `Showing ${startIndex + 1}–${startIndex + pageRows.length} of ${rows.length}` : "";
+          status.textContent = `Page ${page} of ${pageCount}`;
+          prevButton.disabled = page === 1;
+          nextButton.disabled = page === pageCount;
+        }
+        prevButton.addEventListener("click", () => { page -= 1; render(); });
+        nextButton.addEventListener("click", () => { page += 1; render(); });
+        return {
+          setRows(nextRows) {
+            rows = nextRows;
+            render();
+            emptyEl.hidden = rows.length !== 0;
+          },
+          clear() {
+            rows = [];
+            page = 1;
+            render();
+            emptyEl.hidden = true;
+          },
+        };
+      }
 
       function getCookie(name) {
         const prefix = `${name}=`;
@@ -441,10 +511,8 @@
 
       function setLockedView(message, options = {}) {
         cards.innerHTML = "";
-        usersRows.innerHTML = "";
-        logRows.innerHTML = "";
-        usersEmpty.hidden = true;
-        logEmpty.hidden = true;
+        usersPager.clear();
+        logPager.clear();
         summary.textContent = message || "Token required.";
         authPanel.hidden = false;
         viewerChip.hidden = true;
@@ -510,59 +578,63 @@
           `<article class="card"><div class="meta">Most recent fetch</div><strong>${formatRelative(log[0]?.fetched_at)}</strong><div class="meta wrap">${escapeHtml(log[0]?.requester_email || "—")}</div></article>`,
         ].join("");
 
-        usersRows.innerHTML = users.map((u) => {
-          const isSelf = u.email && u.email === viewerEmail;
-          return `
-            <tr class="${isSelf ? "self-row" : ""}">
-              <td>
-                <div class="wrap">${escapeHtml(u.email || "-")}${isSelf ? '<span class="self-mark">you</span>' : ""}</div>
-              </td>
-              <td><div class="wrap">${formatDate(u.created_at)}</div></td>
-              <td>
-                <div class="wrap">${formatDate(u.last_token_issued_at)}</div>
-                <div class="meta wrap">${u.has_active_token ? "active" : "no active token"}</div>
-              </td>
-              <td>
-                <div class="wrap">${formatDate(u.token_last_used_at)}</div>
-                <div class="meta wrap">${formatRelative(u.token_last_used_at)}</div>
-              </td>
-              <td><div class="wrap">${u.fetch_count || 0}</div></td>
-              <td>
-                <div class="wrap">${formatDate(u.last_fetched_at)}</div>
-                <div class="meta wrap">${formatRelative(u.last_fetched_at)}</div>
-              </td>
-            </tr>
-          `;
-        }).join("");
-        usersEmpty.hidden = users.length !== 0;
-
-        fetchLogMeta.textContent = `Showing latest ${log.length} fetch event${log.length === 1 ? "" : "s"}`;
-        logRows.innerHTML = log.map((row) => {
-          const isSelfRequester = row.requester_email && row.requester_email === viewerEmail;
-          const isOwnAuthServed = row.served_uploader_email && row.served_uploader_email === viewerEmail;
-          return `
-            <tr class="${isOwnAuthServed ? "self-row" : ""}">
-              <td>
-                <div class="wrap">${formatDate(row.fetched_at)}</div>
-                <div class="meta wrap">${formatRelative(row.fetched_at)}</div>
-              </td>
-              <td>
-                <div class="wrap">${escapeHtml(row.requester_email || "-")}${isSelfRequester ? '<span class="self-mark">you</span>' : ""}</div>
-                <div class="meta wrap">${quotaText(row.current_five_h_remaining, row.current_one_week_remaining)}</div>
-                </td>
-              <td>${sourceTag(row.source)}</td>
-              <td>${reasonTag(row.reason)}</td>
-              <td>
-                <div class="wrap">${escapeHtml(row.served_email || row.served_account_id || "—")}</div>
-                <div class="mono wrap">${escapeHtml(row.served_account_id || "")}</div>
-                <div class="wrap">${escapeHtml(row.served_uploader_email || "—")}${isOwnAuthServed ? '<span class="self-mark">your auth</span>' : ""}</div>
-                <div class="mono wrap">${escapeHtml(row.current_account_id || "")}</div>
-              </td>
-            </tr>
-          `;
-        }).join("");
-        logEmpty.hidden = log.length !== 0;
+        usersPager.setRows(users);
+        fetchLogMeta.textContent = `Latest ${log.length} fetch event${log.length === 1 ? "" : "s"} · newest first`;
+        logPager.setRows(log);
       }
+
+      function userRow(u) {
+        const isSelf = u.email && u.email === viewerEmail;
+        return `
+          <tr class="${isSelf ? "self-row" : ""}">
+            <td>
+              <div class="wrap">${escapeHtml(u.email || "-")}${isSelf ? '<span class="self-mark">you</span>' : ""}</div>
+            </td>
+            <td><div class="wrap">${formatDate(u.created_at)}</div></td>
+            <td>
+              <div class="wrap">${formatDate(u.last_token_issued_at)}</div>
+              <div class="meta wrap">${u.has_active_token ? "active" : "no active token"}</div>
+            </td>
+            <td>
+              <div class="wrap">${formatDate(u.token_last_used_at)}</div>
+              <div class="meta wrap">${formatRelative(u.token_last_used_at)}</div>
+            </td>
+            <td><div class="wrap">${u.fetch_count || 0}</div></td>
+            <td>
+              <div class="wrap">${formatDate(u.last_fetched_at)}</div>
+              <div class="meta wrap">${formatRelative(u.last_fetched_at)}</div>
+            </td>
+          </tr>
+        `;
+      }
+
+      function logRow(row) {
+        const isSelfRequester = row.requester_email && row.requester_email === viewerEmail;
+        const isOwnAuthServed = row.served_uploader_email && row.served_uploader_email === viewerEmail;
+        return `
+          <tr class="${isOwnAuthServed ? "self-row" : ""}">
+            <td>
+              <div class="wrap">${formatDate(row.fetched_at)}</div>
+              <div class="meta wrap">${formatRelative(row.fetched_at)}</div>
+            </td>
+            <td>
+              <div class="wrap">${escapeHtml(row.requester_email || "-")}${isSelfRequester ? '<span class="self-mark">you</span>' : ""}</div>
+              <div class="meta wrap">${quotaText(row.current_five_h_remaining, row.current_one_week_remaining)}</div>
+              </td>
+            <td>${sourceTag(row.source)}</td>
+            <td>${reasonTag(row.reason)}</td>
+            <td>
+              <div class="wrap">${escapeHtml(row.served_email || row.served_account_id || "—")}</div>
+              <div class="mono wrap">${escapeHtml(row.served_account_id || "")}</div>
+              <div class="wrap">${escapeHtml(row.served_uploader_email || "—")}${isOwnAuthServed ? '<span class="self-mark">your auth</span>' : ""}</div>
+              <div class="mono wrap">${escapeHtml(row.current_account_id || "")}</div>
+            </td>
+          </tr>
+        `;
+      }
+
+      const usersPager = createPager({ barId: "users-pagination", tbody: usersRows, emptyEl: usersEmpty, renderRow: userRow });
+      const logPager = createPager({ barId: "log-pagination", tbody: logRows, emptyEl: logEmpty, renderRow: logRow });
 
       currentToken = getStoredToken();
       tokenInput.value = currentToken;
