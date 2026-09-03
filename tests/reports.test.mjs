@@ -1492,6 +1492,26 @@ test("sanitizeReport normalizes exhausted_until and defaults it to null", () => 
     windows: { "5h": null, "1week": null },
   });
   assert.equal(garbage.exhausted_until, null);
+
+  const numeric = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T21:45:21Z",
+    status: "ok",
+    exhausted_until: 3600,
+    windows: { "5h": null, "1week": null },
+  });
+  assert.equal(numeric.exhausted_until, null);
+
+  const wrapped = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T21:45:21Z",
+    status: "ok",
+    exhausted_until: ["2026-09-07T05:26:08Z"],
+    windows: { "5h": null, "1week": null },
+  });
+  assert.equal(wrapped.exhausted_until, null);
 });
 
 test("mergeLatestReport lets a fresh report clear a previous exhausted_until", () => {

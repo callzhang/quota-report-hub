@@ -406,7 +406,10 @@ one that carries the sharp rules:
 - `exhausted_until` (account unusable until T, from a limit-hit probe) is normalized per report and
   never carried forward: a later report without it clears it, and consumers compare it to a clock so
   a stale past value is inert. It exists so the client reports limit-hits as the account-level fact
-  they are, instead of fabricating per-window zeros ([§10](#10-selection-algorithm)).
+  they are, instead of fabricating per-window zeros ([§10](#10-selection-algorithm)) (a report the
+  merge *accepts* clears it; the two guard branches that discard an incoming report wholesale keep it,
+  and they only fire when the previous report has complete windows — a shape an exhaustion report
+  never has).
 
 `statusPayload` / `authPoolStatusPayload` assemble the dashboard dataset from entries, reports and
 invalidation state; `lib/account-availability.js` then reduces each account to the single lifecycle
