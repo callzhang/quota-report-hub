@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -69,6 +69,15 @@ test("refreshVerificationQuotaReport carries the bundled exhausted_until forward
     assert.equal(report.reporter_name, "r");
     assert.equal(report.hostname, "h");
   });
+});
+
+// The pure-function tests above cannot see WHAT the handler feeds it — a call-site regression
+// (quotaPayload: undefined, or a revert to an inline literal) would pass them silently. A full
+// handler harness needs upstream-network mocking, so pin the wiring statically instead, the way
+// tests/db-read-budget-static.test.mjs pins query shapes.
+test("the upload handler feeds body.quota_payload to refreshVerificationQuotaReport", () => {
+  const source = readFileSync(new URL("../api/auth/upload.js", import.meta.url), "utf8");
+  assert.match(source, /refreshVerificationQuotaReport\(\{[\s\S]*?quotaPayload: body\.quota_payload,/);
 });
 
 test("refreshVerificationQuotaReport falls back to null exhausted_until and empty windows without a bundled payload", async () => {
