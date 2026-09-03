@@ -397,8 +397,8 @@ def quota_payload_is_reportable(source: str, payload: dict | None) -> bool:
     """Whether the hub would accept this payload as a quota report.
 
     Mirrors codexClientPayloadAccepted / ingestClientQuota in lib/quota-ingest.js -- posting a
-    payload the hub will discard just burns a request. Accepted codex shapes: complete weekly
-    window, hard invalidation, or exhausted_until.
+    payload the hub will discard just burns a request. Accepted codex shapes: hard invalidation,
+    complete weekly window, confirmed out-of-credits, or exhausted_until.
     """
     if source == "codex":
         if not payload or not payload.get("account_id"):
