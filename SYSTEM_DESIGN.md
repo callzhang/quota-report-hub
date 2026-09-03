@@ -339,13 +339,13 @@ The browser keys in-flight full-status requests by the exact session token and a
 
 ### 6.4 Availability read model and lazy history
 
-`lib/account-availability.js` derives one presentation-neutral state after report freshness and effective windows have been assembled. Precedence is `unavailable` → `waiting_for_new_quota` → `quota_unknown` → `low_quota` → `available`:
+`lib/account-availability.js` derives one presentation-neutral state after report freshness and effective windows have been assembled. Precedence is `unavailable` → `low_quota`/`usage_limit_exhausted` (exhaustion, checked next) → `waiting_for_new_quota` → `quota_unknown` → `low_quota` → `available`:
 
 - `unavailable`: refresh rejection, auth invalidation, ineligible plan, or an unrecoverable access-token expiry overrides quota history.
-- An account with `exhausted_until` in the future renders as `low_quota` / `usage_limit_exhausted`, feeding the reset time into its next-transition candidates (the earliest of that reset or the report's staleness boundary wins) — measured-drained, not unknown.
+- An account with `exhausted_until` in the future renders as `low_quota` / `usage_limit_exhausted`, feeding the reset time into its next-transition candidates (the earliest of that reset or the report's staleness boundary wins) — measured-drained, not unknown. This check deliberately ignores report staleness: `exhausted_until` is a provider-issued absolute deadline, not a decaying measurement, so it stays authoritative even once the surrounding report has gone stale.
 - `waiting_for_new_quota`: a required window reset has passed and no post-reset quota exists.
 - `quota_unknown`: required evidence is missing, partial, failed, older than the one-hour report-freshness boundary, or has no future reset boundary. An expired access token is also unknown—not unavailable—when the auth entry's safe `has_refresh_token` marker is true, or when a migrated legacy row still has a null/unknown marker. New AT-only entries explicitly store false and are unavailable after access expiry. An identical re-upload repairs a null marker and bumps the dashboard revision only when that visible capability changes.
-- `low_quota`: all required evidence is current, but Codex weekly quota is below 5%, or Claude 5-hour/weekly quota is below 20%/5% respectively.
+- `low_quota`: all required evidence is current, but Codex weekly quota is below 5%, or Claude 5-hour/weekly quota is below 20%/5% respectively — except the exhaustion path above, which reaches `low_quota` without that currency requirement.
 - `available`: all required windows are current and meet the same thresholds used by auth selection.
 
 The collapsed table renders only this state plus current remaining quota and reset countdown, or the expired-window age and next automatic check. Pointer hover, keyboard focus, and touch/click open an accessible dialog; Enter, Space, and Arrow Down deliberately move focus to its close control, and Escape restores focus to the trigger. A quota window's `captured_at` is preserved independently through merge and storage; it is not replaced by a newer row-level `reported_at`. `reset_at` remains the provider's window boundary. When evidence is no longer current, the snapshot remains available in gray as historical evidence and never contributes to current usability.
