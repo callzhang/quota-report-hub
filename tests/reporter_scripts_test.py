@@ -1622,6 +1622,114 @@ Reading additional input from stdin...
         self.assertNotIn("statusline_snapshot", payload["usage_summary"])
         self.assertNotIn("stats", payload["usage_summary"])
 
+    def test_probe_claude_reports_the_account_the_installed_token_belongs_to(self):
+        """A stale identity record must not relabel another account's quota.
+
+        Claude's account identity lives in a record no credential install writes, so after the
+        guard installs a fetched credential the CLI still names the previous account. Reporting
+        that name over the new token's quota is how claude-qpt0311@uw.edu spent ten days
+        publishing a borrowed account's usage under its own long-dead id.
+        """
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        # The CLI still reports the account this machine used BEFORE the guard installed a
+        # replacement credential.
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: qpt0311@uw.edu's Organization\nEmail: qpt0311@uw.edu\n",
+            stderr="",
+        )
+        installed_token = "borrowed-account-access-token"
+        with tempfile.TemporaryDirectory() as state_dir:
+            known_auth_path = Path(state_dir) / "known_auth.json"
+            known_auth_path.write_text(
+                json.dumps(
+                    {
+                        "sources": {
+                            "claude": {
+                                "account_id": "claude-leizhang0121@gmail.com",
+                                "email": "leizhang0121@gmail.com",
+                                "name": "Derek Zen",
+                                "access_token_fingerprint": hashlib.sha256(installed_token.encode("utf-8")).hexdigest(),
+                                "state_source": "fetched_from_auth_pool",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "quota_reporters.discover_claude_executable",
+                return_value="/usr/local/bin/claude",
+            ), mock.patch(
+                "quota_reporters.subprocess.run",
+                side_effect=[auth_json, auth_text],
+            ), mock.patch(
+                "quota_reporters.read_claude_keychain_credentials", return_value=None
+            ), mock.patch(
+                "quota_reporters.read_claude_credentials",
+                return_value={"claudeAiOauth": {"accessToken": installed_token, "subscriptionType": "max"}},
+            ), mock.patch(
+                "quota_reporters.read_claude_statusline_snapshot",
+                return_value={
+                    "captured_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                    "rate_limits": {
+                        "five_hour": {
+                            "used_percentage": 16,
+                            "resets_at": int((datetime.now(timezone.utc) + timedelta(hours=3)).timestamp()),
+                        }
+                    },
+                },
+            ), mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                payload = probe_claude(Path("/tmp/claude-home"), known_auth_path=known_auth_path)
+
+        self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
+        self.assertEqual(payload["email"], "leizhang0121@gmail.com")
+        self.assertEqual(payload["name"], "Derek Zen")
+
+    def test_probe_claude_keeps_cli_identity_for_a_credential_the_guard_never_installed(self):
+        """An owner's own login has no install binding — the CLI's answer is the only truth there."""
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as state_dir:
+            known_auth_path = Path(state_dir) / "known_auth.json"
+            known_auth_path.write_text(
+                json.dumps(
+                    {
+                        "sources": {
+                            "claude": {
+                                "account_id": "claude-someone-else@example.com",
+                                "email": "someone-else@example.com",
+                                "name": "Someone Else",
+                                "access_token_fingerprint": hashlib.sha256(b"a-token-no-longer-installed").hexdigest(),
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "quota_reporters.discover_claude_executable",
+                return_value="/usr/local/bin/claude",
+            ), mock.patch(
+                "quota_reporters.subprocess.run",
+                side_effect=[auth_json, auth_text],
+            ), mock.patch(
+                "quota_reporters.read_claude_keychain_credentials", return_value=None
+            ), mock.patch(
+                "quota_reporters.read_claude_credentials",
+                return_value={"claudeAiOauth": {"accessToken": "the-owners-own-token", "subscriptionType": "max"}},
+            ), mock.patch(
+                "quota_reporters.read_claude_statusline_snapshot", return_value=None
+            ), mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                payload = probe_claude(Path("/tmp/claude-home"), known_auth_path=known_auth_path)
+
+        self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
+        self.assertEqual(payload["email"], "leizhang0121@gmail.com")
+
     def test_probe_claude_uses_oauth_usage_api_when_statusline_has_no_windows(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
         auth_text = mock.Mock(

@@ -42,6 +42,7 @@ from quota_reporters import (
     SOURCE_AUTH_PATH,
     auth_metadata,
     cli_auth_seed_state,
+    claude_access_token_fingerprint,
     claude_auth_blob_metadata,
     detect_claude_custom_provider_env,
     discover_codex_executable,
@@ -1664,6 +1665,7 @@ def maybe_replace_claude_auth(
             last_uploaded_digest=metadata["digest"],
             last_uploaded_account_id=metadata["account_id"],
             last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+            access_token_fingerprint=claude_access_token_fingerprint(repair_credentials),
             state_source="repair_auth_from_auth_pool",
         )
         return {
@@ -1722,6 +1724,7 @@ def maybe_replace_claude_auth(
         last_uploaded_digest=metadata["digest"],
         last_uploaded_account_id=metadata["account_id"],
         last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+        access_token_fingerprint=claude_access_token_fingerprint(replacement_credentials),
         state_source="fetched_from_auth_pool",
     )
     if replacement.get("account_id") == current_account_id:
