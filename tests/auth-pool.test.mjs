@@ -312,6 +312,67 @@ test("pickBestAuthPoolCandidate weighs codex 5H headroom alongside weekly quota"
   assert.equal(candidate.entry.account_id, "hot");
 });
 
+test("pickBestAuthPoolCandidate treats a codex 5h window expired before its report as unconstrained", () => {
+  // Production case (codex leizhang0121, 2026-09-03): a Pro account whose probes stopped reporting
+  // a 5h window carried a merged "5h 0%" snapshot whose reset_at had passed days earlier, while its
+  // live weekly window sat at 96%. The spent snapshot must not fail the 5h share threshold.
+  const reports = [
+    {
+      source: "codex",
+      account_id: "zombie-5h",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 0, reset_at: "2026-09-03T16:26:00Z" },
+        "1week": { remaining_percent: 96, reset_at: "2026-09-07T05:26:08Z" },
+      },
+      reported_at: "2026-09-03T21:45:21Z",
+    },
+  ];
+  const pool = [{ account_id: "zombie-5h" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_quota: {
+      five_h_remaining_percent: 0,
+      one_week_remaining_percent: 0,
+    },
+    now: "2026-09-03T21:50:00Z",
+  });
+
+  assert.equal(candidate?.entry?.account_id, "zombie-5h");
+});
+
+test("pickBestAuthPoolCandidate withholds a claude account whose 5h window expired unreplaced", () => {
+  // Same expiry rule, claude semantics: a missing 5h window means the quota is unknown, and an
+  // unknown claude account is not shareable — unlike codex, where missing means unconstrained.
+  const reports = [
+    {
+      source: "claude",
+      account_id: "claude-stale",
+      status: "ok",
+      error: null,
+      windows: {
+        "5h": { remaining_percent: 95, reset_at: "2026-09-03T18:00:00Z" },
+        "1week": { remaining_percent: 84, reset_at: "2026-09-07T05:26:08Z" },
+      },
+      reported_at: "2026-09-03T21:45:21Z",
+    },
+  ];
+  const pool = [{ account_id: "claude-stale" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "claude",
+    current_quota: {
+      five_h_remaining_percent: 1,
+      one_week_remaining_percent: 1,
+    },
+    now: "2026-09-03T21:50:00Z",
+  });
+
+  assert.equal(candidate, null);
+});
+
 test("pickBestAuthPoolCandidate lets high-quota accounts carry proportionally more fetches", () => {
   const reports = [
     {
