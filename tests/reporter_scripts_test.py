@@ -833,6 +833,11 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNotNone(report["exhausted_until"])
         self.assertEqual(report["exhausted_until"], report["usage_summary"]["next_retry_at"])
         self.assertEqual(report["usage_summary"]["credits"]["balance"], "0")
+        # Can't pin a literal here: codex_usage_limit_reset_at localizes "Apr 28th, 2026 7:19 PM"
+        # against the machine's local timezone (datetime.now().astimezone().tzinfo) before
+        # converting to UTC, so the exact instant shifts with the runner's TZ (e.g. local ->
+        # 2026-04-29T02:19:00Z, but Asia/Tokyo -> 2026-04-28T10:19:00Z, verified directly).
+        self.assertTrue(report["exhausted_until"].endswith("Z"))
 
     def test_probe_codex_does_not_create_zero_windows_without_reset_time(self):
         with tempfile.TemporaryDirectory() as temp_dir:
