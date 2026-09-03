@@ -100,4 +100,25 @@ test("codexClientPayloadAccepted accepts an exhaustion report without windows", 
     error: "codex exec failed",
     exhausted_until: "2026-09-07T05:26:08Z",
   }), false);
+  // old-client fabricated zero-window shape stays accepted (mixed-fleet phasing, §17.3)
+  assert.equal(codexClientPayloadAccepted({
+    account_id: "a",
+    status: "ok",
+    windows: {
+      "5h": { remaining_percent: 0, reset_at: "2026-09-07T05:26:08Z" },
+      "1week": { remaining_percent: 0, reset_at: "2026-09-07T05:26:08Z" },
+    },
+  }), true);
+  // a bare number is a duration or a year, not a timestamp — not evidence
+  assert.equal(codexClientPayloadAccepted({
+    account_id: "a",
+    status: "ok",
+    exhausted_until: 3600,
+  }), false);
+  // nor is a numeric string
+  assert.equal(codexClientPayloadAccepted({
+    account_id: "a",
+    status: "ok",
+    exhausted_until: "3600",
+  }), false);
 });
