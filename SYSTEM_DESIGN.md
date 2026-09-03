@@ -733,11 +733,11 @@ without reading, which is the opposite of what a warning is for.
 
 ## 10. Selection algorithm
 
-Code: `pickBestAuthPoolCandidate`, `lib/auth-pool.js:260-312`.
+Code: `pickBestAuthPoolCandidate`, `lib/auth-pool.js:312-376`.
 
 For a borrow request, candidates are filtered then ranked:
 
-**Eligibility** (`:273-280`): same source; not excluded (incl. `current_account_id`); not `Free` plan and not hard-invalidated; report fresh (`reported_at` within `max_report_age_seconds`, default 3600 s).
+**Eligibility** (`:325-333`): same source; not excluded (incl. `current_account_id`); not `Free` plan and not hard-invalidated; report fresh (`reported_at` within `max_report_age_seconds`, default 3600 s).
 
 An account whose report carries `exhausted_until` later than now is excluded outright — a limit-hit
 probe measured it as unusable until then, whatever its (possibly carried-forward) windows claim.
@@ -746,7 +746,7 @@ Both sources are held to the same thresholds, judged per window the report carri
 
 **Expired windows count as missing.** Every selection read of a window (`windowRemainingPercent`) drops a window whose `reset_at` is at or before the report's own `reported_at`: the provider has rolled that window over, so its stored numbers describe a spent period. The merge layer deliberately carries such windows forward for the dashboard's stale-evidence display ([§6.4](#64-availability-read-model-and-lazy-history)), so expiry is enforced here, at the decision boundary, not at merge. The forcing case (2026-09-03, codex `leizhang0121`): a Pro account's probes stopped reporting a 5h window on 08-29 — Pro no longer meters one — and the last synthesized "5h 0%" (a weekly-exhaustion pair from the client's `zero_remaining_window`) was carried five days past its reset, failing the 5h threshold while the live weekly window sat at 96%. A window without `reset_at` cannot be judged and keeps its value.
 
-**Ranking** (`:282-301`): primary key is `projectedWeightedLoad` ascending — a fairness/load score combining a **deterministic exponential jitter** seeded by `selection_key:source:account_id` (stable per requester, spreads load) and a recent-served penalty. Quota weight uses the limiting window for both sources (a missing codex 5h term reads as unconstrained); codex tie-breaks weekly-first, claude by 5h, weekly, then recency. This balances *give the borrower good quota* against *don't stampede one account*.
+**Ranking** (`:335-365`): primary key is `projectedWeightedLoad` ascending — a fairness/load score combining a **deterministic exponential jitter** seeded by `selection_key:source:account_id` (stable per requester, spreads load) and a recent-served penalty. Quota weight uses the limiting window for both sources (a missing codex 5h term reads as unconstrained); codex tie-breaks weekly-first, claude by 5h, weekly, then recency. This balances *give the borrower good quota* against *don't stampede one account*.
 
 **Read budget**: `fetch-best` reads only the requested source's pool entries and latest quota rows. Active load is read from the compact requester/reporter assignment tables, which have one row per requester or reporter, rather than using window functions over the append-only fetch/quota history tables on every request.
 
