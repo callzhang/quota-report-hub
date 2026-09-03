@@ -379,8 +379,8 @@ Two modules decide what a quota report means, and both are shared by every write
 cannot drift between the client path and the worker path.
 
 **`lib/quota-ingest.js` — acceptance.** `ingestClientQuota` stamps `report_origin:"client"` and a
-reporter identity, then applies one gate: `codexClientPayloadAccepted` requires a *complete* weekly
-window (`remaining_percent` **and** `reset_at`) or a hard invalidation. Codex has no live 5-hour
+reporter identity, then applies one gate: `codexClientPayloadAccepted` requires a *complete* weekly window (`remaining_percent` **and**
+`reset_at`), a hard invalidation, or a valid `exhausted_until` timestamp. Codex has no live 5-hour
 window any more, so weekly completeness is the whole test; Claude reports are not gated here. An
 unacceptable payload is not an error — it returns `{ok:true, ignored:true}` and the caller decides
 the HTTP status. This is the same predicate the guard mirrors locally as
