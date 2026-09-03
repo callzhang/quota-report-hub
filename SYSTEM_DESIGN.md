@@ -403,6 +403,10 @@ one that carries the sharp rules:
 - Otherwise the newer report wins per window, and each window keeps its own `captured_at`, which is
   never overwritten by a newer row-level `reported_at`
   ([§6.4](#64-availability-read-model-and-lazy-history)).
+- `exhausted_until` (account unusable until T, from a limit-hit probe) is normalized per report and
+  never carried forward: a later report without it clears it, and consumers compare it to a clock so
+  a stale past value is inert. It exists so the client reports limit-hits as the account-level fact
+  they are, instead of fabricating per-window zeros ([§10](#10-selection-algorithm)).
 
 `statusPayload` / `authPoolStatusPayload` assemble the dashboard dataset from entries, reports and
 invalidation state; `lib/account-availability.js` then reduces each account to the single lifecycle
