@@ -137,8 +137,13 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 - **Claude**: modern macOS Claude Code stores the active OAuth credential in Claude's encrypted `oauth:tokenCacheV2`; older builds may still use the direct `"Claude Code-credentials"` keychain item, and non-darwin uses `~/.claude/.credentials.json`. `read_claude_oauth_credentials` prefers tokenCacheV2 on macOS so stale files or MCP-only keychain entries cannot shadow the live credential. Writes go back to the same source when possible. Claude account id = `claude-<email-lowercased>` — **this is where the `claude-` prefix originates** (the server derive takes `account_id` as-is).
 - Quota source order for Claude: statusline snapshot first, live `/api/oauth/usage` only as fallback after a 429 backoff (`:1420-1432`).
 
-### 3.4 Rotation decision (`source_needs_replacement` `:186-197`)
-Replace when the source is hard-invalidated. Neither `maybe_replace_*` gates the fetch on a healthy probe: a hub-fetched credential is AT-only ([§9](#9-the-disabled_refresh_token-mechanism)), so a machine whose access token died cannot refresh its own way out and a failed probe is exactly when the fetch matters most. Claude used to carry such a gate (`missing_stable_claude_auth`) and every hard-invalidated Claude state was therefore unrecoverable until a human re-logged in. A probe that failed without reaching a verdict on the credential (no binary, a timeout) still fetches nothing — `probe_unavailable` — because it is no evidence the account is unhealthy. `claude auth status` exits nonzero exactly when it is logged out and still prints its JSON, so that exit is parsed into the one `CLAUDE_LOGGED_OUT_ERROR` value `is_hard_invalidated` matches, not an opaque command failure. Quota-based replacement uses `5h_remaining < 20%` or `1week_remaining < 5%` for both sources, judged per window the probe actually reported: Plus-tier Codex accounts still meter a 5-hour window and are held to the 20% threshold, while Codex tiers without a 5-hour limit report no `5h` window and are judged on `1week` alone. (This corrects an earlier claim that Codex `5h` was legacy metadata — that was true only of the higher tiers, and treating it as universal let a Plus account run its 5-hour window to zero without rotating.) `maybe_replace_*` then calls `/api/auth/fetch-best`. Two outcomes:
+### 3.4 Rotation decision (`source_needs_replacement` `:324-347`)
+Replace when the source is hard-invalidated. Neither `maybe_replace_*` gates the fetch on a healthy probe: a hub-fetched credential is AT-only ([§9](#9-the-disabled_refresh_token-mechanism)), so a machine whose access token died cannot refresh its own way out and a failed probe is exactly when the fetch matters most. Claude used to carry such a gate (`missing_stable_claude_auth`) and every hard-invalidated Claude state was therefore unrecoverable until a human re-logged in. A probe that failed without reaching a verdict on the credential (no binary, a timeout) still fetches nothing — `probe_unavailable` — because it is no evidence the account is unhealthy. `claude auth status` exits nonzero exactly when it is logged out and still prints its JSON, so that exit is parsed into the one `CLAUDE_LOGGED_OUT_ERROR` value `is_hard_invalidated` matches, not an opaque command failure. Quota-based replacement uses `5h_remaining < 20%` or `1week_remaining < 5%` for both sources, judged per window the probe actually reported: Plus-tier Codex accounts still meter a 5-hour window and are held to the 20% threshold, while Codex tiers without a 5-hour limit report no `5h` window and are judged on `1week` alone. (This corrects an earlier claim that Codex `5h` was legacy metadata — that was true only of the higher tiers, and treating it as universal let a Plus account run its 5-hour window to zero without rotating.)
+A codex usage-limit probe reports `exhausted_until` instead of fabricated zero windows (the
+workspace-out-of-credits branch still synthesizes them — its reports are discarded server-side
+and it is an explicit follow-up), and `source_needs_replacement` treats its presence as an
+immediate replacement trigger.
+`maybe_replace_*` then calls `/api/auth/fetch-best`. Two outcomes:
 - **`repair_auth`** — the hub hands the dead auth back to its latest uploader so they re-login (state `repair_auth_from_auth_pool`).
 - **`replacement`** — install the better auth. If it's the same account it's an `auth_refreshed` (state `fetched_from_auth_pool`), else a true switch.
 
@@ -339,12 +344,13 @@ The browser keys in-flight full-status requests by the exact session token and a
 
 ### 6.4 Availability read model and lazy history
 
-`lib/account-availability.js` derives one presentation-neutral state after report freshness and effective windows have been assembled. Precedence is `unavailable` → `waiting_for_new_quota` → `quota_unknown` → `low_quota` → `available`:
+`lib/account-availability.js` derives one presentation-neutral state after report freshness and effective windows have been assembled. Precedence is `unavailable` → `low_quota`/`usage_limit_exhausted` (exhaustion, checked next) → `waiting_for_new_quota` → `quota_unknown` → `low_quota` → `available`:
 
 - `unavailable`: refresh rejection, auth invalidation, ineligible plan, or an unrecoverable access-token expiry overrides quota history.
+- An account with `exhausted_until` in the future renders as `low_quota` / `usage_limit_exhausted`, feeding the reset time into its next-transition candidates (the earliest of that reset or the report's staleness boundary wins) — measured-drained, not unknown. This check deliberately ignores report staleness: `exhausted_until` is a provider-issued absolute deadline, not a decaying measurement, so it stays authoritative even once the surrounding report has gone stale.
 - `waiting_for_new_quota`: a required window reset has passed and no post-reset quota exists.
 - `quota_unknown`: required evidence is missing, partial, failed, older than the one-hour report-freshness boundary, or has no future reset boundary. An expired access token is also unknown—not unavailable—when the auth entry's safe `has_refresh_token` marker is true, or when a migrated legacy row still has a null/unknown marker. New AT-only entries explicitly store false and are unavailable after access expiry. An identical re-upload repairs a null marker and bumps the dashboard revision only when that visible capability changes.
-- `low_quota`: all required evidence is current, but Codex weekly quota is below 5%, or Claude 5-hour/weekly quota is below 20%/5% respectively.
+- `low_quota`: all required evidence is current, but Codex weekly quota is below 5%, or Claude 5-hour/weekly quota is below 20%/5% respectively — except the exhaustion path above, which reaches `low_quota` without that currency requirement.
 - `available`: all required windows are current and meet the same thresholds used by auth selection.
 
 The collapsed table renders only this state plus current remaining quota and reset countdown, or the expired-window age and next automatic check. Pointer hover, keyboard focus, and touch/click open an accessible dialog; Enter, Space, and Arrow Down deliberately move focus to its close control, and Escape restores focus to the trigger. A quota window's `captured_at` is preserved independently through merge and storage; it is not replaced by a newer row-level `reported_at`. `reset_at` remains the provider's window boundary. When evidence is no longer current, the snapshot remains available in gray as historical evidence and never contributes to current usability.
@@ -379,9 +385,9 @@ Two modules decide what a quota report means, and both are shared by every write
 cannot drift between the client path and the worker path.
 
 **`lib/quota-ingest.js` — acceptance.** `ingestClientQuota` stamps `report_origin:"client"` and a
-reporter identity, then applies one gate: `codexClientPayloadAccepted` requires a *complete* weekly
-window (`remaining_percent` **and** `reset_at`) or a hard invalidation. Codex has no live 5-hour
-window any more, so weekly completeness is the whole test; Claude reports are not gated here. An
+reporter identity, then applies one gate: `codexClientPayloadAccepted` requires a *complete* weekly window (`remaining_percent` **and**
+`reset_at`), a hard invalidation, or a valid `exhausted_until` timestamp. Codex has no live 5-hour
+window any more, so weekly completeness is the whole windows test; Claude reports are not gated here. An
 unacceptable payload is not an error — it returns `{ok:true, ignored:true}` and the caller decides
 the HTTP status. This is the same predicate the guard mirrors locally as
 `quota_payload_is_reportable`, so a report that would be discarded is never sent
@@ -403,6 +409,15 @@ one that carries the sharp rules:
 - Otherwise the newer report wins per window, and each window keeps its own `captured_at`, which is
   never overwritten by a newer row-level `reported_at`
   ([§6.4](#64-availability-read-model-and-lazy-history)).
+- `exhausted_until` (account unusable until T, from a limit-hit probe) is normalized per report and
+  never carried forward: a later report without it clears it, and consumers compare it to a clock so
+  a stale past value is inert. It exists so the client reports limit-hits as the account-level fact
+  they are, instead of fabricating per-window zeros ([§10](#10-selection-algorithm)) (a report the
+  merge *accepts* clears it; the two guard branches that discard an incoming report wholesale keep
+  the previous value — coherent, since they drop the incoming report entirely, and the next accepted
+  report clears it within a client cycle). The refresh-verification upsert forwards the bundled
+  payload's `exhausted_until` — that write restates the same client observation, and omitting the
+  field would clear the just-ingested deadline under the per-report-evidence rule above.
 
 `statusPayload` / `authPoolStatusPayload` assemble the dashboard dataset from entries, reports and
 invalidation state; `lib/account-availability.js` then reduces each account to the single lifecycle
@@ -687,7 +702,8 @@ Every other rule here rations demand, and no amount of rationing puts a single p
 the pool -- when it runs dry the only remedy is another account in it. Supply therefore gets the same
 treatment demand does: `hasHealthyUpload` (one entry uploaded by this user that the pool can actually
 lend -- not a dead login, not a Free plan; a *drained* account still counts, since being drained is
-what a shared account is for) decides whether the same cooldown applies while the pool is scarce.
+what a shared account is for -- including one that reports only `exhausted_until` with no windows at
+all) decides whether the same cooldown applies while the pool is scarce.
 
 This is not payment for access, and the numbers are why it cannot be. Over 14 days to 2026-08-27,
 half the people who fetched had never supplied anything, but they accounted for 7.4% of priced spend
@@ -725,15 +741,20 @@ without reading, which is the opposite of what a warning is for.
 
 ## 10. Selection algorithm
 
-Code: `pickBestAuthPoolCandidate`, `lib/auth-pool.js:260-312`.
+Code: `pickBestAuthPoolCandidate`, `lib/auth-pool.js:312-376`.
 
 For a borrow request, candidates are filtered then ranked:
 
-**Eligibility** (`:273-280`): same source; not excluded (incl. `current_account_id`); not `Free` plan and not hard-invalidated; report fresh (`reported_at` within `max_report_age_seconds`, default 3600 s). Both sources are held to the same thresholds, judged per window the report carries (5h ≥ 20%, weekly ≥ 5%), and must beat the requester's `5h × weekly` product — with a codex candidate's *missing* 5h window counting as unconstrained (higher codex tiers meter no 5-hour window), while a missing claude window means the quota is unknown and the account is not shareable.
+**Eligibility** (`:325-333`): same source; not excluded (incl. `current_account_id`); not `Free` plan and not hard-invalidated; report fresh (`reported_at` within `max_report_age_seconds`, default 3600 s).
+
+An account whose report carries `exhausted_until` later than now is excluded outright — a limit-hit
+probe measured it as unusable until then, whatever its (possibly carried-forward) windows claim.
+
+Both sources are held to the same thresholds, judged per window the report carries (5h ≥ 20%, weekly ≥ 5%), and must beat the requester's `5h × weekly` product — with a codex candidate's *missing* 5h window counting as unconstrained (higher codex tiers meter no 5-hour window), while a missing claude window means the quota is unknown and the account is not shareable.
 
 **Expired windows count as missing.** Every selection read of a window (`windowRemainingPercent`) drops a window whose `reset_at` is at or before the report's own `reported_at`: the provider has rolled that window over, so its stored numbers describe a spent period. The merge layer deliberately carries such windows forward for the dashboard's stale-evidence display ([§6.4](#64-availability-read-model-and-lazy-history)), so expiry is enforced here, at the decision boundary, not at merge. The forcing case (2026-09-03, codex `leizhang0121`): a Pro account's probes stopped reporting a 5h window on 08-29 — Pro no longer meters one — and the last synthesized "5h 0%" (a weekly-exhaustion pair from the client's `zero_remaining_window`) was carried five days past its reset, failing the 5h threshold while the live weekly window sat at 96%. A window without `reset_at` cannot be judged and keeps its value.
 
-**Ranking** (`:282-301`): primary key is `projectedWeightedLoad` ascending — a fairness/load score combining a **deterministic exponential jitter** seeded by `selection_key:source:account_id` (stable per requester, spreads load) and a recent-served penalty. Quota weight uses the limiting window for both sources (a missing codex 5h term reads as unconstrained); codex tie-breaks weekly-first, claude by 5h, weekly, then recency. This balances *give the borrower good quota* against *don't stampede one account*.
+**Ranking** (`:335-365`): primary key is `projectedWeightedLoad` ascending — a fairness/load score combining a **deterministic exponential jitter** seeded by `selection_key:source:account_id` (stable per requester, spreads load) and a recent-served penalty. Quota weight uses the limiting window for both sources (a missing codex 5h term reads as unconstrained); codex tie-breaks weekly-first, claude by 5h, weekly, then recency. This balances *give the borrower good quota* against *don't stampede one account*.
 
 **Read budget**: `fetch-best` reads only the requested source's pool entries and latest quota rows. Active load is read from the compact requester/reporter assignment tables, which have one row per requester or reporter, rather than using window functions over the append-only fetch/quota history tables on every request.
 

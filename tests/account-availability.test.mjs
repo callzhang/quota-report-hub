@@ -387,3 +387,61 @@ test("deriveAccountAvailability preserves historical window values without treat
     },
   });
 });
+
+test("deriveAccountAvailability reports an exhausted account as low_quota until its reset", () => {
+  const item = {
+    source: "codex",
+    status: "ok",
+    effective_status: "ok",
+    reported_at: "2026-09-03T21:45:21Z",
+    exhausted_until: "2026-09-07T05:26:08Z",
+    display_windows: {},
+    refresh_validity: { status: "unverified" },
+  };
+  const result = deriveAccountAvailability(item, "2026-09-03T22:00:00Z");
+  assert.equal(result.state, "low_quota");
+  assert.equal(result.reason, "usage_limit_exhausted");
+  assert.equal(result.currently_usable, false);
+  // nextTransitionAt picks the EARLIEST future transition. The report-staleness boundary
+  // (reported_at + 3600s + 1) comes before the exhaustion reset here, and that is correct — a
+  // report going stale changes the display before the quota resets. The staleness boundary
+  // usually binds; the exhausted_until candidate binds only in the final stretch before reset,
+  // when the deadline is nearer than staleness (see the near-reset test below).
+  // (the +1 in nextTransitionAt is one millisecond past the freshness boundary, hence .001)
+  assert.equal(result.next_transition_at, "2026-09-03T22:45:21.001Z");
+});
+
+test("deriveAccountAvailability schedules the next transition at a near exhaustion reset", () => {
+  // The staleness boundary (reported_at + 1h + 1ms) usually binds; the exhausted_until candidate
+  // exists for the final stretch before the reset, when the deadline is NEARER than staleness —
+  // that is when the dashboard must wake up because the account actually recovers.
+  const item = {
+    source: "codex",
+    status: "ok",
+    effective_status: "ok",
+    reported_at: "2026-09-03T21:55:00Z",
+    exhausted_until: "2026-09-03T22:20:00Z",
+    display_windows: {},
+    refresh_validity: { status: "unverified" },
+  };
+  const result = deriveAccountAvailability(item, "2026-09-03T22:00:00Z");
+  assert.equal(result.state, "low_quota");
+  assert.equal(result.next_transition_at, "2026-09-03T22:20:00.000Z");
+});
+
+test("deriveAccountAvailability ignores a past exhausted_until", () => {
+  const item = {
+    source: "codex",
+    status: "ok",
+    effective_status: "ok",
+    reported_at: "2026-09-07T06:00:00Z",
+    exhausted_until: "2026-09-07T05:26:08Z",
+    display_windows: {
+      "1week": { remaining_percent: 96, reset_at: "2026-09-14T00:00:00Z" },
+    },
+    refresh_validity: { status: "unverified" },
+  };
+  const result = deriveAccountAvailability(item, "2026-09-07T06:05:00Z");
+  assert.equal(result.state, "available");
+  assert.notEqual(result.reason, "usage_limit_exhausted");
+});

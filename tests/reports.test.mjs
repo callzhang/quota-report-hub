@@ -1462,3 +1462,91 @@ test("authPoolStatusPayload archives old invalidated state even when latest repo
   assert.equal(payload.archived_invalidated_items[0].account_id, "claude-old-invalid");
   assert.equal(payload.archived_invalidated_items[0].first_invalidated_at, "2026-04-20T12:00:00Z");
 });
+
+test("sanitizeReport normalizes exhausted_until and defaults it to null", () => {
+  const withField = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T21:45:21Z",
+    status: "ok",
+    exhausted_until: "2026-09-07T05:26:08Z",
+    windows: { "5h": null, "1week": null },
+  });
+  assert.equal(withField.exhausted_until, "2026-09-07T05:26:08.000Z");
+
+  const without = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T21:45:21Z",
+    status: "ok",
+    windows: { "5h": null, "1week": null },
+  });
+  assert.equal(without.exhausted_until, null);
+
+  const garbage = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T21:45:21Z",
+    status: "ok",
+    exhausted_until: "not-a-time",
+    windows: { "5h": null, "1week": null },
+  });
+  assert.equal(garbage.exhausted_until, null);
+
+  const numeric = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T21:45:21Z",
+    status: "ok",
+    exhausted_until: 3600,
+    windows: { "5h": null, "1week": null },
+  });
+  assert.equal(numeric.exhausted_until, null);
+
+  const numericString = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T21:45:21Z",
+    status: "ok",
+    exhausted_until: "3600",
+    windows: { "5h": null, "1week": null },
+  });
+  assert.equal(numericString.exhausted_until, null);
+
+  const wrapped = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T21:45:21Z",
+    status: "ok",
+    exhausted_until: ["2026-09-07T05:26:08Z"],
+    windows: { "5h": null, "1week": null },
+  });
+  assert.equal(wrapped.exhausted_until, null);
+});
+
+test("mergeLatestReport lets a fresh report clear a previous exhausted_until", () => {
+  // exhausted_until is per-report evidence: a later report that does not carry it means the
+  // exhaustion is over (or was never re-observed). It must never be carried forward the way
+  // windows are — sanitizeReport always emits the key, so the merge spread overwrites it.
+  const previous = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T10:00:00Z",
+    status: "ok",
+    exhausted_until: "2026-09-07T05:26:08Z",
+    windows: { "5h": null, "1week": null },
+  });
+  const incoming = sanitizeReport({
+    source: "codex",
+    account_id: "acct-1",
+    reported_at: "2026-09-03T11:00:00Z",
+    status: "ok",
+    windows: {
+      "5h": null,
+      "1week": { used_percent: 4, remaining_percent: 96, reset_at: "2026-09-07T05:26:08Z" },
+    },
+  });
+  const merged = mergeLatestReport(previous, incoming);
+  assert.equal(merged.exhausted_until, null);
+  assert.equal(merged.windows["1week"].remaining_percent, 96);
+});

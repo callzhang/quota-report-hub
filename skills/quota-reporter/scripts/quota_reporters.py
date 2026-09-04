@@ -418,6 +418,7 @@ def write_known_auth_state(
     last_uploaded_account_id: str | None = None,
     last_uploaded_auth_last_refresh: str | None = None,
     last_reuploaded_at: str | None = None,
+    access_token_fingerprint: str | None = None,
     state_source: str,
 ) -> dict | None:
     payload = read_known_auth_state(known_auth_path)
@@ -429,6 +430,10 @@ def write_known_auth_state(
         "auth_last_refresh": metadata["auth_last_refresh"],
         "auth_path": metadata["auth_path"],
         "digest": metadata["digest"],
+        # Which access token this identity belongs to. Claude keeps its account identity in a
+        # record no credential install touches, so the identity and the token can drift apart;
+        # this binding is what lets a later probe tell whose token it is actually running.
+        "access_token_fingerprint": access_token_fingerprint,
         "observed_at": iso_now(),
         "last_uploaded_digest": last_uploaded_digest,
         "last_uploaded_account_id": last_uploaded_account_id,
@@ -859,9 +864,9 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
 
     if rate_limits and not has_complete_windows and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
         quota_exhausted = codex_usage_limit_exhausted(rate_limits, result.stderr, result.stdout)
-        reset_at, reset_in_seconds = codex_usage_limit_reset_from_rate_limits(rate_limits, checked_at)
+        reset_at, _ = codex_usage_limit_reset_from_rate_limits(rate_limits, checked_at)
         if reset_at is None:
-            reset_at, reset_in_seconds = codex_usage_limit_reset_at(result.stderr, result.stdout, now=checked_at)
+            reset_at, _ = codex_usage_limit_reset_at(result.stderr, result.stdout, now=checked_at)
         if not quota_exhausted:
             payload = {
                 **base,
@@ -902,10 +907,13 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
             "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
             "status": "ok",
             "error": None,
-            "windows": {
-                "5h": zero_remaining_window(300, reset_at=reset_at, reset_in_seconds=reset_in_seconds),
-                "1week": zero_remaining_window(10080, reset_at=reset_at, reset_in_seconds=reset_in_seconds),
-            },
+            # A limit-hit is account-level evidence ("unusable until T"), not a window
+            # measurement. Fabricating per-window zeros here is how a Pro account — which meters
+            # no 5h window at all — once carried a synthetic "5h 0%" five days past its reset and
+            # was locked out of pool selection at 96% weekly quota. Only genuinely measured
+            # windows are reported.
+            "exhausted_until": reset_at,
+            "windows": windows,
             "usage_summary": {
                 "credits": rate_limits.get("credits"),
                 "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
@@ -1383,6 +1391,40 @@ def read_claude_oauth_credentials(claude_home: Path = CLAUDE_HOME) -> tuple[dict
     if claude_credentials_have_oauth(credentials):
         return credentials, "keychain"
     return None, "unavailable"
+
+
+def claude_access_token_fingerprint(credentials: dict | None) -> str | None:
+    token = ((credentials or {}).get("claudeAiOauth") or {}).get("accessToken")
+    if not token:
+        return None
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def resolve_claude_installed_identity(
+    credentials: dict | None,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
+) -> dict | None:
+    """Whose account the running claude credential actually belongs to.
+
+    Claude's account identity lives in ~/.claude.json, which no credential install writes:
+    installing a fetched credential swaps the token and leaves the identity record pointing at
+    whatever account was there before. The probe then reads quota through the new token and the
+    name off the old record, and reports one account's usage under another account's id —
+    measured on claude-qpt0311@uw.edu, which spent ten days reporting a borrowed account's quota
+    while its own credential was long dead.
+
+    The install records which account the token it wrote belongs to. Matching that fingerprint
+    against the token now in place answers the question from the credential itself, so a stale
+    identity record cannot mislabel the report. No match means the machine is running a
+    credential the guard never installed — its own login — and the CLI's own answer stands.
+    """
+    fingerprint = claude_access_token_fingerprint(credentials)
+    if not fingerprint:
+        return None
+    state = known_auth_state_for_source(read_known_auth_state(known_auth_path), "claude")
+    if not state.get("email") or state.get("access_token_fingerprint") != fingerprint:
+        return None
+    return {"email": state.get("email"), "name": state.get("name")}
 
 
 def claude_oauth_token_expired(oauth: dict, now_ms: float | None = None) -> bool:
@@ -2204,6 +2246,7 @@ def probe_claude(
     claude_bin: str | None = None,
     now: float | None = None,
     usage_backoff_path: Path = CLAUDE_USAGE_BACKOFF_PATH,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
 ) -> dict:
     claude_executable = discover_claude_executable(claude_bin)
     # One budget for both `claude auth status` calls below, so a slow probe cannot eat the whole run.
@@ -2282,6 +2325,12 @@ def probe_claude(
         auth_text_details["organization"] = oauth_account.get("organizationUuid")
     credentials, _ = read_claude_oauth_credentials(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
+    # Identity and quota must come from the same credential. Everything below reads quota through
+    # the token now installed, so the account it is reported under has to be that token's account.
+    installed_identity = resolve_claude_installed_identity(credentials, known_auth_path)
+    if installed_identity:
+        auth_text_details["email"] = installed_identity["email"]
+        auth_text_details["organization"] = installed_identity["name"]
     stats = read_claude_stats(claude_home)
     statusline_snapshot = read_claude_statusline_snapshot(claude_home)
     statusline_windows = parse_claude_statusline_rate_limits(statusline_snapshot)

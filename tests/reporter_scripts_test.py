@@ -776,7 +776,7 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(report["windows"]["1week"]["remaining_percent"], 70.0)
         self.assertEqual(report["windows"]["1week"]["reset_in_seconds"], 3600)
 
-    def test_probe_codex_maps_usage_limit_event_to_zero_remaining_windows(self):
+    def test_probe_codex_reports_usage_limit_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text(
@@ -831,15 +831,17 @@ class ReporterScriptsTest(unittest.TestCase):
                     report = probe_codex(auth_path)
 
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["5h"]["used_percent"], 100.0)
+        self.assertIsNone(report["error"])
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertIsNone(report["windows"]["1week"])
+        self.assertIsNotNone(report["exhausted_until"])
+        self.assertEqual(report["exhausted_until"], report["usage_summary"]["next_retry_at"])
         self.assertEqual(report["usage_summary"]["credits"]["balance"], "0")
-        self.assertIsNotNone(report["windows"]["5h"]["reset_at"])
-        self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
-        self.assertIsInstance(report["windows"]["5h"]["reset_in_seconds"], int)
-        self.assertGreaterEqual(report["windows"]["5h"]["reset_in_seconds"], 0)
-        self.assertEqual(report["usage_summary"]["next_retry_at"], report["windows"]["5h"]["reset_at"])
+        # Can't pin a literal here: codex_usage_limit_reset_at localizes "Apr 28th, 2026 7:19 PM"
+        # against the machine's local timezone (datetime.now().astimezone().tzinfo) before
+        # converting to UTC, so the exact instant shifts with the runner's TZ (e.g. local ->
+        # 2026-04-29T02:19:00Z, but Asia/Tokyo -> 2026-04-28T10:19:00Z, verified directly).
+        self.assertTrue(report["exhausted_until"].endswith("Z"))
 
     def test_probe_codex_does_not_create_zero_windows_without_reset_time(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -897,8 +899,9 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(report["windows"]["5h"])
         self.assertIsNone(report["windows"]["1week"])
         self.assertIsNone(report["usage_summary"]["next_retry_at"])
+        self.assertIsNone(report.get("exhausted_until"))
 
-    def test_probe_codex_maps_structured_reset_to_zero_remaining_windows(self):
+    def test_probe_codex_reports_structured_reset_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text(
@@ -950,13 +953,16 @@ class ReporterScriptsTest(unittest.TestCase):
                     report = probe_codex(auth_path)
 
         self.assertEqual(report["status"], "ok")
+        # Unlike the other exhaustion tests, this fixture's primary block carries a genuine
+        # used_percent measurement, so the 5h window is real (not fabricated) and must survive;
+        # only the unmeasured 1week window collapses to None.
+        self.assertIsNotNone(report["windows"]["5h"])
         self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["5h"]["reset_in_seconds"], 900)
-        self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
-        self.assertEqual(report["usage_summary"]["next_retry_at"], report["windows"]["5h"]["reset_at"])
+        self.assertIsNone(report["windows"]["1week"])
+        self.assertIsNotNone(report["exhausted_until"])
+        self.assertEqual(report["exhausted_until"], report["usage_summary"]["next_retry_at"])
 
-    def test_probe_codex_maps_rate_limited_exhausted_window_to_zero_remaining_windows(self):
+    def test_probe_codex_reports_rate_limited_exhaustion_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text(
@@ -1008,8 +1014,9 @@ class ReporterScriptsTest(unittest.TestCase):
                     report = probe_codex(auth_path)
 
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertIsNone(report["windows"]["1week"])
+        self.assertEqual(report["exhausted_until"], "2026-04-22T16:30:00Z")
         self.assertEqual(report["usage_summary"]["rate_limit_reached_type"], "rate_limited")
         self.assertEqual(report["usage_summary"]["next_retry_at"], "2026-04-22T16:30:00Z")
 
@@ -1069,7 +1076,7 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(report["windows"]["5h"])
         self.assertIsNone(report["windows"]["1week"])
 
-    def test_probe_codex_maps_partial_missing_window_usage_limit_to_zero_remaining_windows(self):
+    def test_probe_codex_reports_partial_missing_window_usage_limit_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text(
@@ -1122,10 +1129,13 @@ class ReporterScriptsTest(unittest.TestCase):
 
         self.assertEqual(report["status"], "ok")
         self.assertIsNone(report["error"])
+        # Same as the structured-reset case: primary carries a genuine used_percent measurement,
+        # so the 5h window is real even though it lacks its own reset time; 1week stays None.
+        self.assertIsNotNone(report["windows"]["5h"])
         self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
-        self.assertIsNotNone(report["windows"]["5h"]["reset_at"])
-        self.assertEqual(report["windows"]["1week"]["reset_at"], report["windows"]["5h"]["reset_at"])
+        self.assertIsNone(report["windows"]["1week"])
+        self.assertIsNotNone(report["exhausted_until"])
+        self.assertEqual(report["exhausted_until"], report["usage_summary"]["next_retry_at"])
 
     def test_probe_codex_does_not_treat_creditless_team_account_as_zero_remaining_without_usage_limit_signal(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1625,6 +1635,114 @@ Reading additional input from stdin...
         self.assertNotIn("rate_limit_probe", payload["usage_summary"])
         self.assertNotIn("statusline_snapshot", payload["usage_summary"])
         self.assertNotIn("stats", payload["usage_summary"])
+
+    def test_probe_claude_reports_the_account_the_installed_token_belongs_to(self):
+        """A stale identity record must not relabel another account's quota.
+
+        Claude's account identity lives in a record no credential install writes, so after the
+        guard installs a fetched credential the CLI still names the previous account. Reporting
+        that name over the new token's quota is how claude-qpt0311@uw.edu spent ten days
+        publishing a borrowed account's usage under its own long-dead id.
+        """
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        # The CLI still reports the account this machine used BEFORE the guard installed a
+        # replacement credential.
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: qpt0311@uw.edu's Organization\nEmail: qpt0311@uw.edu\n",
+            stderr="",
+        )
+        installed_token = "borrowed-account-access-token"
+        with tempfile.TemporaryDirectory() as state_dir:
+            known_auth_path = Path(state_dir) / "known_auth.json"
+            known_auth_path.write_text(
+                json.dumps(
+                    {
+                        "sources": {
+                            "claude": {
+                                "account_id": "claude-leizhang0121@gmail.com",
+                                "email": "leizhang0121@gmail.com",
+                                "name": "Derek Zen",
+                                "access_token_fingerprint": hashlib.sha256(installed_token.encode("utf-8")).hexdigest(),
+                                "state_source": "fetched_from_auth_pool",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "quota_reporters.discover_claude_executable",
+                return_value="/usr/local/bin/claude",
+            ), mock.patch(
+                "quota_reporters.subprocess.run",
+                side_effect=[auth_json, auth_text],
+            ), mock.patch(
+                "quota_reporters.read_claude_keychain_credentials", return_value=None
+            ), mock.patch(
+                "quota_reporters.read_claude_credentials",
+                return_value={"claudeAiOauth": {"accessToken": installed_token, "subscriptionType": "max"}},
+            ), mock.patch(
+                "quota_reporters.read_claude_statusline_snapshot",
+                return_value={
+                    "captured_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                    "rate_limits": {
+                        "five_hour": {
+                            "used_percentage": 16,
+                            "resets_at": int((datetime.now(timezone.utc) + timedelta(hours=3)).timestamp()),
+                        }
+                    },
+                },
+            ), mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                payload = probe_claude(Path("/tmp/claude-home"), known_auth_path=known_auth_path)
+
+        self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
+        self.assertEqual(payload["email"], "leizhang0121@gmail.com")
+        self.assertEqual(payload["name"], "Derek Zen")
+
+    def test_probe_claude_keeps_cli_identity_for_a_credential_the_guard_never_installed(self):
+        """An owner's own login has no install binding — the CLI's answer is the only truth there."""
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
+            stderr="",
+        )
+        with tempfile.TemporaryDirectory() as state_dir:
+            known_auth_path = Path(state_dir) / "known_auth.json"
+            known_auth_path.write_text(
+                json.dumps(
+                    {
+                        "sources": {
+                            "claude": {
+                                "account_id": "claude-someone-else@example.com",
+                                "email": "someone-else@example.com",
+                                "name": "Someone Else",
+                                "access_token_fingerprint": hashlib.sha256(b"a-token-no-longer-installed").hexdigest(),
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "quota_reporters.discover_claude_executable",
+                return_value="/usr/local/bin/claude",
+            ), mock.patch(
+                "quota_reporters.subprocess.run",
+                side_effect=[auth_json, auth_text],
+            ), mock.patch(
+                "quota_reporters.read_claude_keychain_credentials", return_value=None
+            ), mock.patch(
+                "quota_reporters.read_claude_credentials",
+                return_value={"claudeAiOauth": {"accessToken": "the-owners-own-token", "subscriptionType": "max"}},
+            ), mock.patch(
+                "quota_reporters.read_claude_statusline_snapshot", return_value=None
+            ), mock.patch("quota_reporters.read_claude_stats", return_value=None):
+                payload = probe_claude(Path("/tmp/claude-home"), known_auth_path=known_auth_path)
+
+        self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
+        self.assertEqual(payload["email"], "leizhang0121@gmail.com")
 
     def test_probe_claude_uses_oauth_usage_api_when_statusline_has_no_windows(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
@@ -2257,6 +2375,27 @@ Reading additional input from stdin...
 
         self.assertFalse(quota_guard.source_needs_replacement(codex_payload, 20.0, 5.0))
 
+    def test_source_needs_replacement_triggers_on_exhausted_until(self):
+        # A codex limit-hit probe reports no windows at all -- exhausted_until is the only
+        # signal that the account is unusable, so its presence must trigger rotation on its own.
+        payload = {
+            "account_id": "acct-1",
+            "status": "ok",
+            "exhausted_until": "2026-09-07T05:26:08Z",
+            "windows": {"5h": None, "1week": None},
+        }
+        self.assertTrue(quota_guard.source_needs_replacement(payload, 20.0, 5.0))
+
+    def test_source_needs_replacement_still_ignores_windowless_healthy_payloads(self):
+        # Without exhausted_until, an all-None-windows payload stays the pre-existing "not
+        # constrained" case (e.g. Codex tiers that never meter a 5h window).
+        payload = {
+            "account_id": "acct-1",
+            "status": "ok",
+            "windows": {"5h": None, "1week": None},
+        }
+        self.assertFalse(quota_guard.source_needs_replacement(payload, 20.0, 5.0))
+
     def test_quota_payload_should_report_valid_windows_and_hard_invalidations_only(self):
         self.assertTrue(
             quota_guard.quota_payload_should_report(
@@ -2286,6 +2425,25 @@ Reading additional input from stdin...
                 }
             )
         )
+
+    def test_quota_payload_is_reportable_accepts_codex_exhaustion(self):
+        payload = {
+            "account_id": "acct-1",
+            "status": "ok",
+            "exhausted_until": "2026-09-07T05:26:08Z",
+            "windows": {"5h": None, "1week": None},
+        }
+        self.assertTrue(quota_guard.quota_payload_is_reportable("codex", payload))
+
+    def test_quota_payload_is_reportable_rejects_error_status_with_exhausted_until(self):
+        payload = {
+            "account_id": "acct-1",
+            "status": "error",
+            "error": "codex exec failed",
+            "exhausted_until": "2026-09-07T05:26:08Z",
+            "windows": {"5h": None, "1week": None},
+        }
+        self.assertFalse(quota_guard.quota_payload_is_reportable("codex", payload))
 
     def test_report_current_quota_to_auth_pool_posts_complete_codex_windows(self):
         payload = {

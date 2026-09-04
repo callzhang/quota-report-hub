@@ -78,3 +78,47 @@ test("ingestClientQuota persists any claude payload (no codex completeness gate)
   assert.equal(written.length, 1);
   assert.equal(written[0].reporter_name, "host-a"); // preserved when provided
 });
+
+test("codexClientPayloadAccepted accepts an exhaustion report without windows", () => {
+  assert.equal(codexClientPayloadAccepted({
+    account_id: "a",
+    status: "ok",
+    exhausted_until: "2026-09-07T05:26:08Z",
+    windows: { "5h": null, "1week": null },
+  }), true);
+  // a malformed timestamp is not evidence
+  assert.equal(codexClientPayloadAccepted({
+    account_id: "a",
+    status: "ok",
+    exhausted_until: "not-a-time",
+    windows: { "5h": null, "1week": null },
+  }), false);
+  // status must still be ok — an error probe with a leftover field stays rejected
+  assert.equal(codexClientPayloadAccepted({
+    account_id: "a",
+    status: "error",
+    error: "codex exec failed",
+    exhausted_until: "2026-09-07T05:26:08Z",
+  }), false);
+  // old-client fabricated zero-window shape stays accepted (mixed-fleet phasing, §17.3)
+  assert.equal(codexClientPayloadAccepted({
+    account_id: "a",
+    status: "ok",
+    windows: {
+      "5h": { remaining_percent: 0, reset_at: "2026-09-07T05:26:08Z" },
+      "1week": { remaining_percent: 0, reset_at: "2026-09-07T05:26:08Z" },
+    },
+  }), true);
+  // a bare number is a duration or a year, not a timestamp — not evidence
+  assert.equal(codexClientPayloadAccepted({
+    account_id: "a",
+    status: "ok",
+    exhausted_until: 3600,
+  }), false);
+  // nor is a numeric string
+  assert.equal(codexClientPayloadAccepted({
+    account_id: "a",
+    status: "ok",
+    exhausted_until: "3600",
+  }), false);
+});

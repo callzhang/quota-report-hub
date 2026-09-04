@@ -42,6 +42,7 @@ from quota_reporters import (
     SOURCE_AUTH_PATH,
     auth_metadata,
     cli_auth_seed_state,
+    claude_access_token_fingerprint,
     claude_auth_blob_metadata,
     detect_claude_custom_provider_env,
     discover_codex_executable,
@@ -327,6 +328,11 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
         return True
     if payload.get("status") != "ok":
         return False
+    # A limit-hit probe reports no windows at all -- "unusable until T" travels as
+    # exhausted_until. The payload here is this run's fresh probe result, so any exhausted_until
+    # it carries is current by construction; no clock comparison needed.
+    if payload.get("exhausted_until"):
+        return True
     # Both sources use the same rule: each window the probe actually saw is held to its threshold,
     # and an absent window (Codex tiers without a 5h limit) simply does not constrain. Plus-tier
     # Codex accounts still meter a 5h window, so it must keep triggering rotation.
@@ -391,7 +397,11 @@ def quota_payload_is_reportable(source: str, payload: dict | None) -> bool:
     """Whether the hub would accept this payload as a quota report.
 
     Mirrors codexClientPayloadAccepted / ingestClientQuota in lib/quota-ingest.js -- posting a
-    payload the hub will discard just burns a request.
+    payload the hub will discard just burns a request. Accepted codex shapes: hard invalidation,
+    complete weekly window, or exhausted_until. The confirmed out-of-credits clause below is a
+    deliberate client-side superset: the hub currently DISCARDS that shape (its zero windows carry
+    no reset_at), and fixing the out-of-credits reporting path is an explicit follow-up -- see the
+    plan's known follow-ups.
     """
     if source == "codex":
         if not payload or not payload.get("account_id"):
@@ -400,6 +410,7 @@ def quota_payload_is_reportable(source: str, payload: dict | None) -> bool:
             is_hard_invalidated(payload)
             or (payload.get("status") == "ok" and quota_payload_has_complete_window(payload, "1week"))
             or (payload.get("status") == "ok" and quota_payload_is_confirmed_out_of_credits(payload))
+            or (payload.get("status") == "ok" and bool(payload.get("exhausted_until")))
         )
     return quota_payload_should_report(payload)
 
@@ -1664,6 +1675,7 @@ def maybe_replace_claude_auth(
             last_uploaded_digest=metadata["digest"],
             last_uploaded_account_id=metadata["account_id"],
             last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+            access_token_fingerprint=claude_access_token_fingerprint(repair_credentials),
             state_source="repair_auth_from_auth_pool",
         )
         return {
@@ -1722,6 +1734,7 @@ def maybe_replace_claude_auth(
         last_uploaded_digest=metadata["digest"],
         last_uploaded_account_id=metadata["account_id"],
         last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+        access_token_fingerprint=claude_access_token_fingerprint(replacement_credentials),
         state_source="fetched_from_auth_pool",
     )
     if replacement.get("account_id") == current_account_id:

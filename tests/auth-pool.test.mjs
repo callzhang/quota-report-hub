@@ -822,3 +822,58 @@ test("shouldReplaceAuthPoolEntry accepts newer refresh for same account", () => 
 
   assert.equal(shouldReplaceAuthPoolEntry(existing, incoming), true);
 });
+
+test("pickBestAuthPoolCandidate readmits an account once its exhaustion deadline passes", () => {
+  // Pins the deadline COMPARISON itself: same shape as the exclusion test below, but now is after
+  // the deadline, the report is fresh, and the weekly window is healthy and unexpired — so the
+  // only thing that could exclude this account is a broken isExhausted that ignores the clock.
+  const reports = [
+    {
+      source: "codex",
+      account_id: "recovered",
+      status: "ok",
+      error: null,
+      exhausted_until: "2026-09-07T05:26:08Z",
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 96, reset_at: "2026-09-14T00:00:00Z" },
+      },
+      reported_at: "2026-09-07T05:30:00Z",
+    },
+  ];
+  const pool = [{ account_id: "recovered" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_quota: { five_h_remaining_percent: 0, one_week_remaining_percent: 0 },
+    now: "2026-09-07T06:00:00Z",
+  });
+
+  assert.equal(candidate?.entry?.account_id, "recovered");
+});
+
+test("pickBestAuthPoolCandidate excludes an exhausted account even when stale windows look healthy", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "drained-with-windows",
+      status: "ok",
+      error: null,
+      exhausted_until: "2026-09-07T05:26:08Z",
+      windows: {
+        "5h": null,
+        "1week": { remaining_percent: 96, reset_at: "2026-09-07T05:26:08Z" },
+      },
+      reported_at: "2026-09-03T21:45:21Z",
+    },
+  ];
+  const pool = [{ account_id: "drained-with-windows" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_quota: { five_h_remaining_percent: 0, one_week_remaining_percent: 0 },
+    now: "2026-09-03T22:00:00Z",
+  });
+
+  assert.equal(candidate, null);
+});
