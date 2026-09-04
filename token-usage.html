@@ -229,6 +229,21 @@
 
       function number(value) { return Number(value || 0).toLocaleString(); }
 
+      // Raw token counts run into 12 digits and stop being readable; the team reads 万/亿.
+      // Visible text carries the scaled unit, and callers keep the exact count in a title.
+      function formatTokens(value) {
+        const n = Number(value || 0);
+        const abs = Math.abs(n);
+        for (const [unit, suffix] of [[1e12, "万亿"], [1e8, "亿"], [1e4, "万"]]) {
+          if (abs >= unit) {
+            const scaled = n / unit;
+            const digits = Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 2;
+            return `${scaled.toFixed(digits)}${suffix}`;
+          }
+        }
+        return n.toLocaleString();
+      }
+
       const COUNTERS = [
         ["Total", "total_tokens"], ["Input", "input_tokens"], ["Output", "output_tokens"],
         ["Cache read", "cache_read_tokens"], ["Cache write", "cache_write_tokens"],
@@ -267,11 +282,7 @@
         if (point.model_account_id) dimensions.push("model account " + point.model_account_id);
         if (point.model_id) dimensions.push("model " + point.model_id);
         return `${bucketStart.toLocaleString()}–${bucketEnd.toLocaleString()}, ${dimensions.join(", ")}, ` +
-          COUNTERS.map(([label, key]) => `${label.toLowerCase()} ${number(point[key])}`).join(", ");
-      }
-
-      function compactNumber(value) {
-        return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(value);
+          COUNTERS.map(([label, key]) => `${label.toLowerCase()} ${formatTokens(point[key])}`).join(", ");
       }
 
       function splitTrendSegments(points) {
@@ -339,7 +350,7 @@
         const grid = Array.from({ length: 4 }, (_, index) => {
           const value = maximum * (1 - index / 3);
           const yPosition = y(value).toFixed(1);
-          return `<line x1="${padding.left}" y1="${yPosition}" x2="${width - padding.right}" y2="${yPosition}" stroke="currentColor" opacity=".12" /><text x="${padding.left - 8}" y="${Number(yPosition) + 4}" text-anchor="end">${compactNumber(value)}</text>`;
+          return `<line x1="${padding.left}" y1="${yPosition}" x2="${width - padding.right}" y2="${yPosition}" stroke="currentColor" opacity=".12" /><text x="${padding.left - 8}" y="${Number(yPosition) + 4}" text-anchor="end">${formatTokens(value)}</text>`;
         }).join("");
         const bucketTimes = [...new Set(sorted.map((point) => new Date(point.bucket_start).getTime()))];
         const xSampleCount = Math.min(5, bucketTimes.length);
@@ -399,14 +410,14 @@
         if (!total) return '<div class="empty">No usage in this range.</div>';
         const max = entries[0][1];
         const label = selectedMetricLabel();
-        return `<div class="meta">${escapeHtml(label)} tokens per Hub user under the current filters · % is the share of the filtered total (${number(total)})</div>` +
+        return `<div class="meta">${escapeHtml(label)} tokens per Hub user under the current filters · % is the share of the filtered total (${formatTokens(total)})</div>` +
           entries.map(([email, value]) => {
             const share = (value / total) * 100;
             return `
             <div class="user-bar-row" title="${escapeHtml(`${email}: ${number(value)} ${label.toLowerCase()} tokens · ${share.toFixed(1)}% of filtered total`)}">
               <div class="user-bar-label">${escapeHtml(email)}</div>
               <div class="user-bar-track"><div class="user-bar-fill" style="width: ${((value / max) * 100).toFixed(2)}%"></div></div>
-              <div class="user-bar-value">${number(value)}<span class="meta"> · ${share.toFixed(1)}%</span></div>
+              <div class="user-bar-value">${formatTokens(value)}<span class="meta"> · ${share.toFixed(1)}%</span></div>
             </div>`;
           }).join("");
       }
@@ -429,7 +440,7 @@
         const body = rows.slice(startIndex, endIndex).map((row, index) => `<tr>` +
           `<td><button id="breakdown-${index}" data-breakdown-index="${startIndex + index}" aria-label="Filter to ${escapeHtml(row.hub_user_email)}, ${escapeHtml(row.provider)}, ${escapeHtml(row.model_account_id)}, ${escapeHtml(row.model_id)}">${escapeHtml(row.hub_user_email)}</button></td>` +
           `<td>${escapeHtml(row.provider)}</td><td>${escapeHtml(row.model_account_id)}</td><td>${escapeHtml(row.model_id)}</td>` +
-          COUNTERS.map(([, key]) => `<td>${number(row[key])}</td>`).join("") + `</tr>`).join("");
+          COUNTERS.map(([, key]) => `<td title="${number(row[key])}">${formatTokens(row[key])}</td>`).join("") + `</tr>`).join("");
         const previousDisabled = breakdownPage === 1 ? " disabled" : "";
         const nextDisabled = breakdownPage === pageCount ? " disabled" : "";
         return `<div data-breakdown-table><table><thead><tr>${headers.map((header) => `<th>${header}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>` +
@@ -522,11 +533,11 @@
       function renderShell(payload) {
         const totals = payload.totals || {};
         summaryRegion.innerHTML = [
-          `<article class="summary-card"><span class="meta">Total</span><strong>${number(totals.total_tokens)}</strong><div class="meta">All provider-reported tokens</div></article>`,
-          `<article class="summary-card"><span class="meta">Input</span><strong>${number(totals.input_tokens)}</strong><div class="meta">Provider input counter</div></article>`,
-          `<article class="summary-card"><span class="meta">Output</span><strong>${number(totals.output_tokens)}</strong><div class="meta">Provider output counter</div></article>`,
-          `<article class="summary-card"><span class="meta">Cache</span><strong>${number(Number(totals.cache_read_tokens || 0) + Number(totals.cache_write_tokens || 0))}</strong>` +
-            `<div class="meta">Cache read ${number(totals.cache_read_tokens)} · Cache write ${number(totals.cache_write_tokens)} · Reasoning ${number(totals.reasoning_tokens)}. These are subsets of Total, not additions.</div></article>`,
+          `<article class="summary-card"><span class="meta">Total</span><strong title="${number(totals.total_tokens)}">${formatTokens(totals.total_tokens)}</strong><div class="meta">All provider-reported tokens</div></article>`,
+          `<article class="summary-card"><span class="meta">Input</span><strong title="${number(totals.input_tokens)}">${formatTokens(totals.input_tokens)}</strong><div class="meta">Provider input counter</div></article>`,
+          `<article class="summary-card"><span class="meta">Output</span><strong title="${number(totals.output_tokens)}">${formatTokens(totals.output_tokens)}</strong><div class="meta">Provider output counter</div></article>`,
+          `<article class="summary-card"><span class="meta">Cache</span><strong title="${number(Number(totals.cache_read_tokens || 0) + Number(totals.cache_write_tokens || 0))}">${formatTokens(Number(totals.cache_read_tokens || 0) + Number(totals.cache_write_tokens || 0))}</strong>` +
+            `<div class="meta">Cache read ${formatTokens(totals.cache_read_tokens)} · Cache write ${formatTokens(totals.cache_write_tokens)} · Reasoning ${formatTokens(totals.reasoning_tokens)}. These are subsets of Total, not additions.</div></article>`,
         ].join("");
         userUsageRegion.innerHTML = renderUserBars(payload.breakdown || []);
         trendRegion.innerHTML = renderTrendChart(payload.trend || []);

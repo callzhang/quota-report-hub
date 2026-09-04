@@ -501,3 +501,22 @@ test("usage-by-user bars aggregate the selected metric per user with share of th
 
   assert.match(harness.evaluate("renderUserBars([])"), /No usage in this range/);
 });
+
+test("token counts render in 万/亿 units with the exact count kept in titles", async () => {
+  const harness = await pageHarness(async () => response(200, usagePayload({
+    totals: { total_tokens: 197_397_276_632, input_tokens: 84_120_000, output_tokens: 9_120, cache_read_tokens: 3_200_000_000, cache_write_tokens: 0, reasoning_tokens: 15_000 },
+    breakdown: [{ hub_user_email: "alice@stardust.ai", provider: "codex", model_account_id: "a1", model_id: "m1", total_tokens: 197_397_276_632 }],
+  })));
+
+  assert.equal(harness.evaluate("formatTokens(197397276632)"), "1974亿");
+  assert.equal(harness.evaluate("formatTokens(84120000)"), "8412万");
+  assert.equal(harness.evaluate("formatTokens(1234567890123)"), "1.23万亿");
+  assert.equal(harness.evaluate("formatTokens(85000)"), "8.50万");
+  assert.equal(harness.evaluate("formatTokens(431)"), "431");
+
+  const summary = harness.element("summary-region").innerHTML;
+  assert.match(summary, /title="197,397,276,632">1974亿</);
+  const bars = harness.element("user-usage-region").innerHTML;
+  assert.match(bars, />1974亿<span class="meta"> · 100\.0%<\/span>/);
+  assert.match(bars, /197,397,276,632 total tokens/);
+});
