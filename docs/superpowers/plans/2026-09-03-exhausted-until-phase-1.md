@@ -27,7 +27,7 @@
 - Modify: `lib/reports.js` (sanitizeReport, ~line 71–105)
 - Test: `tests/reports.test.mjs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/reports.test.mjs`:
 
@@ -91,12 +91,12 @@ test("mergeLatestReport lets a fresh report clear a previous exhausted_until", (
 });
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `node --test tests/reports.test.mjs`
 Expected: 2 new tests FAIL — `exhausted_until` is `undefined`, not the asserted values.
 
-- [ ] **Step 3: Implement in `lib/reports.js`**
+- [x] **Step 3: Implement in `lib/reports.js`**
 
 Add above `sanitizeReport` (next to `toFiniteNumber`):
 
@@ -125,12 +125,12 @@ No merge changes are needed: `mergeReportFields` spreads `{...previous, ...incom
 incoming always carries the key, so it overwrites. (The `return previous` guard branches keep the
 previous value — acceptable, since a past `exhausted_until` has no effect anywhere.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `node --test tests/reports.test.mjs`
 Expected: PASS (all tests in file).
 
-- [ ] **Step 5: Update SYSTEM_DESIGN §6.6 (same commit)**
+- [x] **Step 5: Update SYSTEM_DESIGN §6.6 (same commit)**
 
 In the `lib/reports.js` bullet list of §6.6, append a bullet:
 
@@ -141,7 +141,7 @@ In the `lib/reports.js` bullet list of §6.6, append a bullet:
   they are, instead of fabricating per-window zeros ([§10](#10-selection-algorithm)).
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add lib/reports.js tests/reports.test.mjs SYSTEM_DESIGN.md
@@ -160,7 +160,7 @@ No schema migration: `serializeReport` already stores the full sanitized report 
 (`JSON.stringify(report)`, db.js:165), so once Task 1 lands the field is persisted for free.
 Reads come from the parsed payload; the one SQL consumer uses `json_extract`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/exhausted-state-db.test.mjs`:
 
@@ -233,13 +233,13 @@ test("an exhausted upload with no windows still counts as a healthy contribution
 (`fetchPolicyInputs({ email, since })` returns `hasHealthyUpload` — verified against the
 `has_healthy_upload` EXISTS subquery and its return mapping at lib/db.js:2521-2545.)
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `node --test tests/exhausted-state-db.test.mjs`
 Expected: FAIL — `report.exhausted_until` is `undefined` (rowToReport does not expose it) and
 `hasHealthyUpload` is `false` (SQL requires a non-null window).
 
-- [ ] **Step 3: Implement in `lib/db.js`**
+- [x] **Step 3: Implement in `lib/db.js`**
 
 In `rowToReport`, after `windows_stale: Boolean(payload.windows_stale),` add:
 
@@ -265,17 +265,17 @@ with this comment above the changed line:
 // report, and this is the only SQL consumer of the field.
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `node --test tests/exhausted-state-db.test.mjs`
 Expected: PASS.
 
-- [ ] **Step 5: Run the full node suite (schema/SQL changes can break neighbors)**
+- [x] **Step 5: Run the full node suite (schema/SQL changes can break neighbors)**
 
 Run: `npm test`
 Expected: all pass.
 
-- [ ] **Step 6: Update SYSTEM_DESIGN §6.6 (same commit)**
+- [x] **Step 6: Update SYSTEM_DESIGN §6.6 (same commit)**
 
 In §6.6's `lib/quota-ingest.js` paragraph area, wherever the healthy-contribution rule is described
 (search for "healthy" in §9b/§6.6 and pick the section that cites `HEALTHY_POOL_ENTRY_SQL`), append:
@@ -285,7 +285,7 @@ An exhausted account (`exhausted_until` set, no windows) still counts as a healt
 being drained is what a shared account is for.
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add lib/db.js tests/exhausted-state-db.test.mjs SYSTEM_DESIGN.md
@@ -300,7 +300,7 @@ git commit -m "feat: persist exhausted_until and credit exhausted uploads as con
 - Modify: `lib/quota-ingest.js` — `codexClientPayloadAccepted` (~line 22–33)
 - Test: `tests/quota-ingest.test.mjs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/quota-ingest.test.mjs`:
 
@@ -329,12 +329,12 @@ test("codexClientPayloadAccepted accepts an exhaustion report without windows", 
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `node --test tests/quota-ingest.test.mjs`
 Expected: FAIL on the first assertion (no windows → currently rejected).
 
-- [ ] **Step 3: Implement in `lib/quota-ingest.js`**
+- [x] **Step 3: Implement in `lib/quota-ingest.js`**
 
 Replace the final return of `codexClientPayloadAccepted`:
 
@@ -356,12 +356,12 @@ Also update the comment above the function ("Codex no longer has a live 5H quota
 // Claude has no such gate here.
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `node --test tests/quota-ingest.test.mjs`
 Expected: PASS.
 
-- [ ] **Step 5: Update SYSTEM_DESIGN §6.6 (same commit)**
+- [x] **Step 5: Update SYSTEM_DESIGN §6.6 (same commit)**
 
 In the §6.6 acceptance paragraph, change the sentence describing `codexClientPayloadAccepted` to
 mention the third accepted shape:
@@ -371,7 +371,7 @@ mention the third accepted shape:
 `reset_at`), a hard invalidation, or a valid `exhausted_until` timestamp.
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add lib/quota-ingest.js tests/quota-ingest.test.mjs SYSTEM_DESIGN.md
@@ -386,7 +386,7 @@ git commit -m "feat: accept codex exhaustion reports at the ingest gate"
 - Modify: `lib/auth-pool.js` — `pickBestAuthPoolCandidate` filter chain (~line 296–303)
 - Test: `tests/auth-pool.test.mjs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/auth-pool.test.mjs`:
 
@@ -455,13 +455,13 @@ test("pickBestAuthPoolCandidate excludes an exhausted account even when stale wi
 });
 ```
 
-- [ ] **Step 2: Run tests to verify the second one fails**
+- [x] **Step 2: Run tests to verify the second one fails**
 
 Run: `node --test tests/auth-pool.test.mjs`
 Expected: `excludes an exhausted account even when stale windows look healthy` FAILS (candidate is
 returned today); the first test passes for the accidental reason noted above.
 
-- [ ] **Step 3: Implement in `lib/auth-pool.js`**
+- [x] **Step 3: Implement in `lib/auth-pool.js`**
 
 Add next to `isPoolIneligible`:
 
@@ -485,12 +485,12 @@ In `pickBestAuthPoolCandidate`, add to the filter chain directly after
     .filter((report) => !isExhausted(report, options))
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `node --test tests/auth-pool.test.mjs`
 Expected: PASS (all).
 
-- [ ] **Step 5: Update SYSTEM_DESIGN §10 (same commit)**
+- [x] **Step 5: Update SYSTEM_DESIGN §10 (same commit)**
 
 In §10's **Eligibility** paragraph, after the freshness clause, add:
 
@@ -499,7 +499,7 @@ An account whose report carries `exhausted_until` later than now is excluded out
 probe measured it as unusable until then, whatever its (possibly carried-forward) windows claim.
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add lib/auth-pool.js tests/auth-pool.test.mjs SYSTEM_DESIGN.md
@@ -517,7 +517,7 @@ git commit -m "feat: exclude exhausted-until accounts from pool selection"
 The item passed to `deriveAccountAvailability` is the `annotateFreshness` spread of `rowToReport`
 output (reports.js:460), so `item.exhausted_until` is already present after Task 2 — no plumbing.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `tests/account-availability.test.mjs` (module-level, following the existing standalone
 test style — reuse the file's `now` constant only if it fits; here we need our own timestamps):
@@ -561,12 +561,12 @@ test("deriveAccountAvailability ignores a past exhausted_until", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests to verify the first fails**
+- [x] **Step 2: Run tests to verify the first fails**
 
 Run: `node --test tests/account-availability.test.mjs`
 Expected: first test FAILS (state is `quota_unknown` today, reason not `usage_limit_exhausted`).
 
-- [ ] **Step 3: Implement in `lib/account-availability.js`**
+- [x] **Step 3: Implement in `lib/account-availability.js`**
 
 In `deriveAccountAvailability`, after the `if (unavailable) {...}` block and before
 `hasExpiredWindow`, insert:
@@ -594,12 +594,12 @@ In `nextTransitionAt`, after the `auth_expires_at` candidate, add:
   if (Number.isFinite(exhaustedMs)) candidates.push(exhaustedMs);
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `node --test tests/account-availability.test.mjs`
 Expected: PASS (all).
 
-- [ ] **Step 5: Update SYSTEM_DESIGN (same commit)**
+- [x] **Step 5: Update SYSTEM_DESIGN (same commit)**
 
 In the section describing the availability read model (§6.4 — search for
 `waiting_for_new_quota`), add to the state list/prose:
@@ -610,7 +610,7 @@ An account with `exhausted_until` in the future renders as `low_quota` /
 unknown.
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add lib/account-availability.js tests/account-availability.test.mjs SYSTEM_DESIGN.md
@@ -636,7 +636,7 @@ probe stops fabricating windows without teaching the trigger about `exhausted_un
 machine would sit on its dead account and never ask for a replacement. Both changes land together
 in this task.
 
-- [ ] **Step 1: Rewrite the four synthesis tests to assert the new shape**
+- [x] **Step 1: Rewrite the four synthesis tests to assert the new shape**
 
 In `tests/reporter_scripts_test.py`, keep every fixture (auth file, mocked `subprocess.run`,
 mocked `latest_token_count_event`) exactly as it is and change ONLY the trailing assertion blocks
@@ -704,7 +704,7 @@ one assertion to it:
 Leave `test_probe_codex_maps_workspace_out_of_credits_to_zero_remaining_windows` (line ~1182)
 untouched (workspace-credits branch is out of scope).
 
-- [ ] **Step 2: Add the rotation-trigger test**
+- [x] **Step 2: Add the rotation-trigger test**
 
 Append to the quota_guard test class in `tests/reporter_scripts_test.py` (find the class that
 imports from `quota_guard`; follow its import style):
@@ -731,13 +731,13 @@ imports from `quota_guard`; follow its import style):
 (`source_needs_replacement` must be added to the test file's `quota_guard` import list if not
 already there.)
 
-- [ ] **Step 3: Run tests to verify the rewritten/new ones fail**
+- [x] **Step 3: Run tests to verify the rewritten/new ones fail**
 
 Run: `python3 -m pytest tests/reporter_scripts_test.py -q`
 Expected: the four rewritten probe tests FAIL (windows are still fabricated,
 `exhausted_until` missing) and `test_source_needs_replacement_triggers_on_exhausted_until` FAILS.
 
-- [ ] **Step 4: Implement the probe change in `quota_reporters.py`**
+- [x] **Step 4: Implement the probe change in `quota_reporters.py`**
 
 In the usage-limit branch (the `if rate_limits and not has_complete_windows and
 codex_usage_limit_reached(...)` block), replace the final quota-exhausted payload (the one
@@ -772,7 +772,7 @@ the measured windows, possibly `{"5h": None, "1week": None}`.)
 If `zero_remaining_window` is now referenced only by the workspace-credits branch, leave it; if it
 becomes fully unreferenced, delete it (no dead code).
 
-- [ ] **Step 5: Implement the trigger change in `quota_guard.py`**
+- [x] **Step 5: Implement the trigger change in `quota_guard.py`**
 
 In `source_needs_replacement`, after the `if payload.get("status") != "ok": return False` line,
 insert:
@@ -785,12 +785,12 @@ insert:
         return True
 ```
 
-- [ ] **Step 6: Run the python suite**
+- [x] **Step 6: Run the python suite**
 
 Run: `python3 -m pytest tests -q`
 Expected: all pass.
 
-- [ ] **Step 7: Update SYSTEM_DESIGN §5 (same commit)**
+- [x] **Step 7: Update SYSTEM_DESIGN §5 (same commit)**
 
 In the §5 paragraph describing quota-based replacement (the one beginning "Quota-based replacement
 uses `5h_remaining < 20%`…"), append:
@@ -800,7 +800,7 @@ A codex limit-hit probe reports `exhausted_until` instead of fabricated zero win
 `source_needs_replacement` treats its presence as an immediate replacement trigger.
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add skills/quota-reporter/scripts/quota_reporters.py skills/quota-reporter/scripts/quota_guard.py tests/reporter_scripts_test.py SYSTEM_DESIGN.md
@@ -818,7 +818,7 @@ git commit -m "feat: report codex limit-hits as exhausted_until instead of fabri
 Without this, the client would produce the new payload and then refuse to post it (the mirror
 predicts the hub's acceptance to avoid burning requests, and it does not know the new shape yet).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to the quota_guard test class:
 
@@ -833,12 +833,12 @@ Append to the quota_guard test class:
         self.assertTrue(quota_payload_is_reportable("codex", payload))
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `python3 -m pytest tests/reporter_scripts_test.py -q -k reportable`
 Expected: FAIL (no complete weekly window → not reportable today).
 
-- [ ] **Step 3: Implement in `quota_guard.py`**
+- [x] **Step 3: Implement in `quota_guard.py`**
 
 In `quota_payload_is_reportable`'s codex branch, add one clause to the `bool(...)` expression,
 directly after the complete-window clause:
@@ -855,17 +855,17 @@ Update the function's docstring line to keep the mirror claim honest:
     window, hard invalidation, or exhausted_until.
 ```
 
-- [ ] **Step 4: Run the full python suite**
+- [x] **Step 4: Run the full python suite**
 
 Run: `python3 -m pytest tests -q`
 Expected: all pass.
 
-- [ ] **Step 5: Run the full node suite once more (whole-phase check)**
+- [x] **Step 5: Run the full node suite once more (whole-phase check)**
 
 Run: `npm test`
 Expected: all pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add skills/quota-reporter/scripts/quota_guard.py tests/reporter_scripts_test.py

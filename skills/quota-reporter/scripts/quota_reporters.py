@@ -841,9 +841,9 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
 
     if rate_limits and not has_complete_windows and codex_usage_limit_reached(rate_limits, result.stderr, result.stdout):
         quota_exhausted = codex_usage_limit_exhausted(rate_limits, result.stderr, result.stdout)
-        reset_at, reset_in_seconds = codex_usage_limit_reset_from_rate_limits(rate_limits, checked_at)
+        reset_at, _ = codex_usage_limit_reset_from_rate_limits(rate_limits, checked_at)
         if reset_at is None:
-            reset_at, reset_in_seconds = codex_usage_limit_reset_at(result.stderr, result.stdout, now=checked_at)
+            reset_at, _ = codex_usage_limit_reset_at(result.stderr, result.stdout, now=checked_at)
         if not quota_exhausted:
             payload = {
                 **base,
