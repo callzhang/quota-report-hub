@@ -335,7 +335,7 @@
       .availability-summary { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.35; }
       .availability-popover {
         position: fixed; z-index: 20; width: min(520px, calc(100vw - 24px)); max-height: min(680px, calc(100vh - 24px));
-        overflow: auto; padding: 18px; border: 1px solid var(--line); border-radius: 18px;
+        overflow: auto; overscroll-behavior: contain; padding: 18px; border: 1px solid var(--line); border-radius: 18px;
         background: #fffaf3; box-shadow: 0 24px 70px rgba(29,25,21,.24);
       }
       .availability-popover[hidden] { display: none; }
@@ -1111,7 +1111,11 @@
         return trigger === openAvailabilityTrigger && sessionGeneration === authSessionGeneration;
       }
 
-      function handlePopoverViewportChange() {
+      function handlePopoverViewportChange(event) {
+        // The capture-phase scroll listener sees every scroll on the page, including the
+        // popover scrolling its own overflow. Only a scroll outside the popover moves the
+        // fixed-position popover away from its anchor, so only that dismisses it.
+        if (event.type === "scroll" && availabilityPopover.contains(event.target)) return;
         closeAvailabilityPopover();
       }
 

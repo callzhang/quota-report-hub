@@ -62,6 +62,7 @@ async function dashboardHarness(fetchImpl, initialToken = "old-token", { notific
         disabled: false,
         placeholder: "",
         querySelectorAll() { return []; },
+        contains(node) { return node === this; },
         addEventListener(type, listener) { listeners[type] = listener; },
         listeners,
       });
@@ -669,4 +670,26 @@ test("exhausted availability renders the reset countdown and keeps live windows 
   // exactly ONE window keeps the Historical brand: the expired weekly, not the live 5h
   assert.equal((markup.match(/Historical - not current quota/g) || []).length, 1);
   assert.equal((markup.match(/quota-snapshot historical/g) || []).length, 1);
+});
+
+test("scrolling inside the availability popover keeps it open; outside scroll and resize dismiss it", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  const popover = harness.element("availability-popover");
+
+  // wheel-scrolling the popover's own overflow reaches the capture-phase window
+  // listener with the popover as target — it must not dismiss the popover
+  popover.hidden = false;
+  harness.evaluate(`handlePopoverViewportChange({ type: "scroll", target: availabilityPopover })`);
+  assert.equal(popover.hidden, false);
+
+  // a page scroll moves the fixed-position popover away from its anchor — dismiss
+  harness.evaluate(`handlePopoverViewportChange({ type: "scroll", target: {} })`);
+  assert.equal(popover.hidden, true);
+
+  popover.hidden = false;
+  harness.evaluate(`handlePopoverViewportChange({ type: "resize", target: availabilityPopover })`);
+  assert.equal(popover.hidden, true);
 });
