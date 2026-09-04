@@ -5572,6 +5572,36 @@ Reading additional input from stdin...
         self.assertEqual(runner.call_args.kwargs["stdin"], probe_claude_auth_blob.subprocess.DEVNULL)
 
     @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
+    def test_parse_usage_windows_reads_a_window_that_has_not_started(self):
+        # A window with nothing consumed prints no "resets" clause at all. Requiring one reported a
+        # fully available account as "returned no usage windows" once an hour in production.
+        windows = probe_claude_auth_blob.parse_usage_windows(
+            "You are currently using your subscription to power your Claude Code usage\n\n"
+            "Current session: 0% used\n"
+            "Current week (all models): 0% used\n"
+            "Current week (Fable): 0% used\n"
+        )
+
+        self.assertEqual(windows["5h"]["used_percent"], 0.0)
+        self.assertEqual(windows["5h"]["remaining_percent"], 100.0)
+        self.assertIsNone(windows["5h"]["reset_at"])
+        self.assertEqual(windows["1week"]["used_percent"], 0.0)
+        self.assertIsNone(windows["1week"]["reset_at"])
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
+    def test_parse_usage_windows_does_not_borrow_a_later_sections_reset(self):
+        # The optional reset clause must not reach across into the next window's line.
+        windows = probe_claude_auth_blob.parse_usage_windows(
+            "Current session: 0% used\n"
+            "Current week (all models): 21% used \u00b7 resets Sep 8 at 5am (America/Los_Angeles)\n"
+        )
+
+        self.assertEqual(windows["5h"]["used_percent"], 0.0)
+        self.assertIsNone(windows["5h"]["reset_at"])
+        self.assertEqual(windows["1week"]["used_percent"], 21.0)
+        self.assertIsNotNone(windows["1week"]["reset_at"])
+
+    @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
     def test_run_usage_probe_does_not_claim_auth_failure_it_cannot_see(self):
         # A rejected access token still exits 0 and prints the header, with no diagnostic at all.
         # Only the worker's 401 check may call that auth invalid; this layer reports what it saw.

@@ -4,6 +4,11 @@ import { deriveAccountAvailability } from "../lib/account-availability.js";
 
 const now = "2026-08-08T07:37:12Z";
 
+function unstartedWindow(capturedAt) {
+  // Nothing consumed, so the provider reports no reset time yet.
+  return { remaining_percent: 100, reset_at: null, reset_unavailable_reason: null, captured_at: capturedAt };
+}
+
 function window(remainingPercent, resetAt, resetUnavailableReason = null) {
   return {
     remaining_percent: remainingPercent,
@@ -444,4 +449,39 @@ test("deriveAccountAvailability ignores a past exhausted_until", () => {
   const result = deriveAccountAvailability(item, "2026-09-07T06:05:00Z");
   assert.equal(result.state, "available");
   assert.notEqual(result.reason, "usage_limit_exhausted");
+});
+
+test("a freshly measured window with nothing consumed counts as current quota", () => {
+  // Requiring a future reset made the *most* available account read as quota_evidence_incomplete:
+  // a full window has no reset time because the clock has not started.
+  const result = deriveAccountAvailability({
+    source: "claude",
+    effective_status: "ok",
+    reported_at: "2026-08-08T07:24:12Z",
+    display_windows: {
+      "5h": unstartedWindow("2026-08-08T07:24:12Z"),
+      "1week": unstartedWindow("2026-08-08T07:24:12Z"),
+    },
+  }, now);
+
+  assert.equal(result.state, "available");
+  assert.equal(result.currently_usable, true);
+  assert.equal(result.reason, "meets_rotation_threshold");
+});
+
+test("a stale carried-forward zero window does not masquerade as current quota", () => {
+  // With no reset_at there is no expiry to fall past, so staleness has to come from captured_at -
+  // otherwise a zero measured days ago would keep an account permanently "available".
+  const result = deriveAccountAvailability({
+    source: "claude",
+    effective_status: "ok",
+    reported_at: "2026-08-08T07:24:12Z",
+    display_windows: {
+      "5h": unstartedWindow("2026-08-05T01:00:00Z"),
+      "1week": unstartedWindow("2026-08-05T01:00:00Z"),
+    },
+  }, now);
+
+  assert.equal(result.state, "quota_unknown");
+  assert.equal(result.reason, "quota_evidence_incomplete");
 });

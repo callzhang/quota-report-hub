@@ -979,6 +979,25 @@ test("statusPayload classifies missing reset time as probe failure for non-inval
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "probe_missing_reset");
 });
 
+test("statusPayload treats an unconsumed window as full quota, not a missing reset", () => {
+  const payload = statusPayload([
+    {
+      source: "claude",
+      status: "ok",
+      account_id: "acct-fresh",
+      reported_at: "2026-04-21T10:15:00Z",
+      windows: {
+        // Nothing used yet, so the provider has not started the clock and reports no reset time.
+        "5h": { used_percent: 0, remaining_percent: 100, reset_at: null },
+        "1week": { used_percent: 0, remaining_percent: 100, reset_at: null },
+      },
+    },
+  ], "2026-04-21T10:30:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, null);
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, null);
+});
+
 test("statusPayload marks expired auth and hides stale error quota windows", () => {
   const payload = statusPayload([
     {

@@ -165,15 +165,30 @@ def parse_usage_windows(text: str, now: datetime | None = None) -> dict:
     timezone_name = timezone_match.group(1) if timezone_match else "UTC"
 
     def parse_section(label_pattern: str, window_key: str, window_minutes: int) -> None:
+        # The reset clause is optional: a window at 0% has not started, so the CLI prints
+        # "Current session: 0% used" with nothing after it. Requiring "Resets" there dropped the
+        # window entirely and reported a healthy, fully-available account as a probe error.
         pattern = re.compile(
             label_pattern
-            + r"(?P<body>[\s\S]{0,500}?)(?P<used>\d{1,3}(?:\.\d+)?)%\s*used[\s\S]{0,180}?Resets\s+(?P<reset>[^\n\r]+)",
+            + r"(?P<body>[\s\S]{0,500}?)(?P<used>\d{1,3}(?:\.\d+)?)%\s*used"
+            # Newlines allowed (the rendered page puts "Resets" on the next line), but never cross a
+            # "%" - that would let a zero window borrow the reset time of the section below it.
+            + r"(?:[^%]{0,180}?Resets\s+(?P<reset>[^\n\r]+))?",
             re.I,
         )
         match = pattern.search(cleaned)
         if not match:
             return
         used = min(max(float(match.group("used")), 0.0), 100.0)
+        if match.group("reset") is None:
+            windows[window_key] = {
+                "used_percent": round(used, 1),
+                "remaining_percent": round(max(0.0, 100.0 - used), 1),
+                "window_minutes": window_minutes,
+                "reset_in_seconds": None,
+                "reset_at": None,
+            }
+            return
         reset_text = match.group("reset").split("Current ")[0].strip()
         resets_at = parse_reset_text(reset_text, timezone_name, now=now)
         if resets_at is None:
