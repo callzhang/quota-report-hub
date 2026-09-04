@@ -61,6 +61,15 @@
       #summary-region { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
       .summary-card { border: 1px solid var(--line); border-radius: 16px; padding: 16px; background: rgba(255,255,255,.55); }
       .summary-card strong { display: block; margin-top: 6px; font-size: 28px; }
+      #user-usage-region { display: grid; gap: 8px; }
+      .user-bar-row {
+        display: grid; grid-template-columns: minmax(150px, 240px) 1fr max-content;
+        align-items: center; gap: 12px;
+      }
+      .user-bar-label { overflow-wrap: anywhere; word-break: break-word; }
+      .user-bar-track { height: 14px; border-radius: 4px; background: rgba(31, 109, 104, 0.1); }
+      .user-bar-fill { height: 100%; min-width: 2px; border-radius: 0 4px 4px 0; background: var(--accent); }
+      .user-bar-value { font-variant-numeric: tabular-nums; white-space: nowrap; }
       .error { margin-top: 14px; padding: 12px 14px; border: 1px solid rgba(178,58,50,.25); border-radius: 12px; color: var(--bad); }
       .empty { color: var(--muted); padding: 18px 0; }
       table { width: 100%; border-collapse: collapse; }
@@ -134,6 +143,10 @@
           <h2 id="summary-title">Summary</h2>
           <div id="summary-region" aria-live="polite"></div>
         </section>
+        <section class="panel" aria-labelledby="user-usage-title">
+          <h2 id="user-usage-title">Usage by user</h2>
+          <div id="user-usage-region"></div>
+        </section>
         <section class="panel" id="trend-panel" aria-labelledby="trend-title">
           <h2 id="trend-title">Trend</h2>
           <div id="trend-region"></div>
@@ -167,6 +180,7 @@
       const groupBy = document.getElementById("group-by");
       const metric = document.getElementById("metric");
       const summaryRegion = document.getElementById("summary-region");
+      const userUsageRegion = document.getElementById("user-usage-region");
       const trendRegion = document.getElementById("trend-region");
       const breakdownRegion = document.getElementById("breakdown-region");
       const errorRegion = document.getElementById("error-region");
@@ -369,6 +383,34 @@
         });
       }
 
+      function selectedMetricLabel() {
+        return COUNTERS.find(([, key]) => key === selectedMetricCounter())?.[0] || "Total";
+      }
+
+      function renderUserBars(rows) {
+        const metricCounter = selectedMetricCounter();
+        const byUser = new Map();
+        for (const row of rows) {
+          const key = row.hub_user_email || "Unknown";
+          byUser.set(key, (byUser.get(key) || 0) + Number(row[metricCounter] || 0));
+        }
+        const entries = [...byUser.entries()].sort((a, b) => b[1] - a[1]);
+        const total = entries.reduce((sum, [, value]) => sum + value, 0);
+        if (!total) return '<div class="empty">No usage in this range.</div>';
+        const max = entries[0][1];
+        const label = selectedMetricLabel();
+        return `<div class="meta">${escapeHtml(label)} tokens per Hub user under the current filters · % is the share of the filtered total (${number(total)})</div>` +
+          entries.map(([email, value]) => {
+            const share = (value / total) * 100;
+            return `
+            <div class="user-bar-row" title="${escapeHtml(`${email}: ${number(value)} ${label.toLowerCase()} tokens · ${share.toFixed(1)}% of filtered total`)}">
+              <div class="user-bar-label">${escapeHtml(email)}</div>
+              <div class="user-bar-track"><div class="user-bar-fill" style="width: ${((value / max) * 100).toFixed(2)}%"></div></div>
+              <div class="user-bar-value">${number(value)}<span class="meta"> · ${share.toFixed(1)}%</span></div>
+            </div>`;
+          }).join("");
+      }
+
       function renderBreakdown(rows) {
         const sortedRows = [...rows].sort((a, b) => Number(b.total_tokens || 0) - Number(a.total_tokens || 0));
         breakdownRegion.dataset.rows = JSON.stringify(sortedRows);
@@ -486,6 +528,7 @@
           `<article class="summary-card"><span class="meta">Cache</span><strong>${number(Number(totals.cache_read_tokens || 0) + Number(totals.cache_write_tokens || 0))}</strong>` +
             `<div class="meta">Cache read ${number(totals.cache_read_tokens)} · Cache write ${number(totals.cache_write_tokens)} · Reasoning ${number(totals.reasoning_tokens)}. These are subsets of Total, not additions.</div></article>`,
         ].join("");
+        userUsageRegion.innerHTML = renderUserBars(payload.breakdown || []);
         trendRegion.innerHTML = renderTrendChart(payload.trend || []);
         bindTrendLegendActions();
         breakdownRegion.innerHTML = renderBreakdown(payload.breakdown || []);

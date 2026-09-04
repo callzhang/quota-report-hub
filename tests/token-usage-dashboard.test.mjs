@@ -474,3 +474,30 @@ test("successful zero usage remains visible without a duplicate user summary pan
   })));
   assert.match(harness.element("summary-region").innerHTML, />0</);
 });
+
+test("usage-by-user bars aggregate the selected metric per user with share of the filtered total", async () => {
+  const rows = [
+    { hub_user_email: "alice@stardust.ai", provider: "codex", model_account_id: "a1", model_id: "m1", total_tokens: 600, input_tokens: 10 },
+    { hub_user_email: "alice@stardust.ai", provider: "claude", model_account_id: "a2", model_id: "m2", total_tokens: 150, input_tokens: 30 },
+    { hub_user_email: "bob@stardust.ai", provider: "codex", model_account_id: "b1", model_id: "m1", total_tokens: 250, input_tokens: 60 },
+  ];
+  const harness = await pageHarness(async () => response(200, usagePayload({ breakdown: rows })));
+  const markup = harness.element("user-usage-region").innerHTML;
+
+  // alice's two provider rows fold into one bar: 750 of the 1000 filtered total
+  assert.ok(markup.indexOf("alice@stardust.ai") < markup.indexOf("bob@stardust.ai"), "bars sort by usage descending");
+  assert.match(markup, /750<span class="meta"> · 75\.0%<\/span>/);
+  assert.match(markup, /250<span class="meta"> · 25\.0%<\/span>/);
+  // bar length is relative to the biggest user, share is relative to the total
+  assert.match(markup, /width: 100\.00%/);
+  assert.match(markup, /width: 33\.33%/);
+
+  // the Metric filter drives the aggregation: by input tokens bob (60) outranks alice (40)
+  harness.element("metric").value = "input";
+  const inputMarkup = harness.evaluate(`renderUserBars(${JSON.stringify(rows)})`);
+  assert.ok(inputMarkup.indexOf("bob@stardust.ai") < inputMarkup.indexOf("alice@stardust.ai"));
+  assert.match(inputMarkup, /60<span class="meta"> · 60\.0%<\/span>/);
+  assert.match(inputMarkup, /Input tokens per Hub user/);
+
+  assert.match(harness.evaluate("renderUserBars([])"), /No usage in this range/);
+});
