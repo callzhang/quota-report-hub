@@ -16,7 +16,7 @@ import {
 } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
-import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob } from "../lib/token-refresh.js";
+import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob, probeClaudeAccessToken } from "../lib/token-refresh.js";
 import { REFRESH_TOKEN_REJECTED_ERROR, isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
 
 // Proactively refresh an access token (claude OR codex) once it is within this window of expiry.
@@ -106,14 +106,25 @@ function probeCodexAuthJson(authJsonText) {
   }
 }
 
-function probeClaudeAuthJson(authJsonText) {
+// `claude -p /usage` cannot report a dead credential: with a rejected access token it still exits 0
+// and prints its header, just without the usage lines. So establish auth validity first, against the
+// endpoint that answers plainly. Only a 401 is an answer — a 5xx or a network blip must not retire an
+// account, which is why this reads `rejected` and not `!ok`.
+export async function probeClaudeAuthJson(authJsonText, { probeAccessTokenImpl = probeClaudeAccessToken } = {}) {
+  const tokenCheck = await probeAccessTokenImpl(authJsonText);
+  if (tokenCheck?.rejected) {
+    // Exact string from AUTH_INVALIDATION_ERRORS: it is what drives the force-refresh path below.
+    throw new Error("claude auth invalid (authentication_error)");
+  }
   const tempDir = mkdtempSync(join(tmpdir(), "quota-report-claude-"));
   const authBlobPath = join(tempDir, "auth.json");
   writeFileSync(authBlobPath, authJsonText, "utf8");
+  // Escape hatch to plan B without a code change, should `claude -p /usage` ever stop answering.
+  const mode = process.env.PROBE_CLAUDE_MODE === "tui" ? "tui" : "usage";
   try {
     const result = spawnSync(
       "python3",
-      [join(process.cwd(), "scripts/probe_claude_auth_blob.py"), "--auth-blob-path", authBlobPath],
+      [join(process.cwd(), "scripts/probe_claude_auth_blob.py"), "--auth-blob-path", authBlobPath, "--mode", mode],
       {
         cwd: process.cwd(),
         encoding: "utf8",
@@ -370,7 +381,7 @@ export async function processAuthPoolEntry(
       entry.source === "codex"
         ? probeCodexAuthJsonImpl(authJsonText)
         : entry.source === "claude"
-          ? probeClaudeAuthJsonImpl(authJsonText)
+          ? await probeClaudeAuthJsonImpl(authJsonText)
           : await probeAuthJsonImpl(entry.source, authJsonText);
     report = {
       ...report,
@@ -410,7 +421,7 @@ export async function processAuthPoolEntry(
         report =
           entry.source === "codex"
             ? probeCodexAuthJsonImpl(authJsonText)
-            : probeClaudeAuthJsonImpl(authJsonText);
+            : await probeClaudeAuthJsonImpl(authJsonText);
         report = {
           ...report,
           report_origin: "worker",

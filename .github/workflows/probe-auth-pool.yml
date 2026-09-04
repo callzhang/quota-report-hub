@@ -20,6 +20,14 @@ on:
         required: false
         type: boolean
         default: false
+      claude_probe_mode:
+        description: "Claude probe mode: usage (claude -p /usage) or tui (plan B, costs one inference per probe)"
+        required: false
+        type: choice
+        options:
+          - usage
+          - tui
+        default: usage
 
 # Never let two probe runs overlap: each run snapshots the pool at start and centrally
 # refreshes tokens, so two concurrent runs can replay an already-rotated refresh token and
@@ -44,6 +52,8 @@ jobs:
         run: npm install -g @openai/codex
       - name: Install Claude CLI
         run: npm install -g @anthropic-ai/claude-code
+      # Only plan B (PROBE_CLAUDE_MODE=tui) needs pexpect; the default usage-mode probe shells out to
+      # `claude -p /usage`. Installed anyway so a dispatch can fall back to plan B without a code change.
       - name: Install Python dependencies
         run: python3 -m pip install --user pexpect
       - name: Run cloud auth pool probe worker
@@ -57,6 +67,7 @@ jobs:
           PROBE_CYCLES: ${{ github.event_name == 'schedule' && '12' || inputs.cycles || '1' }}
           PROBE_INTERVAL_SECONDS: ${{ github.event_name == 'schedule' && '720' || inputs.interval_seconds || '720' }}
           FORCE_REFRESH_UNVERIFIED: ${{ github.event_name == 'workflow_dispatch' && inputs.force_refresh_unverified || 'false' }}
+          PROBE_CLAUDE_MODE: ${{ inputs.claude_probe_mode || 'usage' }}
         run: |
           set -euo pipefail
           for cycle in $(seq 1 "${PROBE_CYCLES}"); do

@@ -573,9 +573,18 @@ the app never sees the 401 and the machine stays AT-only.
     populated by your normal Claude Code usage via the installed `statusLine` hook; falls back to a live
     `GET https://api.anthropic.com/api/oauth/usage` probe (windows from response **headers**), guarded by
     an 1800s backoff.
-  - **Worker (active):** `scripts/probe_claude_auth_blob.py` drives a headless Claude CLI via `pexpect`
-    to the `/usage` page (forcing fresh `rate_limits`) and scrapes both the snapshot it generates and the
-    rendered page. So the worker doesn't depend on a pre-existing snapshot — it generates the data.
+  - **Worker (active):** `scripts/probe_claude_auth_blob.py` runs `claude -p /usage` in a temp `HOME`
+    built from the blob and parses the plaintext windows it prints (~1.5s, exit 0, **no inference turn
+    and no session registered against the pooled account**). The statusline is irrelevant here: the
+    worker asks the CLI for the numbers instead of provoking an API response to populate a snapshot.
+    - A **rejected access token cannot be seen from that output** — the CLI still exits 0 and prints its
+      header, just without the window lines. So the worker calls `probeClaudeAccessToken`
+      (`GET /api/oauth/profile`) first and maps a **401** to `claude auth invalid (authentication_error)`;
+      only a 401, never a 5xx or a network error, retires a credential.
+    - **Plan B** (`--mode tui`, or `PROBE_CLAUDE_MODE=tui`): the original `pexpect` driver that walks the
+      interactive `/usage` page and scrapes the statusline snapshot it generates. Kept intact for the day
+      `claude -p /usage` changes shape or disappears; it costs one real inference turn per probe and
+      registers a session on a runner that is about to be destroyed.
   - `model_context_window` is always `null` for Claude.
 - ⚠️ A custom-provider session (`ANTHROPIC_BASE_URL` gateway / host-managed Desktop) emits **no
   subscription `rate_limits`**, so the statusline shows `rate_limits: null` and the guard reports
