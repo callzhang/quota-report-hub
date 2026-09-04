@@ -638,3 +638,35 @@ test("clicking the button after permission becomes granted hides it again", asyn
   assert.equal(harness.getRequestPermissionCalls(), 1);
   assert.equal(button.hidden, true, "the mock's requestPermission() always resolves to granted, so the button should re-hide itself");
 });
+
+test("exhausted availability renders the reset countdown and keeps live windows unbranded", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  const now = Date.now();
+  const availability = {
+    state: "low_quota",
+    reason: "usage_limit_exhausted",
+    summary: "Usage limit exhausted; the provider resets it automatically.",
+    current_quota: null,
+    historical_snapshot: {
+      windows: {
+        // measured 5h window whose reset is still ahead — a live measurement
+        "5h": { remaining_percent: 0, reset_at: new Date(now + 2 * 3600000).toISOString(), captured_at: new Date(now - 600000).toISOString() },
+        // carried-forward weekly whose reset already passed — genuinely historical
+        "1week": { remaining_percent: 0, reset_at: new Date(now - 3600000).toISOString(), captured_at: new Date(now - 600000).toISOString() },
+      },
+    },
+  };
+  const item = { exhausted_until: new Date(now + 2 * 3600000).toISOString() };
+
+  const summary = harness.evaluate(`formatAvailabilitySummary(${JSON.stringify(availability)}, ${JSON.stringify(item)})`);
+  assert.match(summary, /^Usage limit exhausted · reset in /);
+  assert.match(summary, /not eligible for rotation$/);
+
+  const markup = harness.evaluate(`snapshotMarkup(${JSON.stringify(availability)})`);
+  // exactly ONE window keeps the Historical brand: the expired weekly, not the live 5h
+  assert.equal((markup.match(/Historical - not current quota/g) || []).length, 1);
+  assert.equal((markup.match(/quota-snapshot historical/g) || []).length, 1);
+});

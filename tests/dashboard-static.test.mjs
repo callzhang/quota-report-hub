@@ -38,7 +38,7 @@ test("dashboard restores quota progress columns while keeping availability detai
   assert.match(html, /\.progress\.inferred/);
   assert.match(html, /function availabilityCell\(item\)/);
   assert.match(html, /availability\.summary/);
-  assert.match(html, /formatAvailabilitySummary\(availability\)/);
+  assert.match(html, /formatAvailabilitySummary\(availability, item\)/);
   assert.match(html, /remaining quota/);
   assert.match(html, /Next automatic check/);
   assert.match(html, /aria-haspopup="dialog"/);
@@ -207,4 +207,25 @@ test("accounts and users pages link to the independent token usage page", async 
   ]);
   assert.match(dashboard, /href="\.\/token-usage\.html"/);
   assert.match(users, /href="\.\/token-usage\.html"/);
+});
+
+test("dashboard renders the exhaustion deadline in the row summary and popover", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  // Row summary: the exhausted state reuses the quota windows' reset-countdown formatting and
+  // reads the deadline off the item (current_quota is deliberately null for this state — a
+  // snapshot would route into the quota branch and suppress the line entirely).
+  assert.match(html, /function formatAvailabilitySummary\(availability, item\)/);
+  assert.match(html, /formatAvailabilitySummary\(availability, item\)/);
+  assert.match(html, /availability\.reason === "usage_limit_exhausted"/);
+  assert.match(html, /Usage limit exhausted · \$\{formatResetCountdown\(item\?\.exhausted_until\)\} · not eligible for rotation/);
+
+  // Popover: a dedicated section shows the countdown plus the absolute reset moment.
+  assert.match(html, /<h4>Usage limit<\/h4>/);
+  assert.match(html, /formatResetCountdown\(item\.exhausted_until\)/);
+  assert.match(html, /resets at \$\{escapeHtml\(formatDate\(item\.exhausted_until\)\)\}/);
+
+  // Snapshot windows with a future reset on an exhausted account are live measurements, not
+  // history — labeled per window instead of branding the whole snapshot "Historical".
+  assert.match(html, /liveExhaustedWindow/);
 });
