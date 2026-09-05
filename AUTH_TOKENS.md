@@ -157,6 +157,18 @@
   another's id; `qpt0311` looked alive for ten days while its own credential had been dead since
   08-07; and because the guard kept self-reporting the broken account as current, it re-fetched a
   replacement every ~17 minutes for ten days without ever converging.
+- **Attribution is the hub's call, not the client's.** Because the client cannot know whose token it
+  is running, its `account_id` is a *claim*. Every claude report now also carries
+  `access_token_fingerprint` (SHA-256 of the access token, never the token), and the hub keeps
+  `auth_pool_token_fingerprints`: every access token it has ever stored, keyed to its account, written
+  from the one place all of them pass through (`upsertAuthPoolEntry` -- uploads, central refresh and
+  fetch-best's `refresh_current`; what fetch-best serves is that blob with only the RT stripped), and
+  again by the probe worker each cycle as it decrypts every pooled blob -- which is how tokens pooled
+  before the map existed, still held by borrowers, become resolvable within one cycle of deploy. On
+  ingest the hub files the report under the token's account and, when that differs from the claim,
+  stamps `usage_summary.identity = {claimed_account_id, resolved_account_id, resolved_by}` on the
+  report. An unknown fingerprint is the machine's own login -- the claim stands. This is what makes an
+  already-drifted machine correct on its very next report, with no install and no local state.
 
 ### Refresh endpoint
 - `POST https://platform.claude.com/v1/oauth/token`, `client_id = 9d1c250a-e61b-44d9-88ed-5944d1962f5e`,

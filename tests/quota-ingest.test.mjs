@@ -122,3 +122,74 @@ test("codexClientPayloadAccepted accepts an exhaustion report without windows", 
     exhausted_until: "3600",
   }), false);
 });
+
+// Attribution by token. The client's account_id is a claim it cannot verify; the fingerprint of the
+// token it measured through is a fact the hub can check against the tokens it has issued.
+const stubEntry = { email: "owner@example.com", name: "Owner Org", plan_name: "Max" };
+
+test("ingestClientQuota files a report under the account its token belongs to, not the account claimed", async () => {
+  const writes = [];
+  const lookups = [];
+  const res = await ingestClientQuota({
+    source: "claude",
+    reporterEmail: "borrower@example.com",
+    quotaPayload: {
+      account_id: "claude-stale-claim@example.com",
+      email: "stale-claim@example.com",
+      name: "Stale Org",
+      status: "ok",
+      access_token_fingerprint: "fp-of-owner-token",
+      usage_summary: { quota_source: "oauth_usage_api" },
+      windows: { "5h": completeWindow, "1week": completeWindow },
+    },
+    upsertImpl: async (payload) => { writes.push(payload); },
+    tokenOwnerImpl: async (source, fingerprint) => { lookups.push([source, fingerprint]); return { account_id: "claude-owner@example.com" }; },
+    authPoolEntryImpl: async () => stubEntry,
+  });
+
+  assert.deepEqual(lookups, [["claude", "fp-of-owner-token"]]);
+  assert.equal(res.account_id, "claude-owner@example.com");
+  assert.equal(writes.length, 1);
+  const [written] = writes;
+  assert.equal(written.account_id, "claude-owner@example.com");
+  assert.equal(written.email, "owner@example.com", "identity fields follow the resolved account");
+  assert.equal(written.name, "Owner Org");
+  assert.deepEqual(written.usage_summary.identity, {
+    claimed_account_id: "claude-stale-claim@example.com",
+    resolved_account_id: "claude-owner@example.com",
+    resolved_by: "token_fingerprint",
+  });
+  assert.equal(written.usage_summary.quota_source, "oauth_usage_api", "the rest of usage_summary is kept");
+});
+
+test("ingestClientQuota trusts the claim when the token is one the pool never held", async () => {
+  const writes = [];
+  await ingestClientQuota({
+    source: "claude",
+    reporterEmail: "owner@example.com",
+    quotaPayload: {
+      account_id: "claude-own-login@example.com",
+      status: "ok",
+      access_token_fingerprint: "fp-the-hub-has-never-seen",
+      windows: { "5h": completeWindow, "1week": completeWindow },
+    },
+    upsertImpl: async (payload) => { writes.push(payload); },
+    tokenOwnerImpl: async () => null,
+    authPoolEntryImpl: async () => { throw new Error("must not look up an entry for an unknown token"); },
+  });
+  assert.equal(writes[0].account_id, "claude-own-login@example.com");
+  assert.equal(writes[0].usage_summary, undefined, "nothing is annotated when nothing was resolved");
+});
+
+test("ingestClientQuota leaves a report without a fingerprint exactly as before", async () => {
+  const writes = [];
+  await ingestClientQuota({
+    source: "claude",
+    reporterEmail: "someone@example.com",
+    quotaPayload: { account_id: "claude-legacy@example.com", status: "ok", windows: { "5h": completeWindow, "1week": completeWindow } },
+    upsertImpl: async (payload) => { writes.push(payload); },
+    tokenOwnerImpl: async () => { throw new Error("must not consult the token map without a fingerprint"); },
+    authPoolEntryImpl: async () => { throw new Error("unreachable"); },
+  });
+  assert.equal(writes[0].account_id, "claude-legacy@example.com");
+});

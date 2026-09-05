@@ -972,3 +972,25 @@ test("probeClaudeAuthJson does not retire an account when the token check itself
   assert.equal(spawned, true);
   assert.notEqual(error?.message, "claude auth invalid (authentication_error)");
 });
+
+// The worker reads every pooled blob every cycle, which makes it the catch-up path for the
+// token->account map: a token pooled before the map existed becomes resolvable one cycle after deploy.
+test("processAuthPoolEntry records the decrypted token against its account every cycle", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const recorded = [];
+  const blob = JSON.stringify({
+    credentials: { claudeAiOauth: { accessToken: "POOLED_AT", refreshToken: "REAL_RT", expiresAt: Date.now() + 30 * 24 * 3600 * 1000 } },
+  });
+  await processAuthPoolEntry(
+    { source: "claude", account_id: "acct-claude", uploader_email: "owner@stardust.ai" },
+    {
+      decryptAuthJsonImpl: () => blob,
+      recordTokenFingerprintImpl: async (source, authJson, accountId) => { recorded.push([source, authJson, accountId]); },
+      probeClaudeAuthJsonImpl: () => ({ source: "claude", account_id: "acct-claude", status: "ok", error: null, windows: { "5h": null, "1week": null } }),
+      upsertAuthPoolQuotaImpl: async () => {},
+      upsertAuthPoolEntryImpl: async () => ({ deduplicated: false }),
+      authPoolQuotaLatestForEntryImpl: async () => null,
+    }
+  );
+  assert.deepEqual(recorded, [["claude", blob, "acct-claude"]]);
+});

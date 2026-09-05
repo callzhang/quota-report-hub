@@ -2394,6 +2394,9 @@ def probe_claude(
     return {
         **base,
         "account_id": claude_account_id(auth_text_details),
+        # Which token these numbers were measured through. The hub files the report under the
+        # account that token belongs to -- something this machine cannot determine for itself.
+        "access_token_fingerprint": claude_access_token_fingerprint(credentials),
         "email": auth_text_details.get("email"),
         "name": auth_text_details.get("organization"),
         "plan_name": human_plan_name(auth_text_details.get("subscription_type")) or human_plan_name(oauth.get("subscriptionType")) or oauth.get("subscriptionType"),

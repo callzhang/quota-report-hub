@@ -9,8 +9,9 @@ import {
   deleteAuthPoolEntry,
   deleteAuthPoolEntryRow,
   getFeatureFlag,
-  recordPoolHealthSnapshot,
   recomputePoolScarcity,
+  recordAuthPoolTokenFingerprint,
+  recordPoolHealthSnapshot,
   upsertAuthPoolEntry,
   upsertAuthPoolQuota,
 } from "../lib/db.js";
@@ -324,6 +325,7 @@ export async function processAuthPoolEntry(
     probeClaudeAuthJsonImpl = probeClaudeAuthJson,
     upsertAuthPoolQuotaImpl = upsertAuthPoolQuota,
     upsertAuthPoolEntryImpl = upsertAuthPoolEntry,
+    recordTokenFingerprintImpl = recordAuthPoolTokenFingerprint,
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
     authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
     refreshClaudeTokenImpl = refreshClaudeToken,
@@ -349,6 +351,11 @@ export async function processAuthPoolEntry(
   let authJsonText = null;
   try {
     authJsonText = await decryptAuthJsonImpl(entry);
+    // The worker is the one process that reads every pooled blob every cycle, so this is where the
+    // token->account map catches up on tokens that never passed through the upsert hook -- those
+    // pooled before the map existed, still held by borrowers, whose AT-only owners never re-upload.
+    // Idempotent; known tokens are ignored.
+    await recordTokenFingerprintImpl(entry.source, authJsonText, entry.account_id);
     if ((atOnlyMode || verifyUnverified) && (entry.source === "claude" || entry.source === "codex")) {
       const refreshTokenImpl = entry.source === "claude" ? refreshClaudeTokenImpl : refreshCodexTokenImpl;
       const refreshed = await refreshEntryIfNeeded(authJsonText, entry, entry.source, {

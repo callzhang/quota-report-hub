@@ -1699,6 +1699,9 @@ Reading additional input from stdin...
         self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
         self.assertEqual(payload["email"], "leizhang0121@gmail.com")
         self.assertEqual(payload["name"], "Derek Zen")
+        # The report also names the token it measured through, so the hub can file it under that
+        # token's account even when this machine's own identity record has drifted.
+        self.assertEqual(payload["access_token_fingerprint"], hashlib.sha256(installed_token.encode("utf-8")).hexdigest())
 
     def test_probe_claude_keeps_cli_identity_for_a_credential_the_guard_never_installed(self):
         """An owner's own login has no install binding — the CLI's answer is the only truth there."""
