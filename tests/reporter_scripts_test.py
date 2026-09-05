@@ -6171,7 +6171,10 @@ class AtOnlyLocalSyncTests(unittest.TestCase):
         # access tokens are never swapped underneath a running Claude Code
         self.assertEqual(written[f"{hub}:{base}:user:inference user:profile"]["token"], "AT1")
 
-    def test_sync_claude_skips_at_only_local_auth(self):
+    def test_sync_claude_uploads_an_at_only_local_auth_as_supply(self):
+        """An access-token-only credential used to be skipped outright. It is now uploaded: the hub
+        keeps its own refresh token and takes the access token only if it outlives the pooled one, so
+        a machine holding the only live token of a dead-RT account can keep that account circulating."""
         blob = json.dumps({
             "schema": "claude_credentials_v1",
             "account_id": "x",
@@ -6182,15 +6185,17 @@ class AtOnlyLocalSyncTests(unittest.TestCase):
         # it writes EVERY local credential store — including this developer's actual macOS keychain,
         # which is how a run of this suite once replaced a live credential with `accessToken: "AT"`
         # and left `claude auth status` reporting loggedIn=false.
-        with mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})), \
-             mock.patch.object(quota_reporters, "strip_local_claude_refresh_token", return_value={"stripped": True}):
-            with mock.patch.object(quota_reporters, "sync_current_auth_pool_entry") as upload:
-                result = quota_reporters.sync_current_claude_auth_pool(
-                    "https://hub", "tok", claude_home=Path("/tmp/x"), known_auth_path=Path("/tmp/known.json")
-                )
-        self.assertFalse(result["uploaded"])
-        self.assertEqual(result["reason"], "local_auth_is_at_only")
-        upload.assert_not_called()
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(quota_reporters, "build_claude_auth_blob", return_value=(blob, {"status": "ok"})), \
+             mock.patch.object(quota_reporters, "strip_local_claude_refresh_token", return_value={"stripped": True}), \
+             mock.patch.object(quota_reporters, "sync_current_auth_pool_entry", return_value={"ok": True, "uploaded": True, "reason": "uploaded_to_auth_pool"}) as upload:
+            result = quota_reporters.sync_current_claude_auth_pool(
+                "https://hub", "tok", claude_home=Path(d) / ".claude", known_auth_path=Path(d) / "known.json"
+            )
+        upload.assert_called_once()
+        self.assertEqual(upload.call_args.kwargs["auth_json_text"], blob)
+        self.assertTrue(result["uploaded"])
+        self.assertTrue(result["local_auth_is_at_only"])
 
 
 class Phase2NearExpiryTests(unittest.TestCase):
@@ -6622,9 +6627,10 @@ class Phase4StripLocalRtTests(unittest.TestCase):
                  mock.patch.object(quota_reporters, "strip_local_claude_refresh_token", return_value={"stripped": True}) as strip:
                 result = quota_reporters.sync_current_claude_auth_pool(
                     "https://hub", "tok", claude_home=Path(d) / ".claude", known_auth_path=Path(d) / "known.json")
-        self.assertEqual(result["reason"], "local_auth_is_at_only")
+        # the upload now happens, and the backup-store hygiene still runs alongside it
+        self.assertTrue(result["local_auth_is_at_only"])
         self.assertTrue(result["local_refresh_token_stripped"]["stripped"])
-        upload.assert_not_called()
+        upload.assert_called_once()
         strip.assert_called_once()
 
 

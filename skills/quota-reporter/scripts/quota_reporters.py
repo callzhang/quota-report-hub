@@ -3309,15 +3309,27 @@ def sync_current_claude_auth_pool(
             "reason": payload.get("error") or "missing_auth",
         }
 
-    if auth_json_is_stripped("claude", blob_text):
-        return {
-            "ok": True,
-            "uploaded": False,
-            "reason": "local_auth_is_at_only",
-            "local_refresh_token_stripped": strip_local_claude_refresh_token(claude_home),
-        }
-
     metadata = claude_auth_blob_metadata(blob_text)
+    if auth_json_is_stripped("claude", blob_text):
+        # No refresh token to hand over, but the access token may still be supply: the hub keeps
+        # its own RT and takes this token only if it outlives the pooled one (a desktop re-mint on
+        # an AT-only owner, say). This machine stays a participant either way -- it never held the
+        # credential the pool refreshes -- so the state source is pinned back after the sync, or the
+        # upload path's "uploaded_to_auth_pool" would make it look like the owner.
+        result = sync_current_auth_pool_entry(
+            source="claude",
+            auth_pool_url=auth_pool_url,
+            auth_pool_user_token=auth_pool_user_token,
+            auth_json_text=blob_text,
+            metadata=metadata,
+            known_auth_path=known_auth_path,
+            quota_payload=quota_payload,
+        )
+        set_known_auth_state_source("claude", known_auth_path, "fetched_from_auth_pool")
+        result["local_auth_is_at_only"] = True
+        result["local_refresh_token_stripped"] = strip_local_claude_refresh_token(claude_home)
+        return result
+
     result = sync_current_auth_pool_entry(
         source="claude",
         auth_pool_url=auth_pool_url,
