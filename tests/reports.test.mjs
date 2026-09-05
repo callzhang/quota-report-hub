@@ -1569,3 +1569,56 @@ test("mergeLatestReport lets a fresh report clear a previous exhausted_until", (
   assert.equal(merged.exhausted_until, null);
   assert.equal(merged.windows["1week"].remaining_percent, 96);
 });
+
+// An invalidated auth is meant to age out of sight: visible while it is still news, Archived for a
+// fortnight, then gone. The retirement has to remove it from BOTH lists -- dropping it only from
+// Archived would return it to the active list, which is the opposite of retiring it.
+test("authPoolStatusPayload retires invalidated auths from the dashboard after two weeks", () => {
+  const generatedAt = "2026-05-01T00:00:00Z";
+  const entry = (accountId) => ({
+    source: "codex",
+    account_id: accountId,
+    email: `${accountId}@example.com`,
+    plan_name: "Team",
+    digest: `digest-${accountId}`,
+    auth_last_refresh: "2026-04-01T09:00:00Z",
+    uploader_email: "derek@stardust.ai",
+    reporter_name: "derek@gpu4",
+    hostname: "gpu4",
+    uploaded_at: "2026-04-01T10:00:00Z",
+  });
+  const report = (accountId) => ({
+    source: "codex",
+    account_id: accountId,
+    status: "error",
+    error: "refresh_token_rejected",
+    reported_at: generatedAt,
+    windows: { "5h": null, "1week": null },
+  });
+
+  const payload = authPoolStatusPayload(
+    [entry("just-invalidated"), entry("archived"), entry("long-dead")],
+    [report("just-invalidated"), report("archived"), report("long-dead")],
+    generatedAt,
+    [
+      // 1 hour: still news, stays in the active list.
+      { source: "codex", account_id: "just-invalidated", first_invalidated_at: "2026-04-30T23:00:00Z" },
+      // 5 days: inside the archive window.
+      { source: "codex", account_id: "archived", first_invalidated_at: "2026-04-26T00:00:00Z" },
+      // 15 days: past two weeks, retired from the dashboard entirely.
+      { source: "codex", account_id: "long-dead", first_invalidated_at: "2026-04-16T00:00:00Z" },
+    ]
+  );
+
+  const activeIds = payload.items.map((item) => item.account_id);
+  const archivedIds = payload.archived_invalidated_items.map((item) => item.account_id);
+
+  assert.deepEqual(activeIds, ["just-invalidated"]);
+  assert.deepEqual(archivedIds, ["archived"]);
+  assert.equal(payload.archived_invalidated_count, 1);
+  assert.equal(payload.auth_pool_count, 1);
+  assert.ok(
+    !activeIds.includes("long-dead"),
+    "an auth retired from Archived must not reappear in the active list"
+  );
+});
