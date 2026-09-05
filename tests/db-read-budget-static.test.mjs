@@ -261,8 +261,10 @@ test("remote probe avoids high-frequency platform cron and uses a GitHub runner 
 
   const workflow = await readFile(new URL("../.github/workflows/probe-auth-pool.yml", import.meta.url), "utf8");
   assert.match(workflow, /cron: "7 \* \* \* \*"/);
-  assert.match(workflow, /PROBE_CYCLES: \$\{\{ github\.event_name == 'schedule' && '12'/);
-  assert.match(workflow, /PROBE_INTERVAL_SECONDS: \$\{\{ github\.event_name == 'schedule' && '720'/);
+  // 8 x 20 min = 2h40 of coverage per hourly job, so dropped cron events still leave no gap; twenty
+  // minutes is the slowest cadence that gives the T-1h proactive refresh window three chances.
+  assert.match(workflow, /PROBE_CYCLES: \$\{\{ github\.event_name == 'schedule' && '8'/);
+  assert.match(workflow, /PROBE_INTERVAL_SECONDS: \$\{\{ github\.event_name == 'schedule' && '1200'/);
   assert.match(workflow, /for cycle in \$\(seq 1 "\$\{PROBE_CYCLES\}"\)/);
 
   const cronHandler = await readFile(new URL("../api/cron/probe-auth-pool.js", import.meta.url), "utf8");

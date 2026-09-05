@@ -3,7 +3,10 @@ name: Probe Auth Pool
 on:
   schedule:
     # GitHub scheduled workflows can drop high-frequency cron events. Start one hourly
-    # runner off the busy top-of-hour bucket and let it cover the observed 2-3h gaps itself.
+    # runner off the busy top-of-hour bucket and let it cover the observed 2-3h gaps itself:
+    # 8 cycles x 20 min = 2h40 of coverage per job. Twenty minutes is the slowest cadence that
+    # still gives the T-1h proactive refresh window three chances; the old 12 was never chosen for
+    # freshness, only to paper over the dropped crons, and cost a pass every 12 minutes.
     - cron: "7 * * * *"
   workflow_dispatch:
     inputs:
@@ -14,7 +17,7 @@ on:
       interval_seconds:
         description: "Seconds to wait between probe cycles"
         required: false
-        default: "720"
+        default: "1200"
       force_refresh_unverified:
         description: "Refresh every auth whose RT has not been verified"
         required: false
@@ -64,8 +67,8 @@ jobs:
           TIGRIS_STORAGE_ACCESS_KEY_ID: ${{ secrets.TIGRIS_STORAGE_ACCESS_KEY_ID }}
           TIGRIS_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.TIGRIS_STORAGE_SECRET_ACCESS_KEY }}
           TIGRIS_STORAGE_BUCKET: ${{ secrets.TIGRIS_STORAGE_BUCKET }}
-          PROBE_CYCLES: ${{ github.event_name == 'schedule' && '12' || inputs.cycles || '1' }}
-          PROBE_INTERVAL_SECONDS: ${{ github.event_name == 'schedule' && '720' || inputs.interval_seconds || '720' }}
+          PROBE_CYCLES: ${{ github.event_name == 'schedule' && '8' || inputs.cycles || '1' }}
+          PROBE_INTERVAL_SECONDS: ${{ github.event_name == 'schedule' && '1200' || inputs.interval_seconds || '1200' }}
           FORCE_REFRESH_UNVERIFIED: ${{ github.event_name == 'workflow_dispatch' && inputs.force_refresh_unverified || 'false' }}
           PROBE_CLAUDE_MODE: ${{ inputs.claude_probe_mode || 'usage' }}
         run: |

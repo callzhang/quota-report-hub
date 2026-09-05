@@ -19,6 +19,7 @@ function dependencies(overrides = {}) {
     cronSecret: () => "cron-secret",
     dbConfigured: () => true,
     compactTokenUsage: async () => ({ days: [], detail_rows_removed: 0, daily_rows_affected: 0, receipts_removed: 0 }),
+    pruneAuthPoolQuotaEvents: async () => ({ deleted: 0, before: "" }),
     now: () => new Date("2026-08-18T12:00:00.000Z"),
     ...overrides,
   };
@@ -80,4 +81,22 @@ test("retention cron returns service failure without exposing internals", async 
   }));
   assert.equal(recorder.res.statusCode, 503);
   assert.equal(recorder.result().body.includes("private database detail"), false);
+});
+
+test("the retention cron also prunes quota events to a 30-day window", async () => {
+  const { tokenUsageRetentionHandlerImpl } = await import("../lib/data-api.js");
+  const now = new Date("2026-09-05T18:30:00.000Z");
+  const pruned = [];
+  const recorder = responseRecorder();
+  await tokenUsageRetentionHandlerImpl(
+    { method: "POST", headers: { authorization: "Bearer cron-secret" } },
+    recorder.res,
+    dependencies({
+      now: () => now,
+      pruneAuthPoolQuotaEvents: async (options) => { pruned.push(options); return { deleted: 3, before: options.before }; },
+    }),
+  );
+  assert.equal(recorder.res.statusCode, 200);
+  assert.deepEqual(pruned, [{ before: "2026-08-06T18:30:00.000Z" }]);
+  assert.deepEqual(JSON.parse(recorder.result().body).quota_events, { deleted: 3, before: "2026-08-06T18:30:00.000Z" });
 });
