@@ -42,9 +42,14 @@
    (`auth_json_is_stripped`) now **reject empty/absent RTs**, so the blank can't reach the pool. The desktop
    does **not** "revoke the OAuth family" (a myth — the CLI RT refreshes fine with the app open).
    (See [§7](#7-claude-desktop-vs-the-cli).)
-5. **AT expiry ≠ death.** An expired access token is normal and refreshable. Death is an **RT-class**
-   error (`token_invalidated` / `401 unauthorized` / `authentication_error`) — the RT itself is gone and
-   only an **owner re-login** can recover it; central refresh cannot.
+5. **AT expiry ≠ death, and RT death ≠ account death.** An expired access token is normal and
+   refreshable. A dead RT (`token_invalidated` / `401 unauthorized` / `authentication_error` /
+   `refresh_token_rejected`) means nobody can renew — only an **owner re-login** can — but the access
+   token already issued keeps working until it expires, and that can be weeks. The two are tracked as
+   **two independent facts**: the row's `status` is what happened the last time the *access* token was
+   used; `refresh_validity` is the *refresh* token's verdict, derived from `central_refresh` evidence. An
+   account is *unavailable* / *archived* only when **both** are gone; RT-dead with a live AT is a warning
+   carrying its deadline (the AT's expiry) and is still lent out (2026-09-05, see §6).
 6. **A refresh REVOKES the access tokens already issued for that grant**, immediately, whatever their
    `expiresAt`. Not textbook rotation, and the most misleading property here: measured, a live AT went
    `200` → `401 OAuth access token has been revoked` one guard cycle after the hub refreshed that grant
@@ -515,6 +520,29 @@ refusing borrowers until it self-healed.
 
 Abuse-class errors (a *different* risk unique to shared-AT mode — provider pushback): `429`, `403`,
 rate-limit / suspend / ban / abuse. Watched separately (`lib/abuse-errors.js`, `assess_health.mjs` exit 3).
+
+### Access token and refresh token are two facts, not one status (2026-09-05)
+
+`status`/`error` used to conflate them: a rejected central refresh produced a synthetic
+`status=error, error=refresh_token_rejected` report and the worker did not even probe the access token,
+so an account whose pooled RT had died read as dead while borrowers were still working on its 30-day
+access token. Now:
+
+- the worker always probes the access token; a rejected central refresh rides on the report as
+  `usage_summary.central_refresh` **evidence**, never as the status
+  ([scripts/probe_auth_pool_worker.mjs](scripts/probe_auth_pool_worker.mjs));
+- `refreshValidityFromReport` reads that evidence first ([lib/auth-status.js](lib/auth-status.js)), so
+  `refresh_validity.status` is the RT verdict and `refresh_validity.deadline` is the AT's expiry — when the
+  account really dies;
+- `mergeLatestReport` keeps the verdict sticky by carrying the evidence, and lets `status` follow the
+  latest probe ([lib/reports.js](lib/reports.js));
+- the archive clock (`ineligibleForMs`) and `unavailableReason` require **both** tokens gone — RT
+  rejected/invalidated AND access token unusable (refused when used, expired, or with no expiry on
+  record) — and the 48h runs from whichever died last;
+- `pickBestAuthPoolCandidate` stops disqualifying accounts for a dead RT and instead skips entries whose
+  access token has expired ([lib/auth-pool.js](lib/auth-pool.js));
+- the invalidation record (owner mail) still follows the RT verdict alone — re-login is the cure and the
+  owner should hear about it while the account is still usable.
 
 ### The invalidation clock is part of the verdict, not a separate opinion
 

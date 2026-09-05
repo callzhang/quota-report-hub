@@ -233,8 +233,12 @@ test("processAuthPoolEntry force-refreshes claude after auth-invalid probe even 
   assert.equal(persisted.refreshToken, "NEW_RT");
 });
 
-test("processAuthPoolEntry records rejected RT when auth-invalid fallback refresh is rejected", async () => {
+// A rejected refresh is the refresh token's verdict, not the access token's. Both cases below carry the
+// rejection as evidence on the stored report; what they say about the account is decided by probing the
+// access token -- dead in the first case, alive in the second.
+test("a rejected fallback refresh keeps the probe's own verdict and attaches the rejection as evidence", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
+  const { refreshValidityFromReport } = await import("../lib/auth-status.js");
   const quotaReports = [];
   const now = new Date("2026-06-12T00:00:00Z");
   const farFutureBlob = JSON.stringify({
@@ -252,26 +256,26 @@ test("processAuthPoolEntry records rejected RT when auth-invalid fallback refres
         return { ok: false, auth_rejected: true, status: 400, error: "refresh http 400" };
       },
       probeClaudeAuthJsonImpl: () => ({ source: "claude", account_id: "acct-claude", status: "error", error: "claude auth invalid (authentication_error)", windows: { "5h": null, "1week": null } }),
-      upsertAuthPoolQuotaImpl: async (report) => {
-        quotaReports.push(report);
-      },
-      upsertAuthPoolEntryImpl: async () => {
-        throw new Error("must not write rejected auth");
-      },
+      upsertAuthPoolQuotaImpl: async (report) => { quotaReports.push(report); },
+      upsertAuthPoolEntryImpl: async () => { throw new Error("must not write rejected auth"); },
       authPoolQuotaLatestForEntryImpl: async () => null,
     }
   );
 
+  // both tokens dead: the access token was refused when used, the refresh token when presented
   assert.equal(result.status, "error");
-  assert.equal(result.error, "refresh_token_rejected");
+  assert.equal(result.error, "claude auth invalid (authentication_error)");
   assert.equal(result.central_refresh.auth_rejected, true);
   assert.equal(result.central_refresh.status, 400);
   assert.equal(quotaReports.length, 1);
-  assert.equal(quotaReports[0].error, "refresh_token_rejected");
+  assert.equal(quotaReports[0].error, "claude auth invalid (authentication_error)");
+  assert.equal(quotaReports[0].usage_summary.central_refresh.auth_rejected, true);
+  assert.equal(refreshValidityFromReport(quotaReports[0]), "rejected");
 });
 
-test("processAuthPoolEntry records refresh_token_rejected when central refresh rejects RT", async () => {
+test("a rejected central refresh still probes the access token and reports it alive when it is", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
+  const { refreshValidityFromReport } = await import("../lib/auth-status.js");
   const quotaReports = [];
   let probeCalled = false;
   const now = new Date("2026-06-12T00:00:00Z");
@@ -291,25 +295,24 @@ test("processAuthPoolEntry records refresh_token_rejected when central refresh r
       },
       probeClaudeAuthJsonImpl: () => {
         probeCalled = true;
-        return { source: "claude", account_id: "acct-claude", status: "ok", error: null, windows: { "5h": null, "1week": null } };
+        return { source: "claude", account_id: "acct-claude", status: "ok", error: null, windows: { "5h": { remaining_percent: 91, reset_at: "2026-06-12T03:00:00Z" }, "1week": null } };
       },
-      upsertAuthPoolQuotaImpl: async (report) => {
-        quotaReports.push(report);
-      },
-      upsertAuthPoolEntryImpl: async () => {
-        throw new Error("must not write rejected auth");
-      },
+      upsertAuthPoolQuotaImpl: async (report) => { quotaReports.push(report); },
+      upsertAuthPoolEntryImpl: async () => { throw new Error("must not write rejected auth"); },
       authPoolQuotaLatestForEntryImpl: async () => null,
     }
   );
 
-  assert.equal(probeCalled, false);
-  assert.equal(result.status, "error");
-  assert.equal(result.error, "refresh_token_rejected");
+  assert.equal(probeCalled, true, "the access token is probed even though the refresh token was refused");
+  assert.equal(result.status, "ok");
+  assert.equal(result.error, null);
   assert.equal(result.central_refresh.auth_rejected, true);
   assert.equal(quotaReports.length, 1);
-  assert.equal(quotaReports[0].error, "refresh_token_rejected");
-  assert.equal(quotaReports[0].usage_summary.refresh_validity, "rejected");
+  const [stored] = quotaReports;
+  assert.equal(stored.status, "ok", "the row's status is what happened when the access token was used");
+  assert.equal(stored.windows["5h"].remaining_percent, 91);
+  assert.equal(stored.usage_summary.central_refresh.auth_rejected, true);
+  assert.equal(refreshValidityFromReport(stored), "rejected", "the refresh-token verdict is carried as evidence");
 });
 
 test("processAuthPoolEntry leaves a claude auth untouched when disabled_refresh_token is off", async () => {

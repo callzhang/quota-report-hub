@@ -332,6 +332,7 @@
       .availability-trigger.warning .availability-state { color: var(--warn); }
       .availability-trigger.danger .availability-state { color: var(--bad); }
       .availability-trigger.muted .availability-state { color: var(--muted); }
+      .availability-warning { display: block; margin-top: 4px; color: var(--warn); font-size: .82em; font-weight: 600; }
       .availability-summary { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.35; }
       .availability-popover {
         position: fixed; z-index: 20; width: min(520px, calc(100vw - 24px)); max-height: min(680px, calc(100vh - 24px));
@@ -950,6 +951,7 @@
           data-account-key="${escapeHtml(key)}" aria-haspopup="dialog" aria-expanded="false">
           <span class="availability-state">${escapeHtml(availabilityLabel(availability.state))}</span>
           <span class="availability-summary">${escapeHtml(formatAvailabilitySummary(availability, item))}</span>
+          ${availability.warning ? `<span class="availability-warning">refresh token rejected · usable until ${escapeHtml(formatDate(availability.warning.usable_until))}</span>` : ""}
         </button>`;
       }
 
@@ -1093,7 +1095,7 @@
           <div>Probe: ${statusChip(item)} · ${escapeHtml(formatDate(item.reported_at))}</div>
           <div>Token uploaded: ${escapeHtml(formatDate(token.uploaded_at || item.uploaded_at))}</div>
           <div>Access token expiry: ${escapeHtml(formatDate(item.auth_expires_at))}</div>
-          <div>Refresh: ${escapeHtml(refreshStateLabel(refresh.status))} · checked ${escapeHtml(formatDate(refresh.checked_at || refresh.last_checked_at))}</div>
+          <div>Refresh: ${escapeHtml(refreshStateLabel(refresh.status))} · checked ${escapeHtml(formatDate(refresh.checked_at || refresh.last_checked_at))}${refresh.deadline ? ` · usable until ${escapeHtml(formatDate(refresh.deadline))}` : ""}</div>
           ${item.error ? `<div style="color:var(--bad)">${escapeHtml(item.error)}</div>` : ""}
         </div>`;
       }

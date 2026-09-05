@@ -877,3 +877,36 @@ test("pickBestAuthPoolCandidate excludes an exhausted account even when stale wi
 
   assert.equal(candidate, null);
 });
+
+// Serving decisions read the access token, not the refresh token. An account the pool can no longer
+// refresh is still worth lending while its access token lives; one whose access token has run out is
+// not, however healthy its last probe looked.
+test("pickBestAuthPoolCandidate lends a dead-refresh-token account while its access token lives, and skips an expired one", () => {
+  const now = "2026-09-10T01:00:00Z";
+  const reports = [
+    {
+      source: "claude",
+      account_id: "rt-dead-at-live",
+      status: "ok",
+      error: null,
+      windows: { "5h": { remaining_percent: 90, reset_at: "2026-09-10T03:00:00Z" }, "1week": { remaining_percent: 70, reset_at: "2026-09-14T00:00:00Z" } },
+      usage_summary: { central_refresh: { attempted: true, ok: false, auth_rejected: true, status: 400 } },
+      reported_at: "2026-09-10T00:58:00Z",
+    },
+    {
+      source: "claude",
+      account_id: "at-expired",
+      status: "ok",
+      error: null,
+      windows: { "5h": { remaining_percent: 99, reset_at: "2026-09-10T03:00:00Z" }, "1week": { remaining_percent: 99, reset_at: "2026-09-14T00:00:00Z" } },
+      reported_at: "2026-09-10T00:58:00Z",
+    },
+  ];
+  const pool = [
+    { account_id: "rt-dead-at-live", auth_expires_at: "2026-09-29T18:59:06.219Z" },
+    { account_id: "at-expired", auth_expires_at: "2026-09-09T00:00:00Z" },
+  ];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, { source: "claude", current_account_id: "current", now });
+  assert.equal(candidate.report.account_id, "rt-dead-at-live", "the better-looking candidate is the one nobody can use any more");
+});

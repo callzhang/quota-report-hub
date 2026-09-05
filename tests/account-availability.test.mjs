@@ -485,3 +485,49 @@ test("a stale carried-forward zero window does not masquerade as current quota",
   assert.equal(result.state, "quota_unknown");
   assert.equal(result.reason, "quota_evidence_incomplete");
 });
+
+// A dead refresh token is a warning with a deadline, not unavailability. The access token keeps working
+// until it expires; only then -- or when the token is refused outright -- does the account go dark.
+test("deriveAccountAvailability keeps a dead-refresh-token account usable until its access token expires", () => {
+  const generatedAt = "2026-09-10T01:00:00Z";
+  const base = {
+    source: "claude",
+    status: "ok",
+    effective_status: "ok",
+    reported_at: "2026-09-10T00:58:00Z",
+    first_invalidated_at: "2026-09-01T00:00:00Z",
+    refresh_validity: { status: "rejected", deadline: "2026-09-29T18:59:06.219Z" },
+    auth_expires_at: "2026-09-29T18:59:06.219Z",
+    auth_expired: false,
+    has_refresh_token: true,
+    display_windows: {
+      "5h": window(80, "2026-09-10T03:00:00Z"),
+      "1week": window(60, "2026-09-14T00:00:00Z"),
+    },
+  };
+
+  const live = deriveAccountAvailability(base, generatedAt);
+  assert.equal(live.state, "available");
+  assert.equal(live.currently_usable, true);
+  assert.deepEqual(live.warning, {
+    code: "refresh_token_rejected",
+    usable_until: "2026-09-29T18:59:06.219Z",
+    summary: "Refresh token rejected - usable until the access token expires; owner must log in again.",
+  });
+
+  // the access token has now expired: nobody can renew it, so the account is unavailable for good
+  const expired = deriveAccountAvailability({ ...base, auth_expired: true }, "2026-09-29T20:00:00Z");
+  assert.equal(expired.state, "unavailable");
+  assert.equal(expired.reason, "access_token_expired");
+  assert.equal(expired.warning, undefined, "unavailable already says it all");
+
+  // no expiry on record: nothing says the token works, so the dead refresh token is decisive
+  const unknown = deriveAccountAvailability({ ...base, auth_expires_at: null, auth_expired: false }, generatedAt);
+  assert.equal(unknown.state, "unavailable");
+  assert.equal(unknown.reason, "auth_invalidated");
+
+  // a probe that was refused outranks the clock
+  const refused = deriveAccountAvailability({ ...base, status: "error", effective_status: "error", error: "claude auth invalid (authentication_error)" }, generatedAt);
+  assert.equal(refused.state, "unavailable");
+  assert.equal(refused.reason, "auth_invalidated");
+});

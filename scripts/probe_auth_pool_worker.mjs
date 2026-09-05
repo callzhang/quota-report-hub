@@ -18,7 +18,7 @@ import {
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
 import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob, probeClaudeAccessToken } from "../lib/token-refresh.js";
-import { REFRESH_TOKEN_REJECTED_ERROR, isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
+import { isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
 
 // Proactively refresh an access token (claude OR codex) once it is within this window of expiry.
 // The cron nominally fires every ~15 min, but GitHub Actions can delay it; a 1-hour window keeps the
@@ -163,19 +163,19 @@ function failureReport(entry, error) {
   };
 }
 
-function refreshTokenRejectedReport(entry, centralRefreshResult) {
-  const report = failureReport(entry, REFRESH_TOKEN_REJECTED_ERROR);
+// The central refresh's outcome rides on the report as evidence. refresh_validity is derived from it
+// on the hub (auth-status.js), so a rejection keeps the refresh-token verdict "rejected" and a success
+// lifts it -- while status/error stay what the access-token probe said. Nothing is attached when no
+// refresh was attempted, so a plain probe report is unchanged.
+function withCentralRefreshEvidence(report, centralRefreshResult) {
+  if (!centralRefreshResult?.attempted || !report) {
+    return report;
+  }
   return {
     ...report,
     usage_summary: {
-      ...report.usage_summary,
-      refresh_validity: "rejected",
-      central_refresh: {
-        attempted: true,
-        ok: false,
-        auth_rejected: true,
-        status: centralRefreshResult?.status ?? null,
-      },
+      ...(report.usage_summary || {}),
+      central_refresh: centralRefreshResult,
     },
   };
 }
@@ -366,22 +366,14 @@ export async function processAuthPoolEntry(
       });
       authJsonText = refreshed.authJsonText;
       centralRefreshResult = refreshed.result;
-      if (centralRefreshResult?.auth_rejected) {
-        report = refreshTokenRejectedReport(entry, centralRefreshResult);
-        await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
-        return {
-          source: entry.source,
-          account_id: entry.account_id,
-          status: report.status,
-          error: report.error,
-          refreshed_auth_written: false,
-          refreshed_auth_result: null,
-          central_refresh: centralRefreshResult,
-        };
-      }
+      // A rejected refresh used to end the cycle here with a synthetic error report. It no longer
+      // does: the refresh token's death says nothing about whether the ACCESS token still works, and
+      // an account whose RT is dead can carry a live 30-day token for weeks. The verdict travels on
+      // the report as evidence (withCentralRefreshEvidence); the probe below decides the status.
     }
-    if (!probeNeeded) {
+    if (!probeNeeded && !centralRefreshResult?.auth_rejected) {
       // Central refresh was evaluated above; the probe is the only part we defer for a fresh entry.
+      // A rejection is never deferred: it has to be recorded this cycle, with the access token probed.
       return skippedProbeItem(entry, previousReport, skipReason, centralRefreshResult);
     }
     report =
@@ -395,7 +387,7 @@ export async function processAuthPoolEntry(
       report_origin: "worker",
     };
   } catch (error) {
-    if (!probeNeeded) {
+    if (!probeNeeded && !centralRefreshResult?.auth_rejected) {
       return skippedProbeItem(entry, previousReport, skipReason, centralRefreshResult);
     }
     report = failureReport(entry, error);
@@ -410,19 +402,6 @@ export async function processAuthPoolEntry(
     });
     authJsonText = refreshed.authJsonText;
     centralRefreshResult = refreshed.result;
-    if (centralRefreshResult?.auth_rejected) {
-      report = refreshTokenRejectedReport(entry, centralRefreshResult);
-      await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
-      return {
-        source: entry.source,
-        account_id: entry.account_id,
-        status: report.status,
-        error: report.error,
-        refreshed_auth_written: false,
-        refreshed_auth_result: null,
-        central_refresh: centralRefreshResult,
-      };
-    }
     if (centralRefreshResult?.ok) {
       try {
         report =
@@ -438,6 +417,7 @@ export async function processAuthPoolEntry(
       }
     }
   }
+  report = withCentralRefreshEvidence(report, centralRefreshResult);
   if (shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport)) {
     await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
     const deleteResult = await deleteAuthPoolEntryImpl({ source: entry.source, accountId: entry.account_id });

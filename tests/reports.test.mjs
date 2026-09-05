@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { authPoolStatusPayload, mergeLatestReport, sanitizeReport, statusPayload } from "../lib/reports.js";
+import { refreshValidityFromReport } from "../lib/auth-status.js";
 
 test("sanitizeReport normalizes the quota payload", () => {
   const sanitized = sanitizeReport({
@@ -661,25 +662,26 @@ const HEALTHY_CLIENT = {
   },
 };
 
-test("a client's healthy probe cannot clear a standing central-refresh rejection", () => {
-  // The client proves its OWN credential works. The pooled blob is a different credential, and only
-  // the worker ever presents it. Overwriting the rejection here is what kept a month-dead entry in
-  // rotation to borrowers.
+// The refresh-token verdict and the access-token status are separate facts. A central-refresh rejection
+// is sticky as a VERDICT -- read back through refreshValidityFromReport -- but the row's status/error
+// follow whatever the last use of the access token said. That is what lets an account whose RT is dead
+// but whose access token still works show up as usable, on a deadline, instead of as a corpse.
+test("a client's healthy probe moves the row's status but cannot clear the standing refresh verdict", () => {
   const merged = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), sanitizeReport(HEALTHY_CLIENT));
 
-  assert.equal(merged.status, "error");
-  assert.equal(merged.error, "refresh_token_rejected");
-  // fresh quota and timestamps still move, so the entry does not look silent
+  assert.equal(merged.status, "ok", "the access token demonstrably worked");
+  assert.equal(merged.error, null);
   assert.equal(merged.reported_at, "2026-08-28T18:25:00Z");
   assert.equal(merged.windows["5h"].remaining_percent, 90);
-  // the evidence is carried forward so the next client report is held off too
+  // ...but the pooled refresh token is still dead, and the evidence says so
   assert.equal(merged.usage_summary.central_refresh.auth_rejected, true);
+  assert.equal(refreshValidityFromReport(merged), "rejected");
 });
 
-test("a rejection survives an unrelated report in between — the regression that put a month-dead credential back in rotation", () => {
+test("the refresh verdict survives an unrelated report in between — the regression that put a month-dead credential back in rotation", () => {
   // The rule used to read the marker off `previous`, so it only held while consecutive reports
   // carried it. One report that neither rejects nor clears erased the evidence, and the next
-  // client "ok" sailed through. claude-qpt0311@uw.edu came back `ok` on 2026-08-31 with a pooled
+  // client "ok" sailed through. claude-qpt0311@uw.edu came back clean on 2026-08-31 with a pooled
   // access token 782 hours expired, re-entering rotation and resetting its owner's clock.
   const neutral = sanitizeReport({
     ...HEALTHY_CLIENT,
@@ -692,30 +694,29 @@ test("a rejection survives an unrelated report in between — the regression tha
   });
 
   const afterNeutral = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), neutral);
-  // the verdict AND the evidence must both still be there, or the next merge is blind
-  assert.equal(afterNeutral.error, "refresh_token_rejected");
   assert.equal(afterNeutral.usage_summary.central_refresh.auth_rejected, true);
+  assert.equal(refreshValidityFromReport(afterNeutral), "rejected");
 
-  // ...so the client "ok" that follows still cannot resolve it
   const afterClient = mergeLatestReport(sanitizeReport(afterNeutral), sanitizeReport(HEALTHY_CLIENT));
-  assert.equal(afterClient.status, "error");
-  assert.equal(afterClient.error, "refresh_token_rejected");
+  assert.equal(afterClient.status, "ok");
   assert.equal(afterClient.usage_summary.central_refresh.auth_rejected, true);
+  assert.equal(refreshValidityFromReport(afterClient), "rejected", "three reports on, the verdict still stands");
 });
 
-test("the sticky rejection still yields to real proof about the pooled blob", () => {
-  // three neutral reports deep, an upload still clears it
+test("the sticky verdict still yields to real proof about the pooled blob", () => {
   let cur = sanitizeReport(CENTRAL_REJECTION);
   for (let i = 0; i < 3; i += 1) {
     cur = sanitizeReport(mergeLatestReport(cur, sanitizeReport({ ...HEALTHY_CLIENT, reported_at: `2026-08-28T18:3${i}:00Z` })));
   }
-  assert.equal(cur.error, "refresh_token_rejected");
+  assert.equal(refreshValidityFromReport(cur), "rejected");
 
   const upload = sanitizeReport({
     ...HEALTHY_CLIENT,
     usage_summary: { token_refresh: { status: "refreshed", source: "upload" } },
   });
-  assert.equal(mergeLatestReport(cur, upload).status, "ok");
+  const lifted = mergeLatestReport(cur, upload);
+  assert.equal(lifted.status, "ok");
+  assert.equal(refreshValidityFromReport(lifted), "confirmed");
 });
 
 test("a verified upload clears a standing central-refresh rejection", () => {
@@ -723,11 +724,10 @@ test("a verified upload clears a standing central-refresh rejection", () => {
     ...HEALTHY_CLIENT,
     usage_summary: { token_refresh: { status: "refreshed", source: "upload" } },
   });
-
   const merged = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), upload);
-
   assert.equal(merged.status, "ok");
   assert.equal(merged.error, null);
+  assert.equal(refreshValidityFromReport(merged), "confirmed");
 });
 
 test("a successful central refresh clears a standing central-refresh rejection", () => {
@@ -736,23 +736,24 @@ test("a successful central refresh clears a standing central-refresh rejection",
     report_origin: "worker",
     usage_summary: { central_refresh: { attempted: true, ok: true } },
   });
-
-  assert.equal(mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), recovered).status, "ok");
+  const merged = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), recovered);
+  assert.equal(merged.status, "ok");
+  assert.equal(refreshValidityFromReport(merged), "confirmed");
 });
 
-test("a standing rejection never resolves to ok when another error arrives", () => {
-  // The pooled-RT rejection deliberately outranks a client-side error here: both keep the entry out
-  // of rotation, and refresh_token_rejected is the one that names what the owner has to do.
+test("another error on top of a standing rejection is reported as itself, with the verdict intact", () => {
+  // Two independent facts, two fields: the access-token probe failed for its own reason, and the
+  // refresh token is still dead. Neither hides the other.
   const worse = sanitizeReport({
     ...HEALTHY_CLIENT,
     status: "error",
     error: "claude auth email unavailable",
     windows: { "5h": null, "1week": null },
   });
-
   const merged = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), worse);
   assert.equal(merged.status, "error");
-  assert.equal(merged.error, "refresh_token_rejected");
+  assert.equal(merged.error, "claude auth email unavailable");
+  assert.equal(refreshValidityFromReport(merged), "rejected");
 });
 
 test("mergeLatestReport keeps good client codex quota when a newer worker soft-fails", () => {
@@ -1621,4 +1622,54 @@ test("authPoolStatusPayload retires invalidated auths from the dashboard after t
     !activeIds.includes("long-dead"),
     "an auth retired from Archived must not reappear in the active list"
   );
+});
+
+// An account is archived when BOTH tokens are gone. A refresh token the pool can no longer use is a
+// warning with a deadline -- the access token's expiry -- and the row stays in the active list, marked,
+// until that deadline passes. The 48h clock then runs from whichever token died last.
+test("authPoolStatusPayload keeps a dead-refresh-token account active while its access token lives, and archives it from the token's expiry", () => {
+  const entry = {
+    source: "claude",
+    account_id: "claude-rt-dead@example.com",
+    email: "rt-dead@example.com",
+    plan_name: "Max",
+    digest: "digest-rt",
+    auth_last_refresh: "1790708346219",
+    auth_expires_at: "2026-09-29T18:59:06.219Z",
+    uploader_email: "owner@stardust.ai",
+    reporter_name: "owner@mbp",
+    hostname: "mbp",
+    uploaded_at: "2026-08-30T19:11:37.346Z",
+  };
+  // the worker probed the access token (fine) and presented the refresh token (refused)
+  const report = {
+    source: "claude",
+    account_id: entry.account_id,
+    status: "ok",
+    error: null,
+    reported_at: "2026-09-10T00:00:00Z",
+    report_origin: "worker",
+    usage_summary: { central_refresh: { attempted: true, ok: false, auth_rejected: true, status: 400 } },
+    windows: { "5h": { remaining_percent: 88, reset_at: "2026-09-10T03:00:00Z" }, "1week": { remaining_percent: 70, reset_at: "2026-09-14T00:00:00Z" } },
+  };
+  const invalidated = [{ source: "claude", account_id: entry.account_id, first_invalidated_at: "2026-09-01T00:00:00Z" }];
+
+  // ten days after the RT died, the access token is still good for three more weeks
+  const live = authPoolStatusPayload([entry], [report], "2026-09-10T01:00:00Z", invalidated);
+  assert.equal(live.items.length, 1, "usable accounts are not archived");
+  assert.equal(live.archived_invalidated_items.length, 0);
+  assert.equal(live.items[0].effective_status, "ok");
+  assert.equal(live.items[0].refresh_validity.status, "rejected");
+  assert.equal(live.items[0].refresh_validity.deadline, "2026-09-29T18:59:06.219Z", "the warning names when the account really dies");
+  assert.equal(live.items[0].windows["5h"].remaining_percent, 88, "live quota is shown as live");
+
+  // one hour after the access token expired: dead on both tokens, but only for an hour -- still visible
+  const justDead = authPoolStatusPayload([entry], [report], "2026-09-29T20:00:00Z", invalidated);
+  assert.equal(justDead.items.length, 1);
+  assert.equal(justDead.archived_invalidated_items.length, 0);
+
+  // three days after the access token expired: archived, from the expiry -- not from the RT's death a month before
+  const archived = authPoolStatusPayload([entry], [report], "2026-10-02T20:00:00Z", invalidated);
+  assert.equal(archived.items.length, 0);
+  assert.equal(archived.archived_invalidated_items.length, 1);
 });
