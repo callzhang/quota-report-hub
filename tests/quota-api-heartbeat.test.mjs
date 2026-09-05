@@ -30,6 +30,8 @@ function makeDeps(body, overrides = {}) {
       calls.heartbeat.push(args);
       return { ok: true, reporter_name: args.heartbeat?.reporter_name, status: args.heartbeat?.status };
     },
+    // the write-path floor only refuses once the gate phase has begun; tests opt in explicitly
+    activePhases: () => ({ notice: true, reporter_gate: false, cooldown: false }),
     ...overrides,
   };
   return { deps, calls };
@@ -115,4 +117,51 @@ test("an unreportable quota payload still returns the heartbeat result", async (
   const payload = JSON.parse(res.body);
   assert.equal(payload.reason, "quota_unavailable");
   assert.equal(payload.heartbeat.status, "error");
+});
+
+// The version floor is enforced where data is written. The heartbeat is always kept -- it is how the
+// machine and its version are seen at all -- but an outdated client's quota numbers are refused once
+// the reporter_gate phase has begun, and merely warned about before it.
+function outdatedBody() {
+  return {
+    source: "claude",
+    quota_payload: { account_id: "claude-a@example.com", status: "ok", windows: { "5h": null, "1week": null } },
+    heartbeat: { reporter_name: "old@host", hostname: "host", status: "ok", client_version: "2.1.0" },
+  };
+}
+
+test("an outdated client's quota report is refused once the reporter gate is active, its heartbeat is kept", async () => {
+  const { deps, calls } = makeDeps(outdatedBody(), { activePhases: () => ({ notice: true, reporter_gate: true, cooldown: false }) });
+  const res = makeRes();
+  await quotaHandlerImpl({ method: "POST" }, res, deps);
+  const body = JSON.parse(res.body);
+  assert.equal(res.statusCode, 200);
+  assert.equal(body.ok, false);
+  assert.equal(body.reason, "reporter_upgrade_required");
+  assert.equal(body.client_version, "2.1.0");
+  assert.equal(body.notices[0].code, "reporter_upgrade_required");
+  assert.equal(calls.heartbeat.length, 1, "the heartbeat is still ingested");
+  assert.equal(calls.quota.length, 0, "the quota numbers are not");
+});
+
+test("before the gate, an outdated client is warned but its report is still taken", async () => {
+  const { deps, calls } = makeDeps(outdatedBody(), { activePhases: () => ({ notice: true, reporter_gate: false, cooldown: false }) });
+  const res = makeRes();
+  await quotaHandlerImpl({ method: "POST" }, res, deps);
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(calls.quota.length, 1);
+  assert.equal(body.notices?.[0]?.code, "reporter_upgrade_required");
+});
+
+test("a current client passes the write gate with no notice", async () => {
+  const current = outdatedBody();
+  current.heartbeat.client_version = "2.3.0";
+  const { deps, calls } = makeDeps(current, { activePhases: () => ({ notice: true, reporter_gate: true, cooldown: false }) });
+  const res = makeRes();
+  await quotaHandlerImpl({ method: "POST" }, res, deps);
+  const body = JSON.parse(res.body);
+  assert.equal(body.ok, true);
+  assert.equal(calls.quota.length, 1);
+  assert.deepEqual(body.notices ?? [], []);
 });

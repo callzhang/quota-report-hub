@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 process.env.TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL || "file:quota-ingest-test.db";
 process.env.TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN || "test-token";
 
-const { codexClientPayloadAccepted, ingestClientQuota } = await import("../lib/quota-ingest.js");
+const { codexClientPayloadAccepted, ingestClientQuota, ingestReporterHeartbeat } = await import("../lib/quota-ingest.js");
 
 const completeWindow = { remaining_percent: 80, reset_at: "2026-06-14T13:00:00Z" };
 
@@ -192,4 +192,55 @@ test("ingestClientQuota leaves a report without a fingerprint exactly as before"
     authPoolEntryImpl: async () => { throw new Error("unreachable"); },
   });
   assert.equal(writes[0].account_id, "claude-legacy@example.com");
+});
+
+// The heartbeat is filed under the token's account too. It is the row the users page reads for
+// "which account is this machine on", and it used to carry the machine's own drifting name.
+test("ingestReporterHeartbeat files the machine under the account its token belongs to", async () => {
+  const writes = [];
+  const res = await ingestReporterHeartbeat({
+    source: "claude",
+    reporterEmail: "borrower@example.com",
+    heartbeat: {
+      reporter_name: "shawn@192.168.1.2",
+      hostname: "192.168.1.2",
+      status: "ok",
+      account_id: "claude-stale-claim@example.com",
+      client_version: "2.3.0",
+      client_sha: "454064344cae7ae3d91322b1cc02746a902a36dc",
+      access_token_fingerprint: "fp-of-owner-token",
+    },
+    upsertImpl: async (row) => { writes.push(row); },
+    tokenOwnerImpl: async (source, fp) => (source === "claude" && fp === "fp-of-owner-token" ? { account_id: "claude-owner@example.com" } : null),
+  });
+  assert.equal(res.account_id, "claude-owner@example.com");
+  const [row] = writes;
+  assert.equal(row.account_id, "claude-owner@example.com");
+  assert.equal(row.client_sha, "454064344cae7ae3d91322b1cc02746a902a36dc", "the applied commit travels with the heartbeat");
+  assert.equal(row.access_token_fingerprint, undefined, "the fingerprint is consumed, never stored");
+});
+
+test("ingestReporterHeartbeat keeps the claimed account for a token the pool never held", async () => {
+  const writes = [];
+  await ingestReporterHeartbeat({
+    source: "claude",
+    reporterEmail: "owner@example.com",
+    heartbeat: { reporter_name: "owner@mbp", hostname: "mbp", status: "ok", account_id: "claude-own-login@example.com", access_token_fingerprint: "unknown" },
+    upsertImpl: async (row) => { writes.push(row); },
+    tokenOwnerImpl: async () => null,
+  });
+  assert.equal(writes[0].account_id, "claude-own-login@example.com");
+});
+
+test("ingestReporterHeartbeat does not consult the token map when no fingerprint was sent", async () => {
+  const writes = [];
+  await ingestReporterHeartbeat({
+    source: "claude",
+    reporterEmail: "someone@example.com",
+    heartbeat: { reporter_name: "legacy@host", hostname: "host", status: "ok", account_id: "claude-legacy@example.com", client_version: "2.1.0" },
+    upsertImpl: async (row) => { writes.push(row); },
+    tokenOwnerImpl: async () => { throw new Error("must not be called"); },
+  });
+  assert.equal(writes[0].account_id, "claude-legacy@example.com");
+  assert.equal(writes[0].client_sha, null);
 });

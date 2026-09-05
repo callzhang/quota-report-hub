@@ -3,6 +3,7 @@ import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../.
 import { dbConfigured } from "../../lib/db.js";
 import { ingestClientQuota, ingestReporterHeartbeat } from "../../lib/quota-ingest.js";
 import { readJsonBody } from "../../lib/http.js";
+import { activePhases, clientNeedsUpgrade, upgradeNotice, withRepeatIntervals } from "../../lib/premium-ratio.js";
 
 export default async function handler(req, res) {
   return quotaHandlerImpl(req, res);
@@ -17,6 +18,7 @@ export async function quotaHandlerImpl(req, res, deps = {
   readJsonBody,
   ingestClientQuota,
   ingestReporterHeartbeat,
+  activePhases,
 }) {
   if (req.method !== "POST") {
     res.statusCode = 405;
@@ -61,11 +63,29 @@ export async function quotaHandlerImpl(req, res, deps = {
   const heartbeatResult = hasHeartbeat
     ? await deps.ingestReporterHeartbeat({ source, heartbeat: body.heartbeat, reporterEmail: authContext.email })
     : null;
+  // The version floor is enforced where data is WRITTEN, not only where auth is fetched. A machine
+  // that only reports never asks fetch-best for anything, so the fetch gate never reaches it -- and
+  // writing is exactly how a stale client puts bad data in front of everyone. The heartbeat above is
+  // always kept: it is how we see the machine and its version at all. Only the quota numbers are
+  // refused, and only once the reporter_gate phase has begun; before that the response carries the
+  // upgrade notice and the report is taken.
+  const clientVersion = body.heartbeat?.client_version ? String(body.heartbeat.client_version) : null;
+  const outdated = clientNeedsUpgrade(clientVersion);
+  const notices = outdated ? withRepeatIntervals([upgradeNotice()]) : [];
+  if (hasQuotaPayload && outdated && deps.activePhases().reporter_gate) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(deps.withTokenUpgrade(
+      { ok: false, source, heartbeat: heartbeatResult, ignored: true, reason: "reporter_upgrade_required", client_version: clientVersion, notices },
+      authContext,
+    )));
+    return;
+  }
   if (!hasQuotaPayload) {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify(deps.withTokenUpgrade(
-      { ok: true, source, heartbeat: heartbeatResult, ignored: true, reason: "heartbeat_only" },
+      { ok: true, source, heartbeat: heartbeatResult, ignored: true, reason: "heartbeat_only", notices },
       authContext,
     )));
     return;
@@ -83,8 +103,8 @@ export async function quotaHandlerImpl(req, res, deps = {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(deps.withTokenUpgrade(
     result.ignored
-      ? { ok: true, source, ignored: true, reason: "quota_unavailable", heartbeat: heartbeatResult }
-      : { ok: true, source, account_id: result.account_id, heartbeat: heartbeatResult },
+      ? { notices, ok: true, source, ignored: true, reason: "quota_unavailable", heartbeat: heartbeatResult }
+      : { notices, ok: true, source, account_id: result.account_id, heartbeat: heartbeatResult },
     authContext,
   )));
 }

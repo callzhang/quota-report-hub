@@ -435,6 +435,12 @@ def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
         "error": error,
         "account_id": (payload or {}).get("account_id"),
         "client_version": CLIENT_VERSION,
+        # The commit this guard actually runs. client_version is a string somebody has to remember to
+        # bump; the self-updater's applied SHA is what is on disk.
+        "client_sha": read_self_update_state().get("last_applied_sha"),
+        # Same as the quota report: the hub files this machine under the account its token belongs
+        # to, not under the name its own identity record supplies.
+        "access_token_fingerprint": (payload or {}).get("access_token_fingerprint"),
         "last_run_at": iso_now(),
     }
 

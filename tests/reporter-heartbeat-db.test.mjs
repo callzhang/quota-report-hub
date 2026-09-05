@@ -151,3 +151,21 @@ test("a heartbeat without a reporter identity is refused instead of creating a n
     cleanup();
   }
 });
+
+// The heartbeat records which commit the guard runs, not only the hand-maintained version string.
+test("a heartbeat stores and returns the guard's applied commit", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertReporterProbeHeartbeat(heartbeat({ client_version: "2.3.0", client_sha: "454064344cae7ae3d91322b1cc02746a902a36dc" }));
+    const [row] = await mod.reporterProbeHeartbeats();
+    assert.equal(row.client_version, "2.3.0");
+    assert.equal(row.client_sha, "454064344cae7ae3d91322b1cc02746a902a36dc");
+
+    // an older client that sends no sha leaves the column empty rather than failing the write
+    await mod.upsertReporterProbeHeartbeat(heartbeat({ last_run_at: "2026-08-27T09:15:00.000Z", client_version: "2.1.0" }));
+    const [again] = await mod.reporterProbeHeartbeats();
+    assert.equal(again.client_sha, null);
+  } finally {
+    cleanup();
+  }
+});

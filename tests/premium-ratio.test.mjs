@@ -10,18 +10,7 @@ import {
   PREMIUM_MODEL_IDS,
   SUGGESTED_STANDARD_MODEL_IDS,
 } from "../lib/model-tiers.js";
-import {
-  PHASE_COOLDOWN_AT,
-  PHASE_REPORTER_GATE_AT,
-  PREMIUM_RATIO_COOLDOWN_MINUTES,
-  PREMIUM_RATIO_MIN_COST,
-  DEMAND_SHARE_TOLERANCE,
-  DEMAND_SHARE_MIN_ACTIVE_USERS,
-  NOTICE_REPEAT_SECONDS,
-  PREMIUM_RATIO_THRESHOLD,
-  compareVersions,
-  evaluateFetchPolicy,
-} from "../lib/premium-ratio.js";
+import { PHASE_COOLDOWN_AT, PHASE_REPORTER_GATE_AT, PREMIUM_RATIO_COOLDOWN_MINUTES, PREMIUM_RATIO_MIN_COST, DEMAND_SHARE_TOLERANCE, DEMAND_SHARE_MIN_ACTIVE_USERS, NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_THRESHOLD, compareVersions, evaluateFetchPolicy, MIN_REPORTER_CLIENT_VERSION } from "../lib/premium-ratio.js";
 
 const BIG = PREMIUM_RATIO_MIN_COST * 10;
 
@@ -29,7 +18,7 @@ function inputs(overrides = {}) {
   return {
     now: new Date(PHASE_COOLDOWN_AT),
     lastReportAt: PHASE_COOLDOWN_AT,
-    requestClientVersion: "2.0.0",
+    requestClientVersion: MIN_REPORTER_CLIENT_VERSION,
     premiumCost: BIG * 0.9,
     totalCost: BIG,
     // One user carrying the whole team's spend: far over any fair share.
@@ -148,7 +137,7 @@ test("a current client that has simply been idle is left alone entirely", () => 
 test("a fresh install is served before it has any usage to report", () => {
   const result = evaluateFetchPolicy({
     now: new Date(PHASE_COOLDOWN_AT),
-    requestClientVersion: "2.0.0",
+    requestClientVersion: MIN_REPORTER_CLIENT_VERSION,
     lastReportAt: null,
     premiumCost: 0,
     totalCost: 0,
@@ -240,8 +229,8 @@ test("the reporter gate outranks the cooldown so the fix is always the same one"
 
 test("version comparison orders by numeric component, not string", () => {
   assert.equal(compareVersions("2.10.0", "2.9.0"), 1);
-  assert.equal(compareVersions("2.0.0", "2.0.0"), 0);
-  assert.equal(compareVersions("1.9.9", "2.0.0"), -1);
+  assert.equal(compareVersions(MIN_REPORTER_CLIENT_VERSION, MIN_REPORTER_CLIENT_VERSION), 0);
+  assert.equal(compareVersions("1.9.9", MIN_REPORTER_CLIENT_VERSION), -1);
 });
 
 test("the models the notice recommends are themselves non-premium", () => {
@@ -272,7 +261,7 @@ test("both ratio notices name the models on each side of the line", () => {
 test("unreported consumption is measured as a debt from the last new account, not report recency", () => {
   const base = {
     now: new Date(PHASE_REPORTER_GATE_AT),
-    requestClientVersion: "2.0.0",
+    requestClientVersion: MIN_REPORTER_CLIENT_VERSION,
     premiumCost: 0,
     totalCost: 0,
     lastServedAt: null,
@@ -313,7 +302,7 @@ test("a refresh never starts the debt clock, only a new account does", async () 
 test("the hub sets the repeat interval rather than the client compiling one in", () => {
   const result = evaluateFetchPolicy({
     now: new Date("2026-08-25T00:00:00.000Z"),
-    requestClientVersion: "2.0.0",
+    requestClientVersion: MIN_REPORTER_CLIENT_VERSION,
     lastNewAccountAt: "2026-08-20T00:00:00.000Z",
     lastReportAt: null,
     premiumCost: BIG * 0.9,
@@ -333,7 +322,7 @@ test("debt stops growing the moment a user goes dormant", () => {
   // The debt is the gap between being handed an account and accounting for it -- a fixed distance,
   // not a running clock. This is the whole reason dormancy is harmless: an idle month adds nothing.
   const base = {
-    requestClientVersion: "2.0.0",
+    requestClientVersion: MIN_REPORTER_CLIENT_VERSION,
     premiumCost: 0,
     totalCost: 0,
     lastServedAt: null,
@@ -352,7 +341,7 @@ test("a single report clears the debt on the very next fetch", () => {
   const now = new Date("2026-09-10T00:00:00.000Z");
   const base = {
     now,
-    requestClientVersion: "2.0.0",
+    requestClientVersion: MIN_REPORTER_CLIENT_VERSION,
     premiumCost: 0,
     totalCost: 0,
     lastServedAt: null,
@@ -396,7 +385,7 @@ test("scarcity never excuses an unmetered client", () => {
     lastReportAt: null,
   };
   for (const poolScarce of [true, false]) {
-    const result = evaluateFetchPolicy({ ...base, requestClientVersion: "2.0.0", poolScarce });
+    const result = evaluateFetchPolicy({ ...base, requestClientVersion: MIN_REPORTER_CLIENT_VERSION, poolScarce });
     assert.equal(result.reason, "usage_reporting_required", `poolScarce=${poolScarce}`);
   }
   for (const poolScarce of [true, false]) {

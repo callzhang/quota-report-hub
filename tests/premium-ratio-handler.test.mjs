@@ -18,6 +18,9 @@ process.env.TOKEN_ISSUE_KEY = "test-token-issue-key-32-bytes!!!";
 process.env.PREMIUM_RATIO_REPORTER_GATE_AT = "2000-01-01T00:00:00.000Z";
 process.env.POOL_COOLDOWN_AT = "2000-01-01T00:00:00.000Z";
 
+// Dynamic like the modules above it: a static import would be hoisted above the phase-date env
+// overrides and freeze the gate/cooldown dates before the tests could move them.
+const { MIN_REPORTER_CLIENT_VERSION } = await import("../lib/premium-ratio.js");
 const db = await import("../lib/db.js");
 const { default: handler } = await import("../api/auth/fetch-best.js");
 const { createClient } = await import("@libsql/client");
@@ -28,7 +31,7 @@ const scarcityClient = createClient({
 
 test.after(() => rmSync(tempDir, { recursive: true, force: true }));
 
-function request(token, body = { source: "codex", client_version: "2.0.0" }) {
+function request(token, body = { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION }) {
   return {
     method: "POST",
     headers: { authorization: `Bearer ${token}` },
@@ -79,7 +82,7 @@ async function seedUsage(email, modelId, batchId, { heavy = false } = {}) {
     hubUserEmail: email,
     installationId: "install-1",
     batchId,
-    clientVersion: "2.0.0",
+    clientVersion: MIN_REPORTER_CLIENT_VERSION,
     rows: Array.from({ length: heavy ? 40 : 1 }, (_, index) => usageRow(quarterHoursAgo(index + 1), modelId)),
     receivedAt: new Date().toISOString(),
   });

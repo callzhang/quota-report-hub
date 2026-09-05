@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { isPremiumModel, modelCost } from "../lib/model-tiers.js";
+import { MIN_REPORTER_CLIENT_VERSION } from "../lib/premium-ratio.js";
 
 async function loadDb() {
   const tempDir = mkdtempSync(join(tmpdir(), "qrh-premium-ratio-test-"));
@@ -150,13 +151,13 @@ test("the version a fetch request carried is recorded, reported or not", async (
       source: "codex",
       servedEntry: null,
       reason: "no_better_auth_available",
-      clientVersion: "2.0.0",
+      clientVersion: MIN_REPORTER_CLIENT_VERSION,
     });
     const inputs = await mod.fetchPolicyInputs({
       email: "quiet@example.com",
       since: "2026-09-14T00:00:00.000Z",
     });
-    assert.equal(inputs.fetchClientVersion, "2.0.0");
+    assert.equal(inputs.fetchClientVersion, MIN_REPORTER_CLIENT_VERSION);
     assert.equal(inputs.lastReportAt, null, "no usage was ever reported for this user");
   } finally {
     cleanup();
