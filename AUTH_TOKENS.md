@@ -406,6 +406,24 @@ Default OFF → deploys are inert until an admin flips it.
 
 ---
 
+### Access-token-only uploads are supply, not poison (2026-09-05)
+
+The strip-guards (`isStrippedRefreshToken` server-side, `auth_json_is_stripped` client-side) were built
+because a placeholder/empty RT once reached the RT field and wiped the real pooled RT. They over-shot:
+they refused the whole blob, so a machine holding the only *live* access token of an account whose
+pooled RT is dead -- a borrower, or an AT-only owner whose desktop re-minted a fresh 30-day token --
+could never get it into the pool, and the account died with a perfectly usable token in circulation.
+
+Now an AT-only claude upload is **merged** (`mergeStrippedAccessToken`, [lib/fetch-best.js](lib/fetch-best.js)):
+the pooled blob keeps its RT, owner, and owner's machine verbatim and only takes the access token +
+`expiresAt` (and the `auth_last_refresh` mirror, or the freshness gate drops the write) -- and only when
+the incoming token outlives the pooled one (`stripped_access_token_not_newer` otherwise; an account with
+no pooled entry is still refused with `stripped_refresh_token`). The RT field is never written by this
+path, which is the whole of the original guard's intent. Codex is excluded: every codex client refreshes
+hourly, so an AT-only codex upload is never fresher than the pool. Client side, the guard now uploads its
+AT-only claude credential and pins `state_source` back to `fetched_from_auth_pool` afterwards -- an
+AT-only machine is a participant, whatever the upload path would otherwise record.
+
 ## 5. Hub central refresh (the worker)
 
 `scripts/probe_auth_pool_worker.mjs`, GitHub Actions cron (~15 min nominal, jittery — sometimes
@@ -422,6 +440,26 @@ Default OFF → deploys are inert until an admin flips it.
 - The **probe** (quota measurement) is per canonical entry; only the **refresh** is selective.
 
 ---
+
+### Cadence and retention
+
+One hourly GitHub Actions job runs **8 cycles, 20 min apart** (2h40 of coverage, so dropped cron events
+do not open a gap); a cycle probes all ~26 entries in 1-2 minutes. Twenty minutes is the slowest cadence
+that still gives the claude T-1h proactive-refresh window three chances -- the previous 12 was never a
+freshness choice, only a workaround for unreliable scheduling. `auth_pool_quota_events` is a rolling
+record (the dashboard reads 24h; verdicts live in `auth_pool_quota_latest`) and is pruned to **30 days**
+by the daily `quota-events-retention` cron.
+
+### Version telemetry and the write-path floor
+
+`client_version` is a string somebody has to remember to bump (nobody did for the identity fix, so
+2.1.0 meant nothing). Every heartbeat now also carries `client_sha`, the commit the self-updater
+actually applied -- `reporter_probe_heartbeats.client_sha` answers "which code does this machine run".
+`MIN_REPORTER_CLIENT_VERSION` is 2.2.0 (the first client that names its token) and is enforced where
+data is **written** ([api/auth/quota.js](api/auth/quota.js)), not only at fetch-best: a machine that only
+reports never fetches, and writing is how a stale client puts bad data in front of everyone. The
+heartbeat is always kept (it is how the machine is seen at all); only the quota numbers are refused,
+and only once `PHASE_REPORTER_GATE_AT` has passed -- before that the response carries the upgrade notice.
 
 ## 6. Failure modes & invariants (and the fixes)
 
@@ -460,6 +498,14 @@ The test for that is **provenance, not possession** (`claude_client_owns_the_poo
 really is a rejection of what the pool serves. `fetched_from_auth_pool` means we are a participant,
 and what we hold may be a token the hub served *or one the desktop app minted for itself from its
 session key* — a different grant entirely.
+
+The literal it then compared against, `owner_local`, was never written by any code path (the sync
+path writes `uploaded_to_auth_pool` / `unchanged_local_auth` for an accepted own credential), so
+`claude_client_owns_the_pooled_credential()` was False on every machine and this rule was inert from the
+day it shipped -- an owner whose own credential died could only ever say "I am a participant, hand me a
+fresh token". Fixed 2026-09-05: ownership is those two states; `fetched_from_auth_pool`,
+`repair_auth_from_auth_pool`, `server_kept_newer_auth` (the pool holds a *newer* credential than ours)
+and `free_plan_excluded` are not.
 
 The first version of this rule asked "do I have a real refresh token?" and got the converse wrong:
 holding a real RT does not make it the pool's RT, and on claude the app mints its own routinely.
