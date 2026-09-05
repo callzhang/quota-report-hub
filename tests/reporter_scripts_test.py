@@ -2004,14 +2004,27 @@ Reading additional input from stdin...
         self.assertTrue(quota_guard.needs_fresh_access_token(payload))
 
     def test_provenance_reads_state_source_not_the_presence_of_a_refresh_token(self):
-        with tempfile.TemporaryDirectory() as d:
-            k = Path(d) / "known.json"
-            k.write_text(json.dumps({"sources": {"claude": {"state_source": "owner_local"}}}), encoding="utf-8")
-            self.assertTrue(quota_reporters.claude_client_owns_the_pooled_credential(k))
-            k.write_text(json.dumps({"sources": {"claude": {"state_source": "fetched_from_auth_pool"}}}), encoding="utf-8")
-            self.assertFalse(quota_reporters.claude_client_owns_the_pooled_credential(k))
-            k.write_text(json.dumps({"sources": {}}), encoding="utf-8")
-            self.assertFalse(quota_reporters.claude_client_owns_the_pooled_credential(k))
+        """Ownership is decided by the states the sync path actually writes. The old check compared
+        against a literal no writer ever produced, so it was False on every machine."""
+        def owns(state_source):
+            with tempfile.TemporaryDirectory() as d:
+                k = Path(d) / "known.json"
+                sources = {"claude": {"state_source": state_source}} if state_source is not None else {}
+                k.write_text(json.dumps({"sources": sources}), encoding="utf-8")
+                return quota_reporters.claude_client_owns_the_pooled_credential(k)
+
+        # the hub accepted this machine's own credential: the pool serves what we hold
+        self.assertTrue(owns("uploaded_to_auth_pool"))
+        self.assertTrue(owns("unchanged_local_auth"))
+        # a participant, whatever refresh token it happens to hold
+        self.assertFalse(owns("fetched_from_auth_pool"))
+        self.assertFalse(owns("repair_auth_from_auth_pool"))
+        # the pool holds a different, newer credential than ours
+        self.assertFalse(owns("server_kept_newer_auth"))
+        self.assertFalse(owns("free_plan_excluded"))
+        self.assertFalse(owns(None))
+        # the literal the old check looked for is not something any writer produces
+        self.assertFalse(owns("owner_local"))
 
     def test_probe_claude_401_after_a_rejected_refresh_is_still_refresh_token_rejected(self):
         """auth_rejected is the one thing that DOES prove death, and it outranks the AT-only rule."""

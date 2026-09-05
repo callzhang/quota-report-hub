@@ -3026,17 +3026,29 @@ def local_access_token_seconds_left(
     return expiry - now
 
 
+# The state_source values sync_current_auth_pool_entry writes when the hub accepted THIS machine's own
+# credential: the pool now serves exactly what this machine holds.
+OWNED_POOLED_CREDENTIAL_STATE_SOURCES = frozenset({"uploaded_to_auth_pool", "unchanged_local_auth"})
+
+
 def claude_client_owns_the_pooled_credential(known_auth_path: Path = KNOWN_AUTH_PATH) -> bool:
     """Whether this machine's claude credential IS the one the pool holds.
 
     Only then is a 401 here evidence about the pooled credential. `state_source`, not the presence
     of a refresh token, is what answers this:
 
-      owner_local              this credential is ours, we uploaded it, nothing has replaced it —
-                               a rejection here really is a rejection of what the pool serves
+      uploaded_to_auth_pool    this credential is ours and the hub just accepted it — what the pool
+      unchanged_local_auth     serves IS what this machine holds, so a rejection here really is a
+                               rejection of the pooled credential
       fetched_from_auth_pool   we are a participant. What we hold may be a token the hub served, or
-                               one the desktop app minted for itself from its session key — a
+      repair_auth_from_pool    one the desktop app minted for itself from its session key — a
                                DIFFERENT grant that says nothing about the pooled one
+      server_kept_newer_auth   the pool holds a NEWER credential than ours; ours is not what it serves
+      free_plan_excluded       never pooled
+
+    This used to test for a literal "owner_local" that no code path ever wrote, so it was False on
+    every machine and the provenance rule above was inert from the day it shipped: an owner whose
+    own credential died could only ever say "I am a participant, hand me a fresh token".
 
     The earlier test — "do I have a real refresh token?" — got the converse wrong. Holding a real RT
     does not make it the pool's RT, and on claude the app routinely mints its own. Observed
@@ -3046,7 +3058,7 @@ def claude_client_owns_the_pooled_credential(known_auth_path: Path = KNOWN_AUTH_
     """
     state = read_known_auth_state(known_auth_path)
     source_state = (state.get("sources") or {}).get("claude") or {}
-    return source_state.get("state_source") == "owner_local"
+    return source_state.get("state_source") in OWNED_POOLED_CREDENTIAL_STATE_SOURCES
 
 
 def fetched_auth_near_expiry(
