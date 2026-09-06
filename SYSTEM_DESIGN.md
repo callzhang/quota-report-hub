@@ -520,29 +520,21 @@ HTTP API rather than `@libsql/client` because this host resolves the Turso name 
 intercepted range, which curl and urllib traverse but node's TLS stack does not.
 
 ### 8.6 recompute_local_token_usage.py
-The other half of the cleanup, and the better one. `purge_contaminated_usage.py` filters by
-magnitude and therefore keeps whatever contamination landed under its line; this re-derives the
-truth. Every codex rollout and claude transcript on the machine is parsed **from its first byte**
-with the fixed delta logic, so no session is ever picked up part way through and no cumulative is
-ever charged as a turn. Account attribution replays the collector's own finalized switch boundaries
-([§16.2](#162-account-attribution)), so the offline pass makes the same attribution decisions the
-live one would.
+A **diagnostic**, not a repair tool. It re-derives what a machine believes it used, by parsing every
+codex rollout and claude transcript **from its first byte** with the fixed delta logic, and prints
+that against the hub (`--compare --hub-user EMAIL`), per day and provider. Repairing is the
+reporter's own job ([§16.4](#164-one-time-history-repair)) — writing from here would be one machine
+overwriting rows it cannot see.
 
-`--compare EMAIL` prints hub against recompute per day and provider. Compared at **day** granularity
-on purpose: offline and live attribution can disagree about which account a given quarter hour
-belongs to, and daily totals are unaffected by that. `--replace-user EMAIL --apply` swaps that
-user's window for the recomputed rows, backing up what it replaces first.
+Compared at **day** granularity on purpose: offline and live attribution can disagree about which
+account a quarter hour on a switch boundary belongs to, and daily totals do not care.
 
-The check that licenses a replace is a provider already agreeing at **1.00x**. Claude is
-structurally immune to the bug, so the hub's claude figures were always right — a recompute that
-reproduces them exactly has proved both that the pipeline is correct and that this machine is the
-whole of that user's reporting. Measured on Derek's machine over 2026-08-15..09-06: claude
-hub 4.992B vs local 4.995B (1.00x every single day), codex hub 27.774B vs local 20.868B.
-
-Its one real limit: `token_usage_15m` has no installation column, so a bucket carrying several
-machines' work cannot be split, and one machine's number is a floor for that bucket rather than the
-whole of it. Run it on every machine reporting under the same hub user before treating a replace as
-complete.
+The number to read is the per-provider ratio. Claude is structurally immune to the cumulative bug,
+so the hub's claude figures were always right — a recompute that reproduces them exactly has proved
+both that the pipeline is correct and that this machine is the whole of that user's reporting.
+Measured on Derek's machine over 2026-08-15..09-06: claude hub 4.992B vs local 4.995B (**1.00x every
+single day**), codex hub 27.774B vs local 20.868B — the gap being contamination that survived the
+1e8 purge.
 
 ### 8.7 deploy_vercel.py / start_frontend.mjs
 `deploy_vercel.py` wraps the Vercel CLI for production/preview/development deploys and env
@@ -1020,7 +1012,37 @@ so a refused batch stays staged on the client and is reported once it has upgrad
 discarded or falsely acknowledged. See the write-path floor in
 [AUTH_TOKENS.md](AUTH_TOKENS.md).
 
-### 16.4 Query (`GET /api/token-usage-query`)
+### 16.4 One-time history repair
+
+`token_usage_15m` is keyed **per installation**, not just per hub user. That is the load-bearing
+decision: with every machine writing into one shared row, a reporter can add to a bucket but can
+never correct it, and the only copies of the truth — the raw logs on each laptop — can never be
+applied. Databases created before this rebuild once on the next `ensureSchema`; pre-existing rows
+carry `installation_id = ''`, an undifferentiated blob attributable to no machine.
+
+After a client updates past the version whose collector got history wrong, `maybe_start_usage_repair`
+([quota_guard.py](skills/quota-reporter/scripts/quota_guard.py)) launches
+`token_usage_repair.py` **detached** — re-reading several gigabytes takes minutes and the guard's
+whole cycle budget is ten seconds, so blocking would make every machine look hung and skipping the
+collector would lose live usage to fix old usage. It runs once per installation, marked by
+`repair_generation` in the collector state, and a failed attempt backs off six hours rather than
+relaunching a multi-gigabyte parse every quarter hour.
+
+The upload is chunked at `MAX_AGGREGATE_ROWS`. **Only the first batch carries `replace_from`**: that
+is what clears this installation's rows for the window (and the `''` blob for that user, which
+cannot be split and would double-count against the attributed rows replacing it). Every later chunk
+is an ordinary additive batch — the window is already clear and the buckets are disjoint, so
+accumulating is exact, and a second replace would delete the chunks before it. The clear runs inside
+the same batch and behind the same receipt guard as the rows, so a retried repair clears once, not
+once per attempt. Batch ids are **deterministic** (`repair-<generation>-<since>-<index>`) so a
+half-finished repair resumes by re-sending identical payloads that the receipt refuses as duplicates
+rather than counting twice.
+
+What it costs: a machine that never updates loses its historical contribution when some other
+machine under the same user clears the blob. That is the price of a number that can be trusted — the
+blob is exactly the data known to be wrong.
+
+### 16.5 Query (`GET /api/token-usage-query`)
 
 `parseTokenUsageQuery` bounds every request (detail is capped at `TOKEN_USAGE_DETAIL_DAYS = 90`;
 trend at 2000 points; breakdown at 500 rows) and rejects an unbounded one with **422
@@ -1038,7 +1060,7 @@ concurrent identical requests are deduplicated, and a token rotation moves the s
 the new generation so a stale old-token response cannot clear a newer login. Charts preserve
 missing-bucket gaps rather than interpolating, and expose exact values to keyboard and screen reader.
 
-### 16.5 Retention (`/api/cron/token-usage-retention`, daily `30 18 * * *` UTC)
+### 16.6 Retention (`/api/cron/token-usage-retention`, daily `30 18 * * *` UTC)
 
 `compactTokenUsage` moves at most **seven** UTC days older than the 90-day boundary into
 `token_usage_daily` atomically per run, deletes the compacted detail, and prunes old receipts. A

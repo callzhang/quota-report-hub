@@ -480,6 +480,11 @@ The floor is enforced on all three paths, all gated on `PHASE_REPORTER_GATE_AT`:
 | `/api/auth/quota` | quota numbers ignored, **heartbeat still kept** | The heartbeat is how the machine is seen at all |
 | `/api/token-usage` | **HTTP 426**, batch stays pending | Not 400 (client discards) and not 200 (client acknowledges a batch that was never stored) -- both lose real usage over a condition that clears itself on the next run |
 
+Since 2.5.0 the floor also decides whose history can be repaired at all. A machine kept on an older
+client is one whose months of wrong numbers nobody can correct, because the raw logs that hold the
+truth are on that machine and only its own reporter can apply them
+([SYSTEM_DESIGN.md §16.4](SYSTEM_DESIGN.md)).
+
 A refusal nobody acts on repeats every fifteen minutes forever, so the refusal drives the client:
 `enforce_hub_upgrade_demand` ([quota_guard.py](skills/quota-reporter/scripts/quota_guard.py)) reads the
 reason or the notice off any hub response, runs the self-updater with `force=True` (the recorded sha

@@ -7,19 +7,19 @@ reads the source of truth. Every codex rollout and claude transcript is parsed f
 with the fixed delta logic, so no session is ever picked up part way through and no cumulative is
 ever charged as a turn. What comes out is what this machine actually used.
 
-    python3 scripts/recompute_local_token_usage.py [--since ISO] [--out FILE] [--compare]
+    python3 scripts/recompute_local_token_usage.py [--since ISO] [--out FILE] \\
+        [--compare --hub-user EMAIL]
 
-`--compare` fetches the hub's rows for the same window and prints the difference per bucket.
+This is a DIAGNOSTIC. It reads and reports; it does not write to the hub. Repairing history is the
+reporter's own job now -- `skills/quota-reporter/scripts/token_usage_repair.py` runs once per
+installation after the client updates and replaces that machine's own contribution
+([SYSTEM_DESIGN.md] §16.4). Writing from here would mean one machine overwriting rows it cannot
+see, which is exactly the mistake the per-installation grain exists to prevent. Use this to check
+what a machine believes before or after it repairs itself.
 
-Two things it cannot do, and both matter when reading the output:
-
-  * It sees ONE machine. `token_usage_15m` has no installation column, so a hub bucket carrying
-    several machines' work cannot be split, and this machine's number is a floor for that bucket,
-    not the whole of it. Run it on every machine that reports under the same hub user before
-    treating the totals as complete.
-  * Account attribution replays the switch boundaries recorded in the local collector state. Events
-    before the oldest recorded boundary fall back to the earliest account known for that provider,
-    which is a guess -- the same approximation the collector makes live, no better.
+One thing to keep in mind reading the output: it sees ONE machine, so where a hub row carries
+several machines' work this number is a floor for it rather than the whole of it. A provider whose
+totals already agree at 1.00x is the evidence that there is nothing else in it.
 """
 
 import argparse
@@ -200,15 +200,7 @@ def main() -> int:
     parser.add_argument("--out", default=None, help="write the recomputed rows here as JSON")
     parser.add_argument("--compare", action="store_true", help="print the difference against the hub's rows")
     parser.add_argument("--state", default=str(DEFAULT_TOKEN_USAGE_STATE_PATH))
-    parser.add_argument(
-        "--replace-user", default=None, metavar="EMAIL",
-        help="REPLACE this hub user's rows for the window with the recomputed ones. Only sound when "
-             "this machine is that user's only reporter, or so dominant that the rest is noise -- "
-             "the hub cannot separate machines, so anything another machine contributed is dropped. "
-             "Check the per-provider agreement printed by --compare first: a provider that already "
-             "matches 1.00x is proof this machine is the whole of it.",
-    )
-    parser.add_argument("--apply", action="store_true", help="with --replace-user, actually write")
+    parser.add_argument("--hub-user", default=None, metavar="EMAIL", help="whose hub rows --compare reads")
     args = parser.parse_args()
 
     state_path = Path(args.state)
@@ -245,11 +237,9 @@ def main() -> int:
         print(f"written to {args.out}")
 
     if args.compare:
-        if not args.replace_user:
-            sys.exit("--compare needs --replace-user EMAIL to say whose hub rows to compare against")
-        compare_against_hub(args.replace_user, result)
-    if args.replace_user:
-        replace_user_window(args.replace_user, result, apply=args.apply)
+        if not args.hub_user:
+            sys.exit("--compare needs --hub-user EMAIL to say whose hub rows to compare against")
+        compare_against_hub(args.hub_user, result)
     return 0
 
 
@@ -297,61 +287,6 @@ def compare_against_hub(email: str, result: dict) -> None:
         l = sum(v for (_, p), v in local.items() if p == provider)
         line += f"{h / 1e9:12.3f}B{l / 1e9:13.3f}B{(f'{h / l:.2f}x' if l else '-'):>8}"
     print(line)
-
-
-def replace_user_window(email: str, result: dict, *, apply: bool) -> None:
-    """Swap one hub user's window for what the logs say, backing up what was there first.
-
-    Deleting by magnitude leaves whatever contamination landed under the line; this puts the
-    measured number in its place. It is a heavier operation than a purge -- it writes values rather
-    than removing rows -- so it defaults to a dry run and always exports the rows it replaces.
-    There is no way to recompute those from the hub, and after this they are gone.
-    """
-    sys.path.insert(0, str(REPO / "scripts"))
-    from purge_contaminated_usage import query, sql_quote
-
-    since = result["since"]
-    scope = f"hub_user_email = {sql_quote(email)} AND bucket_start >= {sql_quote(since)}"
-    columns, existing, _ = query(f"SELECT * FROM token_usage_15m WHERE {scope}")
-    records = [dict(zip(columns, row)) for row in existing]
-    before = sum(int(record["total_tokens"]) for record in records)
-    after = sum(row["total_tokens"] for row in result["rows"])
-    print(f"\n{email}: {len(records)} rows / {before / 1e9:.3f}B  ->  "
-          f"{len(result['rows'])} rows / {after / 1e9:.3f}B")
-    if not apply:
-        print("dry run; pass --apply to write")
-        return
-
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup = REPO / f"replaced-usage-{email.split('@')[0]}-{stamp}.json"
-    backup.write_text(json.dumps({"hub_user_email": email, "since": since, "rows": records}, indent=1))
-    print(f"backed up to {backup}")
-
-    _, _, removed = query(f"DELETE FROM token_usage_15m WHERE {scope}")
-    print(f"removed {removed} rows")
-
-    written = 0
-    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    # Chunked rather than a statement per row: three thousand round trips over the HTTP API is
-    # minutes of wall clock, and a half-finished replace is the one state no backup describes.
-    for start in range(0, len(result["rows"]), 200):
-        values = ", ".join(
-            "({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})".format(
-                sql_quote(email), sql_quote(row["provider"]), sql_quote(row["model_account_id"]),
-                sql_quote(row["model_id"]), sql_quote(row["bucket_start"]),
-                row["input_tokens"], row["output_tokens"], row["cache_read_tokens"],
-                row["cache_write_tokens"], row["reasoning_tokens"], row["total_tokens"],
-                sql_quote(now_iso),
-            )
-            for row in result["rows"][start:start + 200]
-        )
-        _, _, affected = query(
-            "INSERT INTO token_usage_15m (hub_user_email, provider, model_account_id, model_id, "
-            "bucket_start, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, "
-            f"reasoning_tokens, total_tokens, updated_at) VALUES {values}"
-        )
-        written += affected or 0
-    print(f"wrote {written} recomputed rows")
 
 
 if __name__ == "__main__":

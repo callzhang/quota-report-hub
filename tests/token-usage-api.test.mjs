@@ -95,6 +95,7 @@ test("uses authenticated email and passes normalized rows once", async () => {
     installationId: "install-1",
     batchId: "batch-1",
     clientVersion: undefined,
+    replaceFrom: undefined,
     rows: normalizedRows,
     receivedAt: "2026-08-18T12:00:00.000Z",
   });

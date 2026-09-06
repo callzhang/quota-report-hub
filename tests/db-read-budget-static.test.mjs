@@ -191,7 +191,17 @@ test("token usage ingestion is one receipt-gated batch and current reads stay is
   assert.match(ingestion, /token_usage_batch_receipts/);
   assert.match(ingestion, /applied_at IS NULL/);
   assert.match(ingestion, /token_usage_15m\.input_tokens \+ excluded\.input_tokens/);
-  assert.doesNotMatch(ingestion, /FROM token_usage_15m|FROM token_usage_daily/);
+  assert.doesNotMatch(ingestion, /FROM token_usage_daily/);
+  // The repair path is the one thing here that touches existing detail rows, and it may only ever
+  // reach them by DELETE -- reading the aggregate back during ingestion is what the budget forbids.
+  for (const [, verb] of ingestion.matchAll(/(\w+)\s+FROM token_usage_15m/g)) {
+    assert.equal(verb, "DELETE", "ingestion may only DELETE from token_usage_15m, never read it");
+  }
+  // ... and that delete stays on the primary-key prefix. An unscoped one would be a table scan on
+  // the hottest write path in the system, every time a machine repairs itself.
+  for (const statement of ingestion.match(/DELETE FROM token_usage_15m[\s\S]*?\n\s*`/g) || []) {
+    assert.match(statement, /WHERE hub_user_email = \? AND installation_id = \? AND bucket_start >= \?/);
+  }
 
   assert.match(source, /CREATE INDEX IF NOT EXISTS token_usage_15m_time_idx/);
   assert.match(source, /CREATE INDEX IF NOT EXISTS token_usage_daily_time_idx/);

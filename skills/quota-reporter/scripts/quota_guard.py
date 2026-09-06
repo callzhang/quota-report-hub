@@ -68,6 +68,7 @@ from quota_reporters import (
     write_claude_keychain_credentials,
     write_known_auth_state,
 )
+import token_usage_repair
 from token_usage_collector import collect_and_report_token_usage
 from token_usage_state import TokenUsageState
 
@@ -81,6 +82,10 @@ SELF_UPDATE_ERROR_MAX_LENGTH = 300
 # already-current check. One hour: long enough that a fleet cannot spend GitHub's unauthenticated
 # rate limit on it, short enough that a machine the hub is refusing recovers within the hour.
 SELF_UPDATE_FORCE_INTERVAL_SECONDS = 60 * 60
+# The one-time usage repair costs a multi-gigabyte parse, so a failing one retries on its own clock
+# rather than on the guard's fifteen-minute one.
+USAGE_REPAIR_ATTEMPT_KEY = "repair_attempted_at"
+USAGE_REPAIR_RETRY_SECONDS = 6 * 60 * 60
 HUB_NOTICE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-hub-notices.json"
 HUB_NOTICE_REPEAT_SECONDS = 6 * 60 * 60
 PROBE_FAILURE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-probe-failures.json"
@@ -788,6 +793,49 @@ def enforce_hub_upgrade_demand(
         "请手动重新执行一次安装脚本。",
     )
     return {"demanded": True, "updated": False, "self_update": outcome}
+
+
+def maybe_start_usage_repair(state, *, now: float | None = None) -> dict:
+    """Start the one-time history repair, once, in a process that outlives this run.
+
+    Every machine that takes this version has months of usage on the hub that its old collector
+    got wrong, and the raw logs it would need to correct them are sitting on its own disk. Nobody
+    is going to run a script on every laptop in the company, so the client does it itself the first
+    time it runs new enough code to be trusted with the answer.
+
+    Detached rather than inline because re-reading several gigabytes takes minutes and the guard's
+    entire cycle budget is ten seconds; blocking here would make every machine look hung, and
+    skipping the collector to make room would lose live usage to fix old usage. The marker that
+    says "done" is written by the child after the upload lands, so a machine that is closed
+    mid-repair simply starts over -- the batch ids are deterministic, so the chunks that already
+    landed are refused as duplicates rather than counted twice.
+    """
+    try:
+        if token_usage_repair.repair_completed(state):
+            return {"started": False, "reason": "already_repaired"}
+        # One attempt per interval, not per run. A repair that keeps failing -- no network, a
+        # half-migrated hub -- must not have a fresh multi-gigabyte parse launched at it every
+        # fifteen minutes on somebody's laptop.
+        current = time.time() if now is None else now
+        last = state.meta(USAGE_REPAIR_ATTEMPT_KEY)
+        if last is not None and current - float(last) < USAGE_REPAIR_RETRY_SECONDS:
+            return {"started": False, "reason": "attempted_recently"}
+        state.set_meta(USAGE_REPAIR_ATTEMPT_KEY, str(current))
+    except Exception as error:
+        return {"started": False, "reason": "state_unreadable", "error": str(error)[:200]}
+
+    try:
+        subprocess.Popen(
+            [sys.executable, str(SKILL_ROOT / "scripts" / "token_usage_repair.py")],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(Path.home()),
+        )
+    except Exception as error:
+        return {"started": False, "reason": "spawn_failed", "error": str(error)[:200]}
+    return {"started": True}
 
 
 def read_probe_failure_state(state_path: Path = PROBE_FAILURE_STATE_PATH) -> dict:
@@ -2402,6 +2450,7 @@ def run_guard(args: argparse.Namespace) -> dict:
         )
         if token_usage.get("ok") is False:
             guard_errors["token_usage"] = token_usage
+        token_usage["repair"] = maybe_start_usage_repair(usage_state)
         # The usage upload is the one write path a report-only machine always exercises, so a
         # version refusal here has to drive the updater exactly as one on quota or fetch does.
         notify_hub_notices(token_usage)

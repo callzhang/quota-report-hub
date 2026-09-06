@@ -45,7 +45,7 @@ test("normalizes exact ingestion fields and sorts rows deterministically", () =>
 
   assert.equal(result.installation_id, "install-019f");
   assert.deepEqual(result.rows.map((row) => row.model_id), ["a-model", "z-model"]);
-  assert.deepEqual(Object.keys(result).sort(), ["batch_id", "client_version", "installation_id", "rows"]);
+  assert.deepEqual(Object.keys(result).sort(), ["batch_id", "client_version", "installation_id", "replace_from", "rows"]);
   assert.equal(result.client_version, null, "a reporter predating client_version still normalizes");
   assert.equal(result.rows[0].model_id, "a-model");
 });
@@ -238,4 +238,21 @@ test("a large but reachable bucket is still accepted", () => {
     })],
   }), { now });
   assert.equal(result.rows[0].total_tokens, 909_000_000);
+});
+
+test("replace_from must be a quarter-hour inside the retained detail window", () => {
+  // A repair reaching past the detail window would delete rows it cannot replace: beyond it the
+  // hub keeps only daily rollups, and the reporter produces buckets.
+  assert.equal(
+    normalizeTokenUsageBatch(validBody({ replace_from: "2026-08-18T11:00:00.000Z" }), { now }).replace_from,
+    "2026-08-18T11:00:00.000Z",
+  );
+  assert.equal(normalizeTokenUsageBatch(validBody(), { now }).replace_from, null);
+  for (const value of ["2026-08-18T11:07:00.000Z", "2026-01-01T00:00:00.000Z", "2026-12-01T00:00:00.000Z", 42]) {
+    assert.throws(
+      () => normalizeTokenUsageBatch(validBody({ replace_from: value }), { now }),
+      TokenUsageValidationError,
+      `replace_from ${JSON.stringify(value)} must be rejected`,
+    );
+  }
 });

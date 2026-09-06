@@ -139,6 +139,21 @@ class TokenUsageState:
             raise RuntimeError(f"missing collector metadata: {key}")
         return str(row["value"])
 
+    def meta(self, key: str) -> str | None:
+        """Optional metadata, unlike `_meta`, which is for keys the collector cannot run without."""
+        row = self._connection.execute(
+            "SELECT value FROM collector_meta WHERE key = ?", (key,)
+        ).fetchone()
+        return None if row is None else str(row["value"])
+
+    def set_meta(self, key: str, value: str) -> None:
+        self._connection.execute(
+            "INSERT INTO collector_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+        self._connection.commit()
+
     @property
     def installation_id(self) -> str:
         return self._meta("installation_id")

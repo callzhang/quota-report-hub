@@ -6,4 +6,4 @@ lib/premium-ratio.js — raising the floor there without shipping a client that 
 everybody out. A test asserts the two agree, so the pair moves together or not at all.
 """
 
-CLIENT_VERSION = "2.4.0"
+CLIENT_VERSION = "2.5.0"

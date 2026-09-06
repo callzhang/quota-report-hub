@@ -302,10 +302,10 @@ test("queryTokenUsage rejects result sets beyond finite trend and breakdown limi
       rows.push({
         sql: `
           INSERT INTO token_usage_15m (
-            hub_user_email, provider, model_account_id, model_id, bucket_start,
+            hub_user_email, installation_id, provider, model_account_id, model_id, bucket_start,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
             reasoning_tokens, total_tokens, updated_at
-          ) VALUES (?, 'codex', ?, ?, '2026-08-18T11:00:00.000Z', 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z')
+          ) VALUES (?, 'fixture-install', 'codex', ?, ?, '2026-08-18T11:00:00.000Z', 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z')
         `,
         args: [`member-${index}@stardust.ai`, `account-${index}`, `model-${index}`],
       });
@@ -334,12 +334,12 @@ test("queryTokenUsage rejects more than 2000 chronological trend points", async 
         SELECT value + 1 FROM sequence WHERE value < 2000
       )
       INSERT INTO token_usage_15m (
-        hub_user_email, provider, model_account_id, model_id, bucket_start,
+        hub_user_email, installation_id, provider, model_account_id, model_id, bucket_start,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
         reasoning_tokens, total_tokens, updated_at
       )
       SELECT
-        'trend@stardust.ai', 'codex', 'trend-account', 'trend-model',
+        'trend@stardust.ai', 'fixture-install', 'codex', 'trend-account', 'trend-model',
         strftime('%Y-%m-%dT%H:%M:00.000Z', '2026-07-28T15:00:00Z', '+' || (value * 15) || ' minutes'),
         1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z'
       FROM sequence
@@ -362,10 +362,10 @@ test("compactTokenUsage moves only rows before cutoff, adds to daily data, and p
     await mod.ensureSchema();
     const detailSql = `
       INSERT INTO token_usage_15m (
-        hub_user_email, provider, model_account_id, model_id, bucket_start,
+        hub_user_email, installation_id, provider, model_account_id, model_id, bucket_start,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
         reasoning_tokens, total_tokens, updated_at
-      ) VALUES (?, 'codex', 'account', ?, ?, ?, ?, 0, 0, 0, ?, '2026-08-18T12:00:00.000Z')
+      ) VALUES (?, 'fixture-install', 'codex', 'account', ?, ?, ?, ?, 0, 0, 0, ?, '2026-08-18T12:00:00.000Z')
     `;
     await client.batch([
       { sql: detailSql, args: ["derek@stardust.ai", "gpt-5.5", "2026-05-19T23:45:00.000Z", 100, 20, 120] },
@@ -434,10 +434,10 @@ test("compactTokenUsage processes at most seven UTC days per call", async () => 
     const statements = Array.from({ length: 8 }, (_, index) => ({
       sql: `
         INSERT INTO token_usage_15m (
-          hub_user_email, provider, model_account_id, model_id, bucket_start,
+          hub_user_email, installation_id, provider, model_account_id, model_id, bucket_start,
           input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
           reasoning_tokens, total_tokens, updated_at
-        ) VALUES ('derek@stardust.ai', 'codex', 'account', 'model', ?, 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z')
+        ) VALUES ('derek@stardust.ai', 'fixture-install', 'codex', 'account', 'model', ?, 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z')
       `,
       args: [`2026-05-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`],
     }));
@@ -457,10 +457,10 @@ test("failed daily aggregation leaves that day's detail untouched", async () => 
     await mod.ensureSchema();
     await client.execute(`
       INSERT INTO token_usage_15m (
-        hub_user_email, provider, model_account_id, model_id, bucket_start,
+        hub_user_email, installation_id, provider, model_account_id, model_id, bucket_start,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
         reasoning_tokens, total_tokens, updated_at
-      ) VALUES ('derek@stardust.ai', 'codex', 'account', 'model', '2026-05-01T00:00:00.000Z', 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z')
+      ) VALUES ('derek@stardust.ai', 'fixture-install', 'codex', 'account', 'model', '2026-05-01T00:00:00.000Z', 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z')
     `);
     await client.execute(`
       CREATE TRIGGER fail_token_usage_daily
@@ -472,6 +472,104 @@ test("failed daily aggregation leaves that day's detail untouched", async () => 
     await assert.rejects(mod.compactTokenUsage({ before: "2026-06-01T00:00:00.000Z", maxDays: 7 }));
     const remaining = await client.execute("SELECT COUNT(*) AS count FROM token_usage_15m");
     assert.equal(Number(remaining.rows[0].count), 1);
+  } finally {
+    cleanup();
+  }
+});
+
+// Usage is keyed per machine so a machine can correct its own history. Without that grain every
+// reporter under one hub user writes into the same row, and the only copies of the truth -- the raw
+// logs on each laptop -- can never be applied.
+test("a repair replaces this machine's window and leaves other machines alone", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    const row = (bucket, total) => ({
+      bucket_start: bucket, provider: "codex", model_account_id: "acct", model_id: "gpt-5.6-sol",
+      input_tokens: total, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
+      reasoning_tokens: 0, total_tokens: total,
+    });
+    const ingest = (installationId, batchId, rows, replaceFrom = null) => mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai", installationId, batchId, rows, replaceFrom,
+      receivedAt: "2026-09-07T12:00:00.000Z",
+    });
+
+    await ingest("machine-a", "a1", [row("2026-09-01T10:00:00.000Z", 900_000_000)]);
+    await ingest("machine-b", "b1", [row("2026-09-01T10:00:00.000Z", 5_000_000)]);
+    // The pre-migration blob: reported when machines were not distinguishable, so attributable to
+    // nobody and impossible to split.
+    await client.execute(`
+      INSERT INTO token_usage_15m (
+        hub_user_email, installation_id, provider, model_account_id, model_id, bucket_start,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        reasoning_tokens, total_tokens, updated_at
+      ) VALUES ('derek@stardust.ai', '', 'codex', 'acct', 'gpt-5.6-sol',
+                '2026-09-01T10:00:00.000Z', 700000000, 0, 0, 0, 0, 700000000, '2026-09-01T11:00:00.000Z')
+    `);
+
+    await ingest("machine-a", "a-repair", [row("2026-09-01T10:00:00.000Z", 3_000_000)], "2026-09-01T00:00:00.000Z");
+
+    const rows = await client.execute(
+      "SELECT installation_id, total_tokens FROM token_usage_15m ORDER BY installation_id",
+    );
+    assert.deepEqual(
+      rows.rows.map((entry) => [entry.installation_id, Number(entry.total_tokens)]),
+      [["machine-a", 3_000_000], ["machine-b", 5_000_000]],
+      "the repairing machine's own row is corrected, machine-b is untouched, the blob is gone",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("a repair does not reach back before the window it declares", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    const row = (bucket) => ({
+      bucket_start: bucket, provider: "codex", model_account_id: "acct", model_id: "gpt-5.6-sol",
+      input_tokens: 1, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
+      reasoning_tokens: 0, total_tokens: 1,
+    });
+    const ingest = (batchId, rows, replaceFrom = null) => mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai", installationId: "machine-a", batchId, rows, replaceFrom,
+      receivedAt: "2026-09-07T12:00:00.000Z",
+    });
+    await ingest("old", [row("2026-08-01T10:00:00.000Z")]);
+    await ingest("new", [row("2026-09-02T10:00:00.000Z")]);
+    await ingest("repair", [row("2026-09-03T10:00:00.000Z")], "2026-09-01T00:00:00.000Z");
+
+    const rows = await client.execute("SELECT bucket_start FROM token_usage_15m ORDER BY bucket_start");
+    assert.deepEqual(
+      rows.rows.map((entry) => entry.bucket_start),
+      ["2026-08-01T10:00:00.000Z", "2026-09-03T10:00:00.000Z"],
+      "August predates the declared window and survives; the September row it replaced does not",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+test("a retried repair batch clears once, not once per attempt", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    const rows = [{
+      bucket_start: "2026-09-02T10:00:00.000Z", provider: "codex", model_account_id: "acct",
+      model_id: "gpt-5.6-sol", input_tokens: 7, output_tokens: 0, cache_read_tokens: 0,
+      cache_write_tokens: 0, reasoning_tokens: 0, total_tokens: 7,
+    }];
+    const repair = () => mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai", installationId: "machine-a", batchId: "repair-1",
+      rows, replaceFrom: "2026-09-01T00:00:00.000Z", receivedAt: "2026-09-07T12:00:00.000Z",
+    });
+    await repair();
+    // The retry is the dangerous one: a clear that ran again would wipe the rows the first attempt
+    // had already written, and the client would have no reason to send them a third time.
+    const second = await repair();
+    assert.equal(second.applied, false);
+    const stored = await client.execute("SELECT total_tokens FROM token_usage_15m");
+    assert.deepEqual(stored.rows.map((entry) => Number(entry.total_tokens)), [7]);
   } finally {
     cleanup();
   }
