@@ -720,6 +720,19 @@ rationing rule. Gating it would be self-defeating: nobody fixes their reporter d
 when the pool does tighten those users still have no measurable share and the cooldown -- the actual
 rationing rule -- cannot reach them. The meter has to be running before it is needed.
 
+**`require_contribution` — the admin's hard mode.** A dashboard flag (Settings tab, default OFF)
+that turns the soft supply rule above into a precondition: while ON, a fetch from somebody with no
+healthy upload is refused outright (`contribution_required`, no retry window), abundance or not —
+it is an explicit access decision by an admin, not a scarcity-triggered rationing rule, so the
+scarcity fail-open principle does not apply to it and the flag itself is its kill switch. It is
+also deliberately independent of the `premium_ratio_enforcement` kill switch: turning ratio-gate
+refusals off must not silently disarm an access rule an admin chose to enforce
+(`api/auth/fetch-best.js`). The repair path stays open — a refused non-contributor is still handed
+their own invalidated auth to re-login, which remains the way to stop being one. The refusal
+notice (`contributionRequiredNotice`) names the admin decision, what counts as a valid account,
+and that renewal of the account currently in hand will also require contributing once its access
+token expires.
+
 ### Schedule and kill switch
 
 Phase dates are hardcoded in `lib/premium-ratio.js` and cumulative:
@@ -801,7 +814,7 @@ Both sources are held to the same thresholds, judged per window the report carri
 
 - **`pool_health_snapshots`** — one row per source per worker run: `total, ok_count, hard_dead_count, other_err_count, central_refresh_{attempted,ok,rejected}`.
 - **Account availability** (`index.html`): one primary lifecycle state per account. Detailed probe/token/refresh evidence and the lazy 24-hour quota chart are secondary diagnostics, not peer status lines.
-- **Dashboard trend** (`index.html` `renderHealthTrend`, on the Settings tab next to the `disabled_refresh_token` toggle): per-source healthy ratio, hard-dead count + trend badge, an SVG sparkline of the hard-dead series, and central-refresh outcomes. The framing: *the death spiral is closed when hard-dead stops climbing*.
+- **Dashboard trend** (`index.html` `renderHealthTrend`, at the top of the Accounts tab): per-source healthy ratio, hard-dead count + trend badge, an SVG sparkline of the hard-dead series, and central-refresh outcomes. The framing: *the death spiral is closed when hard-dead stops climbing*.
 - **Reporter health** (`index.html` `renderReporterHealth`, the Devices tab): per-machine guard heartbeat states ([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)).
 - **`assess_health.mjs`** — CLI verdict + abuse scan ([§8.1](#81-assess_healthmjs)).
 - **`auth_pool_fetch_log`** — full borrow audit surfaced on `users.html`.

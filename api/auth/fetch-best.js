@@ -107,22 +107,27 @@ export default async function handler(req, res) {
   // actually matters — the hub keeping one account's access token alive indefinitely — untouched.
   const policyWindowStart = new Date(Date.now() - PREMIUM_RATIO_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const requestClientVersion = body?.client_version ? String(body.client_version) : null;
-  const [policyInputs, scarcityState] = await Promise.all([
+  const [policyInputs, scarcityState, requireContribution] = await Promise.all([
     fetchPolicyInputs({ email: authContext.email, since: policyWindowStart }),
     poolScarcityState(source),
+    getFeatureFlag("require_contribution", false),
   ]);
   const policy = evaluateFetchPolicy({
     ...policyInputs,
     requestClientVersion,
     poolScarce: scarcityFromState(scarcityState).scarce,
+    requireContribution,
   });
 
   // Live kill switch, separate from the hardcoded schedule: if a phase lands badly the flag turns
   // refusals off within one request, while the notices keep flowing so users still see where they
   // stand. Turning enforcement off must never also turn the warnings off.
   const enforcePolicy = await getFeatureFlag("premium_ratio_enforcement", true);
+  // require_contribution is its own admin switch with its own kill path (turning the flag off);
+  // the ratio-gate kill switch must not silently disarm it.
+  const policyRefused = !policy.allowed && (enforcePolicy || policy.reason === "contribution_required");
 
-  if (!policy.allowed && enforcePolicy) {
+  if (policyRefused) {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
       requesterId,

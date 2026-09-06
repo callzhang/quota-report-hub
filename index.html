@@ -500,15 +500,29 @@
           <div class="meta wrap" id="flag-message"></div>
         </section>
 
-        <section class="panel section" id="health-section" hidden>
-          <h2>Pool health trend</h2>
-          <div class="meta">Per source, from each worker run (~15 min): how many pooled auths are healthy vs hard-dead (refresh token gone — needs the owner to re-login), and central-refresh outcomes. The death spiral is closed when hard-dead stops climbing.</div>
-          <div id="health-rows" class="health-rows"></div>
+        <section class="panel section admin-flag" id="require-contribution-panel" hidden>
+          <div class="admin-flag-row">
+            <label class="switch">
+              <input type="checkbox" id="flag-require-contribution" />
+              <span class="slider"></span>
+            </label>
+            <div>
+              <strong>Require users to supply a valid account</strong>
+              <div class="meta" id="flag-require-contribution-status">…</div>
+            </div>
+          </div>
+          <div class="meta wrap">Admin only · When ON, only members with a healthy uploaded account in the pool may borrow from it — a non-contributor's fetch is refused with a notice explaining how to contribute. Their own invalidated auth is still returned for re-login. When OFF, non-contributors are only rate-limited while the pool is scarce.</div>
+          <div class="meta wrap" id="flag-require-contribution-message"></div>
         </section>
         <div class="empty section" id="settings-empty" hidden>No settings are visible to your account.</div>
       </div>
 
       <div id="tab-panel-accounts" hidden>
+      <section class="panel section" id="health-section" hidden>
+        <h2>Pool health trend</h2>
+        <div class="meta">Per source, from each worker run (~15 min): how many pooled auths are healthy vs hard-dead (refresh token gone — needs the owner to re-login), and central-refresh outcomes. The death spiral is closed when hard-dead stops climbing.</div>
+        <div id="health-rows" class="health-rows"></div>
+      </section>
       <section class="panel section">
         <h2>Cloud Auth Entries</h2>
         <div class="table-shell">
@@ -572,6 +586,7 @@
       const requestMessage = document.getElementById("request-message");
       const EMAIL_STORE = "quota_report_hub_email";
       const adminFlagPanel = document.getElementById("admin-flag-panel");
+      const requireContributionPanel = document.getElementById("require-contribution-panel");
       const flagToggle = document.getElementById("flag-disabled-rt");
       const flagStatus = document.getElementById("flag-disabled-rt-status");
       const flagMessage = document.getElementById("flag-message");
@@ -720,6 +735,7 @@
         empty.hidden = true;
         archivedEmpty.hidden = true;
         adminFlagPanel.hidden = true;
+        requireContributionPanel.hidden = true;
         healthSection.hidden = true;
         dashboardLocked = true;
         applyActiveTab();
@@ -1345,7 +1361,7 @@
         setAuthenticatedView(payload.viewer_email || "unknown");
         renderAdminFlag(payload);
         renderHealthTrend(payload.health_history);
-        settingsEmpty.hidden = !(adminFlagPanel.hidden && healthSection.hidden);
+        settingsEmpty.hidden = !adminFlagPanel.hidden;
         renderReporterHealth(payload.reporter_health);
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
         scheduleDashboardTransition(items);
@@ -1480,12 +1496,6 @@
         setLockedView("Token cleared.");
       });
 
-      function flagStatusText(on) {
-        return on
-          ? "ON · borrowers get access-token-only credentials"
-          : "OFF · borrowers get full credentials (including refresh token)";
-      }
-
       function sparkline(values, color) {
         if (!values.length) return "";
         const w = 120, h = 28;
@@ -1545,44 +1555,71 @@
           : `All ${okCount} reporters ran and probed successfully.`;
       }
 
-      function renderAdminFlag(payload) {
-        if (!payload.is_admin) {
-          adminFlagPanel.hidden = true;
-          return;
-        }
-        adminFlagPanel.hidden = false;
-        const on = Boolean(payload.disabled_refresh_token);
-        flagToggle.checked = on;
-        flagStatus.textContent = flagStatusText(on);
-        flagMessage.textContent = "";
+      // One binder for every admin flag toggle: the change handler POSTs just its own key and
+      // trusts the flags object the server answers with, so a failed save rolls the switch back.
+      function bindAdminFlag({ key, toggle, statusEl, messageEl, statusText }) {
+        toggle.addEventListener("change", async () => {
+          const desired = toggle.checked;
+          const token = currentToken || getStoredToken();
+          toggle.disabled = true;
+          messageEl.textContent = "Saving…";
+          try {
+            const response = await fetch("/api/admin/flags", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ [key]: desired }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              throw new Error(payload.error || `request failed (${response.status})`);
+            }
+            const nowOn = Boolean(payload.flags?.[key]);
+            toggle.checked = nowOn;
+            statusEl.textContent = statusText(nowOn);
+            messageEl.textContent = `Saved ${new Date().toLocaleTimeString()}`;
+          } catch (error) {
+            toggle.checked = !desired;
+            messageEl.textContent = `Failed: ${error.message}`;
+          } finally {
+            toggle.disabled = false;
+          }
+        });
+        return {
+          render(on) {
+            toggle.checked = on;
+            statusEl.textContent = statusText(on);
+            messageEl.textContent = "";
+          },
+        };
       }
 
-      flagToggle.addEventListener("change", async () => {
-        const desired = flagToggle.checked;
-        const token = currentToken || getStoredToken();
-        flagToggle.disabled = true;
-        flagMessage.textContent = "Saving…";
-        try {
-          const response = await fetch("/api/admin/flags", {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ disabled_refresh_token: desired }),
-          });
-          const payload = await response.json().catch(() => ({}));
-          if (!response.ok) {
-            throw new Error(payload.error || `request failed (${response.status})`);
-          }
-          const nowOn = Boolean(payload.flags?.disabled_refresh_token);
-          flagToggle.checked = nowOn;
-          flagStatus.textContent = flagStatusText(nowOn);
-          flagMessage.textContent = `Saved ${new Date().toLocaleTimeString()}`;
-        } catch (error) {
-          flagToggle.checked = !desired;
-          flagMessage.textContent = `Failed: ${error.message}`;
-        } finally {
-          flagToggle.disabled = false;
-        }
+      const disabledRtFlag = bindAdminFlag({
+        key: "disabled_refresh_token",
+        toggle: flagToggle,
+        statusEl: flagStatus,
+        messageEl: flagMessage,
+        statusText: (on) => on
+          ? "ON · borrowers get access-token-only credentials"
+          : "OFF · borrowers get full credentials (including refresh token)",
       });
+
+      const requireContributionFlag = bindAdminFlag({
+        key: "require_contribution",
+        toggle: document.getElementById("flag-require-contribution"),
+        statusEl: document.getElementById("flag-require-contribution-status"),
+        messageEl: document.getElementById("flag-require-contribution-message"),
+        statusText: (on) => on
+          ? "ON · borrowing requires a healthy uploaded account in the pool"
+          : "OFF · non-contributors may borrow, rate-limited only during scarcity",
+      });
+
+      function renderAdminFlag(payload) {
+        adminFlagPanel.hidden = !payload.is_admin;
+        requireContributionPanel.hidden = !payload.is_admin;
+        if (!payload.is_admin) return;
+        disabledRtFlag.render(Boolean(payload.disabled_refresh_token));
+        requireContributionFlag.render(Boolean(payload.require_contribution));
+      }
 
       availabilityPopover.addEventListener("mouseenter", () => {
         if (popoverCloseTimer !== null) clearTimeout(popoverCloseTimer);

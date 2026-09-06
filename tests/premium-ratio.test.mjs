@@ -527,3 +527,29 @@ test("the contribution notice says what counts as supplying the pool", () => {
   assert.match(cooldown.message, new RegExp(`${PREMIUM_RATIO_COOLDOWN_MINUTES} 分钟`));
   assert.match(warning.message, new RegExp(PHASE_COOLDOWN_AT.slice(0, 10)));
 });
+
+test("require_contribution refuses a non-contributor outright, abundance or not", () => {
+  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, activeUsers: 10 };
+  // Abundant pool, never served before — every softer rule would have let this caller through.
+  const refused = evaluateFetchPolicy(inputs({
+    ...light, hasHealthyUpload: false, requireContribution: true, poolScarce: false, lastServedAt: null,
+  }));
+  assert.equal(refused.allowed, false);
+  assert.equal(refused.reason, "contribution_required");
+  assert.equal(refused.retry_after_seconds, null);
+  const notice = refused.notices.at(-1);
+  assert.equal(notice.code, "contribution_required");
+  // Must name the one action that lifts it, and not nag on every 15-minute run.
+  assert.match(notice.message, /Codex/);
+  assert.equal(notice.repeat_seconds, NOTICE_REPEAT_SECONDS);
+
+  // A contributor is untouched by the flag.
+  assert.equal(evaluateFetchPolicy(inputs({
+    ...light, hasHealthyUpload: true, requireContribution: true, poolScarce: false, lastServedAt: null,
+  })).allowed, true);
+
+  // Flag off restores the scarcity-only cooldown behavior.
+  assert.equal(evaluateFetchPolicy(inputs({
+    ...light, hasHealthyUpload: false, requireContribution: false, poolScarce: false, lastServedAt: PHASE_COOLDOWN_AT,
+  })).allowed, true);
+});

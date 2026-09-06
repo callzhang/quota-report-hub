@@ -200,6 +200,23 @@ test("all hub pages share the five-tab top navigation", async () => {
   }
 });
 
+test("pool health trend leads the accounts tab and settings holds both admin toggles", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  // the trend section moved out of settings to the top of the accounts tab
+  assert.match(html, /<div id="tab-panel-accounts" hidden>\s*<section class="panel section" id="health-section" hidden>\s*<h2>Pool health trend<\/h2>/);
+  assert.doesNotMatch(html, /tab-panel-settings[\s\S]*?Pool health trend[\s\S]*?tab-panel-accounts/);
+
+  // both flags render through one binder, each posting only its own key
+  assert.match(html, /function bindAdminFlag\(\{ key, toggle, statusEl, messageEl, statusText \}\)/);
+  assert.match(html, /body: JSON\.stringify\(\{ \[key\]: desired \}\)/);
+  assert.match(html, /key: "disabled_refresh_token"/);
+  assert.match(html, /key: "require_contribution"/);
+  assert.match(html, /id="flag-require-contribution"/);
+  assert.match(html, /id="require-contribution-panel"/);
+  assert.match(html, /payload\.require_contribution/);
+});
+
 test("accounts and users pages link to the independent token usage page", async () => {
   const [dashboard, users] = await Promise.all([
     readFile(new URL("../index.html", import.meta.url), "utf8"),

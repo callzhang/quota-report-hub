@@ -58,7 +58,7 @@ export async function statusHandlerImpl(req, res, deps = {
     let snapshot = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const revisionBefore = await deps.dashboardRevision();
-      const [entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken] = await Promise.all([
+      const [entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken, requireContribution] = await Promise.all([
         deps.authPoolEntrySummaries(),
         deps.authPoolQuotaLatest(),
         deps.authPoolInvalidatedNotifications(),
@@ -66,6 +66,7 @@ export async function statusHandlerImpl(req, res, deps = {
         deps.poolHealthSnapshots({ limit: 96 }),
         deps.reporterProbeHeartbeats({ limit: 200 }),
         deps.getFeatureFlag("disabled_refresh_token", false),
+        deps.getFeatureFlag("require_contribution", false),
       ]);
       const revisionAfter = await deps.dashboardRevision();
       if (revisionBefore.revision === revisionAfter.revision) {
@@ -77,6 +78,7 @@ export async function statusHandlerImpl(req, res, deps = {
           healthHistory,
           heartbeats,
           disabledRefreshToken,
+          requireContribution,
           revision: revisionAfter,
         };
         break;
@@ -85,7 +87,7 @@ export async function statusHandlerImpl(req, res, deps = {
     if (!snapshot) {
       throw new Error("dashboard changed while status was being assembled");
     }
-    const { entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken, revision } = snapshot;
+    const { entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken, requireContribution, revision } = snapshot;
     const dataset = deps.authPoolStatusPayload(entries, reports, new Date().toISOString(), invalidatedStates);
     dataset.fetch_log = fetchLog;
     dataset.health_history = healthHistory;
@@ -95,6 +97,7 @@ export async function statusHandlerImpl(req, res, deps = {
     dataset.dashboard_revision_token = deps.signDashboardRevisionToken(authContext.email);
     dataset.viewer_email = authContext.email;
     dataset.disabled_refresh_token = disabledRefreshToken;
+    dataset.require_contribution = requireContribution;
     dataset.is_admin = deps.isAdminEmail(authContext.email);
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");

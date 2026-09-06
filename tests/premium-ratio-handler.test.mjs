@@ -301,3 +301,42 @@ test("the kill switch stops the contribution cooldown too, without silencing it"
     await db.setFeatureFlag("premium_ratio_enforcement", true, "test");
   }
 });
+
+test("require_contribution refuses a non-contributor even while the pool is healthy", async () => {
+  const email = "borrower4@stardust.ai";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.5", "batch-borrower4");
+  await seedScarcePool(false);
+  await db.setFeatureFlag("require_contribution", true, "test");
+  try {
+    const refused = await call(token);
+    assert.equal(refused.reason, "contribution_required");
+    assert.equal(refused.replacement, null);
+    assert.ok(refused.notices.some((notice) => notice.code === "contribution_required"));
+
+    // Supplying the pool lifts the requirement in the very next request.
+    await seedContribution(email, "borrower4-pool@example.com");
+    const after = await call(token);
+    assert.notEqual(after.reason, "contribution_required");
+    assert.ok(after.replacement, "a contributor is served like anybody else");
+  } finally {
+    await db.setFeatureFlag("require_contribution", false, "test");
+  }
+});
+
+test("the ratio-gate kill switch does not disarm require_contribution", async () => {
+  const email = "borrower5@stardust.ai";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.5", "batch-borrower5");
+  await seedScarcePool(false);
+  await db.setFeatureFlag("require_contribution", true, "test");
+  await db.setFeatureFlag("premium_ratio_enforcement", false, "test");
+  try {
+    const payload = await call(token);
+    assert.equal(payload.reason, "contribution_required");
+    assert.equal(payload.replacement, null);
+  } finally {
+    await db.setFeatureFlag("premium_ratio_enforcement", true, "test");
+    await db.setFeatureFlag("require_contribution", false, "test");
+  }
+});
