@@ -1,5 +1,5 @@
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -17,8 +17,9 @@ import {
 } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
-import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob, probeClaudeAccessToken } from "../lib/token-refresh.js";
+import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob } from "../lib/token-refresh.js";
 import { isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
+import { probeClaudeUsage } from "../lib/claude-usage.js";
 
 // Proactively refresh an access token (claude OR codex) once it is within this window of expiry.
 // The cron nominally fires every ~15 min, but GitHub Actions can delay it; a 1-hour window keeps the
@@ -107,29 +108,55 @@ function probeCodexAuthJson(authJsonText) {
   }
 }
 
-// `claude -p /usage` cannot report a dead credential: with a rejected access token it still exits 0
-// and prints its header, just without the usage lines. So establish auth validity first, against the
-// endpoint that answers plainly. Only a 401 is an answer — a 5xx or a network blip must not retire an
-// account, which is why this reads `rejected` and not `!ok`.
-export async function probeClaudeAuthJson(authJsonText, { probeAccessTokenImpl = probeClaudeAccessToken } = {}) {
-  const tokenCheck = await probeAccessTokenImpl(authJsonText);
-  if (tokenCheck?.rejected) {
+// Claude quota comes from /api/oauth/usage -- the endpoint Claude Code itself reads -- with the pooled
+// access token, in one request. It is also the one place a dead token announces itself: a 401. The
+// previous source, scraping "Current session: N% used" out of `claude -p /usage`, was not a contract:
+// CLI 2.1.260 prints a usage-behaviour breakdown with no window lines on some runs, and 10 of 36 probes
+// of a healthy account came back "no usage windows" and flipped its row to error (2026-09-05).
+// Plan B -- driving the interactive UI -- stays behind PROBE_CLAUDE_MODE=tui for the day the endpoint
+// changes shape; it is a deliberate switch, never an automatic fallback, because it costs an inference
+// turn and registers a session against the pooled account.
+export async function probeClaudeAuthJson(authJsonText, { probeUsageImpl = probeClaudeUsage, nowImpl = () => new Date() } = {}) {
+  const usage = await probeUsageImpl(authJsonText);
+  if (usage?.rejected) {
     // Exact string from AUTH_INVALIDATION_ERRORS: it is what drives the force-refresh path below.
     throw new Error("claude auth invalid (authentication_error)");
   }
+  if (process.env.PROBE_CLAUDE_MODE === "tui") {
+    return probeClaudeAuthJsonViaTui(authJsonText);
+  }
+  const blob = JSON.parse(authJsonText);
+  const report = {
+    source: "claude",
+    hostname: "github-actions",
+    reporter_name: `actions@${hostname()}`,
+    reported_at: nowImpl().toISOString().replace(/\.\d{3}Z$/, "Z"),
+    account_id: blob.account_id,
+    email: blob.email ?? null,
+    name: blob.name ?? null,
+    plan_name: blob.plan_name ?? null,
+    auth_path: null,
+    auth_last_refresh: blob.auth_last_refresh ?? null,
+    model_context_window: null,
+    usage_summary: { probe_source: "oauth_usage_api", usage_probe: { status: usage.status ?? null, reason: usage.reason ?? null } },
+  };
+  if (usage.ok) {
+    return { ...report, status: "ok", error: null, windows: usage.windows };
+  }
+  // A throttled or unreachable endpoint is a probe that produced nothing, not a verdict on the account.
+  // Say what was observed; the merge keeps the previous quota for a worker soft-fail.
+  return { ...report, status: "error", error: `claude usage probe failed (${usage.reason})`, windows: { "5h": null, "1week": null } };
+}
+
+function probeClaudeAuthJsonViaTui(authJsonText) {
   const tempDir = mkdtempSync(join(tmpdir(), "quota-report-claude-"));
   const authBlobPath = join(tempDir, "auth.json");
   writeFileSync(authBlobPath, authJsonText, "utf8");
-  // Escape hatch to plan B without a code change, should `claude -p /usage` ever stop answering.
-  const mode = process.env.PROBE_CLAUDE_MODE === "tui" ? "tui" : "usage";
   try {
     const result = spawnSync(
       "python3",
-      [join(process.cwd(), "scripts/probe_claude_auth_blob.py"), "--auth-blob-path", authBlobPath, "--mode", mode],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-      }
+      [join(process.cwd(), "scripts/probe_claude_auth_blob.py"), "--auth-blob-path", authBlobPath],
+      { cwd: process.cwd(), encoding: "utf8" }
     );
     if (result.status !== 0) {
       throw new Error((result.stderr || result.stdout || "claude cloud probe failed").trim());

@@ -29,17 +29,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on runners that skip
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STATUSLINE_SCRIPT = REPO_ROOT / "skills" / "quota-reporter" / "scripts" / "claude_statusline_probe.py"
 STATUSLINE_SNAPSHOT = "statusline-rate-limits.json"
-# Default: ask the CLI for the numbers directly. `claude -p /usage` prints both windows as plain
-# text, exits 0 in ~1.5s and runs no inference turn. Plan B (tui) drives the interactive UI and is
-# kept because it is the only path that survives `-p /usage` changing shape or going away.
-# Plan B types this at the prompt purely to force an API response (that is what populates the
-# statusline snapshot). It lands in the pooled owner's history, so it says what it is.
+# Plan B for claude quota: drive the interactive UI and read the statusline snapshot it writes. The
+# worker reads quota from /api/oauth/usage directly (lib/claude-usage.js); this path is kept behind
+# PROBE_CLAUDE_MODE=tui for the day that endpoint changes shape. It types this at the prompt purely to
+# force an API response (that is what populates the statusline snapshot). It lands in the pooled
+# owner's history, so it says what it is.
 TUI_PROBE_PROMPT = "quota probe - automated - reply with ok"
-PROBE_MODE_USAGE = "usage"
-PROBE_MODE_TUI = "tui"
-PROBE_MODES = (PROBE_MODE_USAGE, PROBE_MODE_TUI)
-# `claude -p` waits on stdin before running; the CLI itself suggests redirecting to skip that wait.
-USAGE_PROBE_ARGS = ("-p", "/usage")
 PROBE_STATUSLINE_REFRESH_SECONDS = 2
 CLAUDE_ENV_DROP_KEYS = {
     "ANTHROPIC_API_KEY",
@@ -305,6 +300,9 @@ def normalize_terminal_text(text: str) -> str:
 # A dead access token is not always announced. In usage mode the CLI prints its header and exits 0
 # with no windows and no diagnostic at all, which is why the worker asks the OAuth profile endpoint
 # for a 401 instead of trusting this text. These strings are the cases the CLI *does* announce.
+# The strings the CLI prints when it DOES announce a dead credential. (In print mode it often does not:
+# it prints its header and exits 0, which is why quota and liveness come from /api/oauth/usage now and
+# this only serves plan B's UI transcript.)
 def looks_like_auth_failure(compact: str) -> bool:
     lowered = compact.lower()
     lowered_flat = re.sub(r"\s+", "", lowered)
@@ -317,19 +315,6 @@ def looks_like_auth_failure(compact: str) -> bool:
         or "not logged in" in lowered
         or "notloggedin" in lowered_flat
     )
-
-
-def summarize_usage_probe_error(text: str, returncode: int | None) -> str:
-    compact = re.sub(r"\s+", " ", normalize_terminal_text(text or "")).strip()
-    if looks_like_auth_failure(compact):
-        return "claude auth invalid (authentication_error)"
-    if not compact:
-        return f"claude -p /usage produced no output (exit {returncode})"
-    if returncode not in (0, None):
-        return f"claude -p /usage failed (exit {returncode}): {compact[:160]}"
-    # Exit 0 with no windows. Most often a rejected access token, but the CLI gives us nothing to
-    # prove that from here, so say what we observed rather than guessing at the cause.
-    return f"claude -p /usage returned no usage windows: {compact[:160]}"
 
 
 def summarize_probe_error(text: str) -> str:
@@ -539,35 +524,7 @@ def warm_statusline_snapshot(claude_bin: str, home: Path, workdir: Path, timeout
             pass
 
 
-def run_usage_probe(claude_bin: str, home: Path, workdir: Path, timeout_seconds: int) -> tuple[dict, str | None]:
-    """Ask the CLI for the numbers directly: no terminal emulation, no inference turn.
-
-    `claude -p /usage` prints both windows as plain text and exits 0. Its output is parsed by the
-    same parse_usage_windows() plan B uses on the rendered /usage page, so the two modes agree.
-    """
-    env = clean_env(home)
-    try:
-        result = subprocess.run(
-            [claude_bin, *USAGE_PROBE_ARGS],
-            cwd=str(workdir),
-            env=env,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired:
-        return empty_windows(), f"claude -p /usage timed out after {timeout_seconds}s"
-    except OSError as error:
-        return empty_windows(), f"claude -p /usage could not start: {error}"
-    output = (result.stdout or "") + (result.stderr or "")
-    windows = parse_usage_windows(output)
-    if windows["5h"] is not None or windows["1week"] is not None:
-        return windows, None
-    return empty_windows(), summarize_usage_probe_error(output, result.returncode)
-
-
-def probe_blob(blob: dict, claude_bin: str, timeout_seconds: int, mode: str = PROBE_MODE_USAGE) -> dict:
+def probe_blob(blob: dict, claude_bin: str, timeout_seconds: int) -> dict:
     temp_dir = tempfile.mkdtemp(prefix="claude-cloud-probe-")
     try:
         home = Path(temp_dir) / "home"
@@ -578,10 +535,7 @@ def probe_blob(blob: dict, claude_bin: str, timeout_seconds: int, mode: str = PR
         materialize_cli_state(home, workdir, blob)
         write_settings(claude_home)
         prepared_claude_bin = prepare_claude_binary(home, claude_bin)
-        if mode == PROBE_MODE_TUI:
-            windows, error = warm_statusline_snapshot(prepared_claude_bin, home, workdir, timeout_seconds)
-        else:
-            windows, error = run_usage_probe(prepared_claude_bin, home, workdir, timeout_seconds)
+        windows, error = warm_statusline_snapshot(prepared_claude_bin, home, workdir, timeout_seconds)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -601,29 +555,23 @@ def probe_blob(blob: dict, claude_bin: str, timeout_seconds: int, mode: str = PR
         "model_context_window": None,
         "windows": windows,
         "usage_summary": {
-            "probe_source": "claude_cli_statusline" if mode == PROBE_MODE_TUI else "claude_cli_usage_command",
+            "probe_source": "claude_cli_statusline",
         },
     }
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Probe a stored Claude auth blob with the Claude CLI and report its quota windows.")
+    parser = argparse.ArgumentParser(description="Plan B: drive the Claude CLI UI for a stored auth blob and report the statusline quota windows.")
     parser.add_argument("--auth-blob-path", type=Path, required=True)
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--timeout-seconds", type=int, default=45)
-    parser.add_argument(
-        "--mode",
-        choices=PROBE_MODES,
-        default=PROBE_MODE_USAGE,
-        help="usage: headless `claude -p /usage` (default). tui: plan B, drive the interactive UI.",
-    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
     blob = json.loads(args.auth_blob_path.read_text(encoding="utf-8"))
-    report = probe_blob(blob, args.claude_bin, args.timeout_seconds, mode=args.mode)
+    report = probe_blob(blob, args.claude_bin, args.timeout_seconds)
     print(json.dumps(report))
 
 

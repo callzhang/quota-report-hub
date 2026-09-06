@@ -24,13 +24,13 @@ on:
         type: boolean
         default: false
       claude_probe_mode:
-        description: "Claude probe mode: usage (claude -p /usage) or tui (plan B, costs one inference per probe)"
+        description: "Claude probe mode: api (default, /api/oauth/usage JSON) or tui (plan B, drives the UI; costs one inference per probe)"
         required: false
         type: choice
         options:
-          - usage
+          - api
           - tui
-        default: usage
+        default: api
 
 # Never let two probe runs overlap: each run snapshots the pool at start and centrally
 # refreshes tokens, so two concurrent runs can replay an already-rotated refresh token and
@@ -55,8 +55,9 @@ jobs:
         run: npm install -g @openai/codex
       - name: Install Claude CLI
         run: npm install -g @anthropic-ai/claude-code
-      # Only plan B (PROBE_CLAUDE_MODE=tui) needs pexpect; the default usage-mode probe shells out to
-      # `claude -p /usage`. Installed anyway so a dispatch can fall back to plan B without a code change.
+      # Only plan B (PROBE_CLAUDE_MODE=tui) needs pexpect and the CLI; the default reads quota from
+      # /api/oauth/usage with the pooled access token and never shells out. Installed anyway so a
+      # dispatch can switch to plan B without a code change.
       - name: Install Python dependencies
         run: python3 -m pip install --user pexpect
       - name: Run cloud auth pool probe worker
@@ -70,7 +71,7 @@ jobs:
           PROBE_CYCLES: ${{ github.event_name == 'schedule' && '8' || inputs.cycles || '1' }}
           PROBE_INTERVAL_SECONDS: ${{ github.event_name == 'schedule' && '1200' || inputs.interval_seconds || '1200' }}
           FORCE_REFRESH_UNVERIFIED: ${{ github.event_name == 'workflow_dispatch' && inputs.force_refresh_unverified || 'false' }}
-          PROBE_CLAUDE_MODE: ${{ inputs.claude_probe_mode || 'usage' }}
+          PROBE_CLAUDE_MODE: ${{ inputs.claude_probe_mode || 'api' }}
         run: |
           set -euo pipefail
           for cycle in $(seq 1 "${PROBE_CYCLES}"); do

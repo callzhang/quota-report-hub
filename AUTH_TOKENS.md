@@ -653,6 +653,18 @@ the app never sees the 401 and the machine stays AT-only.
 
 ## 8. Quota probing (how each source is measured)
 
+**Claude, cloud worker (2026-09-05):** quota is read from `GET /api/oauth/usage` with the pooled access
+token ([lib/claude-usage.js](lib/claude-usage.js)) -- the endpoint Claude Code itself reads, the body the
+guard has parsed since it existed (`five_hour` / `seven_day`, `utilization` already a percentage,
+`resets_at` ISO). A 401 there is also the one answer that means the token is dead, so it replaces the
+separate `/api/oauth/profile` liveness check. The previous source, scraping "Current session: N% used"
+out of `claude -p /usage`, was not a contract: CLI 2.1.260 prints a usage-behaviour breakdown with no
+window lines on some runs, and 10 of 36 probes of a healthy account came back "no usage windows" and
+flipped its row to error. Plan B (driving the interactive UI, `PROBE_CLAUDE_MODE=tui`) is a deliberate
+switch, never an automatic fallback -- it costs an inference turn and registers a session against the
+pooled account. A throttled or unreachable endpoint yields a soft error with no windows; the merge keeps
+the previous reading.
+
 - **Codex** — run `codex exec` against the auth blob and read the latest `token_count` rollout event's
   `rate_limits` (`primary` → 5h, `secondary` → 1week). The worker probe
   (`scripts/probe_codex_auth_blob.py`) sets `capture_refreshed_auth=True` so the CLI **self-refreshes**

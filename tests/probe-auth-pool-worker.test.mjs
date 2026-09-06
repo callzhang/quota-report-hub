@@ -944,14 +944,13 @@ test("probeClaudeAuthJson retires a rejected access token without shelling out t
   const authJsonText = JSON.stringify({ credentials: { claudeAiOauth: { accessToken: "dead-token" } } });
   let seen = null;
 
-  // `claude -p /usage` exits 0 and prints its header for a rejected token, so the CLI can never be
-  // the source of this verdict. The OAuth profile endpoint's 401 is.
+  // The usage endpoint's 401 is the one answer that means the token is dead.
   await assert.rejects(
     () =>
       probeClaudeAuthJson(authJsonText, {
-        probeAccessTokenImpl: async (text) => {
+        probeUsageImpl: async (text) => {
           seen = text;
-          return { ok: false, status: 401, rejected: true };
+          return { ok: false, status: 401, rejected: true, reason: "access_token_rejected", windows: null };
         },
       }),
     /^Error: claude auth invalid \(authentication_error\)$/
@@ -959,21 +958,50 @@ test("probeClaudeAuthJson retires a rejected access token without shelling out t
   assert.equal(seen, authJsonText);
 });
 
-test("probeClaudeAuthJson does not retire an account when the token check itself fails", async () => {
+// Quota comes from /api/oauth/usage as JSON -- the endpoint Claude Code itself reads -- not from
+// scraping `claude -p /usage`, whose text dropped its window lines on some runs (2026-09-05).
+test("probeClaudeAuthJson reports the usage endpoint's windows as the account's quota", async () => {
   const { probeClaudeAuthJson } = await loadWorkerModule();
-  const authJsonText = JSON.stringify({ credentials: { claudeAiOauth: { accessToken: "live-token" } } });
-  let spawned = false;
+  const authJsonText = JSON.stringify({
+    schema: "claude_credentials_v1",
+    account_id: "claude-owner@example.com",
+    email: "owner@example.com",
+    name: "Owner Org",
+    plan_name: "Max",
+    auth_last_refresh: "1790708346219",
+    credentials: { claudeAiOauth: { accessToken: "live-token" } },
+  });
+  const windows = {
+    "5h": { used_percent: 9.4, remaining_percent: 90.6, window_minutes: 300, reset_at: "2026-09-06T02:00:00Z" },
+    "1week": { used_percent: 7, remaining_percent: 93, window_minutes: 10080, reset_at: "2026-09-08T12:00:00Z" },
+  };
+  const report = await probeClaudeAuthJson(authJsonText, {
+    probeUsageImpl: async () => ({ ok: true, rejected: false, status: 200, reason: null, windows }),
+    nowImpl: () => new Date("2026-09-06T00:30:00Z"),
+  });
+  assert.equal(report.status, "ok");
+  assert.equal(report.error, null);
+  assert.deepEqual(report.windows, windows);
+  assert.equal(report.account_id, "claude-owner@example.com");
+  assert.equal(report.email, "owner@example.com");
+  assert.equal(report.plan_name, "Max");
+  assert.equal(report.reported_at, "2026-09-06T00:30:00Z");
+  assert.equal(report.usage_summary.probe_source, "oauth_usage_api");
+});
 
-  // A 5xx or a network blip is the endpoint having a bad day, not a dead account: the probe must
-  // still run and report on its own terms.
-  const error = await probeClaudeAuthJson(authJsonText, {
-    probeAccessTokenImpl: async () => {
-      spawned = true;
-      return { ok: false, status: null, reason: "fetch failed" };
-    },
-  }).then(() => null, (thrown) => thrown);
-  assert.equal(spawned, true);
-  assert.notEqual(error?.message, "claude auth invalid (authentication_error)");
+test("probeClaudeAuthJson does not retire an account when the usage endpoint itself fails", async () => {
+  const { probeClaudeAuthJson } = await loadWorkerModule();
+  const authJsonText = JSON.stringify({ account_id: "claude-owner@example.com", credentials: { claudeAiOauth: { accessToken: "live-token" } } });
+
+  // A 429 or a network blip is the endpoint having a bad day, not a dead account: the report says
+  // what was observed and carries no quota, so the merge keeps the previous reading.
+  const report = await probeClaudeAuthJson(authJsonText, {
+    probeUsageImpl: async () => ({ ok: false, rejected: false, status: 429, reason: "http_429", windows: null }),
+  });
+  assert.equal(report.status, "error");
+  assert.equal(report.error, "claude usage probe failed (http_429)");
+  assert.deepEqual(report.windows, { "5h": null, "1week": null });
+  assert.equal(report.usage_summary.usage_probe.status, 429);
 });
 
 // The worker reads every pooled blob every cycle, which makes it the catch-up path for the

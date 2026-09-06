@@ -5407,7 +5407,7 @@ Reading additional input from stdin...
     def test_probe_claude_auth_blob_report_includes_nullable_fields(self):
         with mock.patch.object(
             probe_claude_auth_blob,
-            "run_usage_probe",
+            "warm_statusline_snapshot",
             return_value=({"5h": {"remaining_percent": 80}, "1week": {"remaining_percent": 50}}, None),
         ):
             report = probe_claude_auth_blob.probe_blob(
@@ -5564,30 +5564,6 @@ Reading additional input from stdin...
         self.assertEqual(Path(prepared), home / ".local" / "bin" / "claude")
 
     @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
-    def test_run_usage_probe_parses_headless_usage_output(self):
-        stdout = (
-            "You are currently using your subscription to power your Claude Code usage\n\n"
-            "Current session: 25% used \u00b7 resets Sep 3 at 7pm (America/Los_Angeles)\n"
-            "Current week (all models): 21% used \u00b7 resets Sep 8 at 5am (America/Los_Angeles)\n"
-            "Current week (Fable): 22% used \u00b7 resets Sep 8 at 5am (America/Los_Angeles)\n"
-        )
-        with mock.patch.object(
-            probe_claude_auth_blob.subprocess,
-            "run",
-            return_value=mock.Mock(returncode=0, stdout=stdout, stderr=""),
-        ) as runner:
-            windows, error = probe_claude_auth_blob.run_usage_probe(
-                "claude", Path("/tmp/home"), Path("/tmp/workdir"), timeout_seconds=30
-            )
-
-        self.assertIsNone(error)
-        self.assertEqual(windows["5h"]["used_percent"], 25.0)
-        self.assertEqual(windows["1week"]["used_percent"], 21.0)
-        # No terminal emulation and no prompt: the CLI is asked for the numbers and nothing else.
-        self.assertEqual(runner.call_args.args[0][1:], ["-p", "/usage"])
-        self.assertEqual(runner.call_args.kwargs["stdin"], probe_claude_auth_blob.subprocess.DEVNULL)
-
-    @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
     def test_parse_usage_windows_reads_a_window_that_has_not_started(self):
         # A window with nothing consumed prints no "resets" clause at all. Requiring one reported a
         # fully available account as "returned no usage windows" once an hour in production.
@@ -5616,76 +5592,6 @@ Reading additional input from stdin...
         self.assertIsNone(windows["5h"]["reset_at"])
         self.assertEqual(windows["1week"]["used_percent"], 21.0)
         self.assertIsNotNone(windows["1week"]["reset_at"])
-
-    @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
-    def test_run_usage_probe_does_not_claim_auth_failure_it_cannot_see(self):
-        # A rejected access token still exits 0 and prints the header, with no diagnostic at all.
-        # Only the worker's 401 check may call that auth invalid; this layer reports what it saw.
-        with mock.patch.object(
-            probe_claude_auth_blob.subprocess,
-            "run",
-            return_value=mock.Mock(
-                returncode=0,
-                stdout="You are currently using your subscription to power your Claude Code usage\n",
-                stderr="",
-            ),
-        ):
-            windows, error = probe_claude_auth_blob.run_usage_probe(
-                "claude", Path("/tmp/home"), Path("/tmp/workdir"), timeout_seconds=30
-            )
-
-        self.assertIsNone(windows["5h"])
-        self.assertIsNone(windows["1week"])
-        self.assertIn("no usage windows", error)
-        self.assertNotEqual(error, "claude auth invalid (authentication_error)")
-
-    @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
-    def test_run_usage_probe_maps_announced_auth_failure(self):
-        with mock.patch.object(
-            probe_claude_auth_blob.subprocess,
-            "run",
-            return_value=mock.Mock(returncode=1, stdout="", stderr="Invalid API key \u00b7 Please run /login"),
-        ):
-            _, error = probe_claude_auth_blob.run_usage_probe(
-                "claude", Path("/tmp/home"), Path("/tmp/workdir"), timeout_seconds=30
-            )
-
-        self.assertEqual(error, "claude auth invalid (authentication_error)")
-
-    @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
-    def test_run_usage_probe_reports_timeout(self):
-        with mock.patch.object(
-            probe_claude_auth_blob.subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=30),
-        ):
-            windows, error = probe_claude_auth_blob.run_usage_probe(
-                "claude", Path("/tmp/home"), Path("/tmp/workdir"), timeout_seconds=30
-            )
-
-        self.assertIsNone(windows["5h"])
-        self.assertIn("timed out", error)
-
-    @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
-    def test_probe_blob_defaults_to_usage_mode_and_keeps_tui_as_plan_b(self):
-        blob = {"account_id": "claude-test@example.com", "credentials": {"claudeAiOauth": {"accessToken": "t"}}}
-        windows = ({"5h": {"remaining_percent": 80}, "1week": None}, None)
-
-        with mock.patch.object(probe_claude_auth_blob, "run_usage_probe", return_value=windows) as usage:
-            with mock.patch.object(probe_claude_auth_blob, "warm_statusline_snapshot") as tui:
-                default_report = probe_claude_auth_blob.probe_blob(blob, claude_bin="claude", timeout_seconds=1)
-        self.assertEqual(usage.call_count, 1)
-        self.assertEqual(tui.call_count, 0)
-        self.assertEqual(default_report["usage_summary"]["probe_source"], "claude_cli_usage_command")
-
-        with mock.patch.object(probe_claude_auth_blob, "run_usage_probe") as usage:
-            with mock.patch.object(probe_claude_auth_blob, "warm_statusline_snapshot", return_value=windows) as tui:
-                tui_report = probe_claude_auth_blob.probe_blob(
-                    blob, claude_bin="claude", timeout_seconds=1, mode=probe_claude_auth_blob.PROBE_MODE_TUI
-                )
-        self.assertEqual(usage.call_count, 0)
-        self.assertEqual(tui.call_count, 1)
-        self.assertEqual(tui_report["usage_summary"]["probe_source"], "claude_cli_statusline")
 
     @unittest.skipIf(probe_claude_auth_blob is None, "probe module unavailable")
     def test_write_settings_keeps_probe_sessions_off_claude_ai(self):
