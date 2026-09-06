@@ -241,6 +241,86 @@ class TokenUsageCollectorTests(unittest.TestCase):
             self.assertEqual(cursors, 2)
             state.close()
 
+    def test_a_changed_device_number_does_not_replay_the_whole_log(self):
+        # APFS hands out a different st_dev after a reboot or a remount. Keying file identity on it
+        # made every session log look like a new file on the next boot, replaying it from byte zero
+        # -- which is how a months-old codex session had its whole cumulative charged as usage.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            codex_root = root / "codex"
+            path = codex_root / "session.jsonl"
+            write_lines(path, codex_lines(session="long-running"))
+            state = self.make_state(root)
+            uploads = []
+            upload = lambda _url, _token, payload: uploads.append(payload) or {"ok": True, "status_code": 200}
+            with mock.patch.object(token_usage_collector, "post_token_usage_batch", side_effect=upload):
+                self.run_collector(state=state, codex_root=codex_root, claude_root=root / "claude")
+                real_key = token_usage_collector._base_file_key
+                rebooted = lambda stat_result: f"{stat_result.st_dev + 2}:{stat_result.st_ino}"
+                with mock.patch.object(token_usage_collector, "_base_file_key", side_effect=rebooted):
+                    write_lines(path, codex_lines(session="long-running") + codex_lines(
+                        session="long-running", event_at="2026-08-18T11:50:01.000Z",
+                        total=320, input_tokens=290, output_tokens=30,
+                    )[2:])
+                    self.run_collector(state=state, codex_root=codex_root, claude_root=root / "claude")
+                self.assertIs(token_usage_collector._base_file_key, real_key)
+            # The appended turn is charged once, as a delta, and the file keeps its single cursor.
+            self.assertEqual(len(uploads), 2)
+            self.assertEqual(uploads[1]["rows"][0]["total_tokens"], 200)
+            self.assertEqual(sqlite_cursor_count(state.path, str(path)), 1)
+            state.close()
+
+    def test_a_session_first_seen_part_way_through_is_seeded_not_charged(self):
+        # The collector losing its place -- a rebuilt state file, a new machine, a log that arrived
+        # already large -- must not turn the session's accumulated history into fresh usage.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            codex_root = root / "codex"
+            path = codex_root / "session.jsonl"
+            write_lines(path, codex_lines(
+                session="ancient", total=5_262_309_118,
+                input_tokens=5_251_704_817, output_tokens=10_604_301,
+            ))
+            state = self.make_state(root)
+            uploads = []
+            upload = lambda _url, _token, payload: uploads.append(payload) or {"ok": True, "status_code": 200}
+            with mock.patch.object(token_usage_collector, "post_token_usage_batch", side_effect=upload):
+                first = self.run_collector(state=state, codex_root=codex_root, claude_root=root / "claude")
+                # ... and the next turn on that session is charged normally against the seed.
+                write_lines(path, codex_lines(session="ancient", total=5_262_309_118) + codex_lines(
+                    session="ancient", event_at="2026-08-18T11:50:01.000Z",
+                    total=5_262_409_118, input_tokens=5_251_804_817, output_tokens=10_604_301,
+                )[2:])
+                self.run_collector(state=state, codex_root=codex_root, claude_root=root / "claude")
+            self.assertEqual(uploads, [])
+            self.assertFalse(first["reported"])
+            state.close()
+
+    def test_a_version_refusal_keeps_the_batch_pending_and_names_the_reason(self):
+        # 426 is the hub refusing the batch over the client's version. The measurements are not the
+        # problem, so they stay staged and go up once the guard has taken the update.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            codex_root = root / "codex"
+            write_lines(codex_root / "session.jsonl", codex_lines())
+            state = self.make_state(root)
+            # The shape read_auth_pool_http_error produces: the hub's body, notices and all, nested
+            # under "response". The guard reads the demand off either level.
+            refusal = {
+                "ok": False, "status_code": 426, "reason": "http_error",
+                "response": {
+                    "reason": "reporter_upgrade_required",
+                    "notices": [{"code": "reporter_upgrade_required", "message": "..."}],
+                },
+            }
+            with mock.patch.object(token_usage_collector, "post_token_usage_batch", return_value=refusal):
+                result = self.run_collector(state=state, codex_root=codex_root, claude_root=root / "claude")
+            self.assertEqual(result["reason"], "reporter_upgrade_required")
+            self.assertEqual(result["notices"][0]["code"], "reporter_upgrade_required")
+            self.assertTrue(result["retry"])
+            self.assertIsNotNone(state.pending_upload())
+            state.close()
+
     def test_file_disappearing_after_discovery_warns_without_checkpointing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

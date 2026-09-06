@@ -169,3 +169,39 @@ test("a heartbeat stores and returns the guard's applied commit", async () => {
     cleanup();
   }
 });
+
+// Whether the updater that keeps the two fields above current is itself working. Without this a
+// machine stuck on an old version and a machine nobody has bumped read identically, and the reason
+// it is stuck stays in a JSON file on a laptop nobody is looking at.
+test("a heartbeat stores whether the self-updater is working, and why it is not", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertReporterProbeHeartbeat(heartbeat({
+      client_version: "2.4.0",
+      self_update_ok: false,
+      self_update_checked_at: "2026-09-06T18:30:00.000Z",
+      self_update_error: "HTTP Error 403: rate limit exceeded",
+    }));
+    const [row] = await mod.reporterProbeHeartbeats();
+    assert.equal(row.self_update_ok, false);
+    assert.equal(row.self_update_checked_at, "2026-09-06T18:30:00.000Z");
+    assert.equal(row.self_update_error, "HTTP Error 403: rate limit exceeded");
+
+    await mod.upsertReporterProbeHeartbeat(heartbeat({
+      last_run_at: "2026-09-06T18:45:00.000Z", client_version: "2.4.0", self_update_ok: true,
+    }));
+    const [healthy] = await mod.reporterProbeHeartbeats();
+    assert.equal(healthy.self_update_ok, true);
+    assert.equal(healthy.self_update_error, null);
+
+    // A client too old to say anything is unknown, not broken: null and false are different claims
+    // and collapsing them would mark every pre-2.4.0 machine as failing.
+    await mod.upsertReporterProbeHeartbeat(heartbeat({
+      last_run_at: "2026-09-06T19:00:00.000Z", client_version: "2.1.0",
+    }));
+    const [silent] = await mod.reporterProbeHeartbeats();
+    assert.equal(silent.self_update_ok, null);
+  } finally {
+    cleanup();
+  }
+});

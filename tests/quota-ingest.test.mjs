@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 process.env.TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL || "file:quota-ingest-test.db";
 process.env.TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN || "test-token";
 
-const { codexClientPayloadAccepted, ingestClientQuota, ingestReporterHeartbeat } = await import("../lib/quota-ingest.js");
+const { codexClientPayloadAccepted, ingestClientQuota, ingestReporterHeartbeat, normalizeReporterHeartbeat } = await import("../lib/quota-ingest.js");
 
 const completeWindow = { remaining_percent: 80, reset_at: "2026-06-14T13:00:00Z" };
 
@@ -289,4 +289,35 @@ test("ingestClientQuota leaves any other error on a resolved report untouched", 
   });
   assert.equal(writes[0].status, "error");
   assert.equal(writes[0].error, "claude auth invalid (authentication_error)", "a token that was refused is still refused, whoever it belongs to");
+});
+
+test("the self-updater's outcome is tri-state: working, failing, or too old to say", () => {
+  // "This client cannot tell us" and "this client's updater failed" are different facts. Folding
+  // them together would mark every pre-2.4.0 machine as broken and bury the ones that are.
+  const base = { reporter_name: "u@host", hostname: "host", status: "ok" };
+  const failing = normalizeReporterHeartbeat({
+    source: "codex",
+    reporterEmail: "derek@stardust.ai",
+    heartbeat: {
+      ...base,
+      self_update_ok: false,
+      self_update_checked_at: "2026-09-06T18:30:00.000Z",
+      self_update_error: `${"x".repeat(600)}`,
+    },
+  });
+  assert.equal(failing.heartbeat.self_update_ok, false);
+  assert.equal(failing.heartbeat.self_update_checked_at, "2026-09-06T18:30:00.000Z");
+  assert.equal(failing.heartbeat.self_update_error.length, 500, "a runaway message cannot bloat the row");
+
+  const silent = normalizeReporterHeartbeat({
+    source: "codex", reporterEmail: "derek@stardust.ai", heartbeat: base,
+  });
+  assert.equal(silent.heartbeat.self_update_ok, null);
+  assert.equal(silent.heartbeat.self_update_error, null);
+
+  // Truthy junk is not a claim that the updater works.
+  const junk = normalizeReporterHeartbeat({
+    source: "codex", reporterEmail: "derek@stardust.ai", heartbeat: { ...base, self_update_ok: "yes" },
+  });
+  assert.equal(junk.heartbeat.self_update_ok, null);
 });

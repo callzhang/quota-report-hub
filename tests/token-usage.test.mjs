@@ -205,3 +205,37 @@ test("rejects a malformed client_version rather than storing junk", () => {
     );
   }
 });
+
+test("refuses a bucket that could not physically have been produced", () => {
+  // The row that made this necessary: 5,262,309,118 tokens in one 15-minute bucket, a codex session
+  // running since June whose entire cumulative was charged as fresh usage. Eleven such rows held
+  // more volume than everything else the hub had recorded. The client-side bound is the real fix,
+  // but it only covers machines that have taken the update -- this covers the rest.
+  assert.throws(
+    () => normalizeTokenUsageBatch(validBody({
+      rows: [codexRow({
+        input_tokens: 5_251_704_817,
+        output_tokens: 10_604_301,
+        cache_read_tokens: 5_066_054_272,
+        reasoning_tokens: 0,
+        total_tokens: 5_262_309_118,
+      })],
+    }), { now }),
+    /implausibly large/i,
+  );
+});
+
+test("a large but reachable bucket is still accepted", () => {
+  // A big fleet on one account and model really can move hundreds of millions of tokens in a
+  // quarter hour. The ceiling has to sit above real usage or it deletes the data it protects.
+  const result = normalizeTokenUsageBatch(validBody({
+    rows: [codexRow({
+      input_tokens: 900_000_000,
+      output_tokens: 9_000_000,
+      cache_read_tokens: 880_000_000,
+      reasoning_tokens: 1_000_000,
+      total_tokens: 909_000_000,
+    })],
+  }), { now });
+  assert.equal(result.rows[0].total_tokens, 909_000_000);
+});

@@ -6681,5 +6681,130 @@ class ProbeHeartbeatTest(unittest.TestCase):
                 self.assertEqual(notify.call_count, 2)
 
 
+class SelfUpdateVisibilityTest(unittest.TestCase):
+    """The updater's outcome has to leave the machine.
+
+    A guard whose updater has been failing for weeks looked exactly like one that was already
+    current: the result was computed before the guard ran and thrown away, and the field that would
+    have told them apart lived in the very version the machine had not taken."""
+
+    def test_a_failed_update_is_recorded_without_disturbing_the_applied_sha(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "self-update.json"
+            quota_guard.write_self_update_state({"last_applied_sha": "a" * 40}, state_path)
+            with mock.patch.object(quota_guard, "github_latest_sha", side_effect=RuntimeError("rate limited")):
+                outcome = quota_guard.self_update_skill(
+                    state_path=state_path, now=lambda: "2026-09-06T18:00:00Z"
+                )
+            state = quota_guard.read_self_update_state(state_path)
+        self.assertFalse(outcome["ok"])
+        self.assertFalse(state["last_ok"])
+        self.assertIn("rate limited", state["last_error"])
+        self.assertEqual(state["last_checked_at"], "2026-09-06T18:00:00Z")
+        # The sha still describes the tree on disk; a failed update is not a downgrade.
+        self.assertEqual(state["last_applied_sha"], "a" * 40)
+
+    def test_an_already_current_check_still_records_that_it_ran(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "self-update.json"
+            quota_guard.write_self_update_state({"last_applied_sha": "b" * 40}, state_path)
+            with mock.patch.object(quota_guard, "github_latest_sha", return_value="b" * 40):
+                outcome = quota_guard.self_update_skill(
+                    state_path=state_path, now=lambda: "2026-09-06T18:15:00Z"
+                )
+            state = quota_guard.read_self_update_state(state_path)
+        self.assertEqual(outcome["reason"], "already_current")
+        self.assertTrue(state["last_ok"])
+        self.assertIsNone(state["last_error"])
+        self.assertEqual(state["last_checked_at"], "2026-09-06T18:15:00Z")
+
+    def test_the_heartbeat_carries_the_updater_state_beside_the_version(self):
+        state = {
+            "last_applied_sha": "c" * 40,
+            "last_ok": False,
+            "last_error": "HTTP Error 403: rate limit exceeded",
+            "last_checked_at": "2026-09-06T18:30:00Z",
+        }
+        with mock.patch.object(quota_guard, "read_self_update_state", return_value=state):
+            heartbeat = quota_guard.build_probe_heartbeat("codex", {"status": "ok"})
+        self.assertEqual(heartbeat["client_sha"], "c" * 40)
+        self.assertFalse(heartbeat["self_update_ok"])
+        self.assertEqual(heartbeat["self_update_error"], "HTTP Error 403: rate limit exceeded")
+        self.assertEqual(heartbeat["self_update_checked_at"], "2026-09-06T18:30:00Z")
+
+
+class HubUpgradeDemandTest(unittest.TestCase):
+    """A refusal the client only logs is a refusal nobody acts on."""
+
+    def test_the_demand_is_read_from_a_reason_a_notice_or_a_wrapped_result(self):
+        self.assertTrue(quota_guard.hub_demands_upgrade({"reason": "reporter_upgrade_required"}))
+        self.assertTrue(quota_guard.hub_demands_upgrade(
+            {"notices": [{"code": "reporter_upgrade_required", "message": "..."}]}
+        ))
+        self.assertTrue(quota_guard.hub_demands_upgrade(
+            {"ok": True, "result": {"reason": "reporter_upgrade_required"}}
+        ))
+        self.assertFalse(quota_guard.hub_demands_upgrade({"reason": "healthy"}))
+        self.assertFalse(quota_guard.hub_demands_upgrade({"notices": [{"code": "quota_low"}]}))
+        self.assertFalse(quota_guard.hub_demands_upgrade(None))
+
+    def test_a_refusal_forces_the_update_past_the_already_current_shortcut(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_path = Path(temp_dir) / "self-update.json"
+            outcome = quota_guard.enforce_hub_upgrade_demand(
+                {"reason": "reporter_upgrade_required"},
+                updater=lambda **kwargs: calls.append(kwargs) or {"ok": True, "updated": True},
+                state_path=state_path,
+                now=1000.0,
+            )
+            # force, because the recorded sha claimed we were current and the hub just proved otherwise
+            self.assertEqual(calls, [{"force": True}])
+            self.assertTrue(outcome["updated"])
+
+            # Every path in the run is refused, so the expensive re-copy is rate limited; the cheap
+            # already-current check still runs. A tarball per hub response, four times a run, every
+            # fifteen minutes, across a fleet, is how an updater ends up rate limited by GitHub.
+            quota_guard.enforce_hub_upgrade_demand(
+                {"reason": "reporter_upgrade_required"},
+                updater=lambda **kwargs: calls.append(kwargs) or {"ok": True, "updated": False},
+                state_path=state_path,
+                now=1200.0,
+            )
+            self.assertEqual(calls[-1], {"force": False})
+
+            # ... and an hour later a machine still being refused tries the full re-copy again.
+            quota_guard.enforce_hub_upgrade_demand(
+                {"reason": "reporter_upgrade_required"},
+                updater=lambda **kwargs: calls.append(kwargs) or {"ok": True, "updated": True},
+                state_path=state_path,
+                now=1000.0 + quota_guard.SELF_UPDATE_FORCE_INTERVAL_SECONDS + 1,
+            )
+            self.assertEqual(calls[-1], {"force": True})
+
+    def test_an_update_that_cannot_run_reaches_the_only_person_who_can_fix_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
+            outcome = quota_guard.enforce_hub_upgrade_demand(
+                {"reason": "reporter_upgrade_required"},
+                updater=lambda **_: {"ok": False, "updated": False, "error": "HTTP Error 403"},
+                state_path=Path(temp_dir) / "self-update.json",
+            )
+        self.assertFalse(outcome["updated"])
+        notify.assert_called_once()
+        self.assertIn("HTTP Error 403", notify.call_args.args[1])
+
+    def test_an_ordinary_response_neither_updates_nor_notifies(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+                mock.patch.object(quota_guard, "show_desktop_notification") as notify:
+            outcome = quota_guard.enforce_hub_upgrade_demand(
+                {"ok": True, "reason": "healthy"},
+                updater=lambda **_: self.fail("must not run the updater"),
+                state_path=Path(temp_dir) / "self-update.json",
+            )
+        self.assertEqual(outcome, {"demanded": False})
+        notify.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -502,7 +502,10 @@ at risk ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)).
 ### 8.5 purge_contaminated_usage.py
 Removes usage buckets recording physically impossible volumes (the compaction-as-reset bug in old
 collectors re-emitted whole session cumulatives as fresh usage; one pass removed 79 rows holding 86%
-of all recorded volume). Backs up before deleting, supports `--dry-run`, and talks to Turso over its
+of all recorded volume). Since 2.4.0 the same bound is enforced at ingest
+(`TOKEN_USAGE_IMPOSSIBLE_BUCKET_TOKENS`, [§16.3](#163-ingest-post-apitoken-usage--ingesttokenusagebatch)),
+so the script is a cleanup tool for rows written before that, not a standing defence. Backs up
+before deleting, supports `--dry-run`, and talks to Turso over its
 HTTP API rather than `@libsql/client` because this host resolves the Turso name into Tailscale's
 intercepted range, which curl and urllib traverse but node's TLS stack does not.
 
@@ -905,13 +908,30 @@ Each installation owns a private SQLite checkpoint at `~/.agents/auth/token-usag
 transcripts does not upload its history. Subsequent runs:
 
 1. `discover_changed_files` — stat the Codex session roots and `~/.claude/projects`, keep files whose
-   size or mtime moved past the acknowledged byte offset.
+   size or mtime moved past the acknowledged byte offset. File identity is the **inode alone**
+   (`_file_identity`): `st_dev` is not stable on macOS — APFS hands out a different device number
+   after a reboot or a remount — so a key including it made every session log look like a new file
+   on the next boot and replayed it from byte zero. Measured on one machine: 1,363 of 15,029 tracked
+   paths carried more than one cursor row, one per device number.
 2. Parse forward from that offset (`token_usage_parsers.py`):
    - **Codex** reads the structural `session_meta` / `turn_context` / cumulative `token_count`
-     fields. Canonical numeric fingerprints drop copied parent history, and a counter that goes
-     *backwards* starts a new non-negative epoch rather than emitting a negative delta.
+     fields. Canonical numeric fingerprints drop copied parent history, and `codex_counter_delta`
+     charges a difference **only when it is one turn's worth of growth**
+     (`CODEX_MAX_EVENT_TOKENS = 2M`, generously above a full context window). Anything else — the
+     charged counters going backwards, an absent predecessor, or a jump past that bound — means the
+     counter being differenced against is not this session's real predecessor, so the collector
+     re-seeds and charges nothing. A dropped `cached_input_tokens` is explicitly *not* a reset: codex
+     compacting the context is the most common thing a long conversation does, and the turn is still
+     charged in full.
+
+   The asymmetry is the whole design. Re-seeding loses at most one turn; charging a cumulative that
+   was never differenced against a real predecessor bills a months-old conversation's entire
+   history. On 2026-09-05/06 that produced eleven buckets holding 63.3 billion tokens from a single
+   codex session open since 2026-06-17, on a client that already had the compaction fix.
    - **Claude** keys on assistant message id, raw model, timestamp and final usage counters; a
-     repeated record contributes only the positive difference.
+     repeated record contributes only the positive difference. Claude counters are per-message
+     absolutes rather than session cumulatives, which is why none of the above applies to it — and
+     why every contaminated bucket ever found was codex.
 3. Bucket each event into a 15-minute `bucket_start`, attribute it to an account
    (`account_for_event`, [§16.2](#162-account-attribution)), and aggregate — at most
    `MAX_AGGREGATE_ROWS = 400` rows per batch, inside a **10-second cycle budget**.
@@ -952,6 +972,18 @@ Validation lives in `lib/token-usage.js` (`normalizeTokenUsageBatch`): canonical
 inside the accepted window, known providers, non-negative safe counters, Codex cache/reasoning as
 subsets of the total, Claude totals that include input/output/cache-read/cache-write, and no unknown
 fields — a malformed batch is rejected, never partially stored.
+
+Plus a plausibility ceiling: `TOKEN_USAGE_IMPOSSIBLE_BUCKET_TOKENS = 1e9`. A billion tokens in a
+900-second bucket for one account and model is 1.11M tokens/second — an order of magnitude past
+anything a fleet produces, so such a row is not usage but a client differencing a cumulative counter
+against state it lost. The client-side bound ([§16.1](#161-client-collector-skillsquota-reporterscriptstoken_usage_py))
+is the real fix; this one covers the machines that have not taken it yet, because a single stale
+reporter can bury every real number on the dashboard.
+
+The ingest path also enforces the reporter version floor, answering **HTTP 426** (not 400, not 200)
+so a refused batch stays staged on the client and is reported once it has upgraded rather than being
+discarded or falsely acknowledged. See the write-path floor in
+[AUTH_TOKENS.md](AUTH_TOKENS.md).
 
 ### 16.4 Query (`GET /api/token-usage-query`)
 

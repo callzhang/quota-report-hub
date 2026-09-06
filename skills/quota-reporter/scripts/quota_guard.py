@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Callable
 
 from install_quota_guard import (
     CRON_MARKER,
@@ -73,6 +74,13 @@ from token_usage_state import TokenUsageState
 DEFAULT_SELF_UPDATE_REPO = "callzhang/quota-report-hub"
 DEFAULT_SELF_UPDATE_REF = "main"
 SELF_UPDATE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-self-update.json"
+# Long enough to keep a stack trace's first line, short enough that a runaway message cannot push a
+# heartbeat past what the hub will accept.
+SELF_UPDATE_ERROR_MAX_LENGTH = 300
+# How often a hub refusal may force a full re-copy of the skill tree, as opposed to the ordinary
+# already-current check. One hour: long enough that a fleet cannot spend GitHub's unauthenticated
+# rate limit on it, short enough that a machine the hub is refusing recovers within the hour.
+SELF_UPDATE_FORCE_INTERVAL_SECONDS = 60 * 60
 HUB_NOTICE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-hub-notices.json"
 HUB_NOTICE_REPEAT_SECONDS = 6 * 60 * 60
 PROBE_FAILURE_STATE_PATH = Path.home() / ".agents" / "auth" / "quota-reporter-probe-failures.json"
@@ -240,12 +248,31 @@ def self_update_skill(
     ref: str = DEFAULT_SELF_UPDATE_REF,
     skill_root: Path = SKILL_ROOT,
     state_path: Path = SELF_UPDATE_STATE_PATH,
+    force: bool = False,
+    now: Callable[[], str] = iso_now,
 ) -> dict:
+    """Pull the skill tree forward to the tip of `ref`, and record what happened either way.
+
+    The outcome is persisted, not just returned, because the only caller that used it ran before
+    the guard did and threw the result away. A machine whose updater has been failing for weeks
+    looked exactly like a machine that was already current -- and the field that would have told us
+    apart lived in the very version it had not taken. Recording it here is what puts the failure in
+    the heartbeat, so a stale client is visible from the hub instead of only from the machine.
+
+    `force` skips the already-current shortcut. The recorded sha is a claim about what was copied,
+    and a client the hub is refusing has already proved that claim wrong, so on a refusal we re-copy
+    the tree rather than trusting the state file that said we were fine.
+    """
+    checked_at = now()
+    state = read_self_update_state(state_path)
     try:
         latest_sha = github_latest_sha(repo=repo, ref=ref)
-        state = read_self_update_state(state_path)
         current_sha = state.get("last_applied_sha")
-        if current_sha == latest_sha:
+        if current_sha == latest_sha and not force:
+            write_self_update_state(
+                {**state, "last_checked_at": checked_at, "last_ok": True, "last_error": None},
+                state_path,
+            )
             return {"ok": True, "updated": False, "reason": "already_current", "sha": latest_sha}
 
         with tempfile.TemporaryDirectory(prefix="quota-reporter-update-") as temp_dir:
@@ -260,12 +287,26 @@ def self_update_skill(
                 "ref": ref,
                 "last_applied_sha": latest_sha,
                 "skill_root": str(skill_root),
+                "last_checked_at": checked_at,
+                "last_ok": True,
+                "last_error": None,
             },
             state_path,
         )
         return {"ok": True, "updated": True, "from_sha": current_sha, "to_sha": latest_sha}
     except Exception as error:
-        return {"ok": False, "updated": False, "error": str(error)}
+        message = str(error)[:SELF_UPDATE_ERROR_MAX_LENGTH]
+        # Keep last_applied_sha untouched: it still describes the tree on disk. Only the freshness
+        # of the check is news, and overwriting the sha here would make a failed update look like a
+        # successful downgrade.
+        try:
+            write_self_update_state(
+                {**state, "last_checked_at": checked_at, "last_ok": False, "last_error": message},
+                state_path,
+            )
+        except Exception:
+            pass
+        return {"ok": False, "updated": False, "error": message}
 
 
 def remaining_percent(payload: dict, window_key: str) -> float:
@@ -428,6 +469,7 @@ def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
     error = None
     if not probe_ok:
         error = (payload or {}).get("error") or "quota probe produced no usable payload"
+    self_update_state = read_self_update_state()
     return {
         "reporter_name": (payload or {}).get("reporter_name") or reporter_name(),
         "hostname": (payload or {}).get("hostname") or socket.gethostname(),
@@ -437,7 +479,13 @@ def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
         "client_version": CLIENT_VERSION,
         # The commit this guard actually runs. client_version is a string somebody has to remember to
         # bump; the self-updater's applied SHA is what is on disk.
-        "client_sha": read_self_update_state().get("last_applied_sha"),
+        "client_sha": self_update_state.get("last_applied_sha"),
+        # Whether the updater that is supposed to keep the two above current is working. Without
+        # these a stale machine is indistinguishable from a current one that simply has not been
+        # bumped, and the reason it is stuck stays on a laptop nobody is looking at.
+        "self_update_ok": self_update_state.get("last_ok"),
+        "self_update_checked_at": self_update_state.get("last_checked_at"),
+        "self_update_error": self_update_state.get("last_error"),
         # Same as the quota report: the hub files this machine under the account its token belongs
         # to, not under the name its own identity record supplies.
         "access_token_fingerprint": (payload or {}).get("access_token_fingerprint"),
@@ -458,6 +506,8 @@ def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict |
         quota_payload=quota_payload,
         heartbeat=heartbeat,
     )
+    notify_hub_notices(result)
+    enforce_hub_upgrade_demand(result)
     if result.get("ok") is False:
         return {
             "ok": False,
@@ -671,6 +721,73 @@ def notify_hub_notices(
         except Exception:
             pass
     return {"shown": shown}
+
+
+# Every refusal the hub can raise against an out-of-date client. The hub sends the reason on the
+# response it refused and the code on the notice that explains it; the client acts on either, so a
+# refusal on a path that carries no notices still triggers the update.
+HUB_UPGRADE_DEMAND = "reporter_upgrade_required"
+
+
+def hub_demands_upgrade(result: object) -> bool:
+    """Did this hub response refuse us for running an out-of-date client?"""
+    if not isinstance(result, dict):
+        return False
+    if str(result.get("reason") or "") == HUB_UPGRADE_DEMAND:
+        return True
+    notices = result.get("notices")
+    if isinstance(notices, list):
+        if any(isinstance(item, dict) and str(item.get("code") or "") == HUB_UPGRADE_DEMAND for item in notices):
+            return True
+    # fetch-best and the quota endpoint both wrap the hub's answer one level down.
+    return hub_demands_upgrade(result.get("result")) if "result" in result else False
+
+
+def enforce_hub_upgrade_demand(
+    result: object,
+    *,
+    updater: Callable[..., dict] = self_update_skill,
+    state_path: Path = SELF_UPDATE_STATE_PATH,
+    now: float | None = None,
+) -> dict:
+    """Take the update the hub just refused us over, and say so out loud if we cannot.
+
+    A refusal the client only logs is a refusal nobody acts on: the machine keeps running the same
+    stale code and keeps being refused every fifteen minutes. So the demand drives the updater
+    directly, with force -- the recorded sha claimed we were current and the hub has just proved
+    otherwise. If the update fails the machine cannot fix itself, and the only person who can is
+    sitting in front of it, so that is where the message goes.
+
+    A refused machine is refused on every path in the run, so the force is rate limited: a full
+    tarball download per hub response, four times a run, every fifteen minutes, is how a fleet
+    exhausts GitHub's unauthenticated rate limit -- which is one of the ways an updater comes to be
+    failing in the first place. Outside the window the ordinary check still runs: it costs one API
+    call when the tree is already current, and it is what applies an update the hub has not yet
+    started refusing us over.
+    """
+    if not hub_demands_upgrade(result):
+        return {"demanded": False}
+    current = time.time() if now is None else now
+    state = read_self_update_state(state_path)
+    last_forced = state.get("last_forced_at")
+    force = not (
+        isinstance(last_forced, (int, float)) and current - last_forced < SELF_UPDATE_FORCE_INTERVAL_SECONDS
+    )
+    if force:
+        try:
+            write_self_update_state({**state, "last_forced_at": current}, state_path)
+        except Exception:
+            pass
+    outcome = updater(force=force)
+    if outcome.get("ok"):
+        return {"demanded": True, "updated": bool(outcome.get("updated")), "self_update": outcome}
+    show_desktop_notification(
+        "额度守护需要升级",
+        "Hub 已拒绝这台机器的上报和 auth 申请，因为它运行的版本过旧，而自动升级失败："
+        f"{str(outcome.get('error') or 'unknown error')[:120]}。"
+        "请手动重新执行一次安装脚本。",
+    )
+    return {"demanded": True, "updated": False, "self_update": outcome}
 
 
 def read_probe_failure_state(state_path: Path = PROBE_FAILURE_STATE_PATH) -> dict:
@@ -1430,6 +1547,7 @@ def maybe_replace_codex_auth(
         refresh_current=refresh_current,
     )
     notify_hub_notices(result)
+    enforce_hub_upgrade_demand(result)
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
     if replacement is None and repair_auth is not None:
@@ -1645,6 +1763,7 @@ def maybe_replace_claude_auth(
         refresh_current=refresh_current,
     )
     notify_hub_notices(result)
+    enforce_hub_upgrade_demand(result)
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
     if replacement is None and repair_auth is not None:
@@ -2283,6 +2402,10 @@ def run_guard(args: argparse.Namespace) -> dict:
         )
         if token_usage.get("ok") is False:
             guard_errors["token_usage"] = token_usage
+        # The usage upload is the one write path a report-only machine always exercises, so a
+        # version refusal here has to drive the updater exactly as one on quota or fetch does.
+        notify_hub_notices(token_usage)
+        enforce_hub_upgrade_demand(token_usage)
         try:
             usage_state.close()
         except Exception as error:

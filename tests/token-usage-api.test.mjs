@@ -180,3 +180,49 @@ test("success never echoes installation identity, rows, or digest", async () => 
   assert.equal(Object.hasOwn(payload, "rows"), false);
   assert.equal(Object.hasOwn(payload, "payload_digest"), false);
 });
+
+test("an out-of-date client is refused with 426 so its batch stays pending", async () => {
+  // Not a 400 and not a 200: the measurements are fine, the client is old. A 400 would make it
+  // discard the batch and a 200 would make it acknowledge one that was never stored -- both lose
+  // usage over a condition that clears itself on the next run.
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
+  const recorder = responseRecorder();
+  let writes = 0;
+  await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies({
+    normalizeTokenUsageBatch: () => ({
+      installation_id: "install-1", batch_id: "batch-1", client_version: "2.1.0", rows: [],
+    }),
+    activePhases: () => ({ notice: true, reporter_gate: true, cooldown: false }),
+    ingestTokenUsageBatch: async () => { writes += 1; },
+  }));
+  const payload = JSON.parse(recorder.result().body);
+  assert.equal(recorder.res.statusCode, 426);
+  assert.equal(payload.reason, "reporter_upgrade_required");
+  assert.equal(payload.notices[0].code, "reporter_upgrade_required");
+  assert.equal(writes, 0);
+});
+
+test("the version gate is inert before the reporter gate phase begins", async () => {
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
+  const recorder = responseRecorder();
+  await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies({
+    normalizeTokenUsageBatch: () => ({
+      installation_id: "install-1", batch_id: "batch-1", client_version: "2.1.0", rows: [],
+    }),
+    activePhases: () => ({ notice: true, reporter_gate: false, cooldown: false }),
+  }));
+  assert.equal(recorder.res.statusCode, 200);
+});
+
+test("a current client is not gated, and the handler works without an activePhases dependency", async () => {
+  const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
+  const { MIN_REPORTER_CLIENT_VERSION } = await import("../lib/premium-ratio.js");
+  const recorder = responseRecorder();
+  await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies({
+    normalizeTokenUsageBatch: () => ({
+      installation_id: "install-1", batch_id: "batch-1",
+      client_version: MIN_REPORTER_CLIENT_VERSION, rows: [],
+    }),
+  }));
+  assert.equal(recorder.res.statusCode, 200);
+});

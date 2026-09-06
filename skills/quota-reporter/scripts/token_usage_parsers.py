@@ -154,30 +154,51 @@ def parse_codex_lines(lines: Iterable[str]) -> Iterator[UsageRecord]:
             yield record
 
 
+# The most one codex turn can add to a session cumulative. A turn re-sends the whole conversation,
+# so its input counter is bounded by the model context window -- a few hundred thousand tokens.
+# Two million is far past any real turn and still three orders of magnitude below what a cumulative
+# differenced against the wrong predecessor produces.
+CODEX_MAX_EVENT_TOKENS = 2_000_000
+
+
 def codex_counter_delta(
     current: dict[str, int],
     acknowledged: dict[str, int] | None,
 ) -> dict[str, int]:
     normalized_current = {field: int(current.get(field, 0)) for field in COUNTER_FIELDS}
-    if acknowledged is None:
-        return normalized_current
-    normalized_acknowledged = {field: int(acknowledged.get(field, 0)) for field in COUNTER_FIELDS}
-    # Only total_tokens going backwards means the session actually restarted and the cumulative
-    # counter was reset. cached_input_tokens drops every time codex compacts the context -- ordinary
-    # behaviour in a long conversation, and the single most common thing a long conversation does.
-    # Treating that as a reset re-emits the ENTIRE session cumulative as fresh usage, so the users
-    # who keep one conversation going get charged for their whole history again on every compaction.
-    if normalized_current["total_tokens"] < normalized_acknowledged["total_tokens"]:
-        return normalized_current
+    # A codex session's counters are cumulative for the life of the session, so the difference is
+    # only usage if it is taken against a counter we watched grow. Treating an absent counter as
+    # zero is right for a session seen from its first event and catastrophic for one picked up part
+    # way through -- the whole conversation's history is charged as fresh usage. The bound below is
+    # what separates the two cases, so an absent counter can start from zero here.
+    normalized_acknowledged = (
+        {field: 0 for field in COUNTER_FIELDS}
+        if acknowledged is None
+        else {field: int(acknowledged.get(field, 0)) for field in COUNTER_FIELDS}
+    )
     delta = {
-        field: max(0, normalized_current[field] - normalized_acknowledged[field])
+        field: normalized_current[field] - normalized_acknowledged[field]
         for field in COUNTER_FIELDS
     }
+    charged = delta["input_tokens"] + delta["output_tokens"]
+    # Only the charged counters have to move forward. cached_input_tokens drops every time codex
+    # compacts the context -- ordinary behaviour, and the single most common thing a long
+    # conversation does -- so a drop there is not a reset and must not cost the turn.
+    rewound = any(delta[field] < 0 for field in ("input_tokens", "output_tokens", "total_tokens"))
+    # Either condition means the counter we differenced against is not this session's real
+    # predecessor. It went backwards (the session restarted or was resumed), it was never there (a
+    # session first observed part way through, after the collector lost its place in the log), or
+    # history was replayed and the turns in between were skipped as already-seen. Re-seed from the
+    # current cumulative and charge nothing: losing one turn is the cheap mistake, and charging a
+    # months-old conversation's whole history is the expensive one -- it once put a single
+    # 5.26-billion-token bucket on the dashboard, 86% of everything the hub had recorded.
+    if rewound or charged > CODEX_MAX_EVENT_TOKENS:
+        return {field: 0 for field in COUNTER_FIELDS}
     # Clamping individual fields can break the invariants the hub validates against, which would
     # get the whole batch rejected. Derive the dependent counters instead of trusting their deltas.
-    delta["cache_read_tokens"] = min(delta["cache_read_tokens"], delta["input_tokens"])
-    delta["cache_write_tokens"] = min(delta["cache_write_tokens"], delta["input_tokens"])
-    delta["reasoning_tokens"] = min(delta["reasoning_tokens"], delta["output_tokens"])
+    delta["cache_read_tokens"] = min(max(0, delta["cache_read_tokens"]), delta["input_tokens"])
+    delta["cache_write_tokens"] = min(max(0, delta["cache_write_tokens"]), delta["input_tokens"])
+    delta["reasoning_tokens"] = min(max(0, delta["reasoning_tokens"]), delta["output_tokens"])
     delta["total_tokens"] = delta["input_tokens"] + delta["output_tokens"]
     return delta
 

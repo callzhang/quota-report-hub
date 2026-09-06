@@ -117,8 +117,11 @@ class CodexTokenUsageParserTests(unittest.TestCase):
             "input_tokens": 20, "output_tokens": 10, "cache_read_tokens": 20,
             "cache_write_tokens": 0, "reasoning_tokens": 3, "total_tokens": 30,
         })
+        # A counter that went backwards is re-seeded, not charged. We cannot tell a restarted
+        # session from a replay of history we already reported, and only one of those two readings
+        # is safe to bill.
         reset = {key: max(0, value // 2) for key, value in current.items()}
-        self.assertEqual(codex_counter_delta(reset, current), reset)
+        self.assertEqual(codex_counter_delta(reset, current), {key: 0 for key in reset})
         self.assertTrue(all(value >= 0 for value in codex_counter_delta(reset, current).values()))
 
 
@@ -239,7 +242,11 @@ class CodexCompactionDeltaTest(unittest.TestCase):
         self.assertEqual(delta["total_tokens"], 410_000)
         self.assertLess(delta["total_tokens"], current["total_tokens"] / 20)
 
-    def test_a_real_restart_still_re_emits_the_cumulative(self):
+    def test_a_real_restart_re_seeds_and_charges_nothing(self):
+        # The restarted session's own cumulative is not usage we can attribute: the same numbers
+        # arrive whether the session really restarted or we are re-reading a log we already
+        # reported. Charge nothing, seed from the new value, and bill the next turn normally --
+        # one lost turn against the alternative of billing a whole conversation twice.
         acknowledged = {
             "input_tokens": 10_000_000, "output_tokens": 100_000,
             "cache_read_tokens": 9_500_000, "cache_write_tokens": 0,
@@ -250,7 +257,10 @@ class CodexCompactionDeltaTest(unittest.TestCase):
             "cache_read_tokens": 0, "cache_write_tokens": 0,
             "reasoning_tokens": 100, "total_tokens": 5_400,
         }
-        self.assertEqual(codex_counter_delta(current, acknowledged), current)
+        self.assertEqual(codex_counter_delta(current, acknowledged), {key: 0 for key in current})
+        # ... and the turn after the restart is charged against the seeded value, not lost too.
+        following = {**current, "input_tokens": 60_000, "output_tokens": 900, "total_tokens": 60_900}
+        self.assertEqual(codex_counter_delta(following, current)["total_tokens"], 55_500)
 
     def test_the_delta_keeps_the_invariants_the_hub_validates(self):
         # A batch breaking these is rejected wholesale, so a clamped field must not desync the rest.

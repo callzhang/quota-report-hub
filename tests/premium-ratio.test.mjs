@@ -553,3 +553,28 @@ test("require_contribution refuses a non-contributor outright, abundance or not"
     ...light, hasHealthyUpload: false, requireContribution: false, poolScarce: false, lastServedAt: PHASE_COOLDOWN_AT,
   })).allowed, true);
 });
+
+test("the hub floor and the shipped client version are the same number", async () => {
+  // These two are one decision written in two languages. Raising the floor without shipping a
+  // client that satisfies it locks the fleet out; shipping a client without raising the floor lets
+  // the version that fixed something keep sitting behind the versions that did not.
+  const source = await readFile(
+    new URL("../skills/quota-reporter/scripts/reporter_version.py", import.meta.url),
+    "utf8",
+  );
+  const shipped = source.match(/^CLIENT_VERSION = "([^"]+)"$/m)?.[1];
+  assert.equal(shipped, MIN_REPORTER_CLIENT_VERSION);
+});
+
+test("a client newer than the hub is not refused", () => {
+  // Both halves of a release land in the same commit but reach production seconds apart. A gate
+  // that demanded an exact match would take the fleet down over a race with itself.
+  const [major, minor, patch] = MIN_REPORTER_CLIENT_VERSION.split(".").map(Number);
+  assert.equal(compareVersions(`${major}.${minor + 1}.${patch}`, MIN_REPORTER_CLIENT_VERSION), 1);
+  assert.equal(evaluateFetchPolicy({
+    now: new Date(PHASE_REPORTER_GATE_AT),
+    requestClientVersion: `${major}.${minor + 1}.0`,
+    lastReportAt: PHASE_REPORTER_GATE_AT,
+    lastNewAccountAt: PHASE_REPORTER_GATE_AT,
+  }).reason !== "reporter_upgrade_required", true);
+});

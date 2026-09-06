@@ -466,11 +466,36 @@ by the daily `quota-events-retention` cron.
 `client_version` is a string somebody has to remember to bump (nobody did for the identity fix, so
 2.1.0 meant nothing). Every heartbeat now also carries `client_sha`, the commit the self-updater
 actually applied -- `reporter_probe_heartbeats.client_sha` answers "which code does this machine run".
-`MIN_REPORTER_CLIENT_VERSION` is 2.2.0 (the first client that names its token) and is enforced where
-data is **written** ([api/auth/quota.js](api/auth/quota.js)), not only at fetch-best: a machine that only
-reports never fetches, and writing is how a stale client puts bad data in front of everyone. The
-heartbeat is always kept (it is how the machine is seen at all); only the quota numbers are refused,
-and only once `PHASE_REPORTER_GATE_AT` has passed -- before that the response carries the upgrade notice.
+
+`MIN_REPORTER_CLIENT_VERSION` **tracks the shipped client exactly** (2.4.0): whatever version a
+commit's reporter is, that is what the hub demands, and a test binds the two so the pair moves
+together. A client *newer* than the hub is allowed through -- both halves of a release reach
+production seconds apart and an exact-match gate would take the fleet down over a race with itself.
+
+The floor is enforced on all three paths, all gated on `PHASE_REPORTER_GATE_AT`:
+
+| Path | Refusal | Why this shape |
+|---|---|---|
+| `/api/auth/fetch-best` | `reason: reporter_upgrade_required`, no auth served | A stale client must not draw on the pool |
+| `/api/auth/quota` | quota numbers ignored, **heartbeat still kept** | The heartbeat is how the machine is seen at all |
+| `/api/token-usage` | **HTTP 426**, batch stays pending | Not 400 (client discards) and not 200 (client acknowledges a batch that was never stored) -- both lose real usage over a condition that clears itself on the next run |
+
+A refusal nobody acts on repeats every fifteen minutes forever, so the refusal drives the client:
+`enforce_hub_upgrade_demand` ([quota_guard.py](skills/quota-reporter/scripts/quota_guard.py)) reads the
+reason or the notice off any hub response, runs the self-updater with `force=True` (the recorded sha
+claimed the machine was current and the hub has just proved otherwise), and raises a desktop
+notification if the update itself fails -- at that point the machine cannot fix itself and the only
+person who can is sitting in front of it.
+
+### Whether the updater works is itself telemetry
+
+The self-updater's outcome is persisted (`last_ok`, `last_error`, `last_checked_at` in
+`~/.agents/auth/quota-reporter-self-update.json`) and carried on every heartbeat. Before this, the
+result was computed before the guard ran and thrown away: a machine whose updater had been failing
+for weeks was indistinguishable from one that was simply current, and the field that would have told
+them apart lived in the very version it had not taken. `self_update_ok` is deliberately **tri-state**
+-- `null` means "too old to say", which is not the same claim as `false`, and collapsing them would
+mark every pre-2.4.0 machine as broken and bury the ones that are.
 
 ## 6. Failure modes & invariants (and the fixes)
 

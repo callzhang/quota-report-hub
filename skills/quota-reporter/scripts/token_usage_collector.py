@@ -72,6 +72,17 @@ def _base_file_key(stat_result: os.stat_result) -> str:
     return f"{stat_result.st_dev}:{stat_result.st_ino}"
 
 
+def _file_identity(file_key: str) -> str:
+    # Every stored key starts "<st_dev>:<st_ino>", with the replacement form appending mtime and
+    # size. st_dev is NOT stable: APFS hands out a different device number after a reboot or a
+    # remount, so a key that includes it makes every session log look like a different file on the
+    # next boot. The inode is the part that actually identifies the file, and it is what identity
+    # compares on. Getting this wrong replays whole logs from byte zero, which is how a months-old
+    # codex session had its entire cumulative charged as fresh usage.
+    parts = str(file_key).split(":")
+    return parts[1] if len(parts) > 1 else parts[0]
+
+
 def _file_checkpoint(candidate: FileCandidate, offset: int, stat_result: os.stat_result | None = None) -> dict[str, Any]:
     return {
         "file_key": candidate.file_key,
@@ -115,7 +126,7 @@ def discover_changed_files(
                     candidates.append(candidate)
                 continue
 
-            same_file = str(previous["file_key"]).split(":", 2)[:2] == base_key.split(":", 1)
+            same_file = _file_identity(previous["file_key"]) == _file_identity(base_key)
             previous_offset = int(previous["offset"])
             previous_size = int(previous["size"])
             previous_mtime = int(previous["mtime_ns"])
@@ -171,6 +182,13 @@ def _empty_summary(*, started: float, monotonic: Callable[[], float], reason: st
     return result
 
 
+def _response_notices(response: dict[str, Any]) -> list | None:
+    for candidate in (response.get("notices"), (response.get("response") or {}).get("notices")):
+        if isinstance(candidate, list) and candidate:
+            return candidate
+    return None
+
+
 def _handle_pending_upload(
     *,
     state: TokenUsageState,
@@ -216,13 +234,25 @@ def _handle_pending_upload(
             "retry": False, "warnings": warnings or {"files": 0, "parse": 0},
             "elapsed_seconds": max(0.0, monotonic() - started), "reason": "upload_rejected",
         }
+    # 426 is the hub refusing the batch for the client's version. It stays pending and is retried,
+    # so once the guard has taken the update the same measurements are reported rather than lost.
+    # The reason is named so the guard can act on it: a refusal nobody acts on repeats forever.
+    if status_code == 426:
+        reason = "reporter_upgrade_required"
+    elif status_code == 401:
+        reason = "token_invalidated"
+    else:
+        reason = "upload_retry_pending"
     return {
         "ok": False, "reported": False, "rows": len(payload.get("rows", [])),
         "total_tokens": sum(int(row.get("total_tokens", 0)) for row in payload.get("rows", [])),
         "bytes_read": bytes_read, "backfill_complete": backfill_complete,
         "retry": True, "warnings": warnings or {"files": 0, "parse": 0},
         "elapsed_seconds": max(0.0, monotonic() - started),
-        "reason": "token_invalidated" if status_code == 401 else "upload_retry_pending",
+        "reason": reason,
+        # An HTTP error hands the parsed body back nested under "response", so the notices the hub
+        # attached to a refusal are one level down; a plain response carries them at the top.
+        "notices": _response_notices(response),
     }
 
 

@@ -5,6 +5,7 @@ process.env.TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL || "file:quota-r
 process.env.TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN || "test-token";
 
 const { quotaHandlerImpl } = await import("../api/auth/quota.js");
+const { MIN_REPORTER_CLIENT_VERSION } = await import("../lib/premium-ratio.js");
 
 function makeRes() {
   const res = { statusCode: 0, headers: {}, body: "" };
@@ -156,7 +157,9 @@ test("before the gate, an outdated client is warned but its report is still take
 
 test("a current client passes the write gate with no notice", async () => {
   const current = outdatedBody();
-  current.heartbeat.client_version = "2.3.0";
+  // Read the floor rather than restating it: a hardcoded version here silently becomes a test that
+  // the gate is OFF the next time the floor moves.
+  current.heartbeat.client_version = MIN_REPORTER_CLIENT_VERSION;
   const { deps, calls } = makeDeps(current, { activePhases: () => ({ notice: true, reporter_gate: true, cooldown: false }) });
   const res = makeRes();
   await quotaHandlerImpl({ method: "POST" }, res, deps);
