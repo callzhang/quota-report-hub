@@ -79,7 +79,10 @@
       .breakdown-pagination { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px; }
       .pager-actions { display:flex; align-items:center; gap:8px; }
       .pager-actions button:disabled { cursor:default; opacity:.45; }
-      .trend-canvas-shell { position: relative; height: 300px; margin-top: 12px; }
+      /* The trend is the reason this page exists, so it gets the room. Sized against the viewport
+         rather than a fixed height so a tall window shows more of the shape, with a floor that
+         keeps it readable on a laptop and a ceiling that leaves the breakdown table reachable. */
+      .trend-canvas-shell { position: relative; height: clamp(360px, 52vh, 640px); margin-top: 12px; }
     </style>
   </head>
   <body>
@@ -155,6 +158,7 @@
          date-fns adapter its time axis needs. Pinned versions, UMD builds. -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
     <script>
       const COOKIE_NAME = "quota_report_hub_token";
       const QUERY_CACHE_MS = 5 * 60 * 1000;
@@ -313,8 +317,13 @@
             borderColor: color,
             backgroundColor: color,
             borderWidth: 1.8,
-            pointRadius: 2.5,
+            // No marker per bucket. At fifteen-minute granularity over a week there are hundreds of
+            // them per series and they read as noise on top of the line they are meant to describe.
+            // The point comes back under the cursor, where it is answering a question.
+            pointRadius: 0,
             pointHoverRadius: 5,
+            // The dots are gone but the line still has to be hoverable, so the hit area stays.
+            pointHitRadius: 12,
             spanGaps: false,
           };
         });
@@ -326,7 +335,27 @@
             maintainAspectRatio: false,
             interaction: { mode: "nearest", intersect: false },
             scales: {
-              x: { type: "time" },
+              x: {
+                type: "time",
+                time: {
+                  // The default hour tick reads "3PM", which says nothing about WHICH day -- and
+                  // this chart's whole point is comparing days. Every format below therefore names
+                  // the date; the time is only added where a tick would otherwise be ambiguous.
+                  displayFormats: {
+                    millisecond: "MM-dd HH:mm",
+                    second: "MM-dd HH:mm",
+                    minute: "MM-dd HH:mm",
+                    hour: "MM-dd HH:mm",
+                    day: "MM-dd",
+                    week: "MM-dd",
+                    month: "yyyy-MM",
+                    quarter: "yyyy-MM",
+                    year: "yyyy",
+                  },
+                  tooltipFormat: "yyyy-MM-dd HH:mm",
+                },
+                ticks: { maxRotation: 0, autoSkipPadding: 16 },
+              },
               y: { beginAtZero: true, ticks: { callback: (value) => formatTokens(value) } },
             },
             plugins: {
@@ -334,6 +363,14 @@
                 callbacks: {
                   label: (item) => `${item.dataset.label}: ${formatTokens(item.parsed.y)}`,
                 },
+              },
+              // Drag a range to zoom into it, wheel to travel along the axis, double-click to get
+              // the whole range back. Both are x-only: the y axis is a token count anchored at
+              // zero, and rescaling it would make two views of the same data look different.
+              zoom: {
+                zoom: { drag: { enabled: true }, mode: "x" },
+                pan: { enabled: true, mode: "x" },
+                limits: { x: { min: "original", max: "original" } },
               },
             },
           },
@@ -351,9 +388,30 @@
           return;
         }
         trendRegion.innerHTML =
-          `<div class="meta">Trend · ${escapeHtml(selectedMetricLabel())} · ${escapeHtml(groupLabel())}. Missing buckets remain gaps; hover a point for the exact value.</div>` +
+          `<div class="meta">Trend · ${escapeHtml(selectedMetricLabel())} · ${escapeHtml(groupLabel())}. Missing buckets remain gaps; hover the line for the exact value. Drag to zoom a range, scroll to move along it, double-click to reset.</div>` +
           `<div class="trend-canvas-shell"><canvas role="img" aria-label="Token usage trend by ${escapeHtml(groupLabel())}"></canvas></div>`;
-        trendChart = new Chart(trendRegion.querySelector("canvas"), trendChartConfig(points));
+        const canvas = trendRegion.querySelector("canvas");
+        trendChart = new Chart(canvas, trendChartConfig(points));
+        attachTrendNavigation(canvas, trendChart);
+      }
+
+      // The zoom plugin binds the wheel to zooming, but the ask here is travel: scrolling should
+      // walk the window forward and back along time, the way scrubbing a timeline does, with the
+      // drag-select left to change the span. So the wheel is handled directly and turned into a pan.
+      // Not passive -- panning the chart must not also scroll the page out from under the cursor.
+      function attachTrendNavigation(canvas, chart) {
+        if (typeof chart.pan !== "function") return;
+        canvas.addEventListener("wheel", (event) => {
+          // A trackpad's horizontal component is the more natural gesture when it is present;
+          // a plain wheel only reports deltaY, so that drives it otherwise.
+          const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+          if (!delta) return;
+          event.preventDefault();
+          chart.pan({ x: -delta }, undefined, "default");
+        }, { passive: false });
+        canvas.addEventListener("dblclick", () => {
+          if (typeof chart.resetZoom === "function") chart.resetZoom();
+        });
       }
 
       function selectedMetricLabel() {

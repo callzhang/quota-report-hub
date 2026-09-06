@@ -213,7 +213,9 @@ test("page exposes the complete query shell and reads only token usage", async (
   assert.match(html, /const BREAKDOWN_PAGE_SIZE = 20/);
   assert.match(html, /cdnjs\.cloudflare\.com\/ajax\/libs\/Chart\.js\/4\.4\.1\/chart\.umd\.min\.js/);
   assert.match(html, /chartjs-adapter-date-fns@3\.0\.0\/dist\/chartjs-adapter-date-fns\.bundle\.min\.js/);
-  assert.match(html, /new Chart\(trendRegion\.querySelector\("canvas"\), trendChartConfig\(points\)\)/);
+  assert.match(html, /const canvas = trendRegion\.querySelector\("canvas"\);/);
+  assert.match(html, /new Chart\(canvas, trendChartConfig\(points\)\)/);
+  assert.match(html, /chartjs-plugin-zoom\/2\.0\.1\/chartjs-plugin-zoom\.min\.js/);
   assert.match(html, /breakdown-pagination/);
   assert.match(html, /const queryCache = new Map\(\)/);
   assert.match(html, /const queryRequests = new Map\(\)/);
@@ -381,6 +383,51 @@ test("the chart delegates axes to the component and formats values in 万/亿", 
   assert.equal(config.options.scales.y.ticks.callback(150000000), "1.50亿");
   const label = config.options.plugins.tooltip.callbacks.label({ dataset: { label: "derek@stardust.ai" }, parsed: { y: 84120000 } });
   assert.equal(label, "derek@stardust.ai: 8412万");
+});
+
+test("every time tick names its date, and the line carries no per-bucket markers", async () => {
+  // "3PM" does not say which day, and comparing days is what this chart is for. And at fifteen
+  // minutes over a week each series has hundreds of points, which read as noise over the line.
+  const payload = usagePayload({ trend: [
+    { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100 },
+  ] });
+  const harness = await pageHarness(async () => response(200, payload));
+  const config = harness.chartInstances.at(-1).config;
+  const formats = config.options.scales.x.time.displayFormats;
+  for (const [unit, format] of Object.entries(formats)) {
+    assert.match(format, /MM|yyyy/, `the ${unit} tick must name a date, not only a time`);
+  }
+  assert.equal(formats.hour, "MM-dd HH:mm");
+  assert.equal(formats.day, "MM-dd");
+  assert.equal(config.options.scales.x.time.tooltipFormat, "yyyy-MM-dd HH:mm");
+
+  const dataset = config.data.datasets[0];
+  assert.equal(dataset.pointRadius, 0);
+  // Invisible, but the line still has to answer a hover, so the hit area outlives the marker.
+  assert.ok(dataset.pointHitRadius > 0);
+  assert.ok(dataset.pointHoverRadius > 0);
+});
+
+test("the trend zooms by drag and travels by scroll, both locked to the time axis", async () => {
+  const payload = usagePayload({ trend: [
+    { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100 },
+  ] });
+  const harness = await pageHarness(async () => response(200, payload));
+  const zoom = harness.chartInstances.at(-1).config.options.plugins.zoom;
+  assert.equal(zoom.zoom.drag.enabled, true);
+  assert.equal(zoom.zoom.mode, "x");
+  assert.equal(zoom.pan.mode, "x");
+  // Y is a token count anchored at zero; rescaling it would make two views of one dataset disagree.
+  assert.deepStrictEqual({ ...zoom.limits.x }, { min: "original", max: "original" });
+  // The wheel is deliberately NOT bound to the plugin's zoom -- the page turns it into travel.
+  assert.equal(zoom.zoom.wheel, undefined);
+
+  const html = await readFile(new URL("../token-usage.html", import.meta.url), "utf8");
+  const nav = html.match(/function attachTrendNavigation\(canvas, chart\)[\s\S]*?\n {6}\}/)?.[0];
+  assert.ok(nav, "the page must wire the wheel itself");
+  assert.match(nav, /chart\.pan\(\{ x: -delta \}/);
+  assert.match(nav, /\{ passive: false \}/, "panning must not scroll the page underneath");
+  assert.match(nav, /chart\.resetZoom\(\)/);
 });
 
 test("focused Next keeps its logical control after local paging", async () => {
