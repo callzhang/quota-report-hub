@@ -244,3 +244,49 @@ test("ingestReporterHeartbeat does not consult the token map when no fingerprint
   assert.equal(writes[0].account_id, "claude-legacy@example.com");
   assert.equal(writes[0].client_sha, null);
 });
+
+// "claude auth email unavailable" is the client saying it does not know whose credential it runs. Once
+// the hub has answered that by token, the error is moot -- and left in place it turned a healthy
+// account's row red every time a borrower with a blank identity record reported.
+test("ingestClientQuota clears the client's email-unavailable error when the hub resolved the identity", async () => {
+  const writes = [];
+  await ingestClientQuota({
+    source: "claude",
+    reporterEmail: "borrower@example.com",
+    quotaPayload: {
+      account_id: "claude-email-missing",
+      status: "error",
+      error: "claude auth email unavailable",
+      access_token_fingerprint: "fp-of-owner-token",
+      windows: { "5h": completeWindow, "1week": completeWindow },
+    },
+    upsertImpl: async (payload) => { writes.push(payload); },
+    tokenOwnerImpl: async () => ({ account_id: "claude-owner@example.com" }),
+    authPoolEntryImpl: async () => stubEntry,
+  });
+  const [written] = writes;
+  assert.equal(written.account_id, "claude-owner@example.com");
+  assert.equal(written.status, "ok", "the numbers were measured fine; only the name was missing");
+  assert.equal(written.error, null);
+  assert.equal(written.email, "owner@example.com");
+});
+
+test("ingestClientQuota leaves any other error on a resolved report untouched", async () => {
+  const writes = [];
+  await ingestClientQuota({
+    source: "claude",
+    reporterEmail: "borrower@example.com",
+    quotaPayload: {
+      account_id: "claude-stale@example.com",
+      status: "error",
+      error: "claude auth invalid (authentication_error)",
+      access_token_fingerprint: "fp-of-owner-token",
+      windows: { "5h": null, "1week": null },
+    },
+    upsertImpl: async (payload) => { writes.push(payload); },
+    tokenOwnerImpl: async () => ({ account_id: "claude-owner@example.com" }),
+    authPoolEntryImpl: async () => stubEntry,
+  });
+  assert.equal(writes[0].status, "error");
+  assert.equal(writes[0].error, "claude auth invalid (authentication_error)", "a token that was refused is still refused, whoever it belongs to");
+});
