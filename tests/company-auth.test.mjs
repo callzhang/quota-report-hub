@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   bearerTokenFromHeaders,
   companyEmailAllowed,
-  isAdminEmail,
+  adminEmails,
   normalizeEmail,
   signDashboardRevisionToken,
   sendAccessTokenEmail,
@@ -11,14 +11,11 @@ import {
   verifyDashboardRevisionToken,
 } from "../lib/company-auth.js";
 
-test("isAdminEmail reads ADMIN_EMAIL (comma-separated, normalized)", () => {
+test("adminEmails reads ADMIN_EMAIL (comma-separated, normalized) for the one-time seed", () => {
   const previous = process.env.ADMIN_EMAIL;
-  process.env.ADMIN_EMAIL = "derek@stardust.ai, boss@stardust.ai";
+  process.env.ADMIN_EMAIL = " Derek@Stardust.ai , boss@stardust.ai";
   try {
-    assert.equal(isAdminEmail("Derek@Stardust.ai "), true);
-    assert.equal(isAdminEmail("boss@stardust.ai"), true);
-    assert.equal(isAdminEmail("intern@stardust.ai"), false);
-    assert.equal(isAdminEmail(""), false);
+    assert.deepEqual(adminEmails(), ["derek@stardust.ai", "boss@stardust.ai"]);
   } finally {
     if (previous === undefined) delete process.env.ADMIN_EMAIL;
     else process.env.ADMIN_EMAIL = previous;

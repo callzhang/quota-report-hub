@@ -1,6 +1,6 @@
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
-import { isAdminEmail } from "../../lib/company-auth.js";
-import { allFeatureFlags, dbConfigured, setFeatureFlag } from "../../lib/db.js";
+import { companyEmailAllowed, normalizeEmail } from "../../lib/company-auth.js";
+import { addAdmin, adminRole, allFeatureFlags, dbConfigured, listAdmins, removeAdmin, setFeatureFlag } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 
 // Flags an admin is allowed to flip at runtime.
@@ -23,20 +23,59 @@ export default async function handler(req, res) {
     return;
   }
 
+  const role = await adminRole(authContext.email);
+
   if (req.method === "GET") {
-    json(res, 200, withTokenUpgrade(
-      { ok: true, flags: await allFeatureFlags(), is_admin: isAdminEmail(authContext.email) },
-      authContext,
-    ));
+    json(res, 200, withTokenUpgrade({
+      ok: true,
+      flags: await allFeatureFlags(),
+      is_admin: role !== null,
+      admin_role: role,
+      // The list is for the admin panel only; other viewers have no reason to see who administers.
+      ...(role !== null ? { admins: await listAdmins() } : {}),
+    }, authContext));
     return;
   }
 
   if (req.method === "POST") {
-    if (!isAdminEmail(authContext.email)) {
-      json(res, 403, { error: "Only an admin may change feature flags" });
+    if (role === null) {
+      json(res, 403, { error: "Only an admin may change settings" });
       return;
     }
     const body = await readJsonBody(req);
+
+    // Admin-list changes are the owner's alone: an admin who could appoint admins would be an
+    // owner in everything but name, and the whole point of the role split is that they are not.
+    if (body?.add_admin !== undefined || body?.remove_admin !== undefined) {
+      if (role !== "owner") {
+        json(res, 403, { error: "Only the owner may change the admin list" });
+        return;
+      }
+      if (body.add_admin !== undefined) {
+        const email = normalizeEmail(body.add_admin);
+        if (!companyEmailAllowed(email)) {
+          json(res, 400, { error: "Admin must be a company email" });
+          return;
+        }
+        await addAdmin({ email, addedBy: authContext.email });
+      }
+      if (body.remove_admin !== undefined) {
+        const email = normalizeEmail(body.remove_admin);
+        if ((await adminRole(email)) === "owner") {
+          json(res, 400, { error: "The owner cannot be removed" });
+          return;
+        }
+        await removeAdmin(email);
+      }
+      json(res, 200, withTokenUpgrade({
+        ok: true,
+        admin_role: role,
+        admins: await listAdmins(),
+        flags: await allFeatureFlags(),
+      }, authContext));
+      return;
+    }
+
     const updated = {};
     for (const key of Object.keys(body || {})) {
       if (!ALLOWED_FLAGS.has(key)) {
@@ -46,7 +85,7 @@ export default async function handler(req, res) {
       updated[key] = Boolean(body[key]);
     }
     json(res, 200, withTokenUpgrade(
-      { ok: true, updated, flags: await allFeatureFlags() },
+      { ok: true, updated, flags: await allFeatureFlags(), admin_role: role },
       authContext,
     ));
     return;

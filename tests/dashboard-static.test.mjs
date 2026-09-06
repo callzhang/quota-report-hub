@@ -215,6 +215,14 @@ test("pool health trend leads the accounts tab and settings holds both admin tog
   assert.match(html, /id="flag-require-contribution"/);
   assert.match(html, /id="require-contribution-panel"/);
   assert.match(html, /payload\.require_contribution/);
+
+  // the admins panel: every admin sees the list, only the owner gets the add/remove controls
+  assert.match(html, /id="admins-panel"/);
+  assert.match(html, /adminAddRow\.hidden = viewerAdminRole !== "owner"/);
+  assert.match(html, /data-remove-admin="\$\{escapeHtml\(admin\.email\)\}"/);
+  assert.match(html, /viewerAdminRole === "owner" && admin\.role !== "owner"/);
+  assert.match(html, /\{ add_admin: email \}/);
+  assert.match(html, /\{ remove_admin: target\.dataset\.removeAdmin \}/);
 });
 
 test("accounts and users pages link to the independent token usage page", async () => {

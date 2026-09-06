@@ -82,7 +82,8 @@ test("status returns the dashboard revision loaded with current state", async ()
     dashboardRevision: async () => ({ revision: 17, updated_at: "2026-08-08T08:00:00Z" }),
     authPoolStatusPayload: () => emptyDataset,
     getFeatureFlag: async () => false,
-    isAdminEmail: () => false,
+    adminRole: async () => null,
+    listAdmins: async () => [],
   });
 
   const payload = JSON.parse(body);
@@ -128,7 +129,8 @@ test("status retries when a concurrent write changes revision and never tags sta
     reporterHealthPayload: () => ({ items: [], silent_count: 0, probe_failing_count: 0, probe_error_count: 0 }),
     authPoolStatusPayload: (entries) => ({ items: entries, archived_invalidated_items: [] }),
     getFeatureFlag: async () => false,
-    isAdminEmail: () => false,
+    adminRole: async () => null,
+    listAdmins: async () => [],
   });
   await staleReadStarted;
   currentRevision = 2;

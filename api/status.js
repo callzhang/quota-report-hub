@@ -1,5 +1,6 @@
 import { authenticateApiRequest, sendServiceUnavailable, sendUnauthorized, withTokenUpgrade } from "../lib/api-auth.js";
 import {
+  adminRole,
   authPoolEntrySummaries,
   authPoolFetchLog,
   authPoolInvalidatedNotifications,
@@ -7,12 +8,13 @@ import {
   dashboardRevision,
   dbConfigured,
   getFeatureFlag,
+  listAdmins,
   poolHealthSnapshots,
   reporterProbeHeartbeats,
 } from "../lib/db.js";
 import { authPoolStatusPayload } from "../lib/reports.js";
 import { reporterHealthPayload } from "../lib/reporter-health.js";
-import { isAdminEmail, signDashboardRevisionToken } from "../lib/company-auth.js";
+import { signDashboardRevisionToken } from "../lib/company-auth.js";
 
 export default async function handler(req, res) {
   return statusHandlerImpl(req, res);
@@ -34,7 +36,8 @@ export async function statusHandlerImpl(req, res, deps = {
   authPoolStatusPayload,
   reporterHealthPayload,
   getFeatureFlag,
-  isAdminEmail,
+  adminRole,
+  listAdmins,
   signDashboardRevisionToken,
 }) {
   try {
@@ -58,7 +61,7 @@ export async function statusHandlerImpl(req, res, deps = {
     let snapshot = null;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const revisionBefore = await deps.dashboardRevision();
-      const [entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken, requireContribution] = await Promise.all([
+      const [entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken, requireContribution, viewerAdminRole] = await Promise.all([
         deps.authPoolEntrySummaries(),
         deps.authPoolQuotaLatest(),
         deps.authPoolInvalidatedNotifications(),
@@ -67,6 +70,7 @@ export async function statusHandlerImpl(req, res, deps = {
         deps.reporterProbeHeartbeats({ limit: 200 }),
         deps.getFeatureFlag("disabled_refresh_token", false),
         deps.getFeatureFlag("require_contribution", false),
+        deps.adminRole(authContext.email),
       ]);
       const revisionAfter = await deps.dashboardRevision();
       if (revisionBefore.revision === revisionAfter.revision) {
@@ -79,6 +83,7 @@ export async function statusHandlerImpl(req, res, deps = {
           heartbeats,
           disabledRefreshToken,
           requireContribution,
+          viewerAdminRole,
           revision: revisionAfter,
         };
         break;
@@ -87,7 +92,7 @@ export async function statusHandlerImpl(req, res, deps = {
     if (!snapshot) {
       throw new Error("dashboard changed while status was being assembled");
     }
-    const { entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken, requireContribution, revision } = snapshot;
+    const { entries, reports, invalidatedStates, fetchLog, healthHistory, heartbeats, disabledRefreshToken, requireContribution, viewerAdminRole, revision } = snapshot;
     const dataset = deps.authPoolStatusPayload(entries, reports, new Date().toISOString(), invalidatedStates);
     dataset.fetch_log = fetchLog;
     dataset.health_history = healthHistory;
@@ -98,7 +103,10 @@ export async function statusHandlerImpl(req, res, deps = {
     dataset.viewer_email = authContext.email;
     dataset.disabled_refresh_token = disabledRefreshToken;
     dataset.require_contribution = requireContribution;
-    dataset.is_admin = deps.isAdminEmail(authContext.email);
+    dataset.is_admin = viewerAdminRole !== null;
+    dataset.admin_role = viewerAdminRole;
+    // The list is for the admin panel only; other viewers have no reason to see who administers.
+    if (viewerAdminRole !== null) dataset.admins = await deps.listAdmins();
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify(deps.withTokenUpgrade(dataset, authContext)));

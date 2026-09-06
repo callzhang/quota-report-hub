@@ -249,7 +249,8 @@ Single module-load client (`lib/db.js:15-18`); schema created lazily + memoized 
 | `auth_pool_requester_assignments` | PK `(source, requester_key)` | Latest fetch/current-account state per requester. Used for active assignment counts and dashboard fetch summaries without scanning `auth_pool_fetch_log`. |
 | `auth_pool_reporter_assignments` | PK `(source, reporter_key)` | Latest quota-account state per reporting machine. Used for active reporter counts without scanning `auth_pool_quota_events`. |
 | `auth_pool_invalidated_notifications` | PK `(source, account_id)` | Since-when an account is hard-dead + last email sent. (`:459-468`) |
-| `feature_flags` | PK `key` | `disabled_refresh_token` (stored as `"true"`/`"false"`). (`:469-476`) |
+| `feature_flags` | PK `key` | `disabled_refresh_token`, `require_contribution` (stored as `"true"`/`"false"`). (`:469-476`) |
+| `auth_admins` | PK `email` | Admin/owner roles; one `owner` row, seeded once ([§6.7](#67-admins--owner)). |
 | `pool_health_snapshots` | PK autoinc | Observability time series: ok/hard-dead/other + central-refresh outcomes per source per worker run. (`:477-494`) |
 | `reporter_probe_heartbeats` | PK `(source, reporter_key)` | Last guard run per machine: outcome, consecutive probe failures, last good probe. Written on every run, including runs with no reportable quota — this is what separates a silent machine from a failing probe ([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)). |
 | `dashboard_revision` | Singleton row (`singleton = 1`) | Monotonic change marker for dashboard-visible writes. The browser reads this one row instead of rebuilding full status every minute. |
@@ -332,7 +333,7 @@ In branches 2–3, when `disabled_refresh_token` is ON, the served blob is run t
 `isStrippedRefreshToken` (`lib/fetch-best.js:57-74`) detects the hub placeholder RTs. `upsertAuthPoolEntry` rejects any upload carrying one (`{rejected:true, reason:"stripped_refresh_token"}`, `lib/db.js:589-597`) so a borrower running AT-only can never overwrite the pool's real shared RT.
 
 ### 6.3 Identity & email
-- Company-email gate: token issuance requires `@<AUTH_ALLOWED_EMAIL_DOMAIN>` (default `stardust.ai`) (`lib/company-auth.js:13-16`); admin gate via `ADMIN_EMAIL` comma-list (`:18-28`).
+- Company-email gate: token issuance requires `@<AUTH_ALLOWED_EMAIL_DOMAIN>` (default `stardust.ai`) (`lib/company-auth.js:13-16`); admin/owner roles live in the `auth_admins` table, not env ([§6.7](#67-admins--owner)).
 - HMAC tokens: `qrp.<base64url(payload)>.<hmac>` signed with `TOKEN_ISSUE_KEY`, verified with `timingSafeEqual`; DB presence still required so tokens are revocable (`:54-117`).
 - Revision tickets: a successful `/api/status` authentication also returns a 12-hour HMAC-signed `qrr.` ticket scoped to `/api/status-revision`. Its routine verification is stateless, so the one-minute change check performs only the singleton revision read and does not update `auth_api_tokens.last_used_at`. The ticket exposes only revision metadata and cannot authorize a full-status or auth-pool request; full data reloads still require the revocable `qrp.` token.
 - This stateless ticket is deliberately less revocable than a DB-backed personal token during its 12-hour life. The tradeoff is bounded: it reveals only `revision` and `updated_at`, cannot read account or quota data, and removes the API-token-row read/write from every routine browser poll. Revoking the personal token still blocks full status and history immediately.
@@ -422,6 +423,27 @@ one that carries the sharp rules:
 `statusPayload` / `authPoolStatusPayload` assemble the dashboard dataset from entries, reports and
 invalidation state; `lib/account-availability.js` then reduces each account to the single lifecycle
 state the table renders.
+
+### 6.7 Admins & owner
+
+Admin standing is configuration, not deployment: the `auth_admins` table (`email, role, added_at,
+added_by`) replaces the `ADMIN_EMAIL` env gate. Exactly one row carries role `owner` — the person
+who first set the service up — and the roles nest: the owner is an admin plus the sole authority
+over the admin list itself.
+
+- **Read**: `/api/status` and `GET /api/admin/flags` return `admin_role` (`owner`/`admin`/null)
+  and, for admins only, the `admins` list. Non-admins get `is_admin: false` and no list — who
+  administers is not a member-facing fact.
+- **Write**: `POST /api/admin/flags` with `add_admin`/`remove_admin` is owner-only (an admin who
+  could appoint admins would be an owner in everything but name); flag flips remain open to every
+  admin. The owner row is not removable — guarded in SQL (`removeAdmin`) and again in the endpoint
+  — and ownership does not transfer through this API. New admins must be company-domain emails.
+- **Seeding** (`seedAdminsIfEmpty`, lib/db.js) runs once, on the first read of an empty table:
+  `ADMIN_EMAIL` wins if set (a live deployment keeps its admins; first listed becomes owner),
+  otherwise the earliest-created `auth_users` row — the first person to set the service up —
+  becomes owner. After seeding the env var is dead weight and can be deleted.
+- Admin-list changes bump the dashboard revision like any other dashboard-visible write, so open
+  Settings tabs converge within a revision poll.
 
 ---
 
@@ -831,7 +853,7 @@ Both sources are held to the same thresholds, judged per window the report carri
 | `AUTH_BLOB_STORAGE_DIR` | API, worker | Local-dir alternative to Tigris |
 | `TOKEN_ISSUE_KEY` | API | HMAC signing of `qrp.` tokens |
 | `AUTH_ALLOWED_EMAIL_DOMAIN` | API | Company-email gate (default `stardust.ai`) |
-| `ADMIN_EMAIL` | API | Comma-list of admins who can flip flags |
+| `ADMIN_EMAIL` | API | Legacy seed only: consulted once, on the first read of an empty `auth_admins` table ([§6.7](#67-admins--owner)). Safe to delete after seeding. |
 | `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `MAILGUN_FROM` | API | Email delivery |
 | `CRON_SECRET` | API | Auth for the daily notification cron |
 | `FRONTEND_PORT` | dev | Local static server port (default 6088) |

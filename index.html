@@ -76,6 +76,18 @@
       }
 
       .admin-flag { display: grid; gap: 8px; }
+      .admins-rows { display: grid; gap: 8px; }
+      .admin-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.5);
+      }
+      .admin-row .admin-email { flex: 1 1 auto; min-width: 0; }
+      .admin-row .button { padding: 6px 12px; }
       .admin-flag-row { display: flex; align-items: center; gap: 14px; }
       .switch { position: relative; display: inline-block; width: 46px; height: 26px; flex: none; }
       .switch input { opacity: 0; width: 0; height: 0; }
@@ -514,6 +526,19 @@
           <div class="meta wrap">Admin only · When ON, only members with a healthy uploaded account in the pool may borrow from it — a non-contributor's fetch is refused with a notice explaining how to contribute. Their own invalidated auth is still returned for re-login. When OFF, non-contributors are only rate-limited while the pool is scarce.</div>
           <div class="meta wrap" id="flag-require-contribution-message"></div>
         </section>
+
+        <section class="panel section admin-flag" id="admins-panel" hidden>
+          <div>
+            <strong>Admins</strong>
+            <div class="meta">The owner is whoever first set this service up; only the owner can add or remove admins. Admins see this list and control the switches above.</div>
+          </div>
+          <div id="admins-rows" class="admins-rows"></div>
+          <div class="auth-actions" id="admin-add-row" hidden>
+            <input id="admin-add-input" class="auth-input" type="email" inputmode="email" autocomplete="off" placeholder="colleague@stardust.ai" style="flex:1 1 240px;" />
+            <button id="admin-add-button" type="button" class="button">Add admin</button>
+          </div>
+          <div class="meta wrap" id="admins-message"></div>
+        </section>
         <div class="empty section" id="settings-empty" hidden>No settings are visible to your account.</div>
       </div>
 
@@ -587,6 +612,13 @@
       const EMAIL_STORE = "quota_report_hub_email";
       const adminFlagPanel = document.getElementById("admin-flag-panel");
       const requireContributionPanel = document.getElementById("require-contribution-panel");
+      const adminsPanel = document.getElementById("admins-panel");
+      const adminsRows = document.getElementById("admins-rows");
+      const adminAddRow = document.getElementById("admin-add-row");
+      const adminAddInput = document.getElementById("admin-add-input");
+      const adminAddButton = document.getElementById("admin-add-button");
+      const adminsMessage = document.getElementById("admins-message");
+      let viewerAdminRole = null;
       const flagToggle = document.getElementById("flag-disabled-rt");
       const flagStatus = document.getElementById("flag-disabled-rt-status");
       const flagMessage = document.getElementById("flag-message");
@@ -736,6 +768,7 @@
         archivedEmpty.hidden = true;
         adminFlagPanel.hidden = true;
         requireContributionPanel.hidden = true;
+        adminsPanel.hidden = true;
         healthSection.hidden = true;
         dashboardLocked = true;
         applyActiveTab();
@@ -1613,12 +1646,69 @@
           : "OFF · non-contributors may borrow, rate-limited only during scarcity",
       });
 
+      function renderAdminsList(admins) {
+        adminsRows.innerHTML = (admins || []).map((admin) => `
+          <div class="admin-row">
+            <span class="admin-email wrap">${escapeHtml(admin.email)}</span>
+            <span class="status-chip ${admin.role === "owner" ? "ok" : ""}">${escapeHtml(admin.role)}</span>
+            ${viewerAdminRole === "owner" && admin.role !== "owner"
+              ? `<button type="button" class="button" data-remove-admin="${escapeHtml(admin.email)}">Remove</button>`
+              : ""}
+          </div>`).join("");
+      }
+
+      async function postAdminListChange(body) {
+        const token = currentToken || getStoredToken();
+        adminsMessage.textContent = "Saving…";
+        try {
+          const response = await fetch("/api/admin/flags", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(payload.error || `request failed (${response.status})`);
+          }
+          renderAdminsList(payload.admins);
+          adminsMessage.textContent = `Saved ${new Date().toLocaleTimeString()}`;
+          return true;
+        } catch (error) {
+          adminsMessage.textContent = `Failed: ${error.message}`;
+          return false;
+        }
+      }
+
+      adminAddButton.addEventListener("click", async () => {
+        const email = adminAddInput.value.trim();
+        if (!email) {
+          adminsMessage.textContent = "Enter an email first.";
+          return;
+        }
+        adminAddButton.disabled = true;
+        try {
+          if (await postAdminListChange({ add_admin: email })) adminAddInput.value = "";
+        } finally {
+          adminAddButton.disabled = false;
+        }
+      });
+
+      adminsRows.addEventListener("click", (event) => {
+        const target = event.target.closest("[data-remove-admin]");
+        if (target) postAdminListChange({ remove_admin: target.dataset.removeAdmin });
+      });
+
       function renderAdminFlag(payload) {
         adminFlagPanel.hidden = !payload.is_admin;
         requireContributionPanel.hidden = !payload.is_admin;
+        adminsPanel.hidden = !payload.is_admin;
         if (!payload.is_admin) return;
+        viewerAdminRole = payload.admin_role || "admin";
         disabledRtFlag.render(Boolean(payload.disabled_refresh_token));
         requireContributionFlag.render(Boolean(payload.require_contribution));
+        renderAdminsList(payload.admins);
+        adminAddRow.hidden = viewerAdminRole !== "owner";
+        adminsMessage.textContent = "";
       }
 
       availabilityPopover.addEventListener("mouseenter", () => {
