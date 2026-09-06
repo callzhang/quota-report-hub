@@ -15,7 +15,7 @@ test("dashboard unlock shows non-auth status failures instead of failing silentl
   assert.match(html, /saveTokenButton\.disabled = true/);
   assert.match(html, /authMessage\.textContent = "Checking token…"/);
   assert.match(html, /function safeDecodeCookieValue\(value\)/);
-  assert.match(html, /return safeDecodeCookieValue\(getCookie\(COOKIE_NAME\)\)/);
+  assert.match(html, /const token = safeDecodeCookieValue\(getCookie\(COOKIE_NAME\)\);/);
   assert.match(html, /item\.availability/);
   assert.match(html, /Access token expiry/);
   assert.doesNotMatch(html, /ready now/);
@@ -253,4 +253,20 @@ test("dashboard renders the exhaustion deadline in the row summary and popover",
   // Snapshot windows with a future reset on an exhausted account are live measurements, not
   // history — labeled per window instead of branding the whole snapshot "Historical".
   assert.match(html, /liveExhaustedWindow/);
+});
+
+// The session lived in a cookie whose Max-Age was set only when a token was pasted or upgraded --
+// and a signed `qrp.` token never upgrades. So everyone was logged out thirty days after logging
+// in, however heavily they had used the page in between. Reading the session now renews it, which
+// makes the thirty days a window of inactivity rather than a deadline.
+test("every authenticated page renews the session cookie when it reads it", async () => {
+  for (const page of ["../index.html", "../token-usage.html", "../users.html"]) {
+    const html = await readFile(new URL(page, import.meta.url), "utf8");
+    const reader = html.match(/function getStoredToken\(\)[\s\S]*?\n {6}\}/)?.[0];
+    assert.ok(reader, `${page} must define getStoredToken`);
+    assert.match(reader, /if \(token\) setTokenCookie\(token\);/, `${page} must renew on read`);
+    assert.match(reader, /return token;/);
+    // Renewing only makes sense against a real lifetime; a session cookie would expire on close.
+    assert.match(html, /Max-Age=\$\{60 \* 60 \* 24 \* 30\}/, `${page} keeps a thirty-day cookie`);
+  }
 });

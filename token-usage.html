@@ -194,7 +194,16 @@
         try { return decodeURIComponent(value); } catch { return ""; }
       }
 
-      function getStoredToken() { return safeDecodeCookieValue(getCookie(COOKIE_NAME)); }
+      // Reading the session also renews it, which is what makes the thirty days a sliding
+      // window rather than a hard deadline from the day the token was pasted. Before this the
+      // cookie was only ever re-stamped by a token upgrade -- something a signed `qrp.` token
+      // never triggers -- so every user was logged out thirty days after logging in, however
+      // heavily they had been using the page in between.
+      function getStoredToken() {
+        const token = safeDecodeCookieValue(getCookie(COOKIE_NAME));
+        if (token) setTokenCookie(token);
+        return token;
+      }
 
       function setTokenCookie(token) {
         const secure = location.protocol === "https:" ? "; Secure" : "";
