@@ -519,7 +519,32 @@ Backs up before deleting, supports `--dry-run`, and talks to Turso over its
 HTTP API rather than `@libsql/client` because this host resolves the Turso name into Tailscale's
 intercepted range, which curl and urllib traverse but node's TLS stack does not.
 
-### 8.6 deploy_vercel.py / start_frontend.mjs
+### 8.6 recompute_local_token_usage.py
+The other half of the cleanup, and the better one. `purge_contaminated_usage.py` filters by
+magnitude and therefore keeps whatever contamination landed under its line; this re-derives the
+truth. Every codex rollout and claude transcript on the machine is parsed **from its first byte**
+with the fixed delta logic, so no session is ever picked up part way through and no cumulative is
+ever charged as a turn. Account attribution replays the collector's own finalized switch boundaries
+([§16.2](#162-account-attribution)), so the offline pass makes the same attribution decisions the
+live one would.
+
+`--compare EMAIL` prints hub against recompute per day and provider. Compared at **day** granularity
+on purpose: offline and live attribution can disagree about which account a given quarter hour
+belongs to, and daily totals are unaffected by that. `--replace-user EMAIL --apply` swaps that
+user's window for the recomputed rows, backing up what it replaces first.
+
+The check that licenses a replace is a provider already agreeing at **1.00x**. Claude is
+structurally immune to the bug, so the hub's claude figures were always right — a recompute that
+reproduces them exactly has proved both that the pipeline is correct and that this machine is the
+whole of that user's reporting. Measured on Derek's machine over 2026-08-15..09-06: claude
+hub 4.992B vs local 4.995B (1.00x every single day), codex hub 27.774B vs local 20.868B.
+
+Its one real limit: `token_usage_15m` has no installation column, so a bucket carrying several
+machines' work cannot be split, and one machine's number is a floor for that bucket rather than the
+whole of it. Run it on every machine reporting under the same hub user before treating a replace as
+complete.
+
+### 8.7 deploy_vercel.py / start_frontend.mjs
 `deploy_vercel.py` wraps the Vercel CLI for production/preview/development deploys and env
 management. `start_frontend.mjs` serves the static dashboards locally on `FRONTEND_PORT`
 (default 6088, `127.0.0.1` only).
