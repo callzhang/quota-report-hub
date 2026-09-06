@@ -324,15 +324,18 @@ test("summary and trend datasets carry exact counters without inventing data", a
     ],
   });
   const harness = await pageHarness(async () => response(200, payload));
+  // Every counter is its own card. Cache read, cache write and reasoning used to be crammed into
+  // one card's caption, which rendered three separate measurements as a single footnote.
   const summary = harness.element("summary-region").innerHTML;
-  assert.match(summary, />1,200</);
-  assert.match(summary, />700</);
-  assert.match(summary, />200</);
-  assert.match(summary, />300</);
-  assert.match(summary, /Cache read 250/);
-  assert.match(summary, /Cache write 50/);
-  assert.match(summary, /Reasoning 33/);
-  assert.match(summary, /subsets of Total/);
+  const cards = [...summary.matchAll(/<span class="meta">([^<]+)<\/span><strong title="([^"]+)">/g)]
+    .map(([, label, value]) => [label, value]);
+  assert.deepEqual(cards, [
+    ["Total", "1,200"], ["Input", "700"], ["Output", "200"],
+    ["Cache read", "250"], ["Cache write", "50"], ["Reasoning", "33"],
+  ]);
+  // The subset relationship has to survive the split, or a reader adds these up past Total.
+  assert.match(summary, /Cache read<\/span><strong title="250">250<\/strong><div class="meta">[^<]*subset of Input/);
+  assert.match(summary, /Reasoning<\/span><strong title="33">33<\/strong><div class="meta">[^<]*subset of Output/);
 
   // the trend is a Chart.js component fed by the pure config builder
   assert.match(harness.element("trend-region").innerHTML, /Trend · Total/);
@@ -536,4 +539,33 @@ test("token counts render in 万/亿 units with the exact count kept in titles",
   const bars = harness.element("user-usage-region").innerHTML;
   assert.match(bars, />1974亿<span class="meta"> · 100\.0%<\/span>/);
   assert.match(bars, /197,397,276,632 total tokens/);
+});
+
+test("the chart is smoothed without inventing values below zero", async () => {
+  // Plain cubic smoothing overshoots around a spike; a token count dipping below zero between two
+  // real samples would be drawing something that cannot have happened.
+  const payload = usagePayload({ trend: [
+    { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100 },
+  ] });
+  const harness = await pageHarness(async () => response(200, payload));
+  const dataset = harness.chartInstances.at(-1).config.data.datasets[0];
+  assert.equal(dataset.cubicInterpolationMode, "monotone");
+});
+
+test("a coarsened trend is drawn at the bucket the hub used, and says so", async () => {
+  // The dropdown says 15 minutes; over a wide range the hub answers hourly. Reading the dropdown
+  // for gap detection would then break the line between every pair of points.
+  const payload = usagePayload({
+    trend_granularity: "day",
+    trend: [
+      { bucket_start: "2026-08-18T00:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100 },
+      { bucket_start: "2026-08-19T00:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 200 },
+    ],
+  });
+  const harness = await pageHarness(async () => response(200, payload));
+  const data = harness.chartInstances.at(-1).config.data.datasets[0].data;
+  assert.deepEqual(Array.from(data, (point) => point.y), [100, 200], "consecutive days are not a gap");
+  const meta = harness.element("trend-region").innerHTML;
+  assert.match(meta, /daily/);
+  assert.match(meta, /coarsened to fit this range/);
 });

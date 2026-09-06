@@ -278,11 +278,18 @@
         return { hub_user: "Hub user", provider: "Provider", model_account: "Model account", model: "Model" }[groupBy.value] || "Group";
       }
 
+      // The bucket the chart is actually drawn at, which is not always the one in the dropdown:
+      // the hub coarsens the trend when a range would need more buckets than it will return, and
+      // says so in trend_granularity. Gap detection keys off this, so reading the dropdown instead
+      // would insert a break between every pair of points the moment a range got wide.
+      let trendGranularity = "hour";
       function trendBucketMs() {
-        return granularity.value === "day" ? 24 * 60 * 60 * 1000
-          : granularity.value === "15m" ? 15 * 60 * 1000
+        return trendGranularity === "day" ? 24 * 60 * 60 * 1000
+          : trendGranularity === "15m" ? 15 * 60 * 1000
           : 60 * 60 * 1000;
       }
+
+      const GRANULARITY_LABELS = { "15m": "15 minutes", hour: "hourly", day: "daily" };
 
       // Chart.js draws the trend; this stays a pure config builder so tests can assert on the
       // datasets and options without a canvas. Colors follow the entity (stableColor), a missing
@@ -317,6 +324,10 @@
             borderColor: color,
             backgroundColor: color,
             borderWidth: 1.8,
+            // Monotone rather than a tension value: plain cubic smoothing overshoots around a
+            // spike, and a token count that dips below zero between two real samples is drawing
+            // something that cannot have happened. Monotone smooths without inventing extrema.
+            cubicInterpolationMode: "monotone",
             // No marker per bucket. At fifteen-minute granularity over a week there are hundreds of
             // them per series and they read as noise on top of the line they are meant to describe.
             // The point comes back under the cursor, where it is answering a question.
@@ -388,7 +399,9 @@
           return;
         }
         trendRegion.innerHTML =
-          `<div class="meta">Trend · ${escapeHtml(selectedMetricLabel())} · ${escapeHtml(groupLabel())}. Missing buckets remain gaps; hover the line for the exact value. Drag to zoom a range, scroll to move along it, double-click to reset.</div>` +
+          `<div class="meta">Trend · ${escapeHtml(selectedMetricLabel())} · ${escapeHtml(groupLabel())} · ${escapeHtml(GRANULARITY_LABELS[trendGranularity] || trendGranularity)}` +
+          `${trendGranularity === granularity.value ? "" : " (coarsened to fit this range)"}. ` +
+          `Missing buckets remain gaps; hover the line for the exact value. Drag to zoom a range, scroll to move along it, double-click to reset.</div>` +
           `<div class="trend-canvas-shell"><canvas role="img" aria-label="Token usage trend by ${escapeHtml(groupLabel())}"></canvas></div>`;
         const canvas = trendRegion.querySelector("canvas");
         trendChart = new Chart(canvas, trendChartConfig(points));
@@ -550,16 +563,29 @@
         return params.toString();
       }
 
+      // One card per counter. Cache read, cache write and reasoning used to share a single card's
+      // caption as a run-on line, which made three separate measurements read as one footnote and
+      // left them in a smaller type than the numbers they sit beside. They are their own figures,
+      // so they get their own cards -- with the subset note kept per card, because a reader adding
+      // Input + Output + Cache read would otherwise double-count their way past Total.
+      const SUMMARY_CARDS = [
+        ["Total", "total_tokens", "All provider-reported tokens"],
+        ["Input", "input_tokens", "Provider input counter"],
+        ["Output", "output_tokens", "Provider output counter"],
+        ["Cache read", "cache_read_tokens", "Replayed context · subset of Input"],
+        ["Cache write", "cache_write_tokens", "Context written to cache · subset of Input"],
+        ["Reasoning", "reasoning_tokens", "Thinking tokens · subset of Output"],
+      ];
+
       function renderShell(payload) {
         const totals = payload.totals || {};
-        summaryRegion.innerHTML = [
-          `<article class="summary-card"><span class="meta">Total</span><strong title="${number(totals.total_tokens)}">${formatTokens(totals.total_tokens)}</strong><div class="meta">All provider-reported tokens</div></article>`,
-          `<article class="summary-card"><span class="meta">Input</span><strong title="${number(totals.input_tokens)}">${formatTokens(totals.input_tokens)}</strong><div class="meta">Provider input counter</div></article>`,
-          `<article class="summary-card"><span class="meta">Output</span><strong title="${number(totals.output_tokens)}">${formatTokens(totals.output_tokens)}</strong><div class="meta">Provider output counter</div></article>`,
-          `<article class="summary-card"><span class="meta">Cache</span><strong title="${number(Number(totals.cache_read_tokens || 0) + Number(totals.cache_write_tokens || 0))}">${formatTokens(Number(totals.cache_read_tokens || 0) + Number(totals.cache_write_tokens || 0))}</strong>` +
-            `<div class="meta">Cache read ${formatTokens(totals.cache_read_tokens)} · Cache write ${formatTokens(totals.cache_write_tokens)} · Reasoning ${formatTokens(totals.reasoning_tokens)}. These are subsets of Total, not additions.</div></article>`,
-        ].join("");
+        summaryRegion.innerHTML = SUMMARY_CARDS.map(([label, counter, note]) =>
+          `<article class="summary-card"><span class="meta">${escapeHtml(label)}</span>` +
+          `<strong title="${number(totals[counter])}">${formatTokens(totals[counter])}</strong>` +
+          `<div class="meta">${escapeHtml(note)}</div></article>`
+        ).join("");
         userUsageRegion.innerHTML = renderUserBars(payload.breakdown || []);
+        trendGranularity = payload.trend_granularity || granularity.value;
         renderTrendChart(payload.trend || []);
         breakdownRegion.innerHTML = renderBreakdown(payload.breakdown || []);
         bindBreakdownActions();

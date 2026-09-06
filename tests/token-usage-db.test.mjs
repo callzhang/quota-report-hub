@@ -344,16 +344,76 @@ test("queryTokenUsage rejects more than 2000 chronological trend points", async 
         1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z'
       FROM sequence
     `);
-    await assert.rejects(mod.queryTokenUsage({
+    // Three weeks of quarter-hours is 2001 buckets, past what the trend will return. Refusing to
+    // draw was the old answer and the wrong one: the range is the question, so the BUCKET gives.
+    const result = await mod.queryTokenUsage({
       start: "2026-07-28T15:00:00.000Z",
       end: "2026-08-18T12:00:00.000Z",
       granularity: "15m",
       groupBy: "provider",
       metric: "total",
+    });
+    assert.equal(result.trend_granularity, "hour");
+    assert.ok(result.trend.length > 0 && result.trend.length <= 2000);
+    // Totals are unaffected by how the trend is bucketed -- every row still counted once.
+    assert.equal(result.totals.total_tokens, 2001);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a query too broad for even daily buckets is still refused", async () => {
+  // The cap has to survive coarsening, or it is not a cap. Distinct series, not time, is what is
+  // unbounded here: one day of usage split across more model names than the trend will return.
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ensureSchema();
+    await client.execute(`
+      WITH RECURSIVE sequence(value) AS (
+        SELECT 0
+        UNION ALL
+        SELECT value + 1 FROM sequence WHERE value < 2000
+      )
+      INSERT INTO token_usage_15m (
+        hub_user_email, installation_id, provider, model_account_id, model_id, bucket_start,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        reasoning_tokens, total_tokens, updated_at
+      )
+      SELECT
+        'trend@stardust.ai', 'fixture-install', 'codex', 'trend-account', 'model-' || value,
+        '2026-08-18T11:00:00.000Z', 1, 0, 0, 0, 0, 1, '2026-08-18T12:00:00.000Z'
+      FROM sequence
+    `);
+    await assert.rejects(mod.queryTokenUsage({
+      start: "2026-05-20T00:00:00.000Z",
+      end: "2026-08-18T12:00:00.000Z",
+      granularity: "day",
+      groupBy: "model",
+      metric: "total",
     }), (error) => error?.code === "query_too_broad");
   } finally {
     cleanup();
   }
+});
+
+test("the trend bucket only ever coarsens, and only when the range needs it", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  const { trendGranularityFor } = mod;
+  const at = (days) => ({
+    start: "2026-08-01T00:00:00.000Z",
+    end: new Date(Date.parse("2026-08-01T00:00:00.000Z") + days * 86400000).toISOString(),
+  });
+  assert.equal(trendGranularityFor({ ...at(1), granularity: "15m" }), "15m");
+  assert.equal(trendGranularityFor({ ...at(7), granularity: "15m" }), "hour");
+  assert.equal(trendGranularityFor({ ...at(30), granularity: "15m" }), "day");
+  assert.equal(trendGranularityFor({ ...at(7), granularity: "hour" }), "hour");
+  assert.equal(trendGranularityFor({ ...at(30), granularity: "hour" }), "day");
+  // Daily is already the coarsest bucket there is, so nothing widens it further.
+  assert.equal(trendGranularityFor({ ...at(90), granularity: "day" }), "day");
+  // Asking for days over an afternoon is odd but answerable; making it finer would answer a
+  // different question than the one the reader asked.
+  assert.equal(trendGranularityFor({ ...at(0.25), granularity: "day" }), "day");
+  cleanup();
 });
 
 test("compactTokenUsage moves only rows before cutoff, adds to daily data, and prunes old receipts", async () => {
