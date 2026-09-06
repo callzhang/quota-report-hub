@@ -24,7 +24,24 @@ REPO = Path(__file__).resolve().parent.parent
 # 1e9 tokens in a 900-second bucket is 1.11M tokens/second. Twenty concurrent agents would each have
 # to sustain 55K tokens/second -- an order of magnitude past anything an agent produces. Buckets
 # below this are reachable by a large fleet, so they stay: deleting them would destroy real usage.
+# This is the same line the hub now refuses at ingest (TOKEN_USAGE_IMPOSSIBLE_BUCKET_TOKENS), and it
+# is deliberately a "physically impossible" bar, not a "looks contaminated" one.
 IMPOSSIBLE_BUCKET_TOKENS = 1_000_000_000
+
+# The historical-repair line, for --threshold. Every codex bucket at or above 1e8 is contamination
+# from the cumulative-as-delta bug, and the evidence is three independent measurements agreeing:
+#
+#   - Claude is structurally immune (its counters are per-message absolutes, not session
+#     cumulatives) and its 748 buckets top out at 72.1M, from the same fleet in the same period.
+#   - Codex user-days that contain no bucket >= 1e8 top out at 97.7M -- the same shape as claude.
+#   - Codex overall matches claude at the median (3.0M vs 3.7M) and then diverges violently:
+#     p90 72.7M, p99 543M, max 981M. The tail is the bug, not the work.
+#
+# Cutting lower would start deleting buckets that both distributions produce; cutting here deletes
+# nothing either of them ever reached. Contamination below the line certainly survives -- a session
+# whose cumulative was only 80M when it was replayed is indistinguishable from a busy quarter hour
+# -- so this makes the numbers defensible, not exact.
+HISTORICAL_REPAIR_BUCKET_TOKENS = 100_000_000
 
 
 def load_credentials() -> tuple[str, str]:
@@ -72,7 +89,24 @@ def sql_quote(value: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="report what would be removed, change nothing")
+    parser.add_argument(
+        "--threshold", type=int, default=IMPOSSIBLE_BUCKET_TOKENS,
+        help=f"remove buckets at or above this many tokens (default {IMPOSSIBLE_BUCKET_TOKENS:,}; "
+             f"the historical repair used {HISTORICAL_REPAIR_BUCKET_TOKENS:,})",
+    )
+    parser.add_argument(
+        "--provider", default=None, choices=("codex", "claude"),
+        help="restrict to one provider. Required in practice for any threshold below the impossible "
+             "line: claude cannot produce a mis-differenced cumulative, so a large claude bucket is "
+             "real usage and deleting it would be destroying data to tidy a codex problem.",
+    )
     args = parser.parse_args()
+    threshold = int(args.threshold)
+    if threshold < IMPOSSIBLE_BUCKET_TOKENS and args.provider is None:
+        sys.exit("a threshold below the impossible line must name --provider; see --help")
+    scope = f"total_tokens >= {threshold}" + (
+        f" AND provider = {sql_quote(args.provider)}" if args.provider else ""
+    )
 
     _, uptake, _ = query(
         "SELECT COALESCE(client_version, 'OLD/NONE') v, COUNT(*) n FROM auth_pool_user_fetch_stats "
@@ -80,17 +114,15 @@ def main() -> int:
     )
     print("active reporter versions (7d):", ", ".join(f"{v}×{n}" for v, n in uptake) or "none")
 
-    columns, rows, _ = query(
-        f"SELECT * FROM token_usage_15m WHERE total_tokens >= {IMPOSSIBLE_BUCKET_TOKENS}"
-    )
+    columns, rows, _ = query(f"SELECT * FROM token_usage_15m WHERE {scope}")
     if not rows:
-        print("no impossible buckets found; nothing to purge")
+        print(f"no buckets at or above {threshold:,} tokens; nothing to purge")
         return 0
 
     records = [dict(zip(columns, row)) for row in rows]
     total = sum(int(record["total_tokens"]) for record in records)
     owners = sorted({record["hub_user_email"] for record in records})
-    print(f"found {len(records)} impossible buckets totalling {total / 1e9:.1f}B tokens")
+    print(f"found {len(records)} buckets at or above {threshold:,} tokens, totalling {total / 1e9:.1f}B")
     for owner in owners:
         owned = [r for r in records if r["hub_user_email"] == owner]
         print(f"  {owner:32} {len(owned):4} buckets  {sum(int(r['total_tokens']) for r in owned) / 1e9:8.1f}B")
@@ -103,6 +135,8 @@ def main() -> int:
     # session logs live on each user's machine -- so the export is the only copy.
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup = REPO / f"contaminated-usage-{stamp}.json"
+    # The threshold travels with the export: an 80M row backed up by a repair run and an 80M row
+    # left in place by a routine run are the same number meaning different things.
     backup.write_text(json.dumps(records, indent=1))
     print(f"backed up to {backup}")
 
@@ -112,17 +146,14 @@ def main() -> int:
     for owner in owners:
         expected = sum(1 for r in records if r["hub_user_email"] == owner)
         _, _, affected = query(
-            f"DELETE FROM token_usage_15m WHERE total_tokens >= {IMPOSSIBLE_BUCKET_TOKENS} "
-            f"AND hub_user_email = {sql_quote(owner)}"
+            f"DELETE FROM token_usage_15m WHERE {scope} AND hub_user_email = {sql_quote(owner)}"
         )
         removed += affected or 0
         note = "" if affected == expected else f"  (expected {expected}; more arrived since the backup)"
         print(f"  removed {affected} for {owner}{note}")
 
-    _, [[left]], _ = query(
-        f"SELECT COUNT(*) FROM token_usage_15m WHERE total_tokens >= {IMPOSSIBLE_BUCKET_TOKENS}"
-    )
-    print(f"removed {removed} rows; {left} impossible buckets remain")
+    _, [[left]], _ = query(f"SELECT COUNT(*) FROM token_usage_15m WHERE {scope}")
+    print(f"removed {removed} rows; {left} remain at or above {threshold:,}")
     if int(left):
         print("WARNING: contamination is still arriving -- some clients have not self-updated yet")
     return 0

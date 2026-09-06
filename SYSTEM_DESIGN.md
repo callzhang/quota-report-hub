@@ -500,12 +500,22 @@ which only ever sees clients that already report usage and therefore excludes ex
 at risk ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)).
 
 ### 8.5 purge_contaminated_usage.py
-Removes usage buckets recording physically impossible volumes (the compaction-as-reset bug in old
-collectors re-emitted whole session cumulatives as fresh usage; one pass removed 79 rows holding 86%
-of all recorded volume). Since 2.4.0 the same bound is enforced at ingest
+Removes usage buckets recording physically impossible volumes (the cumulative-as-delta bug re-emitted
+whole session cumulatives as fresh usage; one pass removed 79 rows holding 86% of all recorded
+volume). Since 2.4.0 the same bound is enforced at ingest
 (`TOKEN_USAGE_IMPOSSIBLE_BUCKET_TOKENS`, [§16.3](#163-ingest-post-apitoken-usage--ingesttokenusagebatch)),
-so the script is a cleanup tool for rows written before that, not a standing defence. Backs up
-before deleting, supports `--dry-run`, and talks to Turso over its
+so the script is a cleanup tool for rows written before that, not a standing defence.
+
+`--threshold` lowers the line for a historical repair, and below the impossible line it requires
+`--provider`: claude's counters are per-message absolutes and cannot be mis-differenced, so a large
+claude bucket is real usage and deleting it would be destroying data to tidy a codex problem. The
+repair line is `HISTORICAL_REPAIR_BUCKET_TOKENS = 1e8`, chosen from three agreeing measurements —
+claude's 748 buckets top out at 72.1M; codex user-days with no bucket ≥1e8 top out at 97.7M; and
+codex matches claude at the median (3.0M vs 3.7M) before diverging to p99 543M and max 981M. The
+tail is the bug, not the work. Contamination below the line survives by construction, so the repair
+makes the numbers defensible rather than exact.
+
+Backs up before deleting, supports `--dry-run`, and talks to Turso over its
 HTTP API rather than `@libsql/client` because this host resolves the Turso name into Tailscale's
 intercepted range, which curl and urllib traverse but node's TLS stack does not.
 
