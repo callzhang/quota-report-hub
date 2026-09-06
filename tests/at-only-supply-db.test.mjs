@@ -134,3 +134,33 @@ test("an access-token-only upload is refused when it is not fresher, or when the
     cleanup();
   }
 });
+
+// The blob says whose account this is; the hub knows whose token it is. When they disagree, the hub
+// wins. Measured 2026-09-05: a machine whose identity record still named a dead account uploaded the
+// live token it actually ran (another account's), and the merge filed that token under the dead name.
+test("an access-token-only upload is refused when the hub knows the token belongs to another account", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    // the live account: its token is now known to the pool
+    await mod.upsertAuthPoolEntry({
+      source: "claude",
+      auth_json: JSON.stringify({ ...JSON.parse(claudeBlob({ accessToken: "LIVE_OWNER_AT", expiresAt: T0 + 30 * DAY })), account_id: "claude-live@example.com", email: "live@example.com" }),
+      uploader_email: "live@example.com",
+    });
+    // the dead account, with an expired token and a dead RT
+    await mod.upsertAuthPoolEntry({ source: "claude", auth_json: claudeBlob({ accessToken: "DEAD_AT", expiresAt: T0 - 30 * DAY }), uploader_email: "owner@example.com" });
+
+    // a drifted machine uploads the LIVE account's token under the DEAD account's name
+    const result = await mod.upsertAuthPoolEntry({
+      source: "claude",
+      auth_json: stripRefreshToken(claudeBlob({ accessToken: "LIVE_OWNER_AT", expiresAt: T0 + 30 * DAY }), "claude"),
+      uploader_email: "drifted@example.com",
+    });
+    assert.deepEqual(result, { rejected: true, reason: "stripped_access_token_belongs_to_another_account", deduplicated: true });
+
+    const dead = (await mod.authPoolEntries()).find((e) => e.account_id === OWNER);
+    assert.equal(dead.auth_expires_at, new Date(T0 - 30 * DAY).toISOString(), "the dead entry keeps its own (dead) token");
+  } finally {
+    cleanup();
+  }
+});

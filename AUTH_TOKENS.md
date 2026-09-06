@@ -423,7 +423,13 @@ Now an AT-only claude upload is **merged** (`mergeStrippedAccessToken`, [lib/fet
 the pooled blob keeps its RT, owner, and owner's machine verbatim and only takes the access token +
 `expiresAt` (and the `auth_last_refresh` mirror, or the freshness gate drops the write) -- and only when
 the incoming token outlives the pooled one (`stripped_access_token_not_newer` otherwise; an account with
-no pooled entry is still refused with `stripped_refresh_token`). The RT field is never written by this
+no pooled entry is still refused with `stripped_refresh_token`) **and the hub does not already know that
+token as another account's** (`stripped_access_token_belongs_to_another_account`). That last check is the
+lesson of the first hours in production: a machine whose identity record still named a dead account
+uploaded the live token it actually ran -- another account's -- and the merge filed that token under the
+dead name, which then read as available with someone else's quota. The blob says whose account; the
+fingerprint map says whose token; when they disagree the hub wins. An unknown token is accepted, because
+borrowers only ever hold pooled (known) tokens -- an unknown one is a fresh mint on the owner's machine. The RT field is never written by this
 path, which is the whole of the original guard's intent. Codex is excluded: every codex client refreshes
 hourly, so an AT-only codex upload is never fresher than the pool. Client side, the guard now uploads its
 AT-only claude credential and pins `state_source` back to `fetched_from_auth_pool` afterwards -- an
