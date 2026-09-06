@@ -79,14 +79,7 @@
       .breakdown-pagination { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px; }
       .pager-actions { display:flex; align-items:center; gap:8px; }
       .pager-actions button:disabled { cursor:default; opacity:.45; }
-      #trend-region svg { display: block; width: 100%; min-height: 260px; margin-top: 12px; overflow: visible; }
-      .trend-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
-      .trend-legend button { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; min-height: 30px; padding: 4px 8px; }
-      .trend-legend i { width: 10px; height: 10px; border-radius: 50%; }
-      .trend-point { opacity: 0; transition: opacity .12s ease; }
-      .trend-point:hover, .trend-point:focus { opacity: 1; }
-      [data-trend-chart][data-highlight-group] .trend-line { opacity: .18; }
-      [data-trend-chart][data-highlight-group] .trend-line.is-highlighted { opacity: 1; }
+      .trend-canvas-shell { position: relative; height: 300px; margin-top: 12px; }
     </style>
   </head>
   <body>
@@ -158,6 +151,10 @@
       </div>
     </main>
 
+    <!-- The trend chart is Chart.js, an off-the-shelf component; the second script bundles the
+         date-fns adapter its time axis needs. Pinned versions, UMD builds. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
     <script>
       const COOKIE_NAME = "quota_report_hub_token";
       const QUERY_CACHE_MS = 5 * 60 * 1000;
@@ -274,124 +271,80 @@
           : 60 * 60 * 1000;
       }
 
-      function pointLabel(point) {
-        const bucketStart = new Date(point.bucket_start);
-        const bucketEnd = new Date(bucketStart.getTime() + trendBucketMs());
-        const dimensions = [groupLabel() + " " + point.group_value];
-        if (point.provider) dimensions.push("provider " + point.provider);
-        if (point.model_account_id) dimensions.push("model account " + point.model_account_id);
-        if (point.model_id) dimensions.push("model " + point.model_id);
-        return `${bucketStart.toLocaleString()}–${bucketEnd.toLocaleString()}, ${dimensions.join(", ")}, ` +
-          COUNTERS.map(([label, key]) => `${label.toLowerCase()} ${formatTokens(point[key])}`).join(", ");
-      }
-
-      function splitTrendSegments(points) {
-        const segments = [];
-        let segment = [];
-        let previousTime = null;
-        for (const point of points) {
-          const time = new Date(point.bucket_start).getTime();
-          if (previousTime !== null && time - previousTime > trendBucketMs() * 1.5) {
-            segments.push(segment);
-            segment = [];
-          }
-          segment.push({ point, time });
-          previousTime = time;
-        }
-        if (segment.length) segments.push(segment);
-        return segments;
-      }
-
-      function renderTrendChart(points) {
-        if (!points.length) return '<div class="empty">No usage in this range.</div>';
-        const width = 760;
-        const height = 260;
-        const padding = { left: 48, right: 18, top: 20, bottom: 36 };
+      // Chart.js draws the trend; this stays a pure config builder so tests can assert on the
+      // datasets and options without a canvas. Colors follow the entity (stableColor), a missing
+      // bucket becomes an explicit null point so the line breaks instead of bridging the gap.
+      function trendChartConfig(points) {
         const metricCounter = selectedMetricCounter();
         const sorted = [...points].sort((a, b) =>
           String(a.bucket_start).localeCompare(String(b.bucket_start)) || String(a.group_value).localeCompare(String(b.group_value))
         );
-        const maximum = Math.max(1, ...sorted.map((point) => Number(point[metricCounter] || 0)));
-        const times = sorted.map((point) => new Date(point.bucket_start).getTime());
-        const minimumTime = Math.min(...times);
-        const maximumTime = Math.max(...times);
-        const timeSpan = Math.max(trendBucketMs(), maximumTime - minimumTime);
-        const x = (time) => padding.left + ((time - minimumTime) / timeSpan) * (width - padding.left - padding.right);
-        const y = (value) => padding.top + (1 - value / maximum) * (height - padding.top - padding.bottom);
         const byGroup = new Map();
         for (const point of sorted) {
           const key = String(point.group_value || "Unknown");
           if (!byGroup.has(key)) byGroup.set(key, []);
           byGroup.get(key).push(point);
         }
-        const paths = [];
-        const circles = [];
-        const legend = [];
-        for (const [group, groupPoints] of byGroup) {
+        const bucketMs = trendBucketMs();
+        const datasets = [...byGroup.entries()].map(([group, groupPoints]) => {
+          const data = [];
+          let previousTime = null;
+          for (const point of groupPoints) {
+            const time = Date.parse(point.bucket_start);
+            if (previousTime !== null && time - previousTime > bucketMs * 1.5) {
+              data.push({ x: previousTime + bucketMs, y: null });
+            }
+            data.push({ x: time, y: Number(point[metricCounter] || 0) });
+            previousTime = time;
+          }
           const color = stableColor(group);
-          const segments = splitTrendSegments(groupPoints);
-          for (const entries of segments) {
-            const path = entries.length === 1
-              ? (() => {
-                const { point, time } = entries[0];
-                const yPosition = y(Number(point[metricCounter] || 0)).toFixed(1);
-                return `M${(x(time) - 3).toFixed(1)} ${yPosition} L${(x(time) + 3).toFixed(1)} ${yPosition}`;
-              })()
-              : entries.map(({ point, time }, index) =>
-                `${index ? "L" : "M"}${x(time).toFixed(1)} ${y(Number(point[metricCounter] || 0)).toFixed(1)}`
-              ).join(" ");
-            paths.push(`<path class="trend-line" data-trend-group="${escapeHtml(group)}" d="${path}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />`);
-          }
-          for (const { point, time } of groupPoints.map((point) => ({ point, time: new Date(point.bucket_start).getTime() }))) {
-            circles.push(`<circle class="trend-point" data-trend-point data-trend-group="${escapeHtml(group)}" cx="${x(time).toFixed(1)}" cy="${y(Number(point[metricCounter] || 0)).toFixed(1)}" r="4" fill="${color}" tabindex="0" role="img" aria-label="${escapeHtml(pointLabel(point))}" />`);
-          }
-          legend.push(`<button type="button" data-trend-legend data-trend-group="${escapeHtml(group)}"><i style="background:${color}"></i>${escapeHtml(group)}</button>`);
-        }
-        const grid = Array.from({ length: 4 }, (_, index) => {
-          const value = maximum * (1 - index / 3);
-          const yPosition = y(value).toFixed(1);
-          return `<line x1="${padding.left}" y1="${yPosition}" x2="${width - padding.right}" y2="${yPosition}" stroke="currentColor" opacity=".12" /><text x="${padding.left - 8}" y="${Number(yPosition) + 4}" text-anchor="end">${formatTokens(value)}</text>`;
-        }).join("");
-        const bucketTimes = [...new Set(sorted.map((point) => new Date(point.bucket_start).getTime()))];
-        const xSampleCount = Math.min(5, bucketTimes.length);
-        const rangeCrossesLocalDays = new Date(minimumTime).toLocaleDateString() !== new Date(maximumTime).toLocaleDateString();
-        const xLabels = Array.from({ length: xSampleCount }, (_, index) => {
-          const time = bucketTimes[Math.round(index * (bucketTimes.length - 1) / Math.max(1, xSampleCount - 1))];
-          const date = new Date(time);
-          const xPosition = x(time).toFixed(1);
-          if (granularity.value !== "day" && rangeCrossesLocalDays) {
-            const dateLabel = date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-            const timeLabel = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-            return `<text x="${xPosition}" y="${height - 22}" text-anchor="middle"><tspan x="${xPosition}" dy="0">${escapeHtml(dateLabel)}</tspan><tspan x="${xPosition}" dy="12">${escapeHtml(timeLabel)}</tspan></text>`;
-          }
-          const label = granularity.value === "day" ? date.toLocaleDateString() : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-          return `<text x="${xPosition}" y="${height - 12}" text-anchor="middle">${escapeHtml(label)}</text>`;
-        }).join("");
-        return `<div class="meta">Trend · ${escapeHtml(COUNTERS.find(([label, key]) => key === metricCounter)?.[0] || "Total")} · ${escapeHtml(groupLabel())}. Missing buckets remain gaps; use Tab for exact values.</div>` +
-          `<div data-trend-chart><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Token usage trend by ${escapeHtml(groupLabel())}">` +
-          `<g aria-label="Y axis labels">${grid}</g><g aria-label="X axis labels">${xLabels}</g>` + paths.join("") + circles.join("") + `</svg></div><div class="trend-legend">${legend.join("")}</div>`;
+          return {
+            label: group,
+            data,
+            borderColor: color,
+            backgroundColor: color,
+            borderWidth: 1.8,
+            pointRadius: 2.5,
+            pointHoverRadius: 5,
+            spanGaps: false,
+          };
+        });
+        return {
+          type: "line",
+          data: { datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: "nearest", intersect: false },
+            scales: {
+              x: { type: "time" },
+              y: { beginAtZero: true, ticks: { callback: (value) => formatTokens(value) } },
+            },
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  label: (item) => `${item.dataset.label}: ${formatTokens(item.parsed.y)}`,
+                },
+              },
+            },
+          },
+        };
       }
 
-      function bindTrendLegendActions() {
-        if (typeof trendRegion.querySelector !== "function") return;
-        const chart = trendRegion.querySelector("[data-trend-chart]");
-        if (!chart) return;
-        trendRegion.querySelectorAll("[data-trend-legend]").forEach((legend) => {
-          const setHighlight = () => {
-            chart.dataset.highlightGroup = legend.dataset.trendGroup;
-            chart.querySelectorAll(".trend-line").forEach((line) => {
-              line.classList.toggle("is-highlighted", line.dataset.trendGroup === legend.dataset.trendGroup);
-            });
-          };
-          const clearHighlight = () => {
-            delete chart.dataset.highlightGroup;
-            chart.querySelectorAll(".trend-line").forEach((line) => line.classList.remove("is-highlighted"));
-          };
-          legend.addEventListener("mouseenter", setHighlight);
-          legend.addEventListener("focus", setHighlight);
-          legend.addEventListener("mouseleave", clearHighlight);
-          legend.addEventListener("blur", clearHighlight);
-        });
+      let trendChart = null;
+      function renderTrendChart(points) {
+        if (trendChart) {
+          trendChart.destroy();
+          trendChart = null;
+        }
+        if (!points.length) {
+          trendRegion.innerHTML = '<div class="empty">No usage in this range.</div>';
+          return;
+        }
+        trendRegion.innerHTML =
+          `<div class="meta">Trend · ${escapeHtml(selectedMetricLabel())} · ${escapeHtml(groupLabel())}. Missing buckets remain gaps; hover a point for the exact value.</div>` +
+          `<div class="trend-canvas-shell"><canvas role="img" aria-label="Token usage trend by ${escapeHtml(groupLabel())}"></canvas></div>`;
+        trendChart = new Chart(trendRegion.querySelector("canvas"), trendChartConfig(points));
       }
 
       function selectedMetricLabel() {
@@ -540,8 +493,7 @@
             `<div class="meta">Cache read ${formatTokens(totals.cache_read_tokens)} · Cache write ${formatTokens(totals.cache_write_tokens)} · Reasoning ${formatTokens(totals.reasoning_tokens)}. These are subsets of Total, not additions.</div></article>`,
         ].join("");
         userUsageRegion.innerHTML = renderUserBars(payload.breakdown || []);
-        trendRegion.innerHTML = renderTrendChart(payload.trend || []);
-        bindTrendLegendActions();
+        renderTrendChart(payload.trend || []);
         breakdownRegion.innerHTML = renderBreakdown(payload.breakdown || []);
         bindBreakdownActions();
       }

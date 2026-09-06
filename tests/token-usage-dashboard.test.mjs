@@ -88,17 +88,7 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
         listeners,
       };
       if (id === "trend-region") {
-        const trendLines = [
-          { dataset: { trendGroup: "derek@stardust.ai" }, classList: { states: new Set(), toggle(name, enabled) { if (enabled) this.states.add(name); else this.states.delete(name); }, remove(name) { this.states.delete(name); } } },
-          { dataset: { trendGroup: "member@stardust.ai" }, classList: { states: new Set(), toggle(name, enabled) { if (enabled) this.states.add(name); else this.states.delete(name); }, remove(name) { this.states.delete(name); } } },
-        ];
-        const chart = { dataset: {}, querySelectorAll: (selector) => selector === ".trend-line" ? trendLines : [] };
-        const legend = makeInteractiveElement({ dataset: { trendGroup: "derek@stardust.ai" } });
-        current.querySelector = (selector) => selector === "[data-trend-chart]" ? chart : null;
-        current.querySelectorAll = (selector) => selector === "[data-trend-legend]" ? [legend] : [];
-        current.trendChart = chart;
-        current.trendLines = trendLines;
-        current.trendLegend = legend;
+        current.querySelector = (selector) => selector === "canvas" ? { id: "trend-canvas" } : null;
       }
       if (id === "breakdown-region") {
         let innerHTML = "";
@@ -171,9 +161,20 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
     constructor(value) { super(value === undefined ? now : value); }
     static now() { return now; }
   }
+  const chartInstances = [];
+  class ChartStub {
+    constructor(canvas, config) {
+      this.canvas = canvas;
+      this.config = config;
+      this.destroyed = false;
+      chartInstances.push(this);
+    }
+    destroy() { this.destroyed = true; }
+  }
   const context = vm.createContext({
     document,
     location,
+    Chart: ChartStub,
     history: { replaceState() {} },
     fetch: fetchImpl,
     URL,
@@ -188,9 +189,7 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
   await new Promise((resolve) => setImmediate(resolve));
   return {
     element,
-    trendChart: element("trend-region").trendChart,
-    trendLines: element("trend-region").trendLines,
-    trendLegend: element("trend-region").trendLegend,
+    chartInstances,
     get breakdownNext() { return breakdownButtons.pager.find((button) => button.dataset.breakdownPage === "next"); },
     get activeElement() { return document.activeElement; },
     replacements,
@@ -212,7 +211,9 @@ test("page exposes the complete query shell and reads only token usage", async (
   }
   assert.match(html, /const QUERY_CACHE_MS = 5 \* 60 \* 1000/);
   assert.match(html, /const BREAKDOWN_PAGE_SIZE = 20/);
-  assert.match(html, /data-trend-chart/);
+  assert.match(html, /cdnjs\.cloudflare\.com\/ajax\/libs\/Chart\.js\/4\.4\.1\/chart\.umd\.min\.js/);
+  assert.match(html, /chartjs-adapter-date-fns@3\.0\.0\/dist\/chartjs-adapter-date-fns\.bundle\.min\.js/);
+  assert.match(html, /new Chart\(trendRegion\.querySelector\("canvas"\), trendChartConfig\(points\)\)/);
   assert.match(html, /breakdown-pagination/);
   assert.match(html, /const queryCache = new Map\(\)/);
   assert.match(html, /const queryRequests = new Map\(\)/);
@@ -311,7 +312,7 @@ test("transient errors preserve auth, selected filters, and the last successful 
   assert.equal(harness.element("error-region").hidden, false);
 });
 
-test("summary and accessible trend render exact counters without inventing data", async () => {
+test("summary and trend datasets carry exact counters without inventing data", async () => {
   const payload = usagePayload({
     totals: { total_tokens: 1200, input_tokens: 700, output_tokens: 200, cache_read_tokens: 250, cache_write_tokens: 50, reasoning_tokens: 33 },
     trend: [
@@ -322,7 +323,6 @@ test("summary and accessible trend render exact counters without inventing data"
   });
   const harness = await pageHarness(async () => response(200, payload));
   const summary = harness.element("summary-region").innerHTML;
-  const trend = harness.element("trend-region").innerHTML;
   assert.match(summary, />1,200</);
   assert.match(summary, />700</);
   assert.match(summary, />200</);
@@ -331,23 +331,19 @@ test("summary and accessible trend render exact counters without inventing data"
   assert.match(summary, /Cache write 50/);
   assert.match(summary, /Reasoning 33/);
   assert.match(summary, /subsets of Total/);
-  assert.match(trend, /Trend · Total/);
-  assert.match(trend, /<svg/);
-  assert.match(trend, /tabindex="0"/);
-  assert.match(trend, /derek@stardust\.ai/);
-  assert.match(trend, /member@stardust\.ai/);
-  assert.match(trend, /total 100/);
-  assert.match(trend, /input 60/);
-  assert.match(trend, /cache read 15/);
-  assert.match(trend, /reasoning 3/);
-  assert.match(trend, /data-trend-group="derek@stardust\.ai"/);
-  assert.match(trend, /data-trend-group="member@stardust\.ai"/);
-  assert.match(trend, /stroke-width="1\.8"/);
-  assert.match(trend, /stroke-linecap="round"/);
-  assert.match(trend, /data-trend-point/);
-  assert.match(trend, /aria-label="Y axis/);
-  assert.match(trend, /aria-label="X axis/);
-  assert.equal((trend.match(/<path class="trend-line"/g) || []).length, 3, "missing hourly bucket splits the path");
+
+  // the trend is a Chart.js component fed by the pure config builder
+  assert.match(harness.element("trend-region").innerHTML, /Trend · Total/);
+  assert.match(harness.element("trend-region").innerHTML, /<canvas/);
+  const config = harness.chartInstances.at(-1).config;
+  assert.equal(config.type, "line");
+  const byLabel = new Map(config.data.datasets.map((dataset) => [dataset.label, dataset]));
+  assert.deepEqual(Array.from(byLabel.keys()).sort(), ["derek@stardust.ai", "member@stardust.ai"]);
+  // derek's 10:00 bucket is missing, so a null point breaks the line instead of bridging it
+  assert.deepEqual(Array.from(byLabel.get("derek@stardust.ai").data, (point) => point.y), [100, null, 200]);
+  assert.deepEqual(Array.from(byLabel.get("member@stardust.ai").data, (point) => point.y), [50]);
+  // color follows the entity, computed by the same stableColor the page uses everywhere
+  assert.equal(byLabel.get("derek@stardust.ai").borderColor, harness.evaluate('stableColor("derek@stardust.ai")'));
 });
 
 test("explicit zero remains connected in a trend line", async () => {
@@ -357,60 +353,34 @@ test("explicit zero remains connected in a trend line", async () => {
     { bucket_start: "2026-08-18T11:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 200 },
   ] });
   const harness = await pageHarness(async () => response(200, payload));
-  const trend = harness.element("trend-region").innerHTML;
-  assert.equal((trend.match(/<path class="trend-line"/g) || []).length, 1);
+  const data = harness.chartInstances.at(-1).config.data.datasets[0].data;
+  // a reported zero is a value, not a gap: no null is inserted between contiguous buckets
+  assert.deepEqual(Array.from(data, (point) => point.y), [100, 0, 200]);
 });
 
-test("singleton trend segments include painted line geometry while their exact-value markers stay hidden", async () => {
+test("a re-render destroys the previous chart instead of stacking instances", async () => {
   const payload = usagePayload({ trend: [
     { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100 },
-    { bucket_start: "2026-08-18T11:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 200 },
   ] });
   const harness = await pageHarness(async () => response(200, payload));
-  const trend = harness.element("trend-region").innerHTML;
-  assert.match(trend, /<path class="trend-line"[^>]*d="M[^\"]+ L[^\"]+"/);
-  const html = await readFile(new URL("../token-usage.html", import.meta.url), "utf8");
-  assert.match(html, /\.trend-point \{ opacity: 0/);
+  await harness.evaluate("loadUsage()");
+  assert.equal(harness.chartInstances.length, 2);
+  assert.equal(harness.chartInstances[0].destroyed, true);
+  assert.equal(harness.chartInstances[1].destroyed, false);
 });
 
-test("trend x-axis labels use unique evenly spaced buckets and intraday time", async () => {
-  const trend = [];
-  for (const bucket of ["09:00:00.000Z", "10:00:00.000Z", "11:00:00.000Z", "12:00:00.000Z"]) {
-    for (const group of ["derek@stardust.ai", "member@stardust.ai"]) {
-      trend.push({ bucket_start: `2026-08-18T${bucket}`, group_value: group, total_tokens: 100 });
-    }
-  }
-  const harness = await pageHarness(async () => response(200, usagePayload({ trend })));
-  const xAxis = harness.element("trend-region").innerHTML.match(/<g aria-label="X axis labels">([\s\S]*?)<\/g>/)?.[1] || "";
-  const labels = [...xAxis.matchAll(/<text[^>]*>([^<]+)<\/text>/g)].map((match) => match[1]);
-  assert.equal(labels.length, 4);
-  assert.equal(new Set(labels).size, labels.length);
-  assert.match(xAxis, /\d{1,2}:00/);
-});
-
-test("multi-day hourly trend labels include compact local dates and times", async () => {
-  const trend = Array.from({ length: 7 }, (_, index) => ({
-    bucket_start: new Date(Date.UTC(2026, 7, 17 + index, 9)).toISOString(),
-    group_value: "derek@stardust.ai",
-    total_tokens: 100 + index,
-  }));
-  const harness = await pageHarness(async () => response(200, usagePayload({ trend })));
-  const xAxis = harness.element("trend-region").innerHTML.match(/<g aria-label="X axis labels">([\s\S]*?)<\/g>/)?.[1] || "";
-  assert.ok((xAxis.match(/<text /g) || []).length <= 5);
-  assert.match(xAxis, /<tspan[^>]*>[^<]+<\/tspan><tspan[^>]*>[^<]+<\/tspan>/);
-});
-
-test("legend focus highlights its group and blur clears it without fetching", async () => {
-  let calls = 0;
-  const harness = await pageHarness(async () => { calls += 1; return response(200, usagePayload()); });
-  assert.equal(calls, 1);
-  harness.trendLegend.listeners.focus();
-  assert.equal(harness.trendChart.dataset.highlightGroup, "derek@stardust.ai");
-  assert.equal(harness.trendLines[0].classList.states.has("is-highlighted"), true);
-  assert.equal(harness.trendLines[1].classList.states.has("is-highlighted"), false);
-  harness.trendLegend.listeners.blur();
-  assert.equal(harness.trendChart.dataset.highlightGroup, undefined);
-  assert.equal(calls, 1);
+test("the chart delegates axes to the component and formats values in 万/亿", async () => {
+  const payload = usagePayload({ trend: [
+    { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 84120000 },
+  ] });
+  const harness = await pageHarness(async () => response(200, payload));
+  const config = harness.chartInstances.at(-1).config;
+  assert.equal(config.options.scales.x.type, "time");
+  assert.equal(config.options.maintainAspectRatio, false);
+  assert.equal(config.data.datasets[0].spanGaps, false);
+  assert.equal(config.options.scales.y.ticks.callback(150000000), "1.50亿");
+  const label = config.options.plugins.tooltip.callbacks.label({ dataset: { label: "derek@stardust.ai" }, parsed: { y: 84120000 } });
+  assert.equal(label, "derek@stardust.ai: 8412万");
 });
 
 test("focused Next keeps its logical control after local paging", async () => {
