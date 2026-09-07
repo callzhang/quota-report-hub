@@ -851,6 +851,73 @@ class ReporterScriptsTest(unittest.TestCase):
             {"limit_id": "codex", "limit_name": None, "individual_limit": None},
         )
 
+    def test_probe_codex_refuses_to_report_another_buckets_numbers_as_plan_quota(self):
+        # Codex meters several buckets from one request and the CLI writes only one of them into the
+        # rollout. A premium model's bucket is barely consumed (ceshi's usage screen: plan 36% left,
+        # GPT-5.3-Codex-Spark 99% left), so accepting it as plan quota does not merely add noise --
+        # it advertises a nearly-spent account as full and gets it handed out. The reading is still
+        # reported, with no windows, so the observation survives without being usable as quota.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-09-07T21:40:45.007Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "POOLED_AT",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "algorithm@stardust.ai",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "pro"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.subprocess.run", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 258400},
+                            "rate_limits": {
+                                "limit_id": "codex_bengalfox",
+                                "limit_name": "GPT-5.3-Codex-Spark",
+                                "individual_limit": None,
+                                "plan_type": "pro",
+                                "primary": {"used_percent": 0, "window_minutes": 300, "resets_in_seconds": 18000},
+                                "secondary": {"used_percent": 1, "window_minutes": 10080, "resets_in_seconds": 604800},
+                                "credits": {"has_credits": False, "balance": "0", "unlimited": False},
+                                "rate_limit_reached_type": None,
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "ok", "another bucket is not a probe failure")
+        self.assertIsNone(report.get("error"))
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertIsNone(report["windows"]["1week"], "1% used on Spark must not read as 99% of plan quota left")
+        self.assertEqual(report["usage_summary"]["meter"]["limit_id"], "codex_bengalfox")
+        self.assertEqual(report["usage_summary"]["meter"]["limit_name"], "GPT-5.3-Codex-Spark")
+
+    def test_codex_meter_is_plan_quota_only_for_the_plan_bucket(self):
+        self.assertTrue(quota_reporters.codex_meter_is_plan_quota(None), "pre-limit_id responses")
+        self.assertTrue(quota_reporters.codex_meter_is_plan_quota({"limit_id": None}))
+        self.assertTrue(quota_reporters.codex_meter_is_plan_quota({"limit_id": "codex"}))
+        self.assertFalse(quota_reporters.codex_meter_is_plan_quota({"limit_id": "codex_bengalfox"}))
+        # `premium` is the tier named on a 429, not a bucket. It reaches the probe with no windows
+        # either way, so classifying it here as "not plan quota" costs nothing and the exhaustion
+        # path that reads the 429 text is untouched.
+        self.assertFalse(quota_reporters.codex_meter_is_plan_quota({"limit_id": "premium"}))
+
     def test_probe_codex_reports_usage_limit_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"

@@ -412,6 +412,27 @@ no meter identity.
 The fingerprint is consumed at ingest and never stored: `sanitizeReport`'s field list omits it, so it
 cannot leak into a dashboard payload or a quota event.
 
+**One request, several quota buckets.** Codex meters more than one limit per account and returns them
+together: the plan's own (`limit_id: "codex"`) plus one per premium model actually used, under its own
+metered id — `codex_bengalfox` is GPT-5.3-Codex-Spark. `premium` is not a bucket at all but the tier
+named on a 429 (`x-codex-active-limit`), and it arrives with no windows. The CLI writes only **one**
+snapshot into the rollout, so a probe reads whichever bucket that session surfaced. Only the plan
+bucket is this account's quota (`codex_meter_is_plan_quota`); any other reading is reported with
+**no windows** so it can never merge in as quota. Upstream draws the same line — `get_rate_limits()`
+picks the `codex` snapshot and ignores the rest.
+
+The direction of that error is what makes it urgent rather than cosmetic: a low-tier model's bucket is
+barely consumed (ceshi's own usage screen, 2026-09-07: plan 36% left, Spark 99% left), so a foreign
+reading advertises a nearly-spent account as full and gets it handed out. Measured on
+`algorithm@stardust.ai`: two machines on a byte-identical credential reported 6% and 14% in the same
+minute, both correct, one of them about Spark.
+
+Such a report carries no complete weekly window, so `codexClientPayloadAccepted` refuses it and the
+event log never sees it. The observation is therefore kept on the **heartbeat** instead
+(`meter_limit_id`, [§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)), which is always
+accepted: without it, the machines whose readings are discarded would be exactly the machines that
+cannot be seen, and a newly introduced metered id would arrive silently.
+
 Then one gate: `codexClientPayloadAccepted` requires a *complete* weekly window (`remaining_percent` **and**
 `reset_at`), a hard invalidation, or a valid `exhausted_until` timestamp. Codex has no live 5-hour
 window any more, so weekly completeness is the whole windows test; Claude reports are not gated here. An

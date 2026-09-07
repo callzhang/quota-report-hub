@@ -527,6 +527,28 @@ def codex_meter_identity(rate_limits: dict | None) -> dict | None:
     }
 
 
+# The plan's own bucket -- the only one whose percentages are this account's quota. Codex returns
+# several buckets from one request: the plan window plus one per premium model actually used, each
+# under its own metered id (`codex_bengalfox` is GPT-5.3-Codex-Spark). Their numbers are all true and
+# all about different things, and the CLI writes only ONE of them into the rollout, so whichever the
+# session happened to surface is what a probe reads. Measured on algorithm@stardust.ai: two machines
+# on a byte-identical credential reported 6% and 14% in the same minute, both correct, one of them
+# about Spark. Upstream draws the same line -- `get_rate_limits()` picks the snapshot whose limit_id
+# is `codex` and ignores the rest.
+#
+# Direction of the error matters: a low-tier model's bucket is barely consumed (ceshi's own usage
+# screen: plan 36% left, Spark 99% left), so a foreign reading does not just add noise, it makes a
+# nearly-spent account look full and gets it handed out.
+CODEX_PLAN_LIMIT_ID = "codex"
+
+
+def codex_meter_is_plan_quota(meter: dict | None) -> bool:
+    if not meter:
+        return True          # pre-limit_id responses; the only bucket that existed was the plan's
+    limit_id = meter.get("limit_id")
+    return not limit_id or limit_id == CODEX_PLAN_LIMIT_ID
+
+
 def empty_windows() -> dict:
     return {"5h": None, "1week": None}
 
@@ -862,7 +884,13 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
     rate_limits = token_payload.get("rate_limits")
     now_ts = checked_at.timestamp()
     meter = codex_meter_identity(rate_limits)
-    windows = codex_windows_from_rate_limits(rate_limits, now_ts)
+    # Percentages only become this account's quota when they came from the plan's own bucket.
+    # `premium` reaches here with no windows at all, so the exhaustion path below is untouched.
+    windows = (
+        codex_windows_from_rate_limits(rate_limits, now_ts)
+        if codex_meter_is_plan_quota(meter)
+        else empty_windows()
+    )
     has_any_window = windows["5h"] is not None or windows["1week"] is not None
     has_complete_windows = windows["5h"] is not None and windows["1week"] is not None
     if rate_limits and not has_complete_windows and codex_workspace_credits_exhausted(rate_limits, result.stderr, result.stdout):
@@ -947,6 +975,21 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
                 "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
                 "next_retry_at": reset_at,
             },
+        }
+        if refresh_capture is not None:
+            payload["refresh_capture"] = refresh_capture
+        return payload
+
+    if not codex_meter_is_plan_quota(meter):
+        # Not a failure and not this account's quota: the session surfaced another bucket. Reported
+        # so the observation survives -- a new metered id appearing is how a product change becomes
+        # visible -- but with no windows, so it can never be merged in as plan quota.
+        payload = {
+            **base,
+            "status": "ok",
+            "error": None,
+            "windows": empty_windows(),
+            "usage_summary": {"meter": meter},
         }
         if refresh_capture is not None:
             payload["refresh_capture"] = refresh_capture

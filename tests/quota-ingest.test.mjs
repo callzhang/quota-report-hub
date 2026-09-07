@@ -162,6 +162,39 @@ test("ingestClientQuota files a report under the account its token belongs to, n
   assert.equal(written.usage_summary.quota_source, "oauth_usage_api", "the rest of usage_summary is kept");
 });
 
+test("a heartbeat keeps the quota bucket its probe read", async () => {
+  // The one channel that survives everything: a report about a non-plan bucket has no windows and is
+  // refused before the event log, so the heartbeat is where that observation is kept. Bounded like
+  // every other free-text heartbeat field.
+  const normalized = normalizeReporterHeartbeat({
+    source: "codex",
+    reporterEmail: "shawn.hou@stardust.ai",
+    heartbeat: {
+      reporter_name: "shawn@192.168.1.6",
+      hostname: "192.168.1.6",
+      status: "ok",
+      account_id: "algorithm@stardust.ai",
+      meter_limit_id: "codex_bengalfox",
+    },
+  });
+  assert.equal(normalized.ok, true);
+  assert.equal(normalized.heartbeat.meter_limit_id, "codex_bengalfox");
+
+  const absent = normalizeReporterHeartbeat({
+    source: "claude",
+    reporterEmail: "shawn.hou@stardust.ai",
+    heartbeat: { reporter_name: "shawn@192.168.1.6", hostname: "192.168.1.6", status: "ok" },
+  });
+  assert.equal(absent.heartbeat.meter_limit_id, null, "claude has no buckets");
+
+  const oversized = normalizeReporterHeartbeat({
+    source: "codex",
+    reporterEmail: "shawn.hou@stardust.ai",
+    heartbeat: { reporter_name: "r", hostname: "h", status: "ok", meter_limit_id: "x".repeat(500) },
+  });
+  assert.equal(oversized.heartbeat.meter_limit_id.length, 64);
+});
+
 test("ingestClientQuota resolves a codex report by token too, and gates the resolved payload", async () => {
   // Attribution was built source-agnostic but only claude ever sent a fingerprint, so for codex
   // the claim was always taken at face value. The codex acceptance gate must see the RESOLVED

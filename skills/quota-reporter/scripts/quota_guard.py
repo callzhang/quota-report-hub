@@ -494,6 +494,12 @@ def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
         # Same as the quota report: the hub files this machine under the account its token belongs
         # to, not under the name its own identity record supplies.
         "access_token_fingerprint": (payload or {}).get("access_token_fingerprint"),
+        # Which quota bucket this machine's codex actually read. A report about a bucket other than
+        # the plan's carries no windows and so is refused by the ingest gate, which means the event
+        # log never sees it -- the heartbeat is always kept, so this is where that observation
+        # survives. It is the field that identified one machine reading GPT-5.3-Codex-Spark's bucket
+        # for every account it touched, and it is how a new metered id would announce itself.
+        "meter_limit_id": ((payload or {}).get("usage_summary") or {}).get("meter", {}).get("limit_id"),
         "last_run_at": iso_now(),
     }
 

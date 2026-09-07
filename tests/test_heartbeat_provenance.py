@@ -30,6 +30,26 @@ class HeartbeatCarriesProvenance(unittest.TestCase):
         self.assertEqual(heartbeat["access_token_fingerprint"], "f" * 64)
         self.assertEqual(heartbeat["account_id"], "claude-x@example.com")
 
+    def test_heartbeat_carries_the_quota_bucket_the_probe_read(self):
+        # A reading from any bucket but the plan's carries no windows, so the ingest gate refuses it
+        # and the event log never sees it. Without this field the machines whose readings are being
+        # discarded would be exactly the machines we cannot see -- and a newly introduced metered id
+        # would arrive silently.
+        payload = {
+            "account_id": "algorithm@stardust.ai",
+            "status": "ok",
+            "reporter_name": "shawn@192.168.1.6",
+            "hostname": "192.168.1.6",
+            "usage_summary": {"meter": {"limit_id": "codex_bengalfox", "limit_name": "GPT-5.3-Codex-Spark"}},
+        }
+        with mock.patch("quota_guard.read_self_update_state", return_value={}):
+            heartbeat = quota_guard.build_probe_heartbeat("codex", payload)
+        self.assertEqual(heartbeat["meter_limit_id"], "codex_bengalfox")
+
+        with mock.patch("quota_guard.read_self_update_state", return_value={}):
+            no_meter = quota_guard.build_probe_heartbeat("codex", {"status": "ok", "usage_summary": None})
+        self.assertIsNone(no_meter["meter_limit_id"], "claude and legacy codex responses have no bucket")
+
     def test_heartbeat_without_self_update_state_or_probe_payload_degrades_to_nulls(self):
         with mock.patch("quota_guard.read_self_update_state", return_value={}):
             heartbeat = quota_guard.build_probe_heartbeat("claude", None)
