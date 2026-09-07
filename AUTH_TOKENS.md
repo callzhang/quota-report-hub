@@ -13,6 +13,7 @@
 | [3. The refresh-token rotation death spiral](#3-the-refresh-token-rotation-death-spiral) | rotation, two custodians, and what was ruled out |
 | [3.5 Refreshing REVOKES the access tokens already issued (measured 2026-08-28)](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28) | **a refresh revokes access tokens already issued** — the rule most things got wrong |
 | [3.6 Why codex never goes dark and claude does: who opens the conversation](#36-why-codex-never-goes-dark-and-claude-does-who-opens-the-conversation) | the initiator decides whether there is a gap at all |
+| [3.7 "Team accounts die easily" is a proxy — the variable is the second custodian (measured 2026-09-07)](#37-team-accounts-die-easily-is-a-proxy--the-variable-is-the-second-custodian-measured-2026-09-07) | why a plan column is not a cause, and why refreshing on upload cannot buy sole custody |
 | [4. `disabled_refresh_token` mode (centralized refresh + AT-only distribution)](#4-disabled_refresh_token-mode-centralized-refresh--at-only-distribution) | AT-only distribution when the hub is sole refresher |
 | [5. Hub central refresh (the worker)](#5-hub-central-refresh-the-worker) | the worker: proactive refresh + lazy probe |
 | [6. Failure modes & invariants (and the fixes)](#6-failure-modes--invariants-and-the-fixes) | every failure seen, its cause, and its fix |
@@ -203,6 +204,10 @@ out. Sources of "more than one custodian" observed in this project:
   refreshes fine with the app open). Its real, *separate* harm was blanking the keychain RT, which used to
   wipe the pooled RT on upload — a different bug, now fixed ([§7](#7-claude-desktop-vs-the-cli)).
 - **Repeated CLI re-logins** of the same account, each minting/rotating an OAuth grant and orphaning the previously-pooled copy.
+- **A lane the guard cannot see** — a second machine, the Codex desktop app, an IDE extension — still
+  holding a real RT on a grant the hub believes it owns alone. This is what makes a personally-owned
+  seat die where a service account does not, and it is why the pool's dead entries cluster on one
+  plan without that plan being the cause ([§3.7](#37-team-accounts-die-easily-is-a-proxy--the-variable-is-the-second-custodian-measured-2026-09-07)).
 
 **Refresh is single-use: a *successful* refresh is what consumes the token.** `ok:true` does **not** mean
 "the RT is still yours to keep" — it means "that RT was spent, and here is its replacement (the next
@@ -386,6 +391,81 @@ So the rule this project settles on is **refresh on demand, not on a clock**:
   knows its own rotation schedule, and a client that asks "is the credential I hold still the one you
   are serving?" every cycle costs a digest comparison and consumes nothing. Whoever asks first turns
   refresh-and-deliver into a single atomic step, which is the whole of codex's advantage.
+
+---
+
+## 3.7 "Team accounts die easily" is a proxy — the variable is the second custodian (measured 2026-09-07)
+
+Live pool, 2026-09-07 ~19:05Z: codex **Team 6/6 hard-dead**, **Pro 0/12**, **Plus 1/3** (the twelfth
+Pro row carries `token_count event was present but missing quota details` — a probe failure, not an
+auth one). The plan column looks causal. It is not, and reading it that way sends the next
+investigation looking for a Team-specific provider behaviour that does not exist.
+
+**The revocation machinery is a property of the authorization server, identical for every plan.**
+Free/Plus/Pro/Team all present at the same `auth.openai.com/oauth/token` under the same rotation and
+reuse detection ([§3](#3-the-refresh-token-rotation-death-spiral)). Non-Team accounts in that same
+snapshot died with the identical error strings — `2290472798@qq.com`, `82008420@qq.com`,
+`zsll714253147@gmail.com`, `a.lbertjeffr.eyson6700@googlemail.com` (`token_invalidated` / `401
+unauthorized`), `mengen.wang@stardust.ai` (**Plus**, `token_invalidated`), and on the other provider
+entirely, `claude-yanqiufu@gmail.com` (`authentication_error`). The two self-inflicted incidents in
+[§6](#6-failure-modes--invariants-and-the-fixes) (multi-session replay, overlapping worker runs) are
+the cleanest evidence: no external custodian was involved at all, and the hub killed plan-agnostic
+entries by replaying its own spent token.
+
+**What actually splits the pool is whether a human is still logged into the account.** Every healthy
+entry is a service or role account nobody signs into personally — `professional@`, `solutions@`,
+`algorithm@`, `ir@`, `ceshi@`, `starbench@`, plus a handful of gmails dedicated to the pool. Every
+dead entry is a personally-owned seat, and the one dead non-Team entry (`mengen.wang@stardust.ai`) is
+a personal seat too. Corroborating this from the other side: across 59 reporter heartbeats, **no
+machine is running a Team account** — each one was long ago swapped onto a pool service account, so
+the pooled Team copy is the only copy the hub can see, and something outside the guard's view is
+moving the grant.
+
+**The clock says which something.** Death-after-upload, measured:
+
+| Account | Plan | Uploaded | First invalid | Δ |
+|---|---|---|---|---|
+| `bd@stardust.ai` | Team | 09-07 01:35:17 | 09-07 02:51:09 | **76 min** |
+| `derek@stardust.ai` | Team | 09-06 05:59:27 | 09-06 07:13:06 | **74 min** |
+| `mengen.wang@stardust.ai` | Plus | 09-03 05:35:05 | 09-03 06:48:25 | **73 min** |
+| `hr@stardust.ai` | Team | 08-30 09:26:29 | 08-30 22:35:18 | 13 h |
+| `guojian.liu@`, `xingye.li@`, `jingwei.zou@` | Team | 08-17 | 08-20 / 08-21 | 3–4 d |
+
+Three of them land inside a three-minute band at one id_token cycle. The upload's verification
+refresh mints a fresh ~1 h id_token; the codex CLI self-refreshes at 20 minutes remaining
+([§3.6](#36-why-codex-never-goes-dark-and-claude-does-who-opens-the-conversation)), so any other
+holder of a real RT on that grant fires 40–60 minutes later, and one guard cycle turns that into the
+73–76 minutes observed. The 3–4 day group is a different death: those three carry raw-UUID
+`session_id`s from a pre-`authsess_` client, and their machines simply stopped reporting.
+
+**Why the upload-verify refresh cannot close this, though it looks like it should.** The instinct is
+that the hub should refresh on upload so that it alone holds the live RT. It already does exactly
+that (`sync_current_codex_auth_pool` → hub verification refresh → `install_uploaded_codex_refresh` →
+`strip_local_codex_refresh_token`), and it cannot deliver sole custody:
+
+1. **The strip only reaches the machine running the guard.** A second laptop, the Codex desktop app,
+   an IDE extension, or any machine without the guard keeps its real RT untouched.
+2. **Rotation does not evict another holder; it orphans one.** It leaves them on the superseded
+   `RT_n`, and their next scheduled refresh replays it — which is the reuse that revokes the family,
+   the hub's live `RT_{n+1}` included. The refresh converts a second custodian into a timed one.
+3. **A fresh `codex login` mints a different grant entirely**, which no amount of rotating the old
+   one touches.
+
+The general rule this restates: the danger of `RT_n` is not that it still works — it cannot be
+exchanged for anything — but that it still *exists* somewhere that will present it. Every fix in
+[§6](#6-failure-modes--invariants-and-the-fixes) for this failure class eliminates a replay
+(one canonical entry per account, serialized worker runs) rather than trying to out-race the other
+holder.
+
+**The one genuinely Team-flavoured amplifier:** shared role mailboxes that sit on Team seats (`bd@`,
+`hr@`) get `codex login` run against them by several people, so their custodians rotate each other
+out without any of them doing anything wrong.
+
+**Not established.** Which non-guard lane is doing the refreshing — desktop app, IDE extension, or a
+second machine ([§7](#7-claude-desktop-vs-the-cli) covers the two-lane shape) — is inference from the
+timing, not measurement; confirming it means comparing grant generations, which needs the stored
+blobs. Team-workspace admin revocation and SSO session policy remain untested as contributing causes;
+nothing in this snapshot points at them, and nothing rules them out either.
 
 ---
 
