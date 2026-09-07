@@ -288,11 +288,11 @@
       #active-entries-table th:nth-child(4), #active-entries-table td:nth-child(4) { width: 15%; }
       #active-entries-table th:nth-child(5), #active-entries-table td:nth-child(5) { width: 15%; }
       #active-entries-table th:nth-child(6), #active-entries-table td:nth-child(6) { width: 25%; }
-      #archived-entries-table th:nth-child(1), #archived-entries-table td:nth-child(1) { width: 10%; }
-      #archived-entries-table th:nth-child(2), #archived-entries-table td:nth-child(2) { width: 27%; }
-      #archived-entries-table th:nth-child(3), #archived-entries-table td:nth-child(3) { width: 18%; }
-      #archived-entries-table th:nth-child(4), #archived-entries-table td:nth-child(4) { width: 18%; }
-      #archived-entries-table th:nth-child(5), #archived-entries-table td:nth-child(5) { width: 27%; }
+      #invalidated-entries-table th:nth-child(1), #invalidated-entries-table td:nth-child(1) { width: 10%; }
+      #invalidated-entries-table th:nth-child(2), #invalidated-entries-table td:nth-child(2) { width: 27%; }
+      #invalidated-entries-table th:nth-child(3), #invalidated-entries-table td:nth-child(3) { width: 18%; }
+      #invalidated-entries-table th:nth-child(4), #invalidated-entries-table td:nth-child(4) { width: 18%; }
+      #invalidated-entries-table th:nth-child(5), #invalidated-entries-table td:nth-child(5) { width: 27%; }
 
       th {
         font-size: 12px;
@@ -569,10 +569,10 @@
       </section>
 
       <section class="panel section">
-        <h2>Archived Invalidated Auths</h2>
-        <div class="meta">Auths that have been continuously hard-invalidated for more than 48 hours are kept here instead of the active rotation table. A successful probe resets the timer.</div>
+        <h2>Invalidated Accounts</h2>
+        <div class="meta">Accounts nobody can use right now — the Availability column's <strong>unavailable</strong> state — listed here from the moment they go dark instead of in the active rotation table. A successful probe returns one to the table above; two weeks dead retires it from the dashboard entirely.</div>
         <div class="table-shell">
-          <table id="archived-entries-table">
+          <table id="invalidated-entries-table">
             <thead>
               <tr>
                 <th>Source</th>
@@ -582,10 +582,10 @@
                 <th>Error</th>
               </tr>
             </thead>
-            <tbody id="archived-rows"></tbody>
+            <tbody id="invalidated-rows"></tbody>
           </table>
         </div>
-        <div id="archived-empty" class="empty" hidden>No archived invalidated auths.</div>
+        <div id="invalidated-empty" class="empty" hidden>No invalidated accounts.</div>
       </section>
       </div>
       <div id="availability-popover" class="availability-popover" role="dialog" aria-modal="false" aria-label="Account availability details" hidden></div>
@@ -595,9 +595,9 @@
       const summary = document.getElementById("summary");
       const cards = document.getElementById("cards");
       const rows = document.getElementById("rows");
-      const archivedRows = document.getElementById("archived-rows");
+      const invalidatedRows = document.getElementById("invalidated-rows");
       const empty = document.getElementById("empty");
-      const archivedEmpty = document.getElementById("archived-empty");
+      const invalidatedEmpty = document.getElementById("invalidated-empty");
       const authPanel = document.getElementById("auth-panel");
       const viewerChip = document.getElementById("viewer-chip");
       const notifyPermissionButton = document.getElementById("notify-permission-button");
@@ -770,9 +770,9 @@
         summary.textContent = "Locked";
         cards.innerHTML = "";
         rows.innerHTML = "";
-        archivedRows.innerHTML = "";
+        invalidatedRows.innerHTML = "";
         empty.hidden = true;
-        archivedEmpty.hidden = true;
+        invalidatedEmpty.hidden = true;
         adminFlagPanel.hidden = true;
         requireContributionPanel.hidden = true;
         adminsPanel.hidden = true;
@@ -1406,7 +1406,7 @@
         const items = (payload.items || []).sort((a, b) => (b.uploaded_at || "").localeCompare(a.uploaded_at || ""));
         scheduleDashboardTransition(items);
         checkQuotaFullNotifications(items);
-        const archivedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
+        const invalidatedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
         const fetchLogByAccount = new Map();
         for (const log of (payload.fetch_log || [])) {
           if (log.reason !== "served" && log.reason !== "repair_returned") continue;
@@ -1419,11 +1419,11 @@
           }
         }
         const totalActive = payload.auth_pool_count || 0;
-        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active quota monitors: ${totalActive} · Archived invalidated: ${payload.archived_invalidated_count || 0}`;
+        summary.textContent = `Latest refresh: ${formatDate(payload.generated_at)} · Active quota monitors: ${totalActive} · Invalidated: ${payload.archived_invalidated_count || 0}`;
         cards.innerHTML = [
           `<article class="card"><div class="meta">Cloud auth entries</div><strong>${payload.auth_pool_count || 0}</strong><div class="meta">Encrypted auths in pool</div></article>`,
           `<article class="card"><div class="meta">Sources</div><strong>${payload.source_count || 0}</strong><div class="meta">Cloud auth pool sources</div></article>`,
-          `<article class="card"><div class="meta">Archived invalidated</div><strong>${payload.archived_invalidated_count || 0}</strong><div class="meta">Hidden from active rotation</div></article>`,
+          `<article class="card"><div class="meta">Invalidated accounts</div><strong>${payload.archived_invalidated_count || 0}</strong><div class="meta">Unavailable — out of rotation</div></article>`,
           `<article class="card"><div class="meta">Latest upload</div><strong class="text">${escapeHtml(items[0]?.email || items[0]?.uploader_email || "n/a")}</strong><div class="meta wrap">${formatDate(items[0]?.uploaded_at)}</div></article>`
         ].join("");
 
@@ -1457,7 +1457,7 @@
         bindAvailabilityTriggers();
 
         empty.hidden = items.length !== 0;
-        archivedRows.innerHTML = archivedItems.map((item) => `
+        invalidatedRows.innerHTML = invalidatedItems.map((item) => `
           <tr>
             <td>${sourceTag(item.source)}</td>
             <td>
@@ -1470,7 +1470,7 @@
             <td><div class="meta wrap">${escapeHtml(item.error || "")}</div></td>
           </tr>
         `).join("");
-        archivedEmpty.hidden = archivedItems.length !== 0;
+        invalidatedEmpty.hidden = invalidatedItems.length !== 0;
       }
 
       currentToken = getStoredToken();

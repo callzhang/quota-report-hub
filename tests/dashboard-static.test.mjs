@@ -49,13 +49,13 @@ test("dashboard restores quota progress columns while keeping availability detai
   assert.doesNotMatch(html, /function tokenStateLine|function quotaSnapshotLine|function refreshValidityLine|function usageCell/);
 });
 
-test("active and archived account tables keep independent column layouts", async () => {
+test("active and invalidated account tables keep independent column layouts", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 
   assert.match(html, /<table id="active-entries-table">/);
-  assert.match(html, /<table id="archived-entries-table">/);
+  assert.match(html, /<table id="invalidated-entries-table">/);
   assert.match(html, /#active-entries-table th:nth-child\(6\)/);
-  assert.match(html, /#archived-entries-table th:nth-child\(5\)/);
+  assert.match(html, /#invalidated-entries-table th:nth-child\(5\)/);
   assert.doesNotMatch(html, /^\s*th:nth-child/m);
 });
 

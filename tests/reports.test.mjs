@@ -1174,12 +1174,16 @@ test("authPoolStatusPayload exposes token, quota, and refresh state independentl
     "2026-04-21T10:30:00Z"
   );
 
-  assert.equal(payload.items.length, 1);
-  assert.equal(payload.items[0].token_state.status, "uploaded");
-  assert.equal(payload.items[0].token_state.uploaded_at, "2026-04-21T09:00:00Z");
-  assert.equal(payload.items[0].quota_snapshot_state.status, "unavailable");
-  assert.equal(payload.items[0].refresh_validity.status, "rejected");
-  assert.equal(payload.items[0].availability.reason, "refresh_token_rejected");
+  // A rejected refresh token with no usable access token is unavailable, so the row is listed
+  // under Invalidated Accounts rather than counted as an active pool entry.
+  assert.equal(payload.items.length, 0);
+  assert.equal(payload.archived_invalidated_items.length, 1);
+  const invalidated = payload.archived_invalidated_items[0];
+  assert.equal(invalidated.token_state.status, "uploaded");
+  assert.equal(invalidated.token_state.uploaded_at, "2026-04-21T09:00:00Z");
+  assert.equal(invalidated.quota_snapshot_state.status, "unavailable");
+  assert.equal(invalidated.refresh_validity.status, "rejected");
+  assert.equal(invalidated.availability.reason, "refresh_token_rejected");
 });
 
 test("authPoolStatusPayload carries only the safe refresh-token capability marker into availability", () => {
@@ -1195,7 +1199,9 @@ test("authPoolStatusPayload carries only the safe refresh-token capability marke
   const atOnly = authPoolStatusPayload([{ ...baseEntry, has_refresh_token: false }], [baseReport], generatedAt);
   const recoverable = authPoolStatusPayload([{ ...baseEntry, has_refresh_token: true }], [baseReport], generatedAt);
 
-  assert.equal(atOnly.items[0].availability.state, "unavailable");
+  // AT-only with the access token gone is unavailable -- and unavailable is listed, not active.
+  assert.equal(atOnly.items.length, 0);
+  assert.equal(atOnly.archived_invalidated_items[0].availability.state, "unavailable");
   assert.equal(recoverable.items[0].availability.state, "quota_unknown");
   assert.equal(recoverable.items[0].has_refresh_token, true);
   assert.equal("refresh_token" in recoverable.items[0], false);
@@ -1304,7 +1310,7 @@ test("authPoolStatusPayload shows the latest auth once when one account has mult
   assert.equal(payload.items[0].reporter_name, "derek@mac");
 });
 
-test("authPoolStatusPayload archives hard-invalidated auths older than 48 hours by first invalidation time", () => {
+test("authPoolStatusPayload lists every hard-invalidated auth immediately, however recently it died", () => {
   const payload = authPoolStatusPayload(
     [
       {
@@ -1373,15 +1379,19 @@ test("authPoolStatusPayload archives hard-invalidated auths older than 48 hours 
     ]
   );
 
-  assert.equal(payload.auth_pool_count, 1);
-  assert.equal(payload.report_count, 1);
-  assert.equal(payload.items.length, 1);
-  assert.equal(payload.items[0].account_id, "fresh-invalid");
-  assert.equal(payload.items[0].first_invalidated_at, "2026-04-23T12:00:02Z");
-  assert.equal(payload.archived_invalidated_count, 1);
-  assert.equal(payload.archived_invalidated_items.length, 1);
-  assert.equal(payload.archived_invalidated_items[0].account_id, "old-invalid");
-  assert.equal(payload.archived_invalidated_items[0].first_invalidated_at, "2026-04-20T12:00:00Z");
+  // Both are unavailable -- one for four days, one for a day -- and both are listed. There is no
+  // grace period: an account nobody can use is not an active pool entry at any age.
+  assert.equal(payload.auth_pool_count, 0);
+  assert.equal(payload.report_count, 0);
+  assert.equal(payload.items.length, 0);
+  assert.equal(payload.archived_invalidated_count, 2);
+  const listed = payload.archived_invalidated_items
+    .map((item) => [item.account_id, item.first_invalidated_at])
+    .sort();
+  assert.deepEqual(listed, [
+    ["fresh-invalid", "2026-04-23T12:00:02Z"],
+    ["old-invalid", "2026-04-20T12:00:00Z"],
+  ]);
 });
 
 test("authPoolStatusPayload archives old invalidations even when latest probe is fresh", () => {
@@ -1602,9 +1612,9 @@ test("authPoolStatusPayload retires invalidated auths from the dashboard after t
     [report("just-invalidated"), report("archived"), report("long-dead")],
     generatedAt,
     [
-      // 1 hour: still news, stays in the active list.
+      // 1 hour: freshly dead, and listed from the moment it died.
       { source: "codex", account_id: "just-invalidated", first_invalidated_at: "2026-04-30T23:00:00Z" },
-      // 5 days: inside the archive window.
+      // 5 days: still listed -- inside the fortnight the dashboard keeps.
       { source: "codex", account_id: "archived", first_invalidated_at: "2026-04-26T00:00:00Z" },
       // 15 days: past two weeks, retired from the dashboard entirely.
       { source: "codex", account_id: "long-dead", first_invalidated_at: "2026-04-16T00:00:00Z" },
@@ -1614,20 +1624,22 @@ test("authPoolStatusPayload retires invalidated auths from the dashboard after t
   const activeIds = payload.items.map((item) => item.account_id);
   const archivedIds = payload.archived_invalidated_items.map((item) => item.account_id);
 
-  assert.deepEqual(activeIds, ["just-invalidated"]);
-  assert.deepEqual(archivedIds, ["archived"]);
-  assert.equal(payload.archived_invalidated_count, 1);
-  assert.equal(payload.auth_pool_count, 1);
+  // Dead an hour and dead five days are both simply dead: listed, not active. Only the fortnight
+  // cutoff still moves a row, and it moves it off the dashboard entirely.
+  assert.deepEqual(activeIds, []);
+  assert.deepEqual([...archivedIds].sort(), ["archived", "just-invalidated"]);
+  assert.equal(payload.archived_invalidated_count, 2);
+  assert.equal(payload.auth_pool_count, 0);
   assert.ok(
     !activeIds.includes("long-dead"),
-    "an auth retired from Archived must not reappear in the active list"
+    "an auth retired from the invalidated list must not reappear in the active list"
   );
 });
 
-// An account is archived when BOTH tokens are gone. A refresh token the pool can no longer use is a
-// warning with a deadline -- the access token's expiry -- and the row stays in the active list, marked,
-// until that deadline passes. The 48h clock then runs from whichever token died last.
-test("authPoolStatusPayload keeps a dead-refresh-token account active while its access token lives, and archives it from the token's expiry", () => {
+// An account is invalidated when BOTH tokens are gone. A refresh token the pool can no longer use
+// is a warning with a deadline -- the access token's expiry -- and the row stays in the active
+// list, marked, until that deadline passes. It moves the moment it does.
+test("authPoolStatusPayload keeps a dead-refresh-token account active while its access token lives, and lists it the moment the token expires", () => {
   const entry = {
     source: "claude",
     account_id: "claude-rt-dead@example.com",
@@ -1663,13 +1675,19 @@ test("authPoolStatusPayload keeps a dead-refresh-token account active while its 
   assert.equal(live.items[0].refresh_validity.deadline, "2026-09-29T18:59:06.219Z", "the warning names when the account really dies");
   assert.equal(live.items[0].windows["5h"].remaining_percent, 88, "live quota is shown as live");
 
-  // one hour after the access token expired: dead on both tokens, but only for an hour -- still visible
+  // one hour after the access token expired: dead on both tokens, so listed straight away
   const justDead = authPoolStatusPayload([entry], [report], "2026-09-29T20:00:00Z", invalidated);
-  assert.equal(justDead.items.length, 1);
-  assert.equal(justDead.archived_invalidated_items.length, 0);
+  assert.equal(justDead.items.length, 0);
+  assert.equal(justDead.archived_invalidated_items.length, 1);
 
-  // three days after the access token expired: archived, from the expiry -- not from the RT's death a month before
-  const archived = authPoolStatusPayload([entry], [report], "2026-10-02T20:00:00Z", invalidated);
-  assert.equal(archived.items.length, 0);
-  assert.equal(archived.archived_invalidated_items.length, 1);
+  // and still listed days later -- the fortnight clock runs from the expiry, not from the refresh
+  // token's death a month before
+  const later = authPoolStatusPayload([entry], [report], "2026-10-02T20:00:00Z", invalidated);
+  assert.equal(later.items.length, 0);
+  assert.equal(later.archived_invalidated_items.length, 1);
+
+  // a fortnight past the expiry it retires from the dashboard altogether
+  const retired = authPoolStatusPayload([entry], [report], "2026-10-16T20:00:00Z", invalidated);
+  assert.equal(retired.items.length, 0);
+  assert.equal(retired.archived_invalidated_items.length, 0);
 });
