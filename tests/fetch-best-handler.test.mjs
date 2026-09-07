@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MIN_REPORTER_CLIENT_VERSION } from "../lib/premium-ratio.js";
 
 function fakeAuthJson({ accountId, email, name = "Test User", plan = "team", lastRefresh = "2026-05-06T00:00:00Z", exp = null }) {
   const claims = {
@@ -140,6 +141,10 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
       body: {
         source: "codex",
         requester_id: "derek@gpu4",
+        // This test is about which auth gets selected, not about the reporter gate. Once
+        // PHASE_REPORTER_GATE_AT passed, a request carrying no version was refused before selection
+        // ever ran and the whole file went red on a date rather than on a commit.
+        client_version: MIN_REPORTER_CLIENT_VERSION,
         current_account_id: "borrowed@stardust.ai",
         current_quota: {
           five_h_remaining_percent: -1,
@@ -176,7 +181,7 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     // not a different account — a near-expiry client refreshes its access token in place.
     const refreshReq = mockJsonRequest({
       token,
-      body: { source: "codex", requester_id: "derek@gpu4", current_account_id: "healthy@stardust.ai", refresh_current: true },
+      body: { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION, requester_id: "derek@gpu4", current_account_id: "healthy@stardust.ai", refresh_current: true },
     });
     const refreshRes = mockResponse();
     await handler(refreshReq, refreshRes);
@@ -200,7 +205,7 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     });
     const staleReq = mockJsonRequest({
       token,
-      body: { source: "codex", requester_id: "derek@gpu4", current_account_id: "stale@stardust.ai", refresh_current: true },
+      body: { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION, requester_id: "derek@gpu4", current_account_id: "stale@stardust.ai", refresh_current: true },
     });
     const staleRes = mockResponse();
     await handler(staleReq, staleRes);
@@ -263,7 +268,7 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     const xinReq = mockJsonRequest({
       token: xinToken,
       body: {
-        source: "codex",
+        source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION,
         requester_id: "xin@mac",
         current_account_id: "xin.jiang@stardust.ai",
         current_quota: {
@@ -352,7 +357,7 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     try {
       const req = mockJsonRequest({
         token,
-        body: { source: "codex", requester_id: "derek@mac", current_account_id: accountId, refresh_current: true },
+        body: { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION, requester_id: "derek@mac", current_account_id: accountId, refresh_current: true },
       });
       const res = mockResponse();
       await handler(req, res);
@@ -444,7 +449,7 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
         // exercising bestAuthPoolEntry's normal serve path, not the same-account refresh path.
         const switchedReq = mockJsonRequest({
           token,
-          body: { source: "codex", requester_id: "derek@mac", current_account_id: "exhausted@stardust.ai" },
+          body: { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION, requester_id: "derek@mac", current_account_id: "exhausted@stardust.ai" },
         });
         const switchedRes = mockResponse();
         await handler(switchedReq, switchedRes);
