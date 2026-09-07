@@ -13,7 +13,7 @@
 | [3. The refresh-token rotation death spiral](#3-the-refresh-token-rotation-death-spiral) | rotation, two custodians, and what was ruled out |
 | [3.5 Refreshing REVOKES the access tokens already issued (measured 2026-08-28)](#35-refreshing-revokes-the-access-tokens-already-issued-measured-2026-08-28) | **a refresh revokes access tokens already issued** — the rule most things got wrong |
 | [3.6 Why codex never goes dark and claude does: who opens the conversation](#36-why-codex-never-goes-dark-and-claude-does-who-opens-the-conversation) | the initiator decides whether there is a gap at all |
-| [3.7 "Team accounts die easily" is a proxy — the variable is the second custodian (measured 2026-09-07)](#37-team-accounts-die-easily-is-a-proxy--the-variable-is-the-second-custodian-measured-2026-09-07) | why a plan column is not a cause, and why refreshing on upload cannot buy sole custody |
+| [3.7 Why the pool's dead accounts cluster on one plan (open question, measured 2026-09-07)](#37-why-the-pools-dead-accounts-cluster-on-one-plan-open-question-measured-2026-09-07) | what the plan column can and cannot be read to mean, and why refreshing on upload cannot buy sole custody |
 | [4. `disabled_refresh_token` mode (centralized refresh + AT-only distribution)](#4-disabled_refresh_token-mode-centralized-refresh--at-only-distribution) | AT-only distribution when the hub is sole refresher |
 | [5. Hub central refresh (the worker)](#5-hub-central-refresh-the-worker) | the worker: proactive refresh + lazy probe |
 | [6. Failure modes & invariants (and the fixes)](#6-failure-modes--invariants-and-the-fixes) | every failure seen, its cause, and its fix |
@@ -207,7 +207,7 @@ out. Sources of "more than one custodian" observed in this project:
 - **A lane the guard cannot see** — a second machine, the Codex desktop app, an IDE extension — still
   holding a real RT on a grant the hub believes it owns alone. This is what makes a personally-owned
   seat die where a service account does not, and it is why the pool's dead entries cluster on one
-  plan without that plan being the cause ([§3.7](#37-team-accounts-die-easily-is-a-proxy--the-variable-is-the-second-custodian-measured-2026-09-07)).
+  plan without that plan being the cause ([§3.7](#37-why-the-pools-dead-accounts-cluster-on-one-plan-open-question-measured-2026-09-07)).
 
 **Refresh is single-use: a *successful* refresh is what consumes the token.** `ok:true` does **not** mean
 "the RT is still yours to keep" — it means "that RT was spent, and here is its replacement (the next
@@ -394,12 +394,15 @@ So the rule this project settles on is **refresh on demand, not on a clock**:
 
 ---
 
-## 3.7 "Team accounts die easily" is a proxy — the variable is the second custodian (measured 2026-09-07)
+## 3.7 Why the pool's dead accounts cluster on one plan (open question, measured 2026-09-07)
 
 Live pool, 2026-09-07 ~19:05Z: codex **Team 6/6 hard-dead**, **Pro 0/12**, **Plus 1/3** (the twelfth
 Pro row carries `token_count event was present but missing quota details` — a probe failure, not an
-auth one). The plan column looks causal. It is not, and reading it that way sends the next
-investigation looking for a Team-specific provider behaviour that does not exist.
+auth one). **This snapshot cannot settle what the plan column means, and an earlier draft of this
+section wrongly said it could.** Plan and account type are collinear here: every Team entry is a
+person's own seat, every Pro entry is a service account, and there is no Team account nobody logs
+into and no Pro account a human uses daily. Both control cells are empty, so the plan effect and the
+account-type effect are not separable from a cross-section.
 
 **The revocation machinery is a property of the authorization server, identical for every plan.**
 Free/Plus/Pro/Team all present at the same `auth.openai.com/oauth/token` under the same rotation and
@@ -410,9 +413,36 @@ unauthorized`), `mengen.wang@stardust.ai` (**Plus**, `token_invalidated`), and o
 entirely, `claude-yanqiufu@gmail.com` (`authentication_error`). The two self-inflicted incidents in
 [§6](#6-failure-modes--invariants-and-the-fixes) (multi-session replay, overlapping worker runs) are
 the cleanest evidence: no external custodian was involved at all, and the hub killed plan-agnostic
-entries by replaying its own spent token.
+entries by replaying its own spent token. What that establishes is narrow but solid: **no
+Team-specific provider behaviour is *needed* to explain these deaths.** It does not establish that
+the plan contributes nothing.
 
-**What actually splits the pool is whether a human is still logged into the account.** Every healthy
+**The strongest evidence against a plan effect is longitudinal, not cross-sectional.** The June-era
+pool snapshot (`database-beige-bell.db`, deaths recorded 2026-06-02 → 06-09) has the plans dying at
+the same rate:
+
+| Plan | Accounts | Dead | Rate |
+|---|---|---|---|
+| Team | 13 | 10 | 77% |
+| Pro | 4 | 3 | **75%** |
+| Plus | 2 | 2 | 100% |
+
+Pro was not immune then, and three of the accounts that were dead in June — `preseenai@gmail.com`,
+`guanghuanhou@hotmail.com`, `leizhang0121@gmail.com` — are alive in the September pool because
+someone re-onboarded them. **Today's 0/12 is a snapshot with two confounds baked in.** First, the
+fixes shipped between those dates (`disabled_refresh_token`, the freshness-gate fix `bd96ae0`, the
+empty-RT wipe fix `4b9b49f`, the Phase-4 strip) all protect *machines running the guard*, and no
+machine runs a Team seat — the surviving population is exactly the population the fixes reach.
+Second, **repair is asymmetric**: a service account has an operational owner and gets re-uploaded, an
+employee's seat is left dead. A cross-section therefore measures who gets fixed as much as who dies.
+
+**The schema is why this was easy to get wrong.** `auth_pool_invalidated_notifications` is a
+current-state table, not a death log: an account that is repaired vanishes from it. "Pro does not
+die" is precisely the illusion that produces, and answering the question properly needs deaths
+recorded as events — with plan, custodian evidence, and time-to-repair — rather than reconstructed
+from an old database file.
+
+**The leading hypothesis is that what splits the pool is whether a human is still logged into the account** — leading, not established. Every healthy
 entry is a service or role account nobody signs into personally — `professional@`, `solutions@`,
 `algorithm@`, `ir@`, `ceshi@`, `starbench@`, plus a handful of gmails dedicated to the pool. Every
 dead entry is a personally-owned seat, and the one dead non-Team entry (`mengen.wang@stardust.ai`) is
@@ -461,11 +491,24 @@ holder.
 `hr@`) get `codex login` run against them by several people, so their custodians rotate each other
 out without any of them doing anything wrong.
 
-**Not established.** Which non-guard lane is doing the refreshing — desktop app, IDE extension, or a
-second machine ([§7](#7-claude-desktop-vs-the-cli) covers the two-lane shape) — is inference from the
-timing, not measurement; confirming it means comparing grant generations, which needs the stored
-blobs. Team-workspace admin revocation and SSO session policy remain untested as contributing causes;
-nothing in this snapshot points at them, and nothing rules them out either.
+**Not established.** Whether the plan contributes anything at all, on top of the custodian effect.
+Which non-guard lane is doing the refreshing — desktop app, IDE extension, or a second machine
+([§7](#7-claude-desktop-vs-the-cli) covers the two-lane shape) — is inference from the timing, not
+measurement; confirming it means comparing grant generations, which needs the stored blobs.
+Team-workspace admin revocation, SSO session policy, and seat churn remain untested as contributing
+causes; nothing here points at them, and nothing rules them out.
+
+**The measurement that would settle it** is not more of this one. It is a per-death record of
+**whether the grant's generation advanced, and who advanced it**:
+
+- generation advanced, and a machine reports holding a real RT on that grant → second custodian, the
+  hypothesis above, plan-agnostic;
+- generation advanced with no known holder → an unobserved lane;
+- **generation never advanced and the credential died anyway** → nobody refreshed it, and that is the
+  one signature that would implicate something plan- or workspace-side.
+
+The hub cannot currently tell these three apart, which is the actual gap. Until it can, read this
+section's plan table as a description of one snapshot, not as a finding.
 
 ---
 
