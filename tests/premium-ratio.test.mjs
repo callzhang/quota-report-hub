@@ -554,16 +554,23 @@ test("require_contribution refuses a non-contributor outright, abundance or not"
   })).allowed, true);
 });
 
-test("the hub floor and the shipped client version are the same number", async () => {
-  // These two are one decision written in two languages. Raising the floor without shipping a
-  // client that satisfies it locks the fleet out; shipping a client without raising the floor lets
-  // the version that fixed something keep sitting behind the versions that did not.
+test("the shipped client version is never behind the hub floor", async () => {
+  // One direction only. Raising the floor above the shipped client locks the fleet out, so that is
+  // asserted against here. The reverse is not a defect but the required order: a client-visible
+  // change ships first and the fleet self-updates within a run, and only then may the floor follow
+  // (AGENTS.md phasing). Demanding exact equality made the two moves inseparable, which meant every
+  // client fix hot-enforced itself against machines that had not updated yet -- and it contradicted
+  // tests/test_hub_notices.py, which asserts the >= relation from the Python side.
   const source = await readFile(
     new URL("../skills/quota-reporter/scripts/reporter_version.py", import.meta.url),
     "utf8",
   );
   const shipped = source.match(/^CLIENT_VERSION = "([^"]+)"$/m)?.[1];
-  assert.equal(shipped, MIN_REPORTER_CLIENT_VERSION);
+  assert.notEqual(shipped, undefined);
+  assert.ok(
+    compareVersions(shipped, MIN_REPORTER_CLIENT_VERSION) >= 0,
+    `shipped client ${shipped} is behind the hub floor ${MIN_REPORTER_CLIENT_VERSION}`,
+  );
 });
 
 test("a client newer than the hub is not refused", () => {

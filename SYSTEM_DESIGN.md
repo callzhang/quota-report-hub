@@ -387,8 +387,31 @@ ingest/query, `CRON_SECRET` for retention), and its own error mapping: `TokenUsa
 Two modules decide what a quota report means, and both are shared by every writer so the rules
 cannot drift between the client path and the worker path.
 
-**`lib/quota-ingest.js` — acceptance.** `ingestClientQuota` stamps `report_origin:"client"` and a
-reporter identity, then applies one gate: `codexClientPayloadAccepted` requires a *complete* weekly window (`remaining_percent` **and**
+**`lib/quota-ingest.js` — attribution, then acceptance.** `ingestClientQuota` stamps
+`report_origin:"client"` and a reporter identity, then resolves *whose numbers these are* before
+judging them. `attributeByToken` hashes nothing itself: the client sends
+`access_token_fingerprint` (SHA-256 of the access token it measured through) and the hub looks it up
+in `auth_pool_token_fingerprints`, filing the report under the owning account and recording
+`usage_summary.identity {claimed_account_id, resolved_account_id, resolved_by:"token_fingerprint"}`
+on a mismatch. An unknown fingerprint is a credential the pool never held — the machine's own login
+— and the claim stands.
+
+The order matters: attribution runs **before** the gate, so a report is never judged against an
+account it does not belong to. Both sources send the fingerprint, computed from the same two blob
+shapes on both sides (`accessTokenFingerprint` in `lib/fetch-best.js`, `access_token_fingerprint` in
+`quota_reporters.py`) — codex was the later half (client 2.6.0). Until then a codex report asserted
+"I am account X, X is N% used" and carried nothing the hub could check it against, which is how six
+machines holding one byte-identical credential could disagree by 27 percentage points with no way to
+tell which of them was measuring something else. Codex reports additionally carry
+`usage_summary.meter` (`limit_id`, `limit_name`, `individual_limit`) — the provider's own name for
+the meter that produced the numbers, the only field in the `rate_limits` response that distinguishes
+two meters reachable from one login. Claude has no counterpart: `claude -p /usage` prints windows and
+no meter identity.
+
+The fingerprint is consumed at ingest and never stored: `sanitizeReport`'s field list omits it, so it
+cannot leak into a dashboard payload or a quota event.
+
+Then one gate: `codexClientPayloadAccepted` requires a *complete* weekly window (`remaining_percent` **and**
 `reset_at`), a hard invalidation, or a valid `exhausted_until` timestamp. Codex has no live 5-hour
 window any more, so weekly completeness is the whole windows test; Claude reports are not gated here. An
 unacceptable payload is not an error — it returns `{ok:true, ignored:true}` and the caller decides

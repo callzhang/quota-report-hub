@@ -266,6 +266,7 @@ def auth_metadata(path: Path) -> dict:
     return {
         "account_id": canonical_codex_account_id(provider_account_id, email),
         "provider_account_id": provider_account_id,
+        "access_token_fingerprint": access_token_fingerprint(payload, "codex"),
         "email": email,
         "name": identity.get("name"),
         "plan_name": human_plan_name(plan_type),
@@ -507,6 +508,23 @@ def codex_windows_from_rate_limits(rate_limits: dict | None, now_ts: float) -> d
             continue
         windows[window_key] = normalize_window(raw_window, now_ts)
     return windows
+
+
+# Which meter produced these numbers, in the provider's own words. `rate_limits` names the limit it
+# is reporting on (`limit_id`, and `individual_limit` when a seat is metered separately inside a
+# larger plan) and that name is the only field in the whole response that distinguishes two meters
+# reachable from one login. It was read and discarded until now, which is why "same credential, two
+# different readings" — six machines on one byte-identical blob disagreeing by 27 points — could not
+# be diagnosed from the hub at all. Claude has no counterpart: `claude -p /usage` prints windows and
+# no meter identity.
+def codex_meter_identity(rate_limits: dict | None) -> dict | None:
+    if not isinstance(rate_limits, dict):
+        return None
+    return {
+        "limit_id": rate_limits.get("limit_id"),
+        "limit_name": rate_limits.get("limit_name"),
+        "individual_limit": rate_limits.get("individual_limit"),
+    }
 
 
 def empty_windows() -> dict:
@@ -767,6 +785,11 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
         "reported_at": checked_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "account_id": metadata["account_id"],
         "provider_account_id": metadata["provider_account_id"],
+        # Which token these numbers were measured through, so the hub can file the report under the
+        # account that token belongs to instead of the one this machine names. The claude probe has
+        # sent this since 4540643; codex was skipped on the reasoning that its identity is readable
+        # from auth.json -- which answers "what is in the file", not "what did the probe measure".
+        "access_token_fingerprint": metadata["access_token_fingerprint"],
         "email": metadata["email"],
         "name": metadata["name"],
         "plan_name": metadata["plan_name"],
@@ -838,6 +861,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
     info = token_payload.get("info")
     rate_limits = token_payload.get("rate_limits")
     now_ts = checked_at.timestamp()
+    meter = codex_meter_identity(rate_limits)
     windows = codex_windows_from_rate_limits(rate_limits, now_ts)
     has_any_window = windows["5h"] is not None or windows["1week"] is not None
     has_complete_windows = windows["5h"] is not None and windows["1week"] is not None
@@ -853,6 +877,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
                 "1week": zero_remaining_window(10080),
             },
             "usage_summary": {
+                "meter": meter,
                 "credits": rate_limits.get("credits"),
                 "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
                 "next_retry_at": None,
@@ -876,6 +901,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
                 "error": "codex rate limited but quota exhaustion was not confirmed",
                 "windows": empty_windows(),
                 "usage_summary": {
+                    "meter": meter,
                     "credits": rate_limits.get("credits"),
                     "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
                     "next_retry_at": reset_at,
@@ -893,6 +919,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
                 "error": "codex usage limit reached but reset time was not found",
                 "windows": empty_windows(),
                 "usage_summary": {
+                    "meter": meter,
                     "credits": rate_limits.get("credits"),
                     "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
                     "next_retry_at": None,
@@ -915,6 +942,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
             "exhausted_until": reset_at,
             "windows": windows,
             "usage_summary": {
+                "meter": meter,
                 "credits": rate_limits.get("credits"),
                 "rate_limit_reached_type": rate_limits.get("rate_limit_reached_type"),
                 "next_retry_at": reset_at,
@@ -941,6 +969,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
         "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
         "status": "ok",
         "windows": windows,
+        "usage_summary": {"meter": meter},
     }
     if refresh_capture is not None:
         payload["refresh_capture"] = refresh_capture
@@ -1393,11 +1422,26 @@ def read_claude_oauth_credentials(claude_home: Path = CLAUDE_HOME) -> tuple[dict
     return None, "unavailable"
 
 
-def claude_access_token_fingerprint(credentials: dict | None) -> str | None:
-    token = ((credentials or {}).get("claudeAiOauth") or {}).get("accessToken")
+def access_token_fingerprint(auth_blob: dict | None, source: str) -> str | None:
+    """A stable, non-secret name for the access token in an auth blob: SHA-256 of the token.
+
+    The hub computes the same digest over the credential it served (lib/fetch-best.js
+    `accessTokenFingerprint`), so a report can be filed under the account whose token actually
+    produced its numbers instead of the account the machine believes it is running. Neither side
+    ever sends the token. One function for both sources deliberately: the two blob shapes differ
+    (codex `tokens.access_token`, claude `claudeAiOauth.accessToken`) but the question does not,
+    and a per-source copy is how codex went three months without the answer claude already had.
+    """
+    if not isinstance(auth_blob, dict):
+        return None
+    token = (
+        (auth_blob.get("tokens") or {}).get("access_token")
+        if source == "codex"
+        else (auth_blob.get("claudeAiOauth") or {}).get("accessToken")
+    )
     if not token:
         return None
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
 
 
 def resolve_claude_installed_identity(
@@ -1418,7 +1462,7 @@ def resolve_claude_installed_identity(
     identity record cannot mislabel the report. No match means the machine is running a
     credential the guard never installed — its own login — and the CLI's own answer stands.
     """
-    fingerprint = claude_access_token_fingerprint(credentials)
+    fingerprint = access_token_fingerprint(credentials, "claude")
     if not fingerprint:
         return None
     state = known_auth_state_for_source(read_known_auth_state(known_auth_path), "claude")
@@ -2396,7 +2440,7 @@ def probe_claude(
         "account_id": claude_account_id(auth_text_details),
         # Which token these numbers were measured through. The hub files the report under the
         # account that token belongs to -- something this machine cannot determine for itself.
-        "access_token_fingerprint": claude_access_token_fingerprint(credentials),
+        "access_token_fingerprint": access_token_fingerprint(credentials, "claude"),
         "email": auth_text_details.get("email"),
         "name": auth_text_details.get("organization"),
         "plan_name": human_plan_name(auth_text_details.get("subscription_type")) or human_plan_name(oauth.get("subscriptionType")) or oauth.get("subscriptionType"),

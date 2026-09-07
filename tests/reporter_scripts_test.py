@@ -776,6 +776,81 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(report["windows"]["1week"]["remaining_percent"], 70.0)
         self.assertEqual(report["windows"]["1week"]["reset_in_seconds"], 3600)
 
+    def test_access_token_fingerprint_matches_the_hub_over_both_blob_shapes(self):
+        # The hub names a token by sha256 of the token itself (lib/fetch-best.js
+        # accessTokenFingerprint). If the two sides ever disagree about which field to hash, every
+        # report resolves to "a token the pool never held" and attribution silently stops working.
+        codex_blob = {"tokens": {"access_token": "CODEX_AT", "refresh_token": "r"}}
+        claude_blob = {"claudeAiOauth": {"accessToken": "CLAUDE_AT", "refreshToken": "r"}}
+        self.assertEqual(
+            quota_reporters.access_token_fingerprint(codex_blob, "codex"),
+            hashlib.sha256(b"CODEX_AT").hexdigest(),
+        )
+        self.assertEqual(
+            quota_reporters.access_token_fingerprint(claude_blob, "claude"),
+            hashlib.sha256(b"CLAUDE_AT").hexdigest(),
+        )
+        # A blob read with the other source's key path has no token, not a wrong one.
+        self.assertIsNone(quota_reporters.access_token_fingerprint(codex_blob, "claude"))
+        self.assertIsNone(quota_reporters.access_token_fingerprint(claude_blob, "codex"))
+        self.assertIsNone(quota_reporters.access_token_fingerprint(None, "codex"))
+
+    def test_probe_codex_reports_which_token_and_which_meter_produced_the_numbers(self):
+        # Before this, a codex report asserted "I am account X, X is N% used" and carried nothing
+        # the hub could check it against: no token fingerprint (so attributeByToken never ran for
+        # codex) and no meter identity (so "same credential, two different readings" was
+        # undiagnosable). Both are read from data already in hand.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-09-04T13:50:35.460Z",
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "access_token": "POOLED_AT",
+                            "refresh_token": "refresh",
+                            "id_token": self._jwt(
+                                {
+                                    "email": "a@example.com",
+                                    "name": "A",
+                                    "https://api.openai.com/auth": {"chatgpt_plan_type": "pro"},
+                                }
+                            ),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.subprocess.run", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
+                with mock.patch(
+                    "quota_reporters.latest_token_count_event",
+                    return_value={
+                        "payload": {
+                            "info": {"model_context_window": 258400},
+                            "rate_limits": {
+                                "limit_id": "codex",
+                                "limit_name": None,
+                                "individual_limit": None,
+                                "plan_type": "pro",
+                                "primary": {"used_percent": 32, "window_minutes": 10080, "resets_in_seconds": 214971},
+                                "secondary": None,
+                                "credits": {"has_credits": False, "balance": "0", "unlimited": False},
+                                "rate_limit_reached_type": None,
+                            },
+                        }
+                    },
+                ):
+                    report = probe_codex(auth_path)
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["access_token_fingerprint"], hashlib.sha256(b"POOLED_AT").hexdigest())
+        self.assertEqual(
+            report["usage_summary"]["meter"],
+            {"limit_id": "codex", "limit_name": None, "individual_limit": None},
+        )
+
     def test_probe_codex_reports_usage_limit_as_exhausted_until(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"

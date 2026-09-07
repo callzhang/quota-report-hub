@@ -162,6 +162,45 @@ test("ingestClientQuota files a report under the account its token belongs to, n
   assert.equal(written.usage_summary.quota_source, "oauth_usage_api", "the rest of usage_summary is kept");
 });
 
+test("ingestClientQuota resolves a codex report by token too, and gates the resolved payload", async () => {
+  // Attribution was built source-agnostic but only claude ever sent a fingerprint, so for codex
+  // the claim was always taken at face value. The codex acceptance gate must see the RESOLVED
+  // payload: reversing the order would judge a report by an account it does not belong to.
+  const writes = [];
+  const lookups = [];
+  const res = await ingestClientQuota({
+    source: "codex",
+    reporterEmail: "borrower@example.com",
+    quotaPayload: {
+      account_id: "claimed@example.com",
+      email: "claimed@example.com",
+      status: "ok",
+      access_token_fingerprint: "fp-of-owner-token",
+      usage_summary: { meter: { limit_id: "codex", limit_name: null, individual_limit: null } },
+      windows: { "5h": null, "1week": completeWindow },
+    },
+    upsertImpl: async (payload) => { writes.push(payload); },
+    tokenOwnerImpl: async (source, fingerprint) => { lookups.push([source, fingerprint]); return { account_id: "owner@example.com" }; },
+    authPoolEntryImpl: async () => stubEntry,
+  });
+
+  assert.deepEqual(lookups, [["codex", "fp-of-owner-token"]]);
+  assert.equal(res.account_id, "owner@example.com");
+  assert.equal(writes.length, 1, "the resolved report passes the codex gate and is written");
+  const [written] = writes;
+  assert.equal(written.account_id, "owner@example.com");
+  assert.deepEqual(written.usage_summary.identity, {
+    claimed_account_id: "claimed@example.com",
+    resolved_account_id: "owner@example.com",
+    resolved_by: "token_fingerprint",
+  });
+  assert.deepEqual(
+    written.usage_summary.meter,
+    { limit_id: "codex", limit_name: null, individual_limit: null },
+    "the meter the numbers were measured on survives alongside the identity annotation",
+  );
+});
+
 test("ingestClientQuota trusts the claim when the token is one the pool never held", async () => {
   const writes = [];
   await ingestClientQuota({

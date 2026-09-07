@@ -54,7 +54,7 @@ class AccessTokenOnlySupply(unittest.TestCase):
     def test_the_fingerprint_in_the_probe_matches_the_installed_token(self):
         # sanity: the fingerprint the hub matches against is sha256 of the raw access token
         creds = json.loads(self._stripped_blob())["credentials"]
-        self.assertEqual(quota_reporters.claude_access_token_fingerprint(creds), hashlib.sha256(b"FRESH_30D_AT").hexdigest())
+        self.assertEqual(quota_reporters.access_token_fingerprint(creds, "claude"), hashlib.sha256(b"FRESH_30D_AT").hexdigest())
 
 
 if __name__ == "__main__":
