@@ -28,6 +28,7 @@
 | [10](#10-selection-algorithm) | Selection algorithm |
 | [11](#11-token-refresh-architecture) | Token-refresh architecture |
 | [12](#12-observability) | Observability |
+| [12.1](#121-auth_pool_death_events-why-a-death-log-and-not-a-state-table) | `auth_pool_death_events` — why a death log and not a state table |
 | [13](#13-configuration) | Configuration |
 | [14](#14-sharp-edges--known-issues) | Sharp edges and known issues |
 | [15](#15-end-to-end-flow-recap) | End-to-end flow recap |
@@ -895,6 +896,42 @@ Both sources are held to the same thresholds, judged per window the report carri
 - **Reporter health** (`index.html` `renderReporterHealth`, the Devices tab): per-machine guard heartbeat states ([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)).
 - **`assess_health.mjs`** — CLI verdict + abuse scan ([§8.1](#81-assess_healthmjs)).
 - **`auth_pool_fetch_log`** — full borrow audit surfaced on `users.html`.
+- **`auth_pool_death_events`** — append-only credential deaths and revivals ([§12.1](#121-auth_pool_death_events-why-a-death-log-and-not-a-state-table)).
+
+### 12.1 `auth_pool_death_events` — why a death log and not a state table
+
+`auth_pool_invalidated_notifications` records the **current** invalidation and nothing else: an
+account someone re-onboards is deleted from it. That makes the pool's own history unreadable. A
+cross-section taken 2026-09-07 showed codex Team 6/6 dead against Pro 0/12 and read as a plan
+effect — while the June-era snapshot had Pro dying at 75% against Team's 77%, and three of the Pro
+accounts alive in September had been dead in June and were simply re-uploaded. The state table
+cannot show that, because every repaired account had already vanished from it
+([AUTH_TOKENS §3.7](AUTH_TOKENS.md)).
+
+`recordAuthPoolDeathEvent` ([lib/db.js](lib/db.js)) appends one row **per transition** — `death` when
+an entry's hard-auth state flips on, `revival` when it flips off — written from
+`processAuthPoolEntry` ([scripts/probe_auth_pool_worker.mjs](scripts/probe_auth_pool_worker.mjs))
+immediately before the delete branch, since an entry about to leave the pool is precisely the one
+whose death has to outlive it. Transitions, not states: an account dead for a fortnight leaves one
+row, not a thousand. The `previousReport` the worker already fetched for its skip decision supplies
+the comparison, so this costs no extra read.
+
+Each row carries `plan_name` snapshotted at the death (the entry may be deleted moments later),
+`hub_last_refresh_at`, `last_healthy_probe_at`, and `central_refresh_verdict`
+(`ok`/`rejected`/`failed`/`not_attempted`). The first two are the join the hub could not previously
+make: a refresh revokes the access tokens already issued for that grant
+([AUTH_TOKENS §3.5](AUTH_TOKENS.md)), so an access token that dies while the hub has not refreshed
+for days implicates something outside the hub, and one that dies right after a hub refresh does not.
+The verdict column separates a dead refresh token from a dead access token.
+
+**Why the classification is not stored.** The rule for splitting *foreign refresh* from *foreign
+revocation* is still open, and only the second would implicate anything plan- or workspace-side. A
+verdict computed by today's rule would silently outlive the rule. Facts in the table, judgement in
+the query.
+
+**Never pruned.** `pruneAuthPoolQuotaEvents` does not touch it. Retention is the entire value: the
+question this table exists to answer is longitudinal, and losing the old rows recreates exactly the
+blindness it was built to remove.
 
 ---
 

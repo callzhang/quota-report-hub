@@ -507,8 +507,15 @@ causes; nothing here points at them, and nothing rules them out.
 - **generation never advanced and the credential died anyway** → nobody refreshed it, and that is the
   one signature that would implicate something plan- or workspace-side.
 
-The hub cannot currently tell these three apart, which is the actual gap. Until it can, read this
-section's plan table as a description of one snapshot, not as a finding.
+The hub could not tell these apart at all when this section was written, which was the actual gap.
+`auth_pool_death_events` ([SYSTEM_DESIGN §12.1](SYSTEM_DESIGN.md)) now records each death and revival
+with the hub's own last refresh, the last healthy probe, and the central-refresh verdict beside it —
+enough for the first cut (**hub-caused vs external**) and for time-to-repair, which is what removes
+the survivorship confound above. It does **not** yet separate a foreign refresh from a foreign
+revocation, and that is the one distinction this section's question turns on.
+
+Until the log has depth, read this section's plan table as a description of one snapshot, not as a
+finding.
 
 ---
 
