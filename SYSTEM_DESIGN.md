@@ -566,7 +566,24 @@ Backs up before deleting, supports `--dry-run`, and talks to Turso over its
 HTTP API rather than `@libsql/client` because this host resolves the Turso name into Tailscale's
 intercepted range, which curl and urllib traverse but node's TLS stack does not.
 
-### 8.6 recompute_local_token_usage.py
+### 8.6 repair_latched_quota_rows.py
+Rewrites `auth_pool_quota_latest` rows the merge guard froze on a pre-reset window
+([§6.6](#66-quota-ingest-and-report-merge), [§14](#14-sharp-edges--known-issues)). The event log is
+untouched by the guard, so the repair is a **copy, not a reconstruction**: the newest event carrying
+a complete plan-bucket weekly window is written over the frozen row, column for column (both tables
+have identical columns by design), with `windows_stale` cleared. An event with no windows — an
+exhausted account, or since client 2.7.0 a reading that belonged to another bucket — proves nothing
+about the plan window and is never a repair source.
+
+Dry-runs by default, `--account` narrows to one, `--apply` writes after backing every affected row up
+to `latched-quota-rows-<stamp>.json`, and it re-runs its own detection afterwards and exits non-zero
+if anything is still latched. Uses the Turso HTTP API for the same reason as
+[§8.5](#85-purge_contaminated_usagepy).
+
+**A cleanup tool, not a standing defence.** Until the guard itself is keyed on something other than
+reset-time arithmetic, a repaired row freezes again the next time that account takes a Full reset.
+
+### 8.7 recompute_local_token_usage.py
 A **diagnostic**, not a repair tool. It re-derives what a machine believes it used, by parsing every
 codex rollout and claude transcript **from its first byte** with the fixed delta logic, and prints
 that against the hub (`--compare --hub-user EMAIL`), per day and provider. Repairing is the
@@ -583,7 +600,7 @@ Measured on Derek's machine over 2026-08-15..09-06: claude hub 4.992B vs local 4
 single day**), codex hub 27.774B vs local 20.868B — the gap being contamination that survived the
 1e8 purge.
 
-### 8.7 deploy_vercel.py / start_frontend.mjs
+### 8.8 deploy_vercel.py / start_frontend.mjs
 `deploy_vercel.py` wraps the Vercel CLI for production/preview/development deploys and env
 management. `start_frontend.mjs` serves the static dashboards locally on `FRONTEND_PORT`
 (default 6088, `127.0.0.1` only).
