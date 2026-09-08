@@ -436,6 +436,29 @@ machine runs a Team seat — the surviving population is exactly the population 
 Second, **repair is asymmetric**: a service account has an operational owner and gets re-uploaded, an
 employee's seat is left dead. A cross-section therefore measures who gets fixed as much as who dies.
 
+**Over full event history the plan effect disappears entirely.** Counting any account with at least
+one hard-auth event in the retained `auth_pool_quota_events` history (2026-09-08, accounts with ≥20
+events):
+
+| Plan | Accounts | Ever hard-dead |
+|---|---|---|
+| Team | 8 | 8 |
+| **Pro** | **12** | **10** |
+| Plus | 4 | 4 |
+| Pro Lite | 1 | 1 |
+
+Ten of twelve Pro accounts have died at least once; only `ceshi@` and `leizhang0121@` never have.
+A hard-auth episode is close to universal on every plan, which is the survivorship confound stated
+as a number: the September cross-section's Team 6/6 against Pro 0/12 measures **which accounts are
+currently repaired**, not which ones die. (The bar here is low — "≥1 hard event in retained history"
+counts transient episodes, so this is not a death *rate*. It is enough to refute "Pro does not die.")
+
+**`codex workspace out of credits` is Team-exclusive but does not predict death.** Seven accounts
+have ever reported it and all seven are Team; no Plus, Pro, or Pro Lite account ever has, which
+follows from workspace credits being a workspace concept. It looked like the plan-specific mechanism
+this section is missing, and it is not: the one Team account that never reported it died too, and
+ten Pro accounts died without it. Recorded so the next investigation does not re-chase it.
+
 **The schema is why this was easy to get wrong.** `auth_pool_invalidated_notifications` is a
 current-state table, not a death log: an account that is repaired vanishes from it. "Pro does not
 die" is precisely the illusion that produces, and answering the question properly needs deaths
