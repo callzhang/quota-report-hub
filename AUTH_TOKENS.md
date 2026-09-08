@@ -461,9 +461,19 @@ events from a single episode). The time-weighted column charges each hard observ
 next observation, so an account probed rarely is not silently discounted; it tracks the probe share
 closely, so the simpler column is not badly biased. Capping each gap at one hour — so a probe outage
 cannot be charged as continuous death — gives Pro 14.9%, Team 66.4%, Plus 31.1%: the same shape.
-(Capping *raises* Pro because it shrinks the denominator too, and Pro's observation gaps fell mostly
-in healthy stretches. Uncapped measures the share of wall-clock spent dead; capped measures the share
-of observed time. Both are defensible and neither changes the conclusion.)
+Capping *raises* Pro because it shrinks the denominator as well as the numerator, and what it removes
+is not distributed evenly. The truncated share of span is almost identical between the two plans —
+Pro 18.9%, Team 19.6% — so the difference is not that Pro has more observation gaps; it is **what the
+gaps are made of**: only 7.2% of Pro's truncated time was dead against Pro's 13.4% overall, so
+removing it takes out a healthier-than-average slice and the ratio climbs, while 64.4% of Team's
+truncated time was dead against its 66% overall, which makes the removal nearly neutral. Team is
+insensitive to the choice of measure because it is dead most of the time however the window is cut.
+Uncapped measures the share of wall-clock spent dead; capped measures the share of observed time.
+Both are defensible and neither changes the conclusion.
+
+**Base rate, for anyone waiting on one of these events:** 46 episodes across 30.3 days over the whole
+codex pool — **~1.5 per day** against ~1,930 probes a day. Rare enough that a few hours of silence in
+`auth_pool_death_events` says nothing.
 
 **Episode frequency is the same on every plan** — 0.75 to 0.81 per thousand probes, with Pro
 marginally the highest. What differs is how long an account stays dead: Team spends ~62% of the
