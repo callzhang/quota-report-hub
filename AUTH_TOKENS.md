@@ -514,6 +514,27 @@ Credit to the "Hub quota显示异常" session for the correction. Its own hazard
 these (Team 0.231, Pro 0.124) because it measures at-risk time with gaps capped at an hour; the rate
 *ratio* is identical to two decimals either way (1.87 vs 1.86), which is what matters here.
 
+**What would settle it, and why waiting will not.** At the observed ratio, about 1.5x the current
+episode count makes it significant — 14 Team and 46 Pro episodes put the CI lower bound at 1.01. The
+15 extra Pro episodes accrue on their own: 12 healthy Pro accounts at 0.099 produce ~1.18 a day, so
+about 13 days. **The 5 extra Team episodes never arrive.** All six Team accounts are currently dead,
+so their forward hazard contribution is exactly zero — a dead account cannot supply an onset. Repair
+them and they return to the risk set at ~1.10 a day, which is 5 episodes in ~4.5 days.
+
+So the question "is Team structurally more fragile" **cannot be answered by waiting**: its
+precondition is fixing the Team seats, which is the operational problem the question was asked about.
+Repair them and there is an answer inside a week; leave them dead and the estimate stays underpowered
+indefinitely, however long the log runs.
+
+**And more data alone would not fix the sampling bias** noted above — that one is structural, not
+random. Doubling the sample narrows the interval around a *biased* point estimate, which reads as
+significance without being it. Comparable exposure has to be built in: stratify by time-since-recovery,
+or measure both plans only over the first N hours after each recovery, so the comparison is "a
+freshly repaired Team seat against a freshly repaired Pro account" rather than "Team always just
+after repair against Pro during long uneventful stretches." If the Team seats are repaired and start
+accruing again, that stratification has to be designed in from the first day — retrofitting it onto
+an accumulated pile is what does not work. (Both points from the "Hub quota显示异常" session.)
+
 **Duration is the difference that survives.** Team spends ~66% of the window unusable against Pro's
 ~13% — a gap far too large to be a sampling artefact, and stable across every denominator either
 session tried. That shape still argues against the second-custodian hypothesis as the discriminator:
