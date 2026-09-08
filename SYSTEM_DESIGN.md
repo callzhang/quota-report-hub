@@ -412,6 +412,18 @@ no meter identity.
 The fingerprint is consumed at ingest and never stored: `sanitizeReport`'s field list omits it, so it
 cannot leak into a dashboard payload or a quota event.
 
+**`plan_name` has two provenances; prefer the credential's.** `auth_pool_entries.plan_name` is
+decoded from the id_token's `chatgpt_plan_type` claim (`deriveCodexAuthPoolEntry`) — an intrinsic
+property of the credential. Every report's `plan_name` instead prefers what the *rate-limit response*
+said (`humanPlanName(payload?.plan_type)` in `lib/auth-pool-probe.js`; `probe_codex` in
+`quota_reporters.py` does the same with the claim as fallback). The two can disagree: OpenAI has a
+reported bug where the responses-API rate limiter resolves a plan differently from the token that
+made the request (`X-Codex-Plan-Type: plus` for an account whose claim reads `prolite`,
+openai/codex#29243). **Anything aggregating by plan should join `auth_pool_entries`.** Measured
+2026-09-08: zero disagreements across the whole codex pool, and `plan_type` is *not* per-bucket — it
+is read once from the response top level and copied into every bucket snapshot, so a bucket mix-up
+cannot move it. This is a caution about a real upstream bug, not a description of current data.
+
 **One request, several quota buckets.** Codex meters more than one limit per account and returns them
 together: the plan's own (`limit_id: "codex"`) plus one per premium model actually used, under its own
 metered id — `codex_bengalfox` is GPT-5.3-Codex-Spark. `premium` is not a bucket at all but the tier
