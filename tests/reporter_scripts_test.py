@@ -1331,9 +1331,49 @@ class ReporterScriptsTest(unittest.TestCase):
                     report = probe_codex(auth_path)
 
         self.assertEqual(report["status"], "error")
-        self.assertEqual(report["error"], "token_count event was present but missing quota details")
+        self.assertEqual(report["error"], "codex returned no quota window of a duration this hub models")
         self.assertIsNone(report["windows"]["5h"])
         self.assertIsNone(report["windows"]["1week"])
+
+    def test_probe_codex_names_which_step_of_the_quota_read_failed(self):
+        # One message for three different failures is undiagnosable by construction: it says a probe
+        # failed without saying where. starbench@stardust.ai reported it six times on 2026-09-07/08
+        # and nothing in the row could distinguish "codex sent no rate limits" from "codex sent a
+        # window of a duration this hub does not model". The third case now also carries the shapes
+        # it saw, which is the only one whose answer was in data already being discarded.
+        def probe_with(rate_limits, info={"model_context_window": 258400}):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                auth_path = Path(temp_dir) / "auth.json"
+                auth_path.write_text(json.dumps({
+                    "last_refresh": "2026-09-08T00:00:00Z",
+                    "tokens": {"account_id": "acct-1", "access_token": "a", "refresh_token": "r",
+                               "id_token": self._jwt({"email": "starbench@stardust.ai", "name": "S",
+                                                      "https://api.openai.com/auth": {"chatgpt_plan_type": "pro"}})},
+                }), encoding="utf-8")
+                with mock.patch("quota_reporters.subprocess.run", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
+                    with mock.patch("quota_reporters.latest_token_count_event",
+                                    return_value={"payload": {"info": info, "rate_limits": rate_limits}}):
+                        return probe_codex(auth_path)
+
+        no_limits = probe_with(None)
+        self.assertEqual(no_limits["error"], "codex returned no rate limits")
+        self.assertIsNone(no_limits["usage_summary"]["observed_windows"])
+
+        # `info` carries the context window, not quota, so it is only the headline when the quota
+        # itself came through fine.
+        no_info = probe_with({"limit_id": "codex", "primary": {"used_percent": 5, "window_minutes": 300,
+                                                              "resets_in_seconds": 60}}, info=None)
+        self.assertEqual(no_info["error"], "codex returned quota but no token usage info")
+
+        # The case that matters: a real response whose window this hub cannot place. Without the
+        # shapes there is no way to learn which duration codex actually sent.
+        odd_window = probe_with({"limit_id": "codex", "plan_type": "pro",
+                                 "primary": {"used_percent": 12, "window_minutes": 1440, "resets_in_seconds": 3600},
+                                 "secondary": None})
+        self.assertEqual(odd_window["error"], "codex returned no quota window of a duration this hub models")
+        self.assertEqual(odd_window["usage_summary"]["observed_windows"],
+                         [{"slot": "primary", "window_minutes": 1440, "used_percent": 12}])
+        self.assertEqual(odd_window["usage_summary"]["meter"]["limit_id"], "codex")
 
     def test_probe_codex_maps_workspace_out_of_credits_to_zero_remaining_windows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
