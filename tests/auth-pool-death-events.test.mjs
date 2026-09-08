@@ -74,6 +74,27 @@ test("a client-observed revival is recorded — the worker is not the only path"
   assert.equal(events[1].error, null);
 });
 
+test("a revival records no central-refresh verdict — it would describe the replaced credential", async () => {
+  const a = account();
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-08T01:00:00Z" }));
+  await db.upsertAuthPoolQuota(
+    report(a, {
+      status: "error",
+      error: DEAD,
+      at: "2026-09-08T01:40:41Z",
+      central: { attempted: true, ok: false, auth_rejected: true },
+    })
+  );
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-08T02:36:41Z" }));
+
+  const events = await eventsFor(a);
+  assert.deepEqual(events.map((e) => e.event), ["death", "revival"]);
+  assert.equal(events[0].central_refresh_verdict, "rejected");
+  // The merge keeps the rejection sticky, so without this the revival inherits it and reads as a
+  // credential that came back while its refresh token was still refused.
+  assert.equal(events[1].central_refresh_verdict, null);
+});
+
 test("staying dead appends nothing — the row marks the transition, not the state", async () => {
   const a = account();
   await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-06T06:00:00Z" }));
