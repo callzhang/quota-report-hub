@@ -436,16 +436,17 @@ machine runs a Team seat — the surviving population is exactly the population 
 Second, **repair is asymmetric**: a service account has an operational owner and gets re-uploaded, an
 employee's seat is left dead. A cross-section therefore measures who gets fixed as much as who dies.
 
-**Over full event history, incidence is flat across plans and only duration differs.** Measured
+**Over full event history, duration differs sharply between plans and incidence is inconclusive.**
+Measured
 2026-09-08 over the retained `auth_pool_quota_events` (~30-day span), using `isHardAuthError` as the
 predicate and taking each account's plan from its **credential** (`auth_pool_entries.plan_name`, the
 id_token claim) rather than from event rows:
 
-| Plan | Accounts | Ever dead | Probes | Episodes | Episodes/1k probes | Probes hard | Time-weighted hard |
+| Plan | Accounts | Ever dead | Probes | Episodes | Healthy days (at risk) | Hazard /healthy-day (95% CI) | Time-weighted hard |
 |---|---|---|---|---|---|---|---|
-| Pro | 12 | 10 | 38,198 | 31 | **0.81** | 12.8% | 13.4% |
-| Team | 6 | 6 | 12,074 | 9 | **0.75** | 62.0% | 66.0% |
-| Plus | 3 | 3 | 8,043 | 6 | **0.75** | 31.5% | 29.0% |
+| Pro | 12 | 10 | 38,198 | 31 | 314.4 | 0.099 [0.067, 0.140] | 13.4% |
+| Team | 6 | 6 | 12,074 | 9 | 49.1 | 0.183 [0.084, 0.348] | **66.0%** |
+| Plus | 3 | 3 | 8,043 | 6 | 58.5 | 0.103 [0.038, 0.223] | 29.0% |
 
 > **Trap for anyone writing such a query: `refresh_token_rejected` is the dominant codex death class
 > and its string contains none of the words you would grep for.** No `invalid`, no `401`, no `auth`.
@@ -472,31 +473,56 @@ Uncapped measures the share of wall-clock spent dead; capped measures the share 
 Both are defensible and neither changes the conclusion.
 
 **Base rate, for anyone waiting on one of these events.** 46 episodes across 30.3 days over the whole
-codex pool is ~1.5 a day against ~1,930 probes a day. But only an account that is *currently healthy*
-can produce a new death transition — the seven already hard-dead are already in that state and have no
-flip left — so the forward-looking rate comes from the 14 healthy accounts alone: **34 episodes over
-30.3 days, λ ≈ 1.12 per day**, median wait to the next one ~14.8 h.
+codex pool is ~1.5 a day against ~1,930 probes a day, but that is a calendar rate over a pool where
+most accounts were dead much of the time. Only a *currently healthy* account can produce a death
+transition, so the forward rate is the current healthy set (12 Pro + 2 Plus, and no Team) multiplied
+by each plan's at-risk hazard: **λ ≈ 1.39 per day**, median wait ~12 h. (A first attempt divided the
+healthy accounts' episodes by calendar days and got 1.12 — that drops the numerator's dead accounts
+without dropping the dead time they contributed to the denominator, and biases the rate low.)
 
 Treating it as Poisson, the probability that `auth_pool_death_events` is still empty after t hours:
 
-| t | 3.5 h | 12 h | 24 h | **48 h** | 72 h | 96 h |
-|---|---|---|---|---|---|---|
-| P(still zero) | 84.9% | 57.0% | 32.5% | **10.6%** | 3.4% | 1.1% |
+| t | 3.5 h | 12 h | 24 h | **48 h** | 72 h |
+|---|---|---|---|---|---|
+| P(still zero) | 81.7% | 50.1% | 24.9% | **6.2%** | 1.6% |
 
 So a few hours of silence carries no information at all, and even a full day is close to a coin flip.
-**Set the "something is wrong with the writer" line at 72 hours** (3.4%), not 48 (10.6%) — at which
-point the thing to check is whether `recordAuthPoolDeathEvent` is being called at all, rather than
-continuing to wait. Two caveats: Poisson assumes independent episodes, and deaths here plausibly
+**Set the "something is wrong with the writer" line at 48 hours** — the 5% tail is at 51.8 h on this
+λ and at 41.8 h on the capped-gap variant, so 48 h sits between them — at which point the thing to
+check is whether `recordAuthPoolDeathEvent` is being called at all, rather than continuing to wait.
+Three caveats: Poisson assumes independent episodes, and deaths here plausibly
 cluster (one workspace event can take several seats at once), which makes long silences *more* likely
 than the table says and the line if anything conservative; and a `revival` row would also land first
 and partly validate the writer, though with `error` and `last_healthy_probe_at` necessarily null.
+Third, λ tracks the *current* healthy set and is not a constant: repairing the six dead Team accounts
+would return them to the risk set at Team's hazard and push λ toward ~3/day, which would pull the
+alarm line in to roughly a day. Recompute it from the healthy set rather than treating 48 h as fixed.
 
-**Episode frequency is the same on every plan** — 0.75 to 0.81 per thousand probes, with Pro
-marginally the highest. What differs is how long an account stays dead: Team spends ~62% of the
-window unusable against Pro's ~13%. That shape argues *against* the second-custodian hypothesis as
-the discriminator, which would predict repeated re-deaths and therefore a raised episode rate. It is
-the signature of **deaths that are never repaired**, not of something killing Team accounts more
-often — which is the same survivorship point the June snapshot made, now with the mechanism named.
+**Incidence: the honest answer is that this data cannot tell.** The point estimate has Team at
+0.183 onsets per healthy-day against Pro's 0.099 — a rate ratio of **1.86** — but with only 9 Team
+episodes the 95% CI on that ratio is **[0.89, 3.90]**. The lower bound is below 1, so "Team dies more
+often" and "every plan dies equally often" are both inside the data. Do not report either as a
+finding.
+
+*An earlier revision of this section did report one*, claiming incidence was flat at 0.75–0.81
+episodes per thousand probes. **That denominator was wrong.** Probes accumulate during dead time as
+well as healthy time, and an account that is already dead cannot die again — its dead time is not
+exposure. Team spends ~62% of its probes already dead, so a per-probe rate dilutes exactly the plan
+that stays dead longest, manufacturing the flatness it then reported. The at-risk denominator above
+(days observed *healthy*) is the correct one; it just does not have the power to settle the question.
+Credit to the "Hub quota显示异常" session for the correction. Its own hazards run ~24% higher than
+these (Team 0.231, Pro 0.124) because it measures at-risk time with gaps capped at an hour; the rate
+*ratio* is identical to two decimals either way (1.87 vs 1.86), which is what matters here.
+
+**Duration is the difference that survives.** Team spends ~66% of the window unusable against Pro's
+~13% — a gap far too large to be a sampling artefact, and stable across every denominator either
+session tried. That shape still argues against the second-custodian hypothesis as the discriminator:
+a custodian rotating the pooled copy would raise the *onset* rate, which is the quantity that turns
+out to be indistinguishable. It is the signature of **deaths that are never repaired**, not of
+something killing Team accounts more often — the same survivorship point the June snapshot made, now
+with the mechanism named. One caveat on the incidence figure that no CI captures: Team's 49 healthy
+days are mostly the stretch immediately preceding each death, while Pro contributes long uneventful
+stretches, so the two plans' healthy time is not sampled from comparable periods.
 
 Only `leizhang0121@gmail.com` and `ceshi@stardust.ai` never went hard-dead at all. Caveats that
 travel with these numbers: the population is restricted to accounts still holding a pooled credential
