@@ -447,11 +447,23 @@ id_token claim) rather than from event rows:
 | Team | 6 | 6 | 12,074 | 9 | **0.75** | 62.0% | 66.0% |
 | Plus | 3 | 3 | 8,043 | 6 | **0.75** | 31.5% | 29.0% |
 
+> **Trap for anyone writing such a query: `refresh_token_rejected` is the dominant codex death class
+> and its string contains none of the words you would grep for.** No `invalid`, no `401`, no `auth`.
+> It is 20,482 of the codex events (and 6,552 claude ones) — more than every other hard failure
+> combined — so an error-string regex built from the obvious keywords silently undercounts deaths by
+> most of them, and makes accounts that died for days read as never having died. Use
+> `isHardAuthError` ([lib/auth-status.js](lib/auth-status.js)), which is the predicate the code
+> itself decides with; do not re-derive the list.
+
 An *episode* is a contiguous run of hard-auth observations — the unit that matters, because a raw
 event count multiplies one death by however many cycles probed it (`jingwei.zou@` shows 101 hard
 events from a single episode). The time-weighted column charges each hard observation the gap to the
 next observation, so an account probed rarely is not silently discounted; it tracks the probe share
-closely, so the simpler column is not badly biased.
+closely, so the simpler column is not badly biased. Capping each gap at one hour — so a probe outage
+cannot be charged as continuous death — gives Pro 14.9%, Team 66.4%, Plus 31.1%: the same shape.
+(Capping *raises* Pro because it shrinks the denominator too, and Pro's observation gaps fell mostly
+in healthy stretches. Uncapped measures the share of wall-clock spent dead; capped measures the share
+of observed time. Both are defensible and neither changes the conclusion.)
 
 **Episode frequency is the same on every plan** — 0.75 to 0.81 per thousand probes, with Pro
 marginally the highest. What differs is how long an account stays dead: Team spends ~62% of the
