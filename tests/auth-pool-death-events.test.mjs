@@ -1,153 +1,129 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
 
-async function loadWorkerModule() {
-  const previousUrl = process.env.TURSO_DATABASE_URL;
-  const previousToken = process.env.TURSO_AUTH_TOKEN;
-  process.env.TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL || "file:quota-report-hub-death-events-test.db";
-  process.env.TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN || "test-token";
-  try {
-    return await import(`../scripts/probe_auth_pool_worker.mjs?ts=${Date.now()}`);
-  } finally {
-    if (previousUrl === undefined) {
-      delete process.env.TURSO_DATABASE_URL;
-    } else {
-      process.env.TURSO_DATABASE_URL = previousUrl;
-    }
-    if (previousToken === undefined) {
-      delete process.env.TURSO_AUTH_TOKEN;
-    } else {
-      process.env.TURSO_AUTH_TOKEN = previousToken;
-    }
-  }
+// Transitions are recorded inside upsertAuthPoolQuota, the one point every ingest path passes
+// through, so these run against a real (file-backed) database rather than injected impls: the bug
+// this file exists for was a hook that only the worker reached, and only an integration-level test
+// notices that a client-observed transition never lands.
+const DB_FILE = "quota-report-hub-death-events-test.db";
+process.env.TURSO_DATABASE_URL = `file:${DB_FILE}`;
+process.env.TURSO_AUTH_TOKEN = "test-token";
+for (const suffix of ["", "-shm", "-wal"]) {
+  rmSync(DB_FILE + suffix, { force: true });
 }
 
-const ENTRY = {
-  source: "codex",
-  account_id: "seat@stardust.ai",
-  plan_name: "Team",
-  uploader_email: "seat@stardust.ai",
-  auth_last_refresh: "2026-09-06T05:59:27.839Z",
-};
+const db = await import("../lib/db.js");
 
-function okReport(reportedAt = "2026-09-06T07:13:06Z") {
+let seq = 0;
+function account() {
+  return `seat-${++seq}@stardust.ai`;
+}
+
+function report(accountId, { status, error = null, at, authLastRefresh = "2026-09-06T05:59:27.839Z", central = null }) {
   return {
     source: "codex",
-    account_id: ENTRY.account_id,
-    status: "ok",
-    error: null,
-    reported_at: reportedAt,
-    windows: { "5h": { remaining_percent: 80 }, "1week": { remaining_percent: 70 } },
+    account_id: accountId,
+    hostname: "test-host",
+    reporter_name: "tester@test-host",
+    reported_at: at,
+    plan_name: "Team",
+    auth_last_refresh: authLastRefresh,
+    status,
+    error,
+    windows:
+      status === "ok"
+        ? { "5h": { remaining_percent: 80, reset_at: at }, "1week": { remaining_percent: 70, reset_at: at } }
+        : {},
+    ...(central ? { usage_summary: { central_refresh: central } } : {}),
   };
 }
 
-function deadReport(reportedAt = "2026-09-06T07:13:06Z") {
-  return {
-    source: "codex",
-    account_id: ENTRY.account_id,
-    status: "error",
-    error: "auth invalidated (token_invalidated)",
-    reported_at: reportedAt,
-    windows: {},
-  };
+async function eventsFor(accountId) {
+  const all = await db.authPoolDeathEvents({ limit: 500 });
+  return all.filter((e) => e.account_id === accountId).sort((a, b) => a.id - b.id);
 }
 
-async function runEntry({ probeReport, previousReport, centralRefresh = null, entry = ENTRY }) {
-  const { processAuthPoolEntry } = await loadWorkerModule();
-  const deathEvents = [];
-  await processAuthPoolEntry(entry, {
-    decryptAuthJsonImpl: () =>
-      '{"tokens":{"account_id":"seat@stardust.ai","refresh_token":"rt.real.token"}}',
-    probeCodexAuthJsonImpl: () => probeReport,
-    upsertAuthPoolQuotaImpl: async () => {},
-    upsertAuthPoolEntryImpl: async () => ({ deduplicated: false }),
-    authPoolQuotaLatestForEntryImpl: async () => previousReport,
-    deleteAuthPoolEntryImpl: async () => ({ deleted: true }),
-    recordAuthPoolDeathEventImpl: async (event) => {
-      deathEvents.push(event);
-    },
-    ...(centralRefresh
-      ? {
-          atOnlyMode: true,
-          refreshCodexTokenImpl: centralRefresh,
-        }
-      : {}),
-  });
-  return deathEvents;
-}
+const DEAD = "auth invalidated (token_invalidated)";
 
-test("a healthy entry going hard-dead appends one death carrying the hub's own last refresh", async () => {
-  const events = await runEntry({
-    probeReport: deadReport(),
-    previousReport: okReport("2026-09-06T06:51:00Z"),
-  });
+test("a healthy account going hard-dead appends one death with the hub's own last refresh", async () => {
+  const a = account();
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-06T06:51:00Z" }));
+  await db.upsertAuthPoolQuota(report(a, { status: "error", error: DEAD, at: "2026-09-06T07:13:06Z" }));
 
+  const events = await eventsFor(a);
   assert.equal(events.length, 1);
   assert.equal(events[0].event, "death");
-  assert.equal(events[0].source, "codex");
-  assert.equal(events[0].accountId, "seat@stardust.ai");
-  // Plan is snapshotted at the death because the entry itself may be deleted moments later.
-  assert.equal(events[0].planName, "Team");
-  assert.equal(events[0].error, "auth invalidated (token_invalidated)");
-  // The two halves of the join the hub could not previously make.
-  assert.equal(events[0].hubLastRefreshAt, "2026-09-06T05:59:27.839Z");
-  assert.equal(events[0].lastHealthyProbeAt, "2026-09-06T06:51:00Z");
-  assert.equal(events[0].centralRefreshVerdict, "not_attempted");
+  assert.equal(events[0].error, DEAD);
+  assert.equal(events[0].hub_last_refresh_at, "2026-09-06T05:59:27.839Z");
+  assert.equal(events[0].last_healthy_probe_at, "2026-09-06T06:51:00Z");
+  assert.equal(events[0].central_refresh_verdict, "not_attempted");
+});
+
+test("a client-observed revival is recorded — the worker is not the only path", async () => {
+  const a = account();
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-08T01:00:00Z" }));
+  await db.upsertAuthPoolQuota(report(a, { status: "error", error: DEAD, at: "2026-09-08T01:40:41Z" }));
+  // What actually happened on 2026-09-08: the owner re-onboarded and their own machine reported ok.
+  // The hook this replaces lived in the worker and saw nothing.
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-08T02:00:10Z" }));
+
+  const events = await eventsFor(a);
+  assert.deepEqual(events.map((e) => e.event), ["death", "revival"]);
+  assert.equal(events[1].observed_at, "2026-09-08T02:00:10Z");
+  assert.equal(events[1].error, null);
 });
 
 test("staying dead appends nothing — the row marks the transition, not the state", async () => {
-  const events = await runEntry({
-    probeReport: deadReport("2026-09-06T07:35:00Z"),
-    previousReport: deadReport("2026-09-06T07:13:06Z"),
-  });
+  const a = account();
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-06T06:00:00Z" }));
+  await db.upsertAuthPoolQuota(report(a, { status: "error", error: DEAD, at: "2026-09-06T07:13:06Z" }));
+  for (const at of ["2026-09-06T07:35:00Z", "2026-09-06T07:57:00Z", "2026-09-06T08:19:00Z"]) {
+    await db.upsertAuthPoolQuota(report(a, { status: "error", error: DEAD, at }));
+  }
 
-  assert.deepEqual(events, []);
-});
-
-test("coming back appends a revival, so time-to-repair is recoverable", async () => {
-  const events = await runEntry({
-    probeReport: okReport("2026-09-07T01:35:17Z"),
-    previousReport: deadReport("2026-09-06T07:13:06Z"),
-  });
-
-  assert.equal(events.length, 1);
-  assert.equal(events[0].event, "revival");
-  assert.equal(events[0].error, null);
-  // Nothing was healthy before this, so there is no healthy probe to point at.
-  assert.equal(events[0].lastHealthyProbeAt, null);
-});
-
-test("an entry first seen already dead is recorded, with no healthy probe to name", async () => {
-  const events = await runEntry({
-    probeReport: deadReport(),
-    previousReport: null,
-  });
-
+  const events = await eventsFor(a);
   assert.equal(events.length, 1);
   assert.equal(events[0].event, "death");
-  assert.equal(events[0].lastHealthyProbeAt, null);
+});
+
+test("an account first seen already dead is recorded, with no healthy probe to name", async () => {
+  const a = account();
+  await db.upsertAuthPoolQuota(report(a, { status: "error", error: DEAD, at: "2026-09-06T07:13:06Z" }));
+
+  const events = await eventsFor(a);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "death");
+  assert.equal(events[0].last_healthy_probe_at, null);
 });
 
 test("a rejected central refresh is recorded as the verdict, separating RT death from AT death", async () => {
-  const events = await runEntry({
-    probeReport: deadReport(),
-    previousReport: okReport("2026-09-06T06:51:00Z"),
-    centralRefresh: async () => ({ ok: false, auth_rejected: true, status: 400 }),
-  });
+  const a = account();
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-06T06:51:00Z" }));
+  await db.upsertAuthPoolQuota(
+    report(a, {
+      status: "error",
+      error: DEAD,
+      at: "2026-09-06T07:13:06Z",
+      central: { attempted: true, ok: false, auth_rejected: true },
+    })
+  );
 
+  const events = await eventsFor(a);
   assert.equal(events.length, 1);
-  assert.equal(events[0].event, "death");
-  assert.equal(events[0].centralRefreshVerdict, "rejected");
+  assert.equal(events[0].central_refresh_verdict, "rejected");
 });
 
 test("a probe failure is not a death — only hard auth errors flip the state", async () => {
-  const events = await runEntry({
-    probeReport: {
-      ...deadReport(),
+  const a = account();
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-06T06:51:00Z" }));
+  await db.upsertAuthPoolQuota(
+    report(a, {
+      status: "error",
       error: "token_count event was present but missing quota details",
-    },
-    previousReport: okReport("2026-09-06T06:51:00Z"),
-  });
+      at: "2026-09-06T07:13:06Z",
+    })
+  );
 
-  assert.deepEqual(events, []);
+  assert.deepEqual(await eventsFor(a), []);
 });

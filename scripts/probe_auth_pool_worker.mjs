@@ -10,7 +10,6 @@ import {
   deleteAuthPoolEntryRow,
   getFeatureFlag,
   recomputePoolScarcity,
-  recordAuthPoolDeathEvent,
   recordAuthPoolTokenFingerprint,
   recordPoolHealthSnapshot,
   upsertAuthPoolEntry,
@@ -344,43 +343,6 @@ function shouldForceRefreshAfterAuthInvalid(entry, report, centralRefreshResult,
   );
 }
 
-// The transition, not the state. A row is appended only when hard-dead flips, so an account that stays
-// dead for a fortnight leaves one row rather than a thousand. `previousReport` is already in hand for
-// the skip decision, which is why this costs no extra read — and why `last_healthy_probe_at` can be
-// recorded truthfully instead of guessed.
-function deathEventFor(entry, report, previousReport, centralRefreshResult, now) {
-  const wasHard = Boolean(previousReport) && isHardAuthError(previousReport.error);
-  const isHard = report?.status === "error" && isHardAuthError(report.error);
-  if (wasHard === isHard) {
-    return null;
-  }
-  return {
-    source: entry.source,
-    accountId: entry.account_id,
-    event: isHard ? "death" : "revival",
-    observedAt: report?.reported_at || now.toISOString(),
-    planName: entry.plan_name ?? null,
-    error: isHard ? report?.error ?? null : null,
-    // What the hub itself last did to this grant. Compared against observedAt, this is the first cut
-    // at "did we kill it, or did something outside the hub" — a refresh revokes the access tokens
-    // already issued for the grant (AUTH_TOKENS §3.5), so an access token that dies while the hub has
-    // not refreshed for days implicates somebody else.
-    hubLastRefreshAt: entry.auth_last_refresh ?? null,
-    lastHealthyProbeAt: previousReport?.status === "ok" ? previousReport.reported_at ?? null : null,
-    centralRefreshVerdict: centralRefreshVerdictOf(centralRefreshResult),
-  };
-}
-
-function centralRefreshVerdictOf(centralRefreshResult) {
-  if (!centralRefreshResult?.attempted) {
-    return "not_attempted";
-  }
-  if (centralRefreshResult.ok) {
-    return "ok";
-  }
-  return centralRefreshResult.auth_rejected ? "rejected" : "failed";
-}
-
 export async function processAuthPoolEntry(
   entry,
   {
@@ -393,7 +355,6 @@ export async function processAuthPoolEntry(
     recordTokenFingerprintImpl = recordAuthPoolTokenFingerprint,
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
     authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
-    recordAuthPoolDeathEventImpl = recordAuthPoolDeathEvent,
     refreshClaudeTokenImpl = refreshClaudeToken,
     refreshCodexTokenImpl = refreshCodexToken,
     atOnlyMode = false,
@@ -484,12 +445,6 @@ export async function processAuthPoolEntry(
     }
   }
   report = withCentralRefreshEvidence(report, centralRefreshResult);
-  // Ahead of the delete branch below: an entry that is about to be removed from the pool is exactly
-  // the one whose death must survive it.
-  const deathEvent = deathEventFor(entry, report, previousReport, centralRefreshResult, now);
-  if (deathEvent) {
-    await recordAuthPoolDeathEventImpl(deathEvent);
-  }
   if (shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport)) {
     await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
     const deleteResult = await deleteAuthPoolEntryImpl({ source: entry.source, accountId: entry.account_id });
