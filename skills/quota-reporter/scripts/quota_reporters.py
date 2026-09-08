@@ -1012,20 +1012,22 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
             payload["refresh_capture"] = refresh_capture
         return payload
 
-    if not info or not rate_limits or not has_any_window:
-        # Three different failures used to share one message, so the report said a probe had failed
-        # without saying at which step -- undiagnosable by construction. They are separated here, and
-        # the unplaceable-window case carries what the response actually offered, because that is the
-        # only one where the answer is in data we were already throwing away.
-        # Ordered by how close each is to the quota this probe exists to read. `info` carries the
-        # context window and token counts, nothing about quota, so its absence is reported only when
-        # the quota itself came through.
+    # `info` is deliberately NOT a condition here. It carries `model_context_window` and token
+    # counts -- nothing about quota -- and gating on it threw away complete, correct weekly windows.
+    # That is the whole of the starbench@stardust.ai failure: measured 2026-09-08T09:57:45Z, codex
+    # returned `primary {window_minutes: 10080, used_percent: 0}` on the plan bucket and the probe
+    # reported an error with empty windows because `info` happened to be absent from that
+    # token_count event. Six occurrences in one night, every one of them a usable reading discarded.
+    if not rate_limits or not has_any_window:
+        # Two different failures used to share one message with the above, so the report said a probe
+        # had failed without saying at which step -- undiagnosable by construction, which is how the
+        # bug above survived a night of investigation. The unplaceable-window case carries what the
+        # response actually offered, because that is the only one whose answer is in data that would
+        # otherwise be discarded.
         if not rate_limits:
             probe_error = "codex returned no rate limits"
-        elif not has_any_window:
-            probe_error = "codex returned no quota window of a duration this hub models"
         else:
-            probe_error = "codex returned quota but no token usage info"
+            probe_error = "codex returned no quota window of a duration this hub models"
         payload = {
             **base,
             "status": "error",
@@ -1039,7 +1041,7 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
 
     payload = {
         **base,
-        "model_context_window": info.get("model_context_window"),
+        "model_context_window": info.get("model_context_window") if isinstance(info, dict) else None,
         "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
         "status": "ok",
         "windows": windows,

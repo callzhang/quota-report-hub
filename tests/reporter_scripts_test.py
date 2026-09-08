@@ -1359,11 +1359,17 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(no_limits["error"], "codex returned no rate limits")
         self.assertIsNone(no_limits["usage_summary"]["observed_windows"])
 
-        # `info` carries the context window, not quota, so it is only the headline when the quota
-        # itself came through fine.
-        no_info = probe_with({"limit_id": "codex", "primary": {"used_percent": 5, "window_minutes": 300,
-                                                              "resets_in_seconds": 60}}, info=None)
-        self.assertEqual(no_info["error"], "codex returned quota but no token usage info")
+        # The bug this diagnostic found: `info` carries the context window and token counts, nothing
+        # about quota, and gating on it discarded complete correct windows. Measured on
+        # starbench@stardust.ai 2026-09-08T09:57:45Z — codex returned a full weekly window on the
+        # plan bucket and the probe reported an error with no windows, six times in a night.
+        no_info = probe_with({"limit_id": "codex", "plan_type": "pro",
+                              "primary": {"used_percent": 0, "window_minutes": 10080, "resets_in_seconds": 604800}},
+                             info=None)
+        self.assertEqual(no_info["status"], "ok", "a missing info must not fail a good quota read")
+        self.assertIsNone(no_info.get("error"))
+        self.assertEqual(no_info["windows"]["1week"]["used_percent"], 0)
+        self.assertIsNone(no_info["model_context_window"], "unknown, not fatal")
 
         # The case that matters: a real response whose window this hub cannot place. Without the
         # shapes there is no way to learn which duration codex actually sent.
