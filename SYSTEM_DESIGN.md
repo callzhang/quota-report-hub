@@ -412,6 +412,35 @@ no meter identity.
 The fingerprint is consumed at ingest and never stored: `sanitizeReport`'s field list omits it, so it
 cannot leak into a dashboard payload or a quota event.
 
+**Who may move a window's anchor.** A report whose `reset_at` disagrees with the stored one is
+describing a *different window*, and the merge has to decide which is real. It is keyed on
+`report_origin`, not on arithmetic over the reset times:
+
+- the stored window has already **expired** at the incoming report's timestamp → accept, no question
+  (nothing is left to protect, and demanding more would delay every ordinary weekly rollover);
+- otherwise a **worker** report re-anchors immediately — it probes a pooled blob in an isolated
+  `CODEX_HOME` on a clean runner ([§7.3](#73-probe-mechanics));
+- otherwise a **client** report is held as `usage_summary.anchor_candidate` and applies when the next
+  report carries the same anchor.
+
+The rule this replaced asked whether `reset_at` jumped *forward* before the stored window expired.
+That is unsound both ways. Forward: codex's "Full reset" credit grants a brand-new weekly window on
+the spot — a supported product action indistinguishable from the fabrication the rule was written
+for — so the preserved window became its own comparison baseline and nothing could lift it until the
+*preserved* reset passed, up to a week out. Backward: only forward jumps were tested, so a lone
+misattributed report that moved the anchor **earlier** was accepted, and then became the baseline
+that refused every later correct report. Measured over 82,703 events (2026-08-07..09-07): **481
+correct refusals against 560 wrong ones**, and the origin split was decisive — correct refusals 393
+client / 2 worker, wrong refusals 248 worker / 98 client.
+
+On the same month the replacement holds 1,409 client outliers out and admits 919 real re-anchors at a
+median delay of 2.8 minutes (p90 15.6). Refusing client re-anchors outright was measured and
+rejected: the worker *skips* probing an account whose client just reported
+([§7.2](#72-per-entry-processing-processauthpoolentry)), so waiting for a worker report on exactly
+those accounts costs a median 4.6 hours. Replaying the month through the new merge leaves 1 of 27
+codex accounts disagreeing with its newest window, against 5-7 latched at any moment under the old
+rule.
+
 **`plan_name` has two provenances; prefer the credential's.** `auth_pool_entries.plan_name` is
 decoded from the id_token's `chatgpt_plan_type` claim (`deriveCodexAuthPoolEntry`) — an intrinsic
 property of the credential. Every report's `plan_name` instead prefers what the *rate-limit response*

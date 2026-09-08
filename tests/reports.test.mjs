@@ -410,7 +410,13 @@ test("mergeLatestReport preserves known quota when a client jumps reset before t
   assert.equal(merged.windows["1week"].reset_at, "2026-05-26T21:23:39Z");
 });
 
-test("mergeLatestReport accepts complete local client quota over stale worker windows", () => {
+test("a stale worker row yields to a client immediately in everything but the anchor", () => {
+  // This test used to assert that a complete client report replaced the stale worker row wholesale,
+  // anchor included. That immediacy is what latched ceshi@stardust.ai for 37 hours: a client moving
+  // an unexpired anchor is the exact shape of BOTH a real re-anchor and a misattributed reading, and
+  // over 82,703 events the client-proposed moves were 1,409 outliers against 919 real ones. So the
+  // staleness lifts and every non-anchor field updates at once; the weekly anchor waits for the next
+  // report to confirm it (measured median 2.8 min, p90 15.6 min).
   const previous = sanitizeReport({
     source: "codex",
     hostname: "worker",
@@ -442,9 +448,64 @@ test("mergeLatestReport accepts complete local client quota over stale worker wi
   const merged = mergeLatestReport(previous, incoming);
 
   assert.equal(merged.report_origin, "client");
-  assert.equal(merged.windows_stale, false);
-  assert.equal(merged.windows["1week"].remaining_percent, 6);
-  assert.equal(merged.windows["1week"].reset_at, "2026-06-11T00:30:03Z");
+  assert.equal(merged.windows_stale, false, "the stale carry-forward is lifted at once");
+  // The 5h anchor did not move, so its numbers are taken immediately.
+  assert.equal(merged.windows["5h"].remaining_percent, 91);
+  // The weekly anchor moved while the stored window was still live: held, and remembered.
+  assert.equal(merged.windows["1week"].reset_at, "2026-06-10T02:04:00Z");
+  assert.equal(merged.usage_summary.anchor_candidate["1week"], "2026-06-11T00:30:03Z");
+
+  // The next report carrying the same anchor settles it.
+  const confirming = sanitizeReport({
+    ...JSON.parse(JSON.stringify(incoming)),
+    reported_at: "2026-06-10T01:45:00Z",
+  });
+  const settled = mergeLatestReport(merged, confirming);
+  assert.equal(settled.windows["1week"].reset_at, "2026-06-11T00:30:03Z");
+  assert.equal(settled.windows["1week"].remaining_percent, 6);
+});
+
+test("the guard is keyed on who reported, not on reset-time arithmetic — tonight's real sequences", () => {
+  const report = (o) => sanitizeReport({
+    source: "codex", account_id: o.acct, email: o.acct, status: "ok", plan_name: "Pro",
+    hostname: o.host, report_origin: o.origin, reported_at: o.at,
+    windows: { "5h": null, "1week": { used_percent: o.used, remaining_percent: 100 - o.used, reset_at: o.reset } },
+  });
+
+  // ceshi@stardust.ai, 2026-09-08: a worker-only account taking a codex "Full reset". The old rule
+  // refused this and froze the row on a window measured two days earlier.
+  const ceshiBefore = report({acct:"ceshi@stardust.ai",host:"github-actions",origin:"worker",at:"2026-09-08T01:18:05Z",used:67,reset:"2026-09-13T15:39:24Z"});
+  const ceshiAfter = report({acct:"ceshi@stardust.ai",host:"github-actions",origin:"worker",at:"2026-09-08T01:40:43Z",used:2,reset:"2026-09-15T01:21:52Z"});
+  assert.equal(
+    mergeLatestReport(ceshiBefore, ceshiAfter).windows["1week"].reset_at,
+    "2026-09-15T01:21:52Z",
+    "a worker re-anchors immediately — it probes an isolated CODEX_HOME on a clean runner",
+  );
+
+  // The same event on solutions@stardust.ai was accepted from a client and refused from the worker
+  // seventeen minutes earlier. Same numbers, opposite outcomes, purely from report_origin.
+  const solutionsBefore = report({acct:"solutions@stardust.ai",host:"github-actions",origin:"worker",at:"2026-09-07T17:07:26Z",used:97,reset:"2026-09-14T13:10:01Z"});
+  const solutionsWorker = report({acct:"solutions@stardust.ai",host:"github-actions",origin:"worker",at:"2026-09-08T01:40:19Z",used:0,reset:"2026-09-15T01:40:21Z"});
+  assert.equal(mergeLatestReport(solutionsBefore, solutionsWorker).windows["1week"].reset_at, "2026-09-15T01:40:21Z");
+
+  // shawn's machine filed another meter's numbers under this account and moved the anchor EARLIER.
+  // The old rule only tested forward jumps, so it accepted this — and then used it as the baseline
+  // that refused every later correct report.
+  const ghBefore = report({acct:"guanghuanhou@gmail.com",host:"MacBook-Air-10.local",origin:"client",at:"2026-09-07T03:32:50Z",used:95,reset:"2026-09-13T16:45:12Z"});
+  const ghOutlier = report({acct:"guanghuanhou@gmail.com",host:"shawndeMacBook-Air.local",origin:"client",at:"2026-09-07T03:36:04Z",used:1,reset:"2026-09-09T06:19:40Z"});
+  assert.equal(
+    mergeLatestReport(ghBefore, ghOutlier).windows["1week"].reset_at,
+    "2026-09-13T16:45:12Z",
+    "a lone client outlier moves the anchor in neither direction",
+  );
+
+  // Two independent clients agreeing is a real re-anchor, and applies on the second one.
+  const profBefore = report({acct:"professional@stardust.ai",host:"macdeMacBook-Air.local",origin:"client",at:"2026-09-07T23:00:00Z",used:53,reset:"2026-09-13T06:20:34Z"});
+  const profFirst = report({acct:"professional@stardust.ai",host:"xingbo.local",origin:"client",at:"2026-09-08T01:38:53Z",used:0,reset:"2026-09-15T01:26:20Z"});
+  const profSecond = report({acct:"professional@stardust.ai",host:"macdeMacBook-Air.local",origin:"client",at:"2026-09-08T01:39:55Z",used:0,reset:"2026-09-15T01:26:20Z"});
+  const held = mergeLatestReport(profBefore, profFirst);
+  assert.equal(held.windows["1week"].reset_at, "2026-09-13T06:20:34Z");
+  assert.equal(mergeLatestReport(held, profSecond).windows["1week"].reset_at, "2026-09-15T01:26:20Z");
 });
 
 test("mergeLatestReport accepts newer zero client quota over stale positive quota", () => {
