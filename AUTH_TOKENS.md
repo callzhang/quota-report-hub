@@ -523,8 +523,18 @@ them and they return to the risk set at ~1.10 a day, which is 5 episodes in ~4.5
 
 So the question "is Team structurally more fragile" **cannot be answered by waiting**: its
 precondition is fixing the Team seats, which is the operational problem the question was asked about.
-Repair them and there is an answer inside a week; leave them dead and the estimate stays underpowered
-indefinitely, however long the log runs.
+
+**Partially resolved 2026-09-08, and the ceiling is now known.** Three seats came back —
+`hr@`, `derek@`, `bd@` — and three cannot: `jingwei.zou@`, `xingye.li@`, `guojian.liu@` are
+individuals' own accounts that nobody else can re-onboard. Team's forward contribution is therefore
+capped at three accounts, ~0.55 episodes a day, putting the 5 additional Team episodes about **9 days
+out** rather than the 4.5 a full repair would have given. The pool-wide forward rate rises to
+λ ≈ 1.94/day (median wait ~8.6 h), which pulls the writer alarm line in to roughly 30 hours.
+
+That cap is itself worth reading as evidence about the original question. Half the Team population is
+unrecoverable not because the credential is fragile but because **nobody but its owner can restore
+it** — which is the repair-path asymmetry this section already identifies as the real difference,
+showing up as a hard limit on the measurement rather than as a hazard.
 
 **And more data alone would not fix the sampling bias** noted above — that one is structural, not
 random. Doubling the sample narrows the interval around a *biased* point estimate, which reads as
