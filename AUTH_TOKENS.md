@@ -436,22 +436,41 @@ machine runs a Team seat — the surviving population is exactly the population 
 Second, **repair is asymmetric**: a service account has an operational owner and gets re-uploaded, an
 employee's seat is left dead. A cross-section therefore measures who gets fixed as much as who dies.
 
-**Over full event history the plan effect disappears entirely.** Counting any account with at least
-one hard-auth event in the retained `auth_pool_quota_events` history (2026-09-08, accounts with ≥20
-events):
+**Over full event history, incidence is flat across plans and only duration differs.** Measured
+2026-09-08 over the retained `auth_pool_quota_events` (~30-day span), using `isHardAuthError` as the
+predicate and taking each account's plan from its **credential** (`auth_pool_entries.plan_name`, the
+id_token claim) rather than from event rows:
 
-| Plan | Accounts | Ever hard-dead |
-|---|---|---|
-| Team | 8 | 8 |
-| **Pro** | **12** | **10** |
-| Plus | 4 | 4 |
-| Pro Lite | 1 | 1 |
+| Plan | Accounts | Ever dead | Probes | Episodes | Episodes/1k probes | Probes hard | Time-weighted hard |
+|---|---|---|---|---|---|---|---|
+| Pro | 12 | 10 | 38,198 | 31 | **0.81** | 12.8% | 13.4% |
+| Team | 6 | 6 | 12,074 | 9 | **0.75** | 62.0% | 66.0% |
+| Plus | 3 | 3 | 8,043 | 6 | **0.75** | 31.5% | 29.0% |
 
-Ten of twelve Pro accounts have died at least once; only `ceshi@` and `leizhang0121@` never have.
-A hard-auth episode is close to universal on every plan, which is the survivorship confound stated
-as a number: the September cross-section's Team 6/6 against Pro 0/12 measures **which accounts are
-currently repaired**, not which ones die. (The bar here is low — "≥1 hard event in retained history"
-counts transient episodes, so this is not a death *rate*. It is enough to refute "Pro does not die.")
+An *episode* is a contiguous run of hard-auth observations — the unit that matters, because a raw
+event count multiplies one death by however many cycles probed it (`jingwei.zou@` shows 101 hard
+events from a single episode). The time-weighted column charges each hard observation the gap to the
+next observation, so an account probed rarely is not silently discounted; it tracks the probe share
+closely, so the simpler column is not badly biased.
+
+**Episode frequency is the same on every plan** — 0.75 to 0.81 per thousand probes, with Pro
+marginally the highest. What differs is how long an account stays dead: Team spends ~62% of the
+window unusable against Pro's ~13%. That shape argues *against* the second-custodian hypothesis as
+the discriminator, which would predict repeated re-deaths and therefore a raised episode rate. It is
+the signature of **deaths that are never repaired**, not of something killing Team accounts more
+often — which is the same survivorship point the June snapshot made, now with the mechanism named.
+
+Only `leizhang0121@gmail.com` and `ceshi@stardust.ai` never went hard-dead at all. Caveats that
+travel with these numbers: the population is restricted to accounts still holding a pooled credential
+(so accounts deleted after dying are excluded, and Team is 6 here against 8 counted across all
+history); the retention window bounds the span; and `ceshi@` has 565 probes against ~3,000 for the
+others, so its clean record is partly low exposure and not evidence that it is the healthiest.
+
+*(An earlier revision of this section reported a coarse "ever hard-dead" table and read it as showing
+the plan effect vanishing. The binary is too blunt — it throws away magnitude, which is where the
+whole difference lives. Credit to the "Hub quota显示异常" session for the correction; its own figures
+differed because its error-string regex omitted `refresh_token_rejected`, which is 20,482 of the
+codex events and the dominant death class on every plan.)*
 
 **`codex workspace out of credits` is Team-exclusive but does not predict death.** Seven accounts
 have ever reported it and all seven are Team; no Plus, Pro, or Pro Lite account ever has, which
