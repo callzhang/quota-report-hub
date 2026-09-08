@@ -471,9 +471,25 @@ insensitive to the choice of measure because it is dead most of the time however
 Uncapped measures the share of wall-clock spent dead; capped measures the share of observed time.
 Both are defensible and neither changes the conclusion.
 
-**Base rate, for anyone waiting on one of these events:** 46 episodes across 30.3 days over the whole
-codex pool — **~1.5 per day** against ~1,930 probes a day. Rare enough that a few hours of silence in
-`auth_pool_death_events` says nothing.
+**Base rate, for anyone waiting on one of these events.** 46 episodes across 30.3 days over the whole
+codex pool is ~1.5 a day against ~1,930 probes a day. But only an account that is *currently healthy*
+can produce a new death transition — the seven already hard-dead are already in that state and have no
+flip left — so the forward-looking rate comes from the 14 healthy accounts alone: **34 episodes over
+30.3 days, λ ≈ 1.12 per day**, median wait to the next one ~14.8 h.
+
+Treating it as Poisson, the probability that `auth_pool_death_events` is still empty after t hours:
+
+| t | 3.5 h | 12 h | 24 h | **48 h** | 72 h | 96 h |
+|---|---|---|---|---|---|---|
+| P(still zero) | 84.9% | 57.0% | 32.5% | **10.6%** | 3.4% | 1.1% |
+
+So a few hours of silence carries no information at all, and even a full day is close to a coin flip.
+**Set the "something is wrong with the writer" line at 72 hours** (3.4%), not 48 (10.6%) — at which
+point the thing to check is whether `recordAuthPoolDeathEvent` is being called at all, rather than
+continuing to wait. Two caveats: Poisson assumes independent episodes, and deaths here plausibly
+cluster (one workspace event can take several seats at once), which makes long silences *more* likely
+than the table says and the line if anything conservative; and a `revival` row would also land first
+and partly validate the writer, though with `error` and `last_healthy_probe_at` necessarily null.
 
 **Episode frequency is the same on every plan** — 0.75 to 0.81 per thousand probes, with Pro
 marginally the highest. What differs is how long an account stays dead: Team spends ~62% of the
