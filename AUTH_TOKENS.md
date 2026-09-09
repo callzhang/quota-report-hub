@@ -635,6 +635,35 @@ measurement; confirming it means comparing grant generations, which needs the st
 Team-workspace admin revocation, SSO session policy, and seat churn remain untested as contributing
 causes; nothing here points at them, and nothing rules them out.
 
+**First real classification (2026-09-09), and it shows the rule above is too coarse.**
+`auth_pool_death_events` recorded its first death 33 hours after the table went live:
+
+```
+preseenai@gmail.com   Pro
+  last_healthy_probe_at   2026-09-09T07:01:45Z
+  hub_last_refresh_at     2026-09-09T07:17:00.986Z
+  observed_at             2026-09-09T08:28:47Z    auth invalidated (token_invalidated)
+  central_refresh_verdict rejected  (401)
+```
+
+All four fields populated, which closes the question of whether the writer passes them through. By the
+rule stated above the hub's refresh falls **inside** the healthy→dead interval, so the death is
+*unattributable*. That verdict is unsatisfying on inspection: the 07:17 refresh **succeeded** — it is
+what set `auth_last_refresh` — and a successful refresh hands back a live token. It cannot be what
+killed the grant. What killed it is whatever spent that generation before the hub's next attempt,
+which came back 401 seventy-one minutes later.
+
+**Seventy-one minutes is the id_token signature from earlier in this section** (bd@ 76, derek@ 74,
+mengen.wang@ 73 — there measured from upload, here from the hub's own rotation). And this one is a
+**Pro** account, which is one more observation that the mechanism is not plan-bound.
+
+So the rule needs a third branch. "Hub refreshed inside the interval" conflates two cases: a refresh
+that *succeeded* and was later spent by someone else (points outward), and a refresh that was itself
+the last thing to touch a grant that then died (points inward). Separating them needs the outcome of
+that refresh, not just its timestamp — `central_refresh_verdict` already carries it, and this row shows
+`rejected` for the *later* attempt while the 07:17 rotation succeeded. One case is not a rate; what it
+establishes is that the classifier, not the data, is what needs work next.
+
 **The measurement that would settle it** is not more of this one. It is a per-death record of
 **whether the grant's generation advanced, and who advanced it**:
 
