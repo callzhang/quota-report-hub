@@ -569,3 +569,26 @@ test("a codex account is held to its 5h window only while that window is current
   assert.equal(pro.state, "available");
   assert.equal(pro.reason, "meets_rotation_threshold");
 });
+
+test("the dashboard drops a quota window that has outlived its own length", () => {
+  // Same row as the selection test in tests/auth-pool.test.mjs: a fabricated 5-hour window dated
+  // with the weekly reset. The dashboard and selection must reach the same verdict about an
+  // account, so both judge a reading by its own age.
+  const item = {
+    source: "codex",
+    plan_name: "Pro",
+    effective_status: "ok",
+    reported_at: "2026-09-10T20:21:18Z",
+    auth_expires_at: "2026-09-19T00:00:00Z",
+    display_windows: {
+      "5h": { remaining_percent: 0, reset_at: "2026-09-12T16:38:00Z", captured_at: "2026-09-06T03:13:23Z", reset_unavailable_reason: null },
+      "1week": { remaining_percent: 98, reset_at: "2026-09-15T02:53:28Z", captured_at: "2026-09-10T20:21:18Z", reset_unavailable_reason: null },
+    },
+    refresh_validity: { status: "unverified" },
+  };
+
+  const result = deriveAccountAvailability(item, "2026-09-10T20:25:00Z");
+  assert.equal(result.state, "available");
+  assert.equal(result.reason, "meets_rotation_threshold");
+  assert.equal(result.current_quota.window, "1week");
+});

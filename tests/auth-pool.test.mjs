@@ -910,3 +910,58 @@ test("pickBestAuthPoolCandidate lends a dead-refresh-token account while its acc
   const candidate = pickBestAuthPoolCandidate(reports, pool, { source: "claude", current_account_id: "current", now });
   assert.equal(candidate.report.account_id, "rt-dead-at-live", "the better-looking candidate is the one nobody can use any more");
 });
+
+test("a quota window that has outlived its own length no longer holds an account out of rotation", () => {
+  // leizhang0121@gmail.com, measured 2026-09-10. A client on 2.1.0 hit "workspace out of credits"
+  // on 09-06 and fabricated a 5-hour window stamped with the WEEKLY reset time (09-12). The account
+  // is Pro, so no later report carried a 5-hour window to replace it, and the merge kept it. Its
+  // reset_at sat in the future, so selection read a four-and-a-half-day-old "5h 0%" as live and
+  // refused the account for days while its real weekly window sat at 98%.
+  const reports = [
+    {
+      source: "codex",
+      account_id: "pro-with-fabricated-5h",
+      status: "ok",
+      error: null,
+      reported_at: "2026-09-10T20:21:18Z",
+      windows: {
+        "5h": { remaining_percent: 0, reset_at: "2026-09-12T16:38:00Z", captured_at: "2026-09-06T03:13:23Z" },
+        "1week": { remaining_percent: 98, reset_at: "2026-09-15T02:53:28Z", captured_at: "2026-09-10T20:21:18Z" },
+      },
+    },
+  ];
+
+  const candidate = pickBestAuthPoolCandidate(reports, [{ account_id: "pro-with-fabricated-5h" }], {
+    source: "codex",
+    current_quota: { five_h_remaining_percent: 10, one_week_remaining_percent: 10 },
+    now: "2026-09-10T20:25:00Z",
+  });
+
+  assert.equal(candidate?.entry?.account_id, "pro-with-fabricated-5h");
+});
+
+test("a five-hour window measured within its own length still constrains", () => {
+  // The counterpart: a genuinely live 5h reading must keep excluding a drained account, or the rule
+  // above would hand out every account whose 5-hour window is spent.
+  const reports = [
+    {
+      source: "codex",
+      account_id: "plus-actually-drained",
+      status: "ok",
+      error: null,
+      reported_at: "2026-09-10T01:30:05Z",
+      windows: {
+        "5h": { remaining_percent: 2, reset_at: "2026-09-10T03:45:20Z", captured_at: "2026-09-10T01:30:05Z" },
+        "1week": { remaining_percent: 71, reset_at: "2026-09-15T04:15:21Z", captured_at: "2026-09-10T01:30:05Z" },
+      },
+    },
+  ];
+
+  const candidate = pickBestAuthPoolCandidate(reports, [{ account_id: "plus-actually-drained" }], {
+    source: "codex",
+    current_quota: { five_h_remaining_percent: 10, one_week_remaining_percent: 10 },
+    now: "2026-09-10T01:35:00Z",
+  });
+
+  assert.equal(candidate, null);
+});
