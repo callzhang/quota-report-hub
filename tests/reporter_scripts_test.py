@@ -1654,6 +1654,26 @@ Reading additional input from stdin...
     def test_discover_claude_executable_rejects_missing_explicit_path(self):
         self.assertIsNone(discover_claude_executable("/nonexistent/claude"))
 
+    def test_discover_codex_executable_finds_the_cli_inside_the_renamed_desktop_app(self):
+        # The Codex app updates itself into ChatGPT.app, which leaves the app-installed
+        # /usr/local/bin/codex symlink dangling. Neither that link nor PATH may be load-bearing:
+        # the CLI inside the renamed bundle is the one that still exists.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            common_dir = root / "bin"
+            common_dir.mkdir()
+            applications = root / "Applications"
+            (common_dir / "codex").symlink_to(applications / "Codex.app" / "Contents" / "Resources" / "codex")
+            bundled = applications / "ChatGPT.app" / "Contents" / "Resources" / "codex"
+            bundled.parent.mkdir(parents=True)
+            bundled.write_text("#!/bin/sh\n", encoding="utf-8")
+            bundled.chmod(0o755)
+            with mock.patch.object(quota_reporters, "COMMON_CLI_DIRS", (common_dir,)), \
+                    mock.patch.object(quota_reporters, "APP_BUNDLE_DIRS", (applications,)), \
+                    mock.patch("quota_reporters.shutil.which", return_value=None):
+                self.assertFalse((common_dir / "codex").exists())
+                self.assertEqual(quota_reporters.discover_codex_executable(), str(bundled))
+
     def test_run_claude_status_marks_unavailable_environment(self):
         completed = mock.Mock(returncode=0, stdout="/status isn't available in this environment.\n", stderr="")
         with mock.patch("quota_reporters.subprocess.run", return_value=completed):

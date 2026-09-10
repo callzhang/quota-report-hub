@@ -92,9 +92,29 @@ COMMON_CLI_DIRS = (
     Path("/usr/local/bin"),
 )
 
+# The desktop app carries its own copy of the CLI. Since 2026-07-09 an installed Codex.app updates
+# itself into ChatGPT.app (bundle id unchanged), so a machine that only ever had the app's
+# "install shell command" symlink is left with /usr/local/bin/codex pointing at a bundle that no
+# longer exists: exists() and which() both say no while the CLI sits inside the renamed app. The
+# bundles are searched directly so that symlink is never load-bearing. Forcing case: melody's
+# probe flipped from ok to "codex command not found" on the app update (2026-09-09 16:40Z), with
+# no node or npm on the machine at all.
+APP_BUNDLE_DIRS = (Path("/Applications"), Path.home() / "Applications")
+APP_BUNDLED_CLI = {
+    "codex": ("ChatGPT.app", "Codex.app"),
+}
+
+
+def app_bundled_cli_candidates(binary_name: str) -> list[Path]:
+    return [
+        app_dir / bundle / "Contents" / "Resources" / binary_name
+        for bundle in APP_BUNDLED_CLI.get(binary_name, ())
+        for app_dir in APP_BUNDLE_DIRS
+    ]
+
 
 def common_cli_binary_candidates(binary_name: str) -> list[Path]:
-    return [directory / binary_name for directory in COMMON_CLI_DIRS]
+    return [directory / binary_name for directory in COMMON_CLI_DIRS] + app_bundled_cli_candidates(binary_name)
 
 
 def discover_cli_executable(
