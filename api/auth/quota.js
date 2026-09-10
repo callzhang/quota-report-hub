@@ -3,7 +3,7 @@ import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../.
 import { dbConfigured } from "../../lib/db.js";
 import { ingestClientQuota, ingestReporterHeartbeat } from "../../lib/quota-ingest.js";
 import { readJsonBody } from "../../lib/http.js";
-import { activePhases, clientNeedsUpgrade, upgradeNotice, withRepeatIntervals } from "../../lib/premium-ratio.js";
+import { activePhases, clientNeedsUpgrade, upgradeNotice } from "../../lib/premium-ratio.js";
 
 export default async function handler(req, res) {
   return quotaHandlerImpl(req, res);
@@ -71,7 +71,7 @@ export async function quotaHandlerImpl(req, res, deps = {
   // upgrade notice and the report is taken.
   const clientVersion = body.heartbeat?.client_version ? String(body.heartbeat.client_version) : null;
   const outdated = clientNeedsUpgrade(clientVersion);
-  const notices = outdated ? withRepeatIntervals([upgradeNotice()]) : [];
+  const notices = outdated ? [upgradeNotice()] : [];
   if (hasQuotaPayload && outdated && deps.activePhases().reporter_gate) {
     res.statusCode = 200;
     res.setHeader("Content-Type", "application/json; charset=utf-8");

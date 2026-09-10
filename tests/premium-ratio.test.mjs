@@ -10,7 +10,7 @@ import {
   PREMIUM_MODEL_IDS,
   SUGGESTED_STANDARD_MODEL_IDS,
 } from "../lib/model-tiers.js";
-import { PHASE_COOLDOWN_AT, PHASE_REPORTER_GATE_AT, PREMIUM_RATIO_COOLDOWN_MINUTES, PREMIUM_RATIO_MIN_COST, DEMAND_SHARE_TOLERANCE, DEMAND_SHARE_MIN_ACTIVE_USERS, NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_THRESHOLD, compareVersions, evaluateFetchPolicy, MIN_REPORTER_CLIENT_VERSION } from "../lib/premium-ratio.js";
+import { PHASE_COOLDOWN_AT, PHASE_REPORTER_GATE_AT, PREMIUM_RATIO_COOLDOWN_MINUTES, PREMIUM_RATIO_MIN_COST, DEMAND_SHARE_TOLERANCE, DEMAND_SHARE_MIN_ACTIVE_USERS, NOTICE_REPEAT_SECONDS, ADVISORY_NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_THRESHOLD, compareVersions, evaluateFetchPolicy, MIN_REPORTER_CLIENT_VERSION } from "../lib/premium-ratio.js";
 
 const BIG = PREMIUM_RATIO_MIN_COST * 10;
 
@@ -299,6 +299,26 @@ test("a refresh never starts the debt clock, only a new account does", async () 
   assert.match(source, /String\(reason\) === NEW_ACCOUNT_REASON \? fetchedAt : null/);
 });
 
+test("a warning that refuses nothing repeats daily, a hold repeats within the day", () => {
+  // Regression for 2026-09-09: the two advisories below re-toasted every six hours on a machine whose
+  // seven-day share had not moved -- eight toasts a day saying the same percentage. The number they
+  // report cannot change faster than the window it is measured over, so neither should the toast.
+  assert.ok(ADVISORY_NOTICE_REPEAT_SECONDS >= 24 * 60 * 60, "an advisory repeats at most once a day");
+  assert.ok(NOTICE_REPEAT_SECONDS < ADVISORY_NOTICE_REPEAT_SECONDS, "a hold repeats more often than an advisory");
+
+  const heavy = { premiumCost: BIG * 0.9, totalCost: BIG, teamCost: BIG * 2, activeUsers: 10 };
+  const warned = evaluateFetchPolicy(inputs({ ...heavy, poolScarce: false, lastServedAt: PHASE_COOLDOWN_AT }));
+  assert.equal(warned.allowed, true);
+  assert.deepEqual(warned.notices.map((notice) => notice.code), ["premium_ratio_warning", "demand_share_warning"]);
+  for (const notice of warned.notices) {
+    assert.equal(notice.repeat_seconds, ADVISORY_NOTICE_REPEAT_SECONDS, `${notice.code} nags within the day`);
+  }
+
+  const held = evaluateFetchPolicy(inputs({ ...heavy, lastServedAt: at(PHASE_COOLDOWN_AT, -1) }));
+  assert.equal(held.reason, "demand_share_cooldown");
+  assert.equal(held.notices.at(-1).repeat_seconds, NOTICE_REPEAT_SECONDS, "a live hold is worth repeating sooner");
+});
+
 test("the hub sets the repeat interval rather than the client compiling one in", () => {
   const result = evaluateFetchPolicy({
     now: new Date("2026-08-25T00:00:00.000Z"),
@@ -521,8 +541,10 @@ test("the contribution notice says what counts as supplying the pool", () => {
   // Both must name the one action that lifts this, or the rule cannot be complied with.
   for (const [label, notice] of [["warning", warning], ["cooldown", cooldown]]) {
     assert.match(notice.message, /Codex/, `${label} does not say what to contribute`);
-    assert.equal(notice.repeat_seconds, NOTICE_REPEAT_SECONDS, `${label} would nag on every 15-minute run`);
   }
+  // The hold is worth repeating within the day; the warning refuses nothing and repeats daily.
+  assert.equal(cooldown.repeat_seconds, NOTICE_REPEAT_SECONDS);
+  assert.equal(warning.repeat_seconds, ADVISORY_NOTICE_REPEAT_SECONDS);
   // The cooldown copy must not read as a ban: they keep working on the account in hand.
   assert.match(cooldown.message, new RegExp(`${PREMIUM_RATIO_COOLDOWN_MINUTES} 分钟`));
   assert.match(warning.message, new RegExp(PHASE_COOLDOWN_AT.slice(0, 10)));

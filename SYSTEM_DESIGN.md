@@ -908,8 +908,16 @@ a separate live kill switch: it stops refusals within one request while the noti
 turning enforcement off must never also turn the warnings off.
 
 Clients surface notices through `notify_hub_notices()` (`quota_guard.py`), once per notice code per
-6 hours. The guard runs every 15 minutes; a toast on every run would train people to dismiss it
-without reading, which is the opposite of what a warning is for.
+`repeat_seconds`, which the hub sends on every notice so the cadence can be re-tuned without a
+client release. Each notice picks one of two cadences (`lib/premium-ratio.js`): a notice about
+something holding the user back right now (an outdated client, reporting debt, a live cooldown, a
+refused fetch, an empty pool) repeats every 6 h, because acting on it changes their situation within
+the hour; an advisory that refuses nothing and reports a seven-day rolling share (`premium_ratio_warning`,
+`demand_share_warning`, `contribution_warning`) repeats once per 24 h, because the number it reports
+cannot move faster than the window it is measured over. The guard runs every 15 minutes; a toast on
+every run would train people to dismiss it without reading, which is the opposite of what a warning
+is for -- and so would the same seven-day percentage four times a day (2026-09-09: two advisories,
+eight toasts a day, number unchanged).
 
 ## 10. Selection algorithm
 
