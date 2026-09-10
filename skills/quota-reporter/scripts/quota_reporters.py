@@ -44,6 +44,16 @@ CODEx_PROMPT = "reply with ok"
 # from 800 scheduled probes: p99 17s, max 21s -- 120s is six times the worst real probe and still far
 # inside the fifteen-minute cycle, so a stalled probe costs one reading, not the whole guard.
 CODEX_EXEC_TIMEOUT_SECONDS = 120
+# A probe home outlives its run only when the guard dies mid-probe. launchd ends the process with
+# SIGTERM on `launchctl bootout` / `kickstart -k` (every reinstall) and on logout, and Python's
+# default SIGTERM disposition exits without running `finally`, so the copied auth.json stays behind.
+# 88 such homes (1.7 GB, 2026-06-04..07-29) were found on Derek's machine; the days with a dozen were
+# reinstall-heavy dev days while `codex exec` still ran for minutes, so a reinstall almost always
+# landed inside a probe. Now that the exec is capped, a home older than twice the cap cannot belong
+# to a live probe, so each probe sweeps them before making its own: a dead run's credential copy
+# never outlives the next cycle. An orphaned `codex exec` may keep touching its home for a while;
+# it is swept the cycle after it goes quiet.
+STALE_PROBE_HOME_SECONDS = 2 * CODEX_EXEC_TIMEOUT_SECONDS
 CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 CLAUDE_SAFE_STORAGE_SERVICE = "Claude Safe Storage"
 CLAUDE_SAFE_STORAGE_ACCOUNTS = ("Claude", "Claude Key")
@@ -608,6 +618,20 @@ def codex_probe_temp_root() -> Path:
     return root
 
 
+def sweep_stale_codex_probe_homes(root: Path, now: float | None = None) -> list[Path]:
+    current = time.time() if now is None else now
+    removed: list[Path] = []
+    for home in root.glob("quota-report-*"):
+        try:
+            stale = home.is_dir() and current - home.stat().st_mtime > STALE_PROBE_HOME_SECONDS
+        except FileNotFoundError:
+            continue
+        if stale:
+            shutil.rmtree(home, ignore_errors=True)
+            removed.append(home)
+    return removed
+
+
 CODEX_PROBE_ENV_BLOCKLIST = {
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
@@ -868,7 +892,9 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
     if codex_command is None:
         return codex_missing_binary_payload(base)
 
-    temp_dir = tempfile.mkdtemp(prefix="quota-report-", dir=str(codex_probe_temp_root()))
+    probe_root = codex_probe_temp_root()
+    sweep_stale_codex_probe_homes(probe_root)
+    temp_dir = tempfile.mkdtemp(prefix="quota-report-", dir=str(probe_root))
     refreshed_metadata = None
     refreshed_auth_text = None
     try:

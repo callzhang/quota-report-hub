@@ -6,6 +6,7 @@ import io
 import contextlib
 import importlib.util
 import os
+import time
 import base64
 import hashlib
 import urllib.error
@@ -712,6 +713,38 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(payload["windows"]["1week"])
         # The stall must not leak the throwaway CODEX_HOME either.
         self.assertFalse(homes[0].exists())
+
+    def test_probe_codex_sweeps_stale_homes_but_not_a_live_one(self):
+        # Regression for the 88 leaked homes of 2026-06..07: a guard killed mid-probe (launchd SIGTERM on
+        # reinstall or logout) never reaches the `finally` that removes its CODEX_HOME, so the copied
+        # auth.json stayed behind for months. Each probe now sweeps homes older than a live probe can be.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = self._codex_probe_auth(temp_dir)
+            stale = base / "quota-report-dead"
+            stale.mkdir()
+            (stale / "auth.json").write_text("{}", encoding="utf-8")
+            old = time.time() - quota_reporters.STALE_PROBE_HOME_SECONDS - 60
+            os.utime(stale, (old, old))
+            live = base / "quota-report-live"
+            live.mkdir()
+            (live / "auth.json").write_text("{}", encoding="utf-8")
+            unrelated = base / "something-else"
+            unrelated.mkdir()
+            os.utime(unrelated, (old, old))
+
+            with mock.patch("quota_reporters.codex_probe_temp_root", return_value=base):
+                with mock.patch(
+                    "quota_reporters.subprocess.run", return_value=mock.Mock(returncode=0, stdout="", stderr="")
+                ):
+                    with mock.patch("quota_reporters.latest_token_count_event", return_value=None):
+                        probe_codex(auth_path, codex_bin=sys.executable)
+
+            self.assertFalse(stale.exists(), "a home older than any live probe must be swept")
+            self.assertTrue(live.exists(), "a home a live probe may still be using must be left alone")
+            self.assertTrue(unrelated.exists(), "only probe homes are swept")
+            # And the probe's own home is gone with it, as before.
+            self.assertEqual([p.name for p in base.glob("quota-report-*")], ["quota-report-live"])
 
     def test_codex_probe_env_strips_provider_auth_overrides(self):
         with tempfile.TemporaryDirectory() as temp_dir:
