@@ -1776,3 +1776,26 @@ test("statusPayload shows a codex Plus account's live 5h window", () => {
   assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, null);
   assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 71);
 });
+
+test("statusPayload marks a window that has outlived its own length as expired evidence", () => {
+  // leizhang0121@gmail.com on 2026-09-10: a fabricated 5h stamped with the WEEKLY reset (09-12), so
+  // nothing about its own reset_at says it is over. Decisions already drop it; the cell has to say
+  // so too, or the dashboard shows a live-looking 0% for a window nobody has measured in four days.
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "ok",
+      account_id: "leizhang0121@gmail.com",
+      plan_name: "Pro",
+      reported_at: "2026-09-10T20:21:18Z",
+      windows: {
+        "5h": { used_percent: 100, remaining_percent: 0, reset_at: "2026-09-12T16:38:00Z", captured_at: "2026-09-06T03:13:23Z" },
+        "1week": { used_percent: 2, remaining_percent: 98, reset_at: "2026-09-15T02:53:28Z", captured_at: "2026-09-10T20:21:18Z" },
+      },
+    },
+  ], "2026-09-10T20:25:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "quota_window_expired");
+  assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, null);
+  assert.equal(payload.items[0].availability.state, "available");
+});
