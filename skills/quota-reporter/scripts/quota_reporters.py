@@ -36,6 +36,14 @@ CLAUDE_HOME = Path.home() / ".claude"
 UNCHANGED_AUTH_REUPLOAD_INTERVAL_SECONDS = 3600
 CLAUDE_STATUSLINE_SNAPSHOT_PATH = "statusline-rate-limits.json"
 CODEx_PROMPT = "reply with ok"
+# `codex exec` reads its prompt from stdin whenever stdin is not a TTY and has not hit EOF, and it
+# only starts once stdin closes. Under launchd stdin is /dev/null, so the scheduled run never notices;
+# anywhere else -- an agent, a shell pipeline, a terminal with a pending socket -- the probe blocked
+# forever (2026-09-09: one manual run sat in `codex exec` for 2h35m while scheduled runs finished in
+# 20s). Closing stdin removes that wait; the cap bounds every other way the process can stall. Sized
+# from 800 scheduled probes: p99 17s, max 21s -- 120s is six times the worst real probe and still far
+# inside the fifteen-minute cycle, so a stalled probe costs one reading, not the whole guard.
+CODEX_EXEC_TIMEOUT_SECONDS = 120
 CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
 CLAUDE_SAFE_STORAGE_SERVICE = "Claude Safe Storage"
 CLAUDE_SAFE_STORAGE_ACCOUNTS = ("Claude", "Claude Key")
@@ -882,9 +890,11 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
                 CODEx_PROMPT,
             ],
             env=env,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=False,
+            timeout=CODEX_EXEC_TIMEOUT_SECONDS,
         )
         token_event = latest_token_count_event(codex_home)
         if capture_refreshed_auth and temp_auth_path.exists():
@@ -892,6 +902,13 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
             refreshed_metadata = auth_metadata(temp_auth_path)
     except FileNotFoundError:
         return codex_missing_binary_payload(base)
+    except subprocess.TimeoutExpired:
+        return {
+            **base,
+            "status": "error",
+            "error": f"codex exec timed out after {CODEX_EXEC_TIMEOUT_SECONDS}s",
+            "windows": empty_windows(),
+        }
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 

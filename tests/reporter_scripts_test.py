@@ -382,7 +382,7 @@ class ReporterScriptsTest(unittest.TestCase):
             }
             auth_path.write_text(json.dumps(payload), encoding="utf-8")
 
-            def fake_run(args, env=None, capture_output=None, text=None, check=None):
+            def fake_run(args, env=None, capture_output=None, text=None, check=None, **kwargs):
                 temp_auth_path = Path(env["CODEX_HOME"]) / "auth.json"
                 refreshed = json.loads(temp_auth_path.read_text(encoding="utf-8"))
                 refreshed["last_refresh"] = "2026-04-22T01:00:00Z"
@@ -557,7 +557,7 @@ class ReporterScriptsTest(unittest.TestCase):
             )
             seen = {}
 
-            def fake_run(args, env=None, capture_output=None, text=None, check=None):
+            def fake_run(args, env=None, capture_output=None, text=None, check=None, **kwargs):
                 seen["code_home"] = env["CODEX_HOME"]
                 seen["workdir"] = args[args.index("-C") + 1]
                 return mock.Mock(returncode=0, stdout="", stderr="")
@@ -605,7 +605,7 @@ class ReporterScriptsTest(unittest.TestCase):
             )
             seen = {}
 
-            def fake_run(args, env=None, capture_output=None, text=None, check=None):
+            def fake_run(args, env=None, capture_output=None, text=None, check=None, **kwargs):
                 seen["args"] = args
                 return mock.Mock(returncode=0, stdout="", stderr="")
 
@@ -654,6 +654,64 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(payload["error"], "codex command not found")
         self.assertIsNone(payload["windows"]["5h"])
         self.assertIsNone(payload["windows"]["1week"])
+
+    def _codex_probe_auth(self, temp_dir: str) -> Path:
+        auth_path = Path(temp_dir) / "auth.json"
+        auth_path.write_text(
+            json.dumps(
+                {
+                    "last_refresh": "2026-04-22T00:00:00Z",
+                    "tokens": {
+                        "account_id": "acct-1",
+                        "access_token": "access",
+                        "refresh_token": "refresh",
+                        "id_token": self._jwt({"email": "a@example.com"}),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return auth_path
+
+    def test_probe_codex_closes_stdin_and_caps_the_exec(self):
+        # Regression for 2026-09-09: `codex exec` waits for stdin to close before it starts, so with
+        # an inherited stdin that never hits EOF (an agent, a pipeline) and no cap the probe sat for
+        # 2h35m. Under launchd stdin is /dev/null, which is why the scheduled runs never showed it.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = self._codex_probe_auth(temp_dir)
+            seen = {}
+
+            def fake_run(args, **kwargs):
+                seen.update(kwargs)
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            with mock.patch("quota_reporters.subprocess.run", side_effect=fake_run):
+                with mock.patch("quota_reporters.latest_token_count_event", return_value=None):
+                    probe_codex(auth_path, codex_bin=sys.executable)
+
+        self.assertIs(seen.get("stdin"), subprocess.DEVNULL)
+        self.assertEqual(seen.get("timeout"), quota_reporters.CODEX_EXEC_TIMEOUT_SECONDS)
+
+    def test_probe_codex_reports_a_stalled_exec_as_an_error_reading(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = self._codex_probe_auth(temp_dir)
+            homes = []
+
+            def fake_run(args, env=None, **kwargs):
+                homes.append(Path(env["CODEX_HOME"]))
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+            with mock.patch("quota_reporters.subprocess.run", side_effect=fake_run):
+                payload = probe_codex(auth_path, codex_bin=sys.executable)
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(
+            payload["error"], f"codex exec timed out after {quota_reporters.CODEX_EXEC_TIMEOUT_SECONDS}s"
+        )
+        self.assertIsNone(payload["windows"]["5h"])
+        self.assertIsNone(payload["windows"]["1week"])
+        # The stall must not leak the throwaway CODEX_HOME either.
+        self.assertFalse(homes[0].exists())
 
     def test_codex_probe_env_strips_provider_auth_overrides(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -705,7 +763,7 @@ class ReporterScriptsTest(unittest.TestCase):
             )
             seen = {}
 
-            def fake_run(args, env=None, capture_output=None, text=None, check=None):
+            def fake_run(args, env=None, capture_output=None, text=None, check=None, **kwargs):
                 seen["args"] = args
                 return mock.Mock(returncode=0, stdout="", stderr="")
 
