@@ -31,7 +31,7 @@ Reference sizing from the approved design benchmark was 95 files and about 2.9 G
 
 ![Quota Report Hub dashboard](docs/hub-dashboard.png)
 
-*The dashboard: one primary availability state per cloud auth entry, with quota and authentication evidence available on demand. Codex uses the weekly quota window; Claude requires both the 5-hour and weekly windows. (Accounts shown are anonymized demo data.)*
+*The dashboard: one primary availability state per cloud auth entry, with quota and authentication evidence available on demand. Codex is judged on its weekly window plus the 5-hour window when its tier meters one (Plus and Team do, Pro does not); Claude requires both. (Accounts shown are anonymized demo data.)*
 
 Chinese operations guidance: [README.zh-CN.md](README.zh-CN.md).
 

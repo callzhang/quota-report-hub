@@ -911,7 +911,9 @@ test("statusPayload hides codex legacy 5H while showing fresh weekly quota", () 
 
   assert.equal(payload.items[0].windows_stale, true);
   assert.equal(payload.items[0].display_windows_stale, false);
-  assert.equal(payload.items[0].display_windows["5h"], null);
+  // the carried-forward 5h is shown as the expired evidence it is, not hidden
+  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 0);
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "quota_window_expired");
   assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 54);
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, null);
 });
@@ -932,7 +934,7 @@ test("statusPayload keeps last invalidated quota window before reset and marks i
     },
   ], "2026-04-21T05:00:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"], null);
+  assert.equal(payload.items[0].display_windows["5h"].invalidated_stale, true);
   assert.equal(payload.items[0].display_windows_stale, true);
   assert.equal(payload.items[0].display_windows["1week"].invalidated_stale, true);
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
@@ -954,7 +956,7 @@ test("statusPayload marks preserved invalidated windows gray even when windows_s
     },
   ], "2026-04-21T06:00:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"], null);
+  assert.equal(payload.items[0].display_windows["5h"].invalidated_stale, true);
   assert.equal(payload.items[0].display_windows["1week"].invalidated_stale, true);
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
 });
@@ -997,7 +999,7 @@ test("statusPayload does not infer weekly ready quota after reset for invalidate
     },
   ], "2026-04-28T10:30:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"], null);
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "auth_invalidated");
   assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 0);
   assert.equal(payload.items[0].display_windows["1week"].used_percent, 100);
   assert.equal(payload.items[0].display_windows["1week"].inferred_ready, false);
@@ -1019,7 +1021,7 @@ test("statusPayload classifies missing reset time on invalidated stale windows",
     },
   ], "2026-04-21T10:30:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"], null);
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "auth_invalidated");
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "auth_invalidated");
 });
 
@@ -1142,7 +1144,7 @@ test("statusPayload marks past reset windows expired for stale ok snapshots", ()
     },
   ], "2026-08-06T15:30:00Z");
 
-  assert.equal(payload.items[0].display_windows["5h"], null);
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, "quota_window_expired");
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, "quota_window_expired");
 });
 
@@ -1197,7 +1199,7 @@ test("authPoolStatusPayload only includes cloud auth pool entries", () => {
   assert.equal(entryItem.reporter_name, "derek@gpu4");
   assert.equal(entryItem.report_origin, "client");
   assert.equal(entryItem.windows["5h"].remaining_percent, 80);
-  assert.equal(entryItem.display_windows["5h"], null);
+  assert.equal(entryItem.display_windows["5h"].remaining_percent, 80);
   assert.equal(entryItem.display_windows["1week"].remaining_percent, 60);
   assert.equal(entryItem.digest, "digest-1");
   // Orphaned reports do not represent stored auth entries and stay out of both active and archived tables.
@@ -1751,4 +1753,26 @@ test("authPoolStatusPayload keeps a dead-refresh-token account active while its 
   const retired = authPoolStatusPayload([entry], [report], "2026-10-16T20:00:00Z", invalidated);
   assert.equal(retired.items.length, 0);
   assert.equal(retired.archived_invalidated_items.length, 0);
+});
+
+test("statusPayload shows a codex Plus account's live 5h window", () => {
+  // Measured 2026-09-10: mingkaixu115@gmail.com (Plus) reported 5h=2% while the dashboard, which
+  // nulled every codex 5h window, listed it as available on its 71% weekly window alone.
+  const payload = statusPayload([
+    {
+      source: "codex",
+      status: "ok",
+      account_id: "mingkaixu115@gmail.com",
+      plan_name: "Plus",
+      reported_at: "2026-09-10T01:30:05Z",
+      windows: {
+        "5h": { used_percent: 98, remaining_percent: 2, reset_at: "2026-09-10T03:45:20Z", captured_at: "2026-09-10T01:30:05Z" },
+        "1week": { used_percent: 29, remaining_percent: 71, reset_at: "2026-09-15T04:15:21Z", captured_at: "2026-09-10T01:30:05Z" },
+      },
+    },
+  ], "2026-09-10T01:35:00Z");
+
+  assert.equal(payload.items[0].display_windows["5h"].remaining_percent, 2);
+  assert.equal(payload.items[0].display_windows["5h"].reset_unavailable_reason, null);
+  assert.equal(payload.items[0].display_windows["1week"].remaining_percent, 71);
 });

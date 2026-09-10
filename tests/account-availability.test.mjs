@@ -228,7 +228,10 @@ test("deriveAccountAvailability applies account-state precedence", () => {
       },
     },
     {
-      name: "Codex with an expired five-hour window waits for a fresh snapshot",
+      // An expired codex 5h window no longer constrains: selection counts it as missing
+      // (unconstrained), and a Pro account carries its last real 5h reading forward for months, so
+      // holding the account to it would park every Pro account in waiting_for_new_quota for good.
+      name: "Codex with an expired five-hour window is judged on its weekly window alone",
       item: {
         source: "codex",
         reported_at: "2026-08-08T07:24:12Z",
@@ -237,7 +240,7 @@ test("deriveAccountAvailability applies account-state precedence", () => {
           "1week": window(6, "2026-08-15T00:00:00Z"),
         },
       },
-      expected: { state: "waiting_for_new_quota", currently_usable: false, reason: "quota_window_expired" },
+      expected: { state: "available", currently_usable: true, reason: "meets_rotation_threshold" },
     },
     {
       name: "Codex five-hour quota below the rotation threshold is low quota",
@@ -530,4 +533,39 @@ test("deriveAccountAvailability keeps a dead-refresh-token account usable until 
   const refused = deriveAccountAvailability({ ...base, status: "error", effective_status: "error", error: "claude auth invalid (authentication_error)" }, generatedAt);
   assert.equal(refused.state, "unavailable");
   assert.equal(refused.reason, "auth_invalidated");
+});
+
+test("a codex account is held to its 5h window only while that window is current", () => {
+  // Plus: the 5h window is live and at 2%, so the account is low_quota even at 71% weekly.
+  const plus = deriveAccountAvailability({
+    source: "codex",
+    plan_name: "Plus",
+    effective_status: "ok",
+    reported_at: "2026-09-10T01:30:05Z",
+    auth_expires_at: "2026-09-19T00:00:00Z",
+    display_windows: {
+      "5h": window(2, "2026-09-10T03:45:20Z"),
+      "1week": window(71, "2026-09-15T04:15:21Z"),
+    },
+    refresh_validity: { status: "unverified" },
+  }, "2026-09-10T01:35:00Z");
+  assert.equal(plus.state, "low_quota");
+  assert.equal(plus.reason, "below_rotation_threshold");
+
+  // Pro: a 5h window carried forward months past its reset is stale evidence, not a requirement.
+  // Selection treats an expired window as missing, and the dashboard must agree with it.
+  const pro = deriveAccountAvailability({
+    source: "codex",
+    plan_name: "Pro",
+    effective_status: "ok",
+    reported_at: "2026-09-10T01:28:44Z",
+    auth_expires_at: "2026-09-19T00:00:00Z",
+    display_windows: {
+      "5h": window(0, "2026-07-28T17:02:00Z", "quota_window_expired"),
+      "1week": window(29, "2026-09-15T04:15:21Z"),
+    },
+    refresh_validity: { status: "unverified" },
+  }, "2026-09-10T01:35:00Z");
+  assert.equal(pro.state, "available");
+  assert.equal(pro.reason, "meets_rotation_threshold");
 });
