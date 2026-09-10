@@ -47,7 +47,9 @@ test("refreshVerificationQuotaReport carries the bundled exhausted_until forward
     const { refreshVerificationQuotaReport } = await import(`../api/auth/upload.js?ts=${Date.now()}`);
 
     const quotaPayload = {
-      windows: { "5h": { remaining_percent: 40 }, "1week": { remaining_percent: 80 } },
+      // status is what a real probe payload always carries, and what the acceptance gate reads
+      status: "ok",
+      windows: { "5h": { remaining_percent: 40, reset_at: "2026-09-07T10:00:00Z" }, "1week": { remaining_percent: 80, reset_at: "2026-09-13T10:00:00Z" } },
       exhausted_until: "2026-09-07T05:26:08Z",
       usage_summary: { total_tokens: 123 },
       reporter_name: "r",
@@ -96,5 +98,44 @@ test("refreshVerificationQuotaReport falls back to null exhausted_until and empt
     assert.deepEqual(report.usage_summary, { token_refresh: { status: "refreshed", source: "upload" } });
     assert.equal(report.reporter_name, "reporter@example.com");
     assert.equal(report.hostname, "upload");
+  });
+});
+
+test("refreshVerificationQuotaReport drops windows the ingest gate would refuse", async () => {
+  await withTempEnv(async () => {
+    const { refreshVerificationQuotaReport } = await import(`../api/auth/upload.js?ts=${Date.now()}`);
+
+    // An incomplete codex payload: ingestClientQuota ignores it, so this write must not carry its
+    // windows in through the side door. BD@chuhuang landed two such rows on 2026-09-10.
+    const report = refreshVerificationQuotaReport({
+      source: "codex",
+      entry,
+      quotaPayload: {
+        status: "ok",
+        windows: { "5h": { remaining_percent: 0 }, "1week": { remaining_percent: 0 } },
+      },
+      reporterEmail: "reporter@example.com",
+    });
+
+    assert.deepEqual(report.windows, { "5h": null, "1week": null });
+  });
+});
+
+test("refreshVerificationQuotaReport keeps windows the ingest gate accepts", async () => {
+  await withTempEnv(async () => {
+    const { refreshVerificationQuotaReport } = await import(`../api/auth/upload.js?ts=${Date.now()}`);
+
+    const windows = {
+      "5h": { remaining_percent: 90, reset_at: "2026-09-07T10:00:00Z" },
+      "1week": { remaining_percent: 60, reset_at: "2026-09-13T10:00:00Z" },
+    };
+    const report = refreshVerificationQuotaReport({
+      source: "codex",
+      entry,
+      quotaPayload: { status: "ok", windows },
+      reporterEmail: "reporter@example.com",
+    });
+
+    assert.deepEqual(report.windows, windows);
   });
 });

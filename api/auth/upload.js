@@ -1,7 +1,7 @@
 import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
 import { dbConfigured, getFeatureFlag, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../../lib/db.js";
-import { ingestClientQuota } from "../../lib/quota-ingest.js";
+import { codexClientPayloadAccepted, ingestClientQuota } from "../../lib/quota-ingest.js";
 import { stripRefreshToken } from "../../lib/fetch-best.js";
 import { probeClaudeAccessToken, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
@@ -11,6 +11,28 @@ import { readJsonBody } from "../../lib/http.js";
 // per-report-evidence rule (sanitize always emits the key) — measured: ingest stored the
 // deadline, this upsert nulled it in the same request, and an exhausted account that uploaded
 // its auth went straight back into rotation.
+// The bundled payload was already offered to ingestClientQuota, which turns away a codex report
+// whose weekly window is incomplete. This second write has to apply the SAME test or it is a way
+// back in for the numbers that gate just refused -- it copied `quotaPayload.windows` through
+// untouched. Measured 2026-09-10: BD@chuhuang, on client 2.1.0 and three days past the reporter
+// gate, landed two rows this way whose windows ingest had rejected. Empty windows cost nothing
+// here (the merge keeps whatever is stored), and the refresh bookkeeping this report exists for is
+// written either way. Claude has no ingest gate, so nothing to mirror.
+function acceptedBundledWindows({ source, quotaPayload, accountId }) {
+  const empty = { "5h": null, "1week": null };
+  if (!quotaPayload?.windows) {
+    return empty;
+  }
+  if (source !== "codex") {
+    return quotaPayload.windows;
+  }
+  // account_id comes from the stored entry: it is the authoritative one for this upload, and the
+  // gate would otherwise refuse a payload merely for omitting it.
+  return codexClientPayloadAccepted({ ...quotaPayload, account_id: accountId })
+    ? quotaPayload.windows
+    : empty;
+}
+
 export function refreshVerificationQuotaReport({ source, entry, quotaPayload, reporterEmail }) {
   return {
     source,
@@ -20,7 +42,7 @@ export function refreshVerificationQuotaReport({ source, entry, quotaPayload, re
     plan_name: entry.plan_name,
     auth_last_refresh: entry.auth_last_refresh,
     status: "ok",
-    windows: quotaPayload?.windows || { "5h": null, "1week": null },
+    windows: acceptedBundledWindows({ source, quotaPayload, accountId: entry.account_id }),
     exhausted_until: quotaPayload?.exhausted_until ?? null,
     usage_summary: {
       ...(quotaPayload?.usage_summary || {}),

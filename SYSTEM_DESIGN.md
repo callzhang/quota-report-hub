@@ -480,7 +480,11 @@ Then one gate: `codexClientPayloadAccepted` requires a *complete* weekly window 
 required because not every codex tier meters a 5-hour one (Pro does not; Plus and Team do — a 5-hour
 window that is present is stored and shown, [§6.4](#64-availability-read-model-and-lazy-history)); Claude reports are not gated here. An
 unacceptable payload is not an error — it returns `{ok:true, ignored:true}` and the caller decides
-the HTTP status. This is the same predicate the guard mirrors locally as
+the HTTP status. `/api/auth/upload` bundles a quota payload with the credential and writes a second,
+refresh-verification row for it; that row runs its windows through this same predicate
+(`acceptedBundledWindows`), because a write that skipped it was a way back in for numbers the gate
+had just refused — BD@chuhuang, on client 2.1.0 and three days past the reporter gate, landed two
+such rows on 2026-09-10. This is the same predicate the guard mirrors locally as
 `quota_payload_is_reportable`, so a report that would be discarded is never sent
 ([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)).
 
