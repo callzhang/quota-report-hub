@@ -218,7 +218,7 @@ class ReporterScriptsTest(unittest.TestCase):
             replace_codex = stack.enter_context(mock.patch.object(
                 quota_guard,
                 "maybe_replace_codex_auth",
-                side_effect=lambda *call_args: events.append(("replace_codex", call_args)) or {
+                side_effect=lambda *call_args, **call_kwargs: events.append(("replace_codex", call_args)) or {
                     "ok": True,
                     "replaced": True,
                     "from_account_id": "codex-old",
@@ -228,7 +228,7 @@ class ReporterScriptsTest(unittest.TestCase):
             stack.enter_context(mock.patch.object(
                 quota_guard,
                 "maybe_replace_claude_auth",
-                side_effect=lambda *call_args: events.append(("replace_claude", call_args)) or {
+                side_effect=lambda *call_args, **call_kwargs: events.append(("replace_claude", call_args)) or {
                     "ok": True,
                     "replaced": False,
                     "reason": "healthy",
@@ -3167,6 +3167,99 @@ Reading additional input from stdin...
                 refresh_current=False,
             )
 
+    def test_maybe_replace_codex_auth_force_switch_refuses_when_current_account_not_synced(self):
+        config = {
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }
+        codex_payload = {
+            "account_id": "current",
+            "status": "ok",
+            "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 90}},
+        }
+
+        with mock.patch.object(quota_guard, "fetch_best_auth") as fetch_best_auth:
+            replacement = quota_guard.maybe_replace_codex_auth(
+                config,
+                codex_payload,
+                Path("/tmp/auth.json"),
+                Path("/tmp/known_auth.json"),
+                threshold_percent=20.0,
+                weekly_threshold_percent=5.0,
+                force_switch=True,
+                current_account_synced=False,
+            )
+
+        fetch_best_auth.assert_not_called()
+        self.assertFalse(replacement["replaced"])
+        self.assertEqual(replacement["reason"], "current_account_not_on_hub")
+
+    def test_maybe_replace_codex_auth_force_switch_excludes_current_account_even_when_healthy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            live_auth.write_text(json.dumps({"tokens": {"account_id": "current"}}), encoding="utf-8")
+            config = {
+                "auth_pool_url": "https://quota-report-hub.vercel.app",
+                "auth_pool_user_token": "qrp_token",
+            }
+            codex_payload = {
+                "account_id": "current",
+                "status": "ok",
+                # Healthy quota -- the ordinary path would skip fetch_best_auth entirely and
+                # return "healthy" here. force_switch must bypass that gate.
+                "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 90}},
+            }
+
+            with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                "replacement": {
+                    "account_id": "other",
+                    "digest": "digest-other",
+                    "email": "other@example.com",
+                    "plan_name": "Pro",
+                    "auth_json": json.dumps({"tokens": {"account_id": "other"}}),
+                    "latest_report": {"remaining_5h": 80, "remaining_1week": 60},
+                },
+            }) as fetch_best_auth:
+                with mock.patch.object(
+                    quota_guard,
+                    "auth_metadata",
+                    return_value={
+                        "digest": "digest-current",
+                        "account_id": "other",
+                        "auth_last_refresh": "2026-04-19T22:00:00Z",
+                    },
+                ):
+                    with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "digest-other"}):
+                        replacement = quota_guard.maybe_replace_codex_auth(
+                            config,
+                            codex_payload,
+                            live_auth,
+                            known_auth_path,
+                            threshold_percent=20.0,
+                            weekly_threshold_percent=5.0,
+                            force_switch=True,
+                            current_account_synced=True,
+                        )
+
+            self.assertTrue(replacement["replaced"])
+            self.assertEqual(replacement["to_account_id"], "other")
+            self.assertEqual(json.loads(live_auth.read_text(encoding="utf-8"))["tokens"]["account_id"], "other")
+            fetch_best_auth.assert_called_once_with(
+                "https://quota-report-hub.vercel.app",
+                "qrp_token",
+                source="codex",
+                current_account_id="current",
+                current_quota={
+                    "five_h_remaining_percent": 90.0,
+                    "one_week_remaining_percent": 90.0,
+                },
+                exclude_account_ids=["current"],
+                requester_id=None,
+                refresh_current=False,
+            )
+
     def test_maybe_replace_codex_auth_skips_when_known_account_quota_is_unavailable(self):
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
@@ -3505,6 +3598,83 @@ Reading additional input from stdin...
 
         self.assertTrue(result["replaced"])
         install.assert_called_once_with({"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}}, claude_home)
+
+    def test_maybe_replace_claude_auth_force_switch_refuses_when_current_account_not_synced(self):
+        config = {"auth_pool_url": "https://quota-report-hub.vercel.app", "auth_pool_user_token": "qrp_token"}
+        claude_payload = {
+            "account_id": "claude-mine@example.com",
+            "email": "claude-mine@example.com",
+            "status": "ok",
+            "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 90}},
+        }
+        with mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None):
+            with mock.patch.object(quota_guard, "fetch_best_auth") as fetch_best_auth:
+                result = quota_guard.maybe_replace_claude_auth(
+                    config, claude_payload, Path("/tmp/claude"), Path("/tmp/known_auth.json"),
+                    threshold_percent=20.0, weekly_threshold_percent=5.0,
+                    force_switch=True, current_account_synced=False,
+                )
+
+        fetch_best_auth.assert_not_called()
+        self.assertFalse(result["replaced"])
+        self.assertEqual(result["reason"], "current_account_not_on_hub")
+
+    def test_maybe_replace_claude_auth_force_switch_excludes_current_account_even_when_healthy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_home = Path(temp_dir) / ".claude"
+            claude_home.mkdir(parents=True)
+            known_auth_path = Path(temp_dir) / "known_auth.json"
+            config = {"auth_pool_url": "https://quota-report-hub.vercel.app", "auth_pool_user_token": "qrp_token"}
+            # Healthy quota -- the ordinary path would return "healthy" without calling
+            # fetch_best_auth. force_switch must bypass that gate and exclude the current account.
+            claude_payload = {
+                "account_id": "claude-mine@example.com",
+                "email": "claude-mine@example.com",
+                "status": "ok",
+                "windows": {"5h": {"remaining_percent": 90}, "1week": {"remaining_percent": 90}},
+            }
+            replacement_blob = json.dumps({
+                "schema": "claude_credentials_v1",
+                "account_id": "claude-other@example.com",
+                "credentials": {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "RT"}},
+            })
+            with mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None):
+                with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                    "replacement": {"account_id": "claude-other@example.com", "email": "other@example.com", "auth_json": replacement_blob},
+                }) as fetch_best_auth:
+                    with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+                        with mock.patch.object(quota_guard, "install_claude_credentials", return_value={"installed": True, "active_store": "token_cache_v2"}):
+                            with mock.patch.object(quota_guard, "claude_auth_blob_metadata", return_value={"digest": "d", "account_id": "claude-other@example.com", "auth_last_refresh": "2026-06-15T00:00:00Z"}):
+                                with mock.patch.object(quota_guard, "write_known_auth_state", return_value={"digest": "d"}):
+                                    result = quota_guard.maybe_replace_claude_auth(
+                                        config, claude_payload, claude_home, known_auth_path,
+                                        threshold_percent=20.0, weekly_threshold_percent=5.0,
+                                        force_switch=True, current_account_synced=True,
+                                    )
+
+        self.assertTrue(result["replaced"])
+        self.assertEqual(result["to_account_id"], "claude-other@example.com")
+        fetch_best_auth.assert_called_once_with(
+            "https://quota-report-hub.vercel.app",
+            "qrp_token",
+            source="claude",
+            current_account_id="claude-mine@example.com",
+            current_quota={
+                "five_h_remaining_percent": 90.0,
+                "one_week_remaining_percent": 90.0,
+            },
+            exclude_account_ids=["claude-mine@example.com"],
+            requester_id=None,
+            refresh_current=False,
+        )
+
+    def test_current_account_confirmed_on_hub(self):
+        self.assertFalse(quota_guard.current_account_confirmed_on_hub(None))
+        self.assertFalse(quota_guard.current_account_confirmed_on_hub({"ok": False, "reason": "uploaded_to_auth_pool"}))
+        self.assertFalse(quota_guard.current_account_confirmed_on_hub({"ok": True, "reason": "missing_auth"}))
+        self.assertFalse(quota_guard.current_account_confirmed_on_hub({"ok": True, "reason": "free_plan_excluded"}))
+        self.assertTrue(quota_guard.current_account_confirmed_on_hub({"ok": True, "reason": "uploaded_to_auth_pool"}))
+        self.assertTrue(quota_guard.current_account_confirmed_on_hub({"ok": True, "reason": "unchanged_auth_recently_reuploaded"}))
 
     def test_cli_auth_seed_state_codex(self):
         with tempfile.TemporaryDirectory() as d:

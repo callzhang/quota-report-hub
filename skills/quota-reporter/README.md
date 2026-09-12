@@ -51,6 +51,7 @@ The hub and local guard remain source-aware:
   - reuploads and probes current Codex and Claude auth
   - resolves the Claude CLI binary from common non-interactive install locations (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) before falling back to `PATH`
   - fetches and installs a better Codex auth below the weekly threshold or a better Claude auth below its source thresholds
+  - `--switch-account {codex,claude}` forces this cycle to fetch and install a *different* same-source auth regardless of the current quota (e.g. when the current account looks healthy but fails for another reason, such as a model-capacity error). It requires the current account to already be synced to the hub this cycle; otherwise it reports `current_account_not_on_hub` and leaves the local auth untouched. It still only succeeds if the pool has a healthy, different account to hand back.
   - after a Codex write, requests only an official managed-daemon restart; it never terminates unmanaged or desktop app-server processes and never starts `codex login`
 - `scripts/trigger_remote_probe.py`
   - triggers the GitHub Actions cloud probe worker

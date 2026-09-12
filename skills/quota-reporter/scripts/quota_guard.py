@@ -393,6 +393,18 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
     return False
 
 
+# Reasons a same-cycle auth-pool sync can report that still mean "the hub has no confirmed copy
+# of the current account" -- a manual --switch-account must refuse rather than exclude an account
+# id the hub cannot actually recognize as the caller's own.
+_SYNC_REASONS_NOT_ON_HUB = {"missing_auth", "free_plan_excluded", "free_plan_removed_from_auth_pool"}
+
+
+def current_account_confirmed_on_hub(sync_outcome: dict | None) -> bool:
+    if not sync_outcome or sync_outcome.get("ok") is not True:
+        return False
+    return sync_outcome.get("reason") not in _SYNC_REASONS_NOT_ON_HUB
+
+
 def quota_payload_has_window(payload: dict) -> bool:
     if not payload:
         return False
@@ -1574,21 +1586,33 @@ def maybe_replace_codex_auth(
     threshold_percent: float,
     weekly_threshold_percent: float,
     usage_state: TokenUsageState | None = None,
+    force_switch: bool = False,
+    current_account_synced: bool = False,
 ) -> dict:
     current_account_id = current_codex_payload.get("account_id") if current_codex_payload else None
     current_quota = {
         "five_h_remaining_percent": remaining_percent(current_codex_payload or {}, "5h"),
         "one_week_remaining_percent": remaining_percent(current_codex_payload or {}, "1week"),
     }
-    # Quota-low (or invalidated) triggers a normal replacement; a healthy-but-near-expiry
-    # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
-    refresh_current = False
-    auth_missing = current_codex_payload is None and not codex_auth_path.exists()
-    if not auth_missing and not source_needs_replacement(current_codex_payload, threshold_percent, weekly_threshold_percent):
-        if fetched_auth_near_expiry("codex", known_auth_path, codex_auth_path=codex_auth_path):
-            refresh_current = True
-        else:
-            return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
+    if force_switch:
+        # A manual switch only makes sense against an account the hub can already recognize as
+        # the caller's own -- otherwise there is nothing to exclude and nothing to prove the
+        # fetched replacement is actually a different account.
+        if current_account_id is None or not current_account_synced:
+            return {"ok": True, "replaced": False, "reason": "current_account_not_on_hub", "triggered_by": []}
+        refresh_current = False
+        exclude_account_ids: list[str] = [current_account_id]
+    else:
+        # Quota-low (or invalidated) triggers a normal replacement; a healthy-but-near-expiry
+        # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
+        refresh_current = False
+        auth_missing = current_codex_payload is None and not codex_auth_path.exists()
+        if not auth_missing and not source_needs_replacement(current_codex_payload, threshold_percent, weekly_threshold_percent):
+            if fetched_auth_near_expiry("codex", known_auth_path, codex_auth_path=codex_auth_path):
+                refresh_current = True
+            else:
+                return {"ok": True, "replaced": False, "reason": "healthy", "triggered_by": []}
+        exclude_account_ids = []
 
     result = fetch_best_auth(
         config["auth_pool_url"],
@@ -1596,7 +1620,7 @@ def maybe_replace_codex_auth(
         source="codex",
         current_account_id=current_account_id,
         current_quota=current_quota,
-        exclude_account_ids=[],
+        exclude_account_ids=exclude_account_ids,
         requester_id=current_codex_payload.get("reporter_name") if current_codex_payload else None,
         refresh_current=refresh_current,
     )
@@ -1760,6 +1784,8 @@ def maybe_replace_claude_auth(
     threshold_percent: float,
     weekly_threshold_percent: float,
     usage_state: TokenUsageState | None = None,
+    force_switch: bool = False,
+    current_account_synced: bool = False,
 ) -> dict:
     custom_provider = detect_claude_custom_provider_env(claude_home)
     if custom_provider is not None:
@@ -1785,26 +1811,35 @@ def maybe_replace_claude_auth(
         "five_h_remaining_percent": remaining_percent(payload, "5h"),
         "one_week_remaining_percent": remaining_percent(payload, "1week"),
     }
-    # Quota-low (or invalidated) triggers a normal replacement; a healthy-but-near-expiry
-    # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
-    refresh_current = False
-    if not source_needs_replacement(payload, threshold_percent, weekly_threshold_percent):
-        # A rejected AT-only access token wants the same treatment as a near-expiry one: a fresh AT
-        # for THIS account, not somebody else's credential. refresh_current also engages the
-        # different-account guard below, so a hub that cannot refresh in place is declined rather
-        # than swapping a healthy owned account onto a borrowed one.
-        if needs_fresh_access_token(payload) or fetched_auth_near_expiry("claude", known_auth_path, claude_home=claude_home):
-            refresh_current = True
-        else:
-            # A probe that failed for a reason other than a dead credential (no binary, a timeout)
-            # is no evidence the account is unhealthy, and borrowing someone else's on it would be
-            # wrong -- but it is not "healthy" either, and the run log has to say which it was.
-            return {
-                "ok": True,
-                "replaced": False,
-                "reason": "healthy" if payload.get("status") == "ok" else "probe_unavailable",
-                "triggered_by": [],
-            }
+    if force_switch:
+        # Same precondition as Codex: only exclude and switch away from an account the hub already
+        # recognizes as the caller's own.
+        if current_account_id is None or not current_account_synced:
+            return {"ok": True, "replaced": False, "reason": "current_account_not_on_hub", "triggered_by": []}
+        refresh_current = False
+        exclude_account_ids: list[str] = [current_account_id]
+    else:
+        # Quota-low (or invalidated) triggers a normal replacement; a healthy-but-near-expiry
+        # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
+        refresh_current = False
+        if not source_needs_replacement(payload, threshold_percent, weekly_threshold_percent):
+            # A rejected AT-only access token wants the same treatment as a near-expiry one: a fresh AT
+            # for THIS account, not somebody else's credential. refresh_current also engages the
+            # different-account guard below, so a hub that cannot refresh in place is declined rather
+            # than swapping a healthy owned account onto a borrowed one.
+            if needs_fresh_access_token(payload) or fetched_auth_near_expiry("claude", known_auth_path, claude_home=claude_home):
+                refresh_current = True
+            else:
+                # A probe that failed for a reason other than a dead credential (no binary, a timeout)
+                # is no evidence the account is unhealthy, and borrowing someone else's on it would be
+                # wrong -- but it is not "healthy" either, and the run log has to say which it was.
+                return {
+                    "ok": True,
+                    "replaced": False,
+                    "reason": "healthy" if payload.get("status") == "ok" else "probe_unavailable",
+                    "triggered_by": [],
+                }
+        exclude_account_ids = []
 
     result = fetch_best_auth(
         config["auth_pool_url"],
@@ -1812,7 +1847,7 @@ def maybe_replace_claude_auth(
         source="claude",
         current_account_id=current_account_id,
         current_quota=current_quota,
-        exclude_account_ids=[],
+        exclude_account_ids=exclude_account_ids,
         requester_id=payload.get("reporter_name"),
         refresh_current=refresh_current,
     )
@@ -2183,6 +2218,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the startup check that updates this installed skill from GitHub before running the guard.",
     )
+    parser.add_argument(
+        "--switch-account",
+        choices=["codex", "claude"],
+        default=None,
+        help="Force this cycle to fetch and install a DIFFERENT same-source auth from the pool for the "
+        "given source, regardless of the current quota threshold (e.g. when the current account looks "
+        "healthy but is failing for another reason, such as a model-capacity error). Requires the "
+        "current account to already be synced to the hub this cycle; otherwise the guard reports "
+        "current_account_not_on_hub and leaves the local auth untouched. Still requires the pool to "
+        "hold a healthy, different account to hand back.",
+    )
     return parser
 
 
@@ -2374,6 +2420,8 @@ def run_guard(args: argparse.Namespace) -> dict:
                 threshold_percent,
                 weekly_threshold_percent,
                 usage_state,
+                force_switch=getattr(args, "switch_account", None) == "codex",
+                current_account_synced=current_account_confirmed_on_hub(sync_result.get("codex")),
             ),
         ),
     )
@@ -2390,6 +2438,8 @@ def run_guard(args: argparse.Namespace) -> dict:
                 threshold_percent,
                 weekly_threshold_percent,
                 usage_state,
+                force_switch=getattr(args, "switch_account", None) == "claude",
+                current_account_synced=current_account_confirmed_on_hub(sync_result.get("claude")),
             ),
         ),
     )

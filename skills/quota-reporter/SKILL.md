@@ -120,6 +120,25 @@ The default output is a short human-readable summary. Use `--json` when you need
 python3 scripts/quota_guard.py --json
 ```
 
+### Manually switch to a different account
+
+`--switch-account {codex,claude}` forces one guard cycle to fetch and install a *different*
+same-source auth from the pool for that source, regardless of the current quota threshold. Use
+this when the current account looks healthy (quota is fine) but requests are still failing for
+another reason — for example a model-capacity error ("Selected model is at capacity. Please try a
+different model."), which is unrelated to quota and would never trigger the automatic threshold
+rotation.
+
+```bash
+python3 scripts/quota_guard.py --switch-account codex
+```
+
+This still requires the current account to already be synced to the hub during the same cycle;
+if it is not, the guard reports `current_account_not_on_hub` on that source's replacement result
+and leaves the local auth untouched instead of guessing at an account id the hub cannot verify.
+It also only succeeds if the pool actually holds a different, healthy account for that source —
+an empty or exhausted pool reports the normal `no_better_auth_available` / `pool_empty` reasons.
+
 ### Trigger one remote cloud probe
 
 ```bash
