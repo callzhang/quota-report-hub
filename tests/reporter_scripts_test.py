@@ -7048,6 +7048,69 @@ class ClaudeCredentialSourceOrderTests(unittest.TestCase):
         self.assertEqual(src, "credentials_file")
 
 
+class ClaudeTwoInstallationCredentialTests(unittest.TestCase):
+    """Two Claude Code installations on one Mac do not share a credential store.
+
+    The standalone CLI (~/.local/bin/claude) keeps its OAuth record in the keychain item; the copy
+    the desktop app bundles runs against the desktop's own user-data dir and safe storage. Reading
+    by store order alone picks whichever store happens to be first, not whichever holds the
+    credential a human just created.
+    """
+
+    # What the desktop store held on 2026-09-12: a credential the guard had already stripped to
+    # access-token-only days earlier. It is a valid OAuth record, so store order returned it.
+    DESKTOP_STRIPPED = {
+        "claudeAiOauth": {
+            "accessToken": "DESKTOP_AT",
+            "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN,
+            "expiresAt": 1789879427427,  # 2026-09-20
+        }
+    }
+    # What a fresh `claude auth login` in the terminal had just put in the keychain.
+    TERMINAL_FRESH = {
+        "claudeAiOauth": {
+            "accessToken": "TERMINAL_AT",
+            "refreshToken": "REAL_RT",
+            "expiresAt": 1790000000000,
+        }
+    }
+
+    def test_a_real_refresh_token_outranks_a_stripped_store_that_comes_first(self):
+        # The forcing case: four terminal logins in a row were invisible to the guard because the
+        # desktop store won every read, so no working refresh token ever reached the pool.
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "read_claude_token_cache_credentials", return_value=(self.DESKTOP_STRIPPED, "token_cache_v2")), \
+             mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=self.TERMINAL_FRESH), \
+             mock.patch.object(quota_reporters, "read_claude_credentials", return_value=None):
+            creds, src = quota_reporters.read_claude_oauth_credentials()
+        self.assertEqual(src, "keychain")
+        self.assertEqual(creds["claudeAiOauth"]["refreshToken"], "REAL_RT")
+
+    def test_all_stores_stripped_falls_back_to_the_later_access_token(self):
+        # After a strip every store is access-token-only; there is no refresh token to prefer, so the
+        # longer-lived access token wins rather than whichever store is listed first.
+        older = {"claudeAiOauth": {"accessToken": "OLD", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "expiresAt": 1_000}}
+        newer = {"claudeAiOauth": {"accessToken": "NEW", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "expiresAt": 2_000}}
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "read_claude_token_cache_credentials", return_value=(older, "token_cache_v2")), \
+             mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=newer), \
+             mock.patch.object(quota_reporters, "read_claude_credentials", return_value=None):
+            creds, src = quota_reporters.read_claude_oauth_credentials()
+        self.assertEqual(src, "keychain")
+        self.assertEqual(creds["claudeAiOauth"]["accessToken"], "NEW")
+
+    def test_an_empty_refresh_token_counts_as_stripped(self):
+        # Claude Desktop rewrites the CLI keychain credential access-token-only (refreshToken=""),
+        # which must not outrank a store that still holds a real one.
+        empty_rt = {"claudeAiOauth": {"accessToken": "EMPTY_RT_AT", "refreshToken": "   ", "expiresAt": 9_999_999_999_999}}
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "read_claude_token_cache_credentials", return_value=(empty_rt, "token_cache_v2")), \
+             mock.patch.object(quota_reporters, "read_claude_keychain_credentials", return_value=self.TERMINAL_FRESH), \
+             mock.patch.object(quota_reporters, "read_claude_credentials", return_value=None):
+            creds, src = quota_reporters.read_claude_oauth_credentials()
+        self.assertEqual(src, "keychain")
+
+
 class ProbeHeartbeatTest(unittest.TestCase):
     """The heartbeat exists so a guard that runs and fails is distinguishable from one that never
     runs. Before it, a probe that could not produce a reportable payload sent the hub nothing at

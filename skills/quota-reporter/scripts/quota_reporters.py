@@ -1137,6 +1137,29 @@ def claude_credentials_have_oauth(credentials: dict | None) -> bool:
     return isinstance(oauth, dict) and bool(oauth.get("accessToken"))
 
 
+def claude_credential_rank(credentials: dict | None) -> tuple[int, float]:
+    """How much a local store's Claude credential is worth, for choosing between stores.
+
+    A real refresh token dominates: it is the only thing that can mint further access tokens, it is
+    what the pool is missing whenever it is missing anything, and its presence is proof the record
+    came from an actual login rather than from a hub serve or this guard's own strip. Among stores
+    that tie on that, the later access-token expiry wins -- after a strip every store is
+    access-token-only, and then "which token lives longer" is the only question left.
+    """
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    refresh_token = oauth.get("refreshToken")
+    has_real_refresh_token = (
+        bool(refresh_token)
+        and bool(str(refresh_token).strip())
+        and refresh_token != STRIPPED_CLAUDE_REFRESH_TOKEN
+    )
+    expires_at = oauth.get("expiresAt")
+    return (
+        1 if has_real_refresh_token else 0,
+        float(expires_at) if isinstance(expires_at, (int, float)) else -1.0,
+    )
+
+
 def claude_keychain_account_candidates() -> list[str]:
     user = os.environ.get("USER") or getpass.getuser() or ""
     candidates = ["unknown"]
@@ -1542,16 +1565,28 @@ def read_claude_oauth_credentials(claude_home: Path = CLAUDE_HOME) -> tuple[dict
     # So prefer tokenCache on darwin, then the direct keychain entry, and only fall back to the file.
     # Other platforms keep file-first (no macOS safe storage there).
     if sys.platform == "darwin":
-        credentials, source = read_claude_token_cache_credentials(claude_home)
-        if claude_credentials_have_oauth(credentials):
-            return credentials, source
-        credentials = read_claude_keychain_credentials()
-        if claude_credentials_have_oauth(credentials):
-            return credentials, "keychain"
-        credentials = read_claude_credentials(claude_home)
-        if claude_credentials_have_oauth(credentials):
-            return credentials, "credentials_file"
-        return None, "unavailable"
+        # Two Claude Code installations can share a Mac and do NOT share a credential store: the
+        # standalone CLI (~/.local/bin/claude) keeps its OAuth record in the keychain item, while the
+        # copy the desktop app bundles runs against the desktop's own user-data dir and safe storage.
+        # Store order cannot choose between them. On 2026-09-12 the desktop store held a credential
+        # this guard had itself stripped to access-token-only on 09-11; it won every read, so four
+        # `claude auth logout && claude auth login` runs in the terminal were invisible here and no
+        # working refresh token ever reached the pool -- the account was left with none anywhere.
+        #
+        # Rank by what the pool actually needs instead of by where it happens to live: a real
+        # (non-placeholder, non-empty) refresh token first, then the later access-token expiry. The
+        # sort is stable, so stores that rank equally keep the historical precedence below -- token
+        # cache, then keychain, then file -- which is what the stale-.credentials.json rule wanted.
+        candidates = [
+            read_claude_token_cache_credentials(claude_home),
+            (read_claude_keychain_credentials(), "keychain"),
+            (read_claude_credentials(claude_home), "credentials_file"),
+        ]
+        live = [(credentials, source) for credentials, source in candidates if claude_credentials_have_oauth(credentials)]
+        if not live:
+            return None, "unavailable"
+        live.sort(key=lambda item: claude_credential_rank(item[0]), reverse=True)
+        return live[0]
     credentials = read_claude_credentials(claude_home)
     if claude_credentials_have_oauth(credentials):
         return credentials, "credentials_file"
