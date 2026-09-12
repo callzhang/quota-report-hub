@@ -2020,8 +2020,19 @@ def parse_claude_auth_status_text(text: str) -> dict:
 
 
 def read_claude_keychain_credentials() -> dict | None:
+    """The best credential across every account entry under the one keychain service.
+
+    `Claude Code-credentials` holds a separate item per account name, and a machine accumulates
+    more than one: the older lineage writes "unknown", a current standalone CLI writes the login
+    name. Returning the first account that parsed made the same mistake the store order made one
+    level up -- on 2026-09-12 "unknown" held a credential this guard had stripped to
+    access-token-only, and it shadowed the real refresh token four terminal logins had written
+    under "derek" on the very same machine. Rank the entries by content instead
+    (`claude_credential_rank`), so a real refresh token is found wherever it happens to live.
+    """
     if sys.platform != "darwin":
         return None
+    found: list[dict] = []
     for account in claude_keychain_account_candidates():
         result = subprocess.run(
             ["security", "find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-a", account, "-w"],
@@ -2036,8 +2047,12 @@ def read_claude_keychain_credentials() -> dict | None:
         except Exception:
             continue
         if claude_credentials_have_oauth(credentials):
-            return credentials
-    return None
+            found.append(credentials)
+    if not found:
+        return None
+    # Stable sort: entries that rank equally keep the candidate order above.
+    found.sort(key=claude_credential_rank, reverse=True)
+    return found[0]
 
 
 def build_claude_window(utilization: float, resets_at: int, window_minutes: int) -> dict:

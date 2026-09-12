@@ -1,6 +1,7 @@
 import sys
 import subprocess
 import tempfile
+import types
 import unittest
 import io
 import contextlib
@@ -7109,6 +7110,48 @@ class ClaudeTwoInstallationCredentialTests(unittest.TestCase):
              mock.patch.object(quota_reporters, "read_claude_credentials", return_value=None):
             creds, src = quota_reporters.read_claude_oauth_credentials()
         self.assertEqual(src, "keychain")
+
+
+class ClaudeKeychainAccountRankingTests(unittest.TestCase):
+    """One keychain service, several account entries, only one of them current.
+
+    `Claude Code-credentials` holds a separate item per account name: the older/desktop lineage
+    writes "unknown", a current standalone CLI writes the login name. Returning the first account
+    that parses is the same mistake as returning the first store that parses.
+    """
+
+    STRIPPED = json.dumps({"claudeAiOauth": {"accessToken": "AT", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "expiresAt": 1789879427427}})
+    REAL = json.dumps({"claudeAiOauth": {"accessToken": "AT2", "refreshToken": "REAL_RT", "expiresAt": 1757692682935}})
+
+    def _security(self, by_account):
+        def run(argv, **kwargs):
+            account = argv[argv.index("-a") + 1]
+            payload = by_account.get(account)
+            return types.SimpleNamespace(returncode=0 if payload else 1, stdout=payload or "", stderr="")
+        return run
+
+    def test_the_account_holding_a_real_refresh_token_wins_over_an_earlier_stripped_one(self):
+        # 2026-09-12: "unknown" held a credential the guard had stripped, the login name held the
+        # refresh token four terminal logins had produced. "unknown" is tried first, so every read
+        # returned the stripped one and the real token sat unseen on the same machine.
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "claude_keychain_account_candidates", return_value=["unknown", "derek"]), \
+             mock.patch.object(quota_reporters.subprocess, "run", side_effect=self._security({"unknown": self.STRIPPED, "derek": self.REAL})):
+            credentials = quota_reporters.read_claude_keychain_credentials()
+        self.assertEqual(credentials["claudeAiOauth"]["refreshToken"], "REAL_RT")
+
+    def test_a_single_account_is_returned_unchanged(self):
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "claude_keychain_account_candidates", return_value=["unknown", "derek"]), \
+             mock.patch.object(quota_reporters.subprocess, "run", side_effect=self._security({"unknown": self.STRIPPED})):
+            credentials = quota_reporters.read_claude_keychain_credentials()
+        self.assertEqual(credentials["claudeAiOauth"]["accessToken"], "AT")
+
+    def test_no_matching_item_reads_as_absent(self):
+        with mock.patch.object(quota_reporters.sys, "platform", "darwin"), \
+             mock.patch.object(quota_reporters, "claude_keychain_account_candidates", return_value=["unknown"]), \
+             mock.patch.object(quota_reporters.subprocess, "run", side_effect=self._security({})):
+            self.assertIsNone(quota_reporters.read_claude_keychain_credentials())
 
 
 class ProbeHeartbeatTest(unittest.TestCase):
