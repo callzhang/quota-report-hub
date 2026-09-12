@@ -135,7 +135,7 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 
 ### 3.3 Reading/writing local auth (`quota_reporters.py`)
 - **Codex**: `~/.codex/auth.json`. Account id is **canonicalized to the lowercased email** (`canonical_codex_account_id` `:175-179`) so Team users sharing a provider UUID don't collide. Probe runs `codex exec` in an isolated temp `CODEX_HOME` with an **env blocklist** (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_ACCESS_TOKEN`, …) so an ambient key can't mislabel another provider's quota (`:396-424`). The exec runs with stdin closed and a `CODEX_EXEC_TIMEOUT_SECONDS = 120` cap: `codex exec` waits for stdin to reach EOF before it starts, which launchd's `/dev/null` satisfies instantly but an inherited socket never does (2026-09-09: a manual run sat in the probe for 2h35m while scheduled runs took 20s); the cap is six times the worst of 800 scheduled probes (p99 17s, max 21s), so a stalled probe costs one reading rather than the guard. The probe also sweeps any `quota-report-*` home under the cache root older than twice that cap (`sweep_stale_codex_probe_homes`) before creating its own. A home outlives its run only when the guard dies mid-probe: launchd's SIGTERM on `launchctl bootout` / `kickstart -k` (the installer's restart sequence) or on logout ends Python without running the `finally`, and the copied `auth.json` stays behind. 88 such homes (1.7 GB, 2026-06-04..07-29) were found on 2026-09-10; the days with a dozen (06-08/09) were installer-development days, and none appeared after the last reinstall (plist 08-06). With the sweep, a dead run's credential copy never outlives the next probe.
-- **Claude**: modern macOS Claude Code stores the active OAuth credential in Claude's encrypted `oauth:tokenCacheV2`; older builds may still use the direct `"Claude Code-credentials"` keychain item, and non-darwin uses `~/.claude/.credentials.json`. `read_claude_oauth_credentials` prefers tokenCacheV2 on macOS so stale files or MCP-only keychain entries cannot shadow the live credential. Writes go back to the same source when possible. Claude account id = `claude-<email-lowercased>` — **this is where the `claude-` prefix originates** (the server derive takes `account_id` as-is).
+- **Claude**: the desktop app's bundled Claude Code stores its OAuth credential in the desktop's encrypted `oauth:tokenCacheV2` (`~/Library/Application Support/Claude/config.json`, key in the `"Claude Safe Storage"` keychain item); the standalone CLI uses the direct `"Claude Code-credentials"` keychain item; non-darwin uses `~/.claude/.credentials.json`. **These are separate stores belonging to separate installations, and a Mac routinely has both.** `read_claude_oauth_credentials` therefore ranks the stores by content rather than by order (`claude_credential_rank`): a real — non-placeholder, non-empty — refresh token first, then the later access-token expiry, with a stable sort keeping the old tokenCache → keychain → file precedence among equals. Ranking by order alone let the desktop store win every read on 2026-09-12 while it held a credential the guard had itself stripped to access-token-only the day before; four consecutive `claude auth logout && claude auth login` runs in the terminal wrote the *other* store and were invisible here, so no working refresh token reached the pool and the account ended up with none anywhere ([§5.2](#52-single-entry-per-account) covers what the pool then did with the uploads). A real refresh token is the right tiebreak because it is the only thing that can mint further access tokens, and its presence is proof the record came from an actual login rather than from a hub serve or this guard's own strip. Writes go back to the same source when possible. Claude account id = `claude-<email-lowercased>` — **this is where the `claude-` prefix originates** (the server derive takes `account_id` as-is).
 - Quota source order for Claude: statusline snapshot first, live `/api/oauth/usage` only as fallback after a 429 backoff (`:1420-1432`).
 - **Finding the CLI** (`discover_cli_executable`): the three common install dirs (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`), then the CLI bundled inside the desktop app (`ChatGPT.app` or `Codex.app` under `/Applications` or `~/Applications`, at `Contents/Resources/codex`), then `PATH`. The bundle lookup exists because the Codex app renames itself to ChatGPT.app on update (2026-07-09), which leaves the app-installed `/usr/local/bin/codex` symlink dangling on a machine with no node at all; a dangling link fails `exists()` and `which` alike, and the probe reported `codex command not found` for an account that was perfectly healthy (melody, 2026-09-09).
 
@@ -276,6 +276,27 @@ Single module-load client (`lib/db.js:15-18`); schema created lazily + memoized 
 - `decryptAuthJson(entry)` branches: if `entry.auth_blob_key` is set, fetch the envelope from object storage then decrypt; else decrypt the inline columns (`:151-156`). This is the **only** abstraction that hides inline-vs-object storage from callers.
 
 ### 5.2 Single-entry-per-account
+**Which upload wins.** `shouldReplaceAuthPoolEntry` (`lib/auth-pool.js:397`) gates the upsert: a new
+account always lands, and for the same account the later `auth_last_refresh` wins. For Claude that
+field is the access token's own expiry, so the comparison asks "whose token lives longer" — the wrong
+question once the incumbent can no longer be renewed at all. A standing central-refresh rejection
+(the worker presented the *pooled* refresh token to the provider and was refused —
+`usage_summary.central_refresh.auth_rejected`, read at the upsert via `json_extract` for the same
+reason `HEALTHY_POOL_ENTRY_SQL` does: no column carries the verdict for a live entry) therefore
+overrides it, and an upload carrying a real refresh token replaces the incumbent outright. A
+renewable credential has no death date; a refused one is a countdown to a hard death with nothing
+behind it. An access-token-only upload does **not** get the override — nothing can renew either
+credential, and the incumbent is at least what the pool already serves.
+
+The forcing case (2026-09-11, `claude-leizhang0121@gmail.com`): the pool held a credential the worker
+had been refused on for 48 consecutive probes (`ok_count` 0 throughout; archived
+"claude auth invalid (authentication_error)" the next morning) whose access token was stamped
+2026-09-29. A fresh login minted a working refresh token whose access token expired 2026-09-20, the
+guard uploaded it, and the expiry comparison refused it. Because the upload was refused there was no
+verification refresh and no `refreshed_auth_json` handback, yet the guard still stripped its local RT
+as designed ([§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)) — so the account's only
+working refresh token ceased to exist anywhere, and the owner had to log in a second time.
+
 On upsert (`upsertAuthPoolEntry` `lib/db.js:589-786`), before INSERT:
 1. **Delete other sessions** of the same account: `DELETE … WHERE source=? AND account_id=? AND session_id IS NOT ?` (`:713-716`).
 2. **Purge same-email / different-account** legacy rows from both `auth_pool_entries` and `auth_pool_quota_latest` (`:717-726`).

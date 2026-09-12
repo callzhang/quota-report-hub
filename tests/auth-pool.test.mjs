@@ -823,6 +823,71 @@ test("shouldReplaceAuthPoolEntry accepts newer refresh for same account", () => 
   assert.equal(shouldReplaceAuthPoolEntry(existing, incoming), true);
 });
 
+test("shouldReplaceAuthPoolEntry takes a renewable upload over an incumbent whose refresh token was rejected", () => {
+  // The 2026-09-11 incident, with its real timestamps. For Claude, auth_last_refresh IS the access
+  // token's expiry, so comparing it keeps whichever token happens to live longer -- here a pooled
+  // credential the worker had already been refused on (48 consecutive probes, ok_count 0, and the
+  // entry was archived "claude auth invalid" the next morning) beat a credential minted minutes
+  // earlier by a fresh login, purely on that number. The owner's only working refresh token was
+  // refused by the pool and then stripped locally, leaving the account with no refresh token
+  // anywhere.
+  const existing = {
+    source: "claude",
+    account_id: "claude-leizhang0121@gmail.com",
+    auth_last_refresh: "1790708346219", // access token expiring 2026-09-29
+    has_refresh_token: true,
+    digest: "pooled-digest",
+  };
+  const incoming = {
+    source: "claude",
+    account_id: "claude-leizhang0121@gmail.com",
+    auth_last_refresh: "1789879427427", // access token expiring 2026-09-20
+    has_refresh_token: true,
+    digest: "freshly-logged-in-digest",
+  };
+
+  assert.equal(shouldReplaceAuthPoolEntry(existing, incoming), false);
+  assert.equal(
+    shouldReplaceAuthPoolEntry(existing, incoming, {
+      existingRefreshRejected: true,
+      incomingHasRealRefreshToken: true,
+    }),
+    true,
+  );
+});
+
+test("shouldReplaceAuthPoolEntry keeps a rejected incumbent over an access-token-only upload", () => {
+  // A rejected incumbent is bad; replacing it with a credential nothing can renew is not better.
+  // Only a real refresh token earns the override, so a stripped blob still loses.
+  //
+  // The guard uploads access-token-only blobs on purpose, and such a blob still derives
+  // has_refresh_token: true -- the hub placeholder is a non-empty string. So the override must key
+  // on the caller's isStrippedRefreshToken verdict; keying on the flag would let exactly these
+  // uploads poison the entry with a placeholder refresh token.
+  const existing = {
+    source: "claude",
+    account_id: "claude-a@example.com",
+    auth_last_refresh: "1790708346219",
+    has_refresh_token: true,
+    digest: "pooled-digest",
+  };
+  const incoming = {
+    source: "claude",
+    account_id: "claude-a@example.com",
+    auth_last_refresh: "1789879427427",
+    has_refresh_token: true, // placeholder RT reads as "has one"
+    digest: "at-only-digest",
+  };
+
+  assert.equal(
+    shouldReplaceAuthPoolEntry(existing, incoming, {
+      existingRefreshRejected: true,
+      incomingHasRealRefreshToken: false,
+    }),
+    false,
+  );
+});
+
 test("pickBestAuthPoolCandidate readmits an account once its exhaustion deadline passes", () => {
   // Pins the deadline COMPARISON itself: same shape as the exclusion test below, but now is after
   // the deadline, the report is fresh, and the weekly window is healthy and unexpired — so the
