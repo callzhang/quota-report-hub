@@ -119,6 +119,11 @@
   to cover **every grant that can do inference**, not every entry of one client id: a second grant
   re-mints just as effectively, and rotating it revokes the tokens the hub is serving. That is what
   `claude_cache_entry_can_mint_inference` decides. Grants without inference scope are left alone.
+- **Selection inside the cache is content-first too.** A cache may contain a high-scoring client/scope
+  entry whose refresh token is the hub's `disabled-by-hub-refresh-token` placeholder alongside a
+  lower-scoring entry with a real refresh token. `select_claude_token_cache_entry` ranks the real,
+  non-placeholder token before client/scope metadata and expiry; otherwise the placeholder shadows
+  the only rotatable credential and the next upload/probe repeats the same failure one level down.
 - **Two different things are both called "desktop".** The claude.ai *cookie session* really is separate
   and unaffected by a stripped keychain RT. But the OAuth *token cache* above lives in Claude.app's own
   config, and every Claude Code session runs as a child of the Claude.app process — so the app's process

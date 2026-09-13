@@ -1254,7 +1254,9 @@ def encrypt_claude_safe_storage_json(payload: dict, secret: str) -> str | None:
         return None
 
 
-def claude_token_cache_entry_score(cache_key: str, entry: dict) -> tuple[int, int]:
+def claude_token_cache_entry_score(cache_key: str, entry: dict) -> tuple[int, int, int]:
+    refresh_token = entry.get("refreshToken")
+    has_real_refresh_token = bool(refresh_token) and refresh_token != STRIPPED_CLAUDE_REFRESH_TOKEN
     score = 0
     if cache_key.startswith(CLAUDE_OAUTH_CLIENT_ID + ":"):
         score += 100
@@ -1262,13 +1264,11 @@ def claude_token_cache_entry_score(cache_key: str, entry: dict) -> tuple[int, in
         score += 20
     if "user:sessions:claude_code" in cache_key:
         score += 10
-    if entry.get("refreshToken"):
-        score += 5
     try:
         expires_at = int(entry.get("expiresAt") or 0)
     except (TypeError, ValueError):
         expires_at = 0
-    return score, expires_at
+    return (1 if has_real_refresh_token else 0), score, expires_at
 
 
 def select_claude_token_cache_entry(cache: dict) -> tuple[str | None, dict | None]:

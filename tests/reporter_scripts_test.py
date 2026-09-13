@@ -1833,6 +1833,25 @@ Reading additional input from stdin...
         self.assertEqual(credentials["claudeAiOauth"]["refreshToken"], "CLI_RT")
         self.assertIn("user:sessions:claude_code", credentials["claudeAiOauth"]["scopes"])
 
+    def test_select_claude_token_cache_entry_prefers_real_refresh_over_scored_placeholder(self):
+        cache = {
+            f"{quota_reporters.CLAUDE_OAUTH_CLIENT_ID}:user:https://api.anthropic.com:user:inference user:sessions:claude_code": {
+                "token": "STALE_AT",
+                "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN,
+                "expiresAt": 9999999999999,
+            },
+            "other-client:user:https://api.anthropic.com:user:inference": {
+                "token": "LIVE_AT",
+                "refreshToken": "LIVE_RT",
+                "expiresAt": 1000,
+            },
+        }
+
+        cache_key, entry = quota_reporters.select_claude_token_cache_entry(cache)
+
+        self.assertEqual(cache_key, "other-client:user:https://api.anthropic.com:user:inference")
+        self.assertEqual(entry["refreshToken"], "LIVE_RT")
+
     def test_read_claude_token_cache_credentials_reads_safe_storage_v2(self):
         cache = {
             f"{quota_reporters.CLAUDE_OAUTH_CLIENT_ID}:user:https://api.anthropic.com:user:inference user:sessions:claude_code": {
