@@ -363,8 +363,18 @@ def needs_fresh_access_token(payload: dict) -> bool:
 def refresh_token_rejected(payload: dict) -> bool:
     if payload.get("error") == "refresh_token_rejected":
         return True
-    token_refresh = (payload.get("usage_summary") or {}).get("token_refresh") or {}
-    return token_refresh.get("status") == "auth_rejected"
+    usage_summary = payload.get("usage_summary") or {}
+    token_refresh = usage_summary.get("token_refresh") or {}
+    if token_refresh.get("status") == "auth_rejected":
+        return True
+    # Client reports can stay healthy on the last access token after the pool's refresh token has
+    # already been refused. The server deliberately carries that worker verdict forward while the
+    # row's top-level status/error continue to describe the still-working access token. Owner repair
+    # must follow the pooled credential verdict, not wait for the access token to expire too.
+    central_refresh = usage_summary.get("central_refresh") or {}
+    if central_refresh.get("auth_rejected") is True:
+        return True
+    return (payload.get("refresh_validity") or {}).get("status") == "rejected"
 
 
 def source_needs_replacement(payload: dict, threshold_percent: float, weekly_threshold_percent: float) -> bool:

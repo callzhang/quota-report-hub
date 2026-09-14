@@ -13,7 +13,7 @@ The skill installs a local 15-minute quota guard that:
 - pushes stable local quota snapshots to the hub when available
 - fetches and installs a strictly better same-source auth when needed
 - shows a desktop notification after a successful auth replacement
-- shows a system notification when any auth uploaded by the current token user has a refresh token rejected by the cloud worker; when `auto_relogin_owner_auth` is enabled, opens the matching CLI login only for that confirmed RT-rejected source
+- shows a system notification when any auth uploaded by the current token user has a refresh token rejected by the cloud worker, including the sticky pool verdict carried on a still-working access-token report; when `auto_relogin_owner_auth` is enabled, opens the matching CLI login only for that confirmed RT-rejected source
 - keeps older uploaded auths in the cloud pool when the local machine switches to a different current auth
 - preserves the first uploader as the owner for each shared account, so using a fetched auth does not transfer re-login responsibility
 - can trigger a remote cloud-worker probe on demand
@@ -60,7 +60,7 @@ The hub and local guard remain source-aware:
 - `scripts/claude_statusline_probe.py`
   - captures Claude statusline JSON into a local snapshot file
   - preserves previous unexpired `5H` and `7d` rate-limit windows when Claude Code sends a startup or failed-response statusline payload without `rate_limits`
-- `scripts/quota_reporters.py` caches successful Claude OAuth usage windows during polling backoff and discards each cached window at its provider reset time
+- `scripts/quota_reporters.py` reports Claude quota only from the OAuth usage endpoint, caches successful windows under the access-token fingerprint that measured them, and discards the cache immediately on a token change or at the provider reset time
 - `scripts/quota_reporters.py`
   - shared helper library used by the scripts above
   - not intended as the main user entrypoint

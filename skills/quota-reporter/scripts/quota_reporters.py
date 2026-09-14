@@ -2176,6 +2176,9 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
     credentials, source, token_refresh = ensure_fresh_claude_access_token(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
     token = oauth.get("accessToken")
+    measured_token_fingerprint = (
+        hashlib.sha256(str(token).encode("utf-8")).hexdigest() if token else None
+    )
     if token is None:
         return {
             "available": False,
@@ -2184,6 +2187,7 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
             "base_url": CLAUDE_DEFAULT_BASE_URL,
             "windows": empty_windows(),
             "token_refresh": token_refresh,
+            "access_token_fingerprint": None,
         }
     request = urllib.request.Request(
         CLAUDE_DEFAULT_BASE_URL + "/api/oauth/usage",
@@ -2211,6 +2215,7 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
             "base_url": CLAUDE_DEFAULT_BASE_URL,
             "windows": empty_windows(),
             "token_refresh": token_refresh,
+            "access_token_fingerprint": measured_token_fingerprint,
         }
 
     try:
@@ -2232,8 +2237,7 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
     # generic rate_limit_error + Retry-After) is the usage-info endpoint throttling our
     # polling, NOT model-usage exhaustion. Only synthesize an exhausted 5h window when
     # the 429 actually describes a model-usage rejection via unified headers; otherwise
-    # report quota as unavailable so the caller falls back to the statusline snapshot
-    # instead of misreporting "5h 100% used".
+    # report quota as unavailable and let the caller reuse only a same-token cache.
     usage_endpoint_throttled = (
         status_code == 429
         and not has_unified_headers
@@ -2261,6 +2265,7 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
         "usage_endpoint_throttled": usage_endpoint_throttled,
         "retry_after_seconds": retry_after_seconds,
         "token_refresh": token_refresh,
+        "access_token_fingerprint": measured_token_fingerprint,
         "base_url": CLAUDE_DEFAULT_BASE_URL,
         "windows": windows,
         "status": headers.get("anthropic-ratelimit-unified-status"),
@@ -2322,10 +2327,13 @@ def write_claude_usage_backoff(
     path: Path = CLAUDE_USAGE_BACKOFF_PATH,
     *,
     windows: dict | None = None,
+    access_token_fingerprint_value: str | None = None,
 ) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         state = {"next_allowed_at": next_allowed_at}
+        if access_token_fingerprint_value:
+            state["access_token_fingerprint"] = access_token_fingerprint_value
         if isinstance(windows, dict) and any(windows.get(key) is not None for key in ("5h", "1week")):
             state["windows"] = windows
         path.write_text(json.dumps(state) + "\n", encoding="utf-8")
@@ -2558,6 +2566,7 @@ def probe_claude(
         auth_text_details["organization"] = oauth_account.get("organizationUuid")
     credentials, _ = read_claude_oauth_credentials(claude_home)
     oauth = (credentials or {}).get("claudeAiOauth") or {}
+    installed_token_fingerprint = access_token_fingerprint(credentials, "claude")
     # Identity and quota must come from the same credential. Everything below reads quota through
     # the token now installed, so the account it is reported under has to be that token's account.
     installed_identity = resolve_claude_installed_identity(credentials, known_auth_path)
@@ -2566,42 +2575,58 @@ def probe_claude(
         auth_text_details["organization"] = installed_identity["name"]
     stats = read_claude_stats(claude_home)
     statusline_snapshot = read_claude_statusline_snapshot(claude_home)
-    statusline_windows = parse_claude_statusline_rate_limits(statusline_snapshot)
     oauth_usage_probe = None
-    windows = statusline_windows
-    quota_source = "statusline_snapshot" if statusline_windows["5h"] is not None or statusline_windows["1week"] is not None else "unavailable"
-    # Prefer a fresh statusline snapshot (free); fall back to the /api/oauth/usage probe
-    # only when the snapshot has no usable windows. Respect a 429 backoff window so we
-    # don't keep hammering the usage endpoint that throttled us.
-    if quota_source == "unavailable":
-        now_ts = now if now is not None else datetime.now(timezone.utc).timestamp()
-        usage_state = read_claude_usage_state(usage_backoff_path)
-        cached_windows = fresh_cached_claude_usage_windows(usage_state, now_ts)
-        if now_ts < read_claude_usage_backoff(usage_backoff_path):
-            if cached_windows["5h"] is not None or cached_windows["1week"] is not None:
-                windows = cached_windows
-                quota_source = "oauth_usage_cache"
-            else:
-                quota_source = "usage_endpoint_backoff"
+    report_token_fingerprint = installed_token_fingerprint
+    windows = empty_windows()
+    quota_source = "unavailable"
+    now_ts = now if now is not None else datetime.now(timezone.utc).timestamp()
+    usage_state = read_claude_usage_state(usage_backoff_path)
+    # A statusline snapshot names the Claude session that emitted it, but not the credential that
+    # session is still holding in memory. After rotation an old session can therefore keep writing
+    # one account's quota while the credential stores contain another account's token. Only the
+    # usage endpoint is measured through the token we fingerprint below, and only a cache written
+    # by that exact token may survive the endpoint's polite polling interval.
+    state_matches_installed_token = bool(
+        installed_token_fingerprint
+        and usage_state.get("access_token_fingerprint") == installed_token_fingerprint
+    )
+    current_usage_state = usage_state if state_matches_installed_token else {}
+    cached_windows = fresh_cached_claude_usage_windows(current_usage_state, now_ts)
+    try:
+        next_allowed_at = float(current_usage_state.get("next_allowed_at") or 0)
+    except (TypeError, ValueError):
+        next_allowed_at = 0
+    if now_ts < next_allowed_at:
+        if cached_windows["5h"] is not None or cached_windows["1week"] is not None:
+            windows = cached_windows
+            quota_source = "oauth_usage_cache"
         else:
-            oauth_usage_probe = probe_claude_rate_limits(claude_home)
-            retry_after = oauth_usage_probe.get("retry_after_seconds")
-            if oauth_usage_probe.get("usage_endpoint_throttled") and retry_after:
-                write_claude_usage_backoff(
-                    now_ts + retry_after,
-                    usage_backoff_path,
-                    windows=cached_windows,
-                )
-            elif oauth_usage_probe.get("available"):
-                # Be polite even on success: don't re-poll for a while.
-                write_claude_usage_backoff(
-                    now_ts + CLAUDE_USAGE_MIN_INTERVAL_SECONDS,
-                    usage_backoff_path,
-                    windows=oauth_usage_probe.get("windows"),
-                )
-            if oauth_usage_probe.get("available"):
-                windows = oauth_usage_probe.get("windows") or empty_windows()
-                quota_source = "oauth_usage_api"
+            quota_source = "usage_endpoint_backoff"
+    else:
+        oauth_usage_probe = probe_claude_rate_limits(claude_home)
+        report_token_fingerprint = (
+            oauth_usage_probe.get("access_token_fingerprint") or installed_token_fingerprint
+        )
+        retry_after = oauth_usage_probe.get("retry_after_seconds")
+        if oauth_usage_probe.get("usage_endpoint_throttled") and retry_after:
+            write_claude_usage_backoff(
+                now_ts + retry_after,
+                usage_backoff_path,
+                windows=cached_windows,
+                access_token_fingerprint_value=report_token_fingerprint,
+            )
+        elif oauth_usage_probe.get("available"):
+            # Be polite even on success: don't re-poll for a while. The fingerprint makes this a
+            # per-token cache; a token change bypasses both the old windows and their backoff.
+            write_claude_usage_backoff(
+                now_ts + CLAUDE_USAGE_MIN_INTERVAL_SECONDS,
+                usage_backoff_path,
+                windows=oauth_usage_probe.get("windows"),
+                access_token_fingerprint_value=report_token_fingerprint,
+            )
+        if oauth_usage_probe.get("available"):
+            windows = oauth_usage_probe.get("windows") or empty_windows()
+            quota_source = "oauth_usage_api"
     auth_error = None
     if oauth_usage_probe and oauth_usage_probe.get("status_code") == 401:
         # A 401 is a real auth failure only when the token couldn't be refreshed back
@@ -2629,7 +2654,7 @@ def probe_claude(
         "account_id": claude_account_id(auth_text_details),
         # Which token these numbers were measured through. The hub files the report under the
         # account that token belongs to -- something this machine cannot determine for itself.
-        "access_token_fingerprint": access_token_fingerprint(credentials, "claude"),
+        "access_token_fingerprint": report_token_fingerprint,
         "email": auth_text_details.get("email"),
         "name": auth_text_details.get("organization"),
         "plan_name": human_plan_name(auth_text_details.get("subscription_type")) or human_plan_name(oauth.get("subscriptionType")) or oauth.get("subscriptionType"),

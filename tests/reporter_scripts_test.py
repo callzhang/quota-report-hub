@@ -1938,8 +1938,17 @@ Reading additional input from stdin...
                             },
                         },
                     ):
-                        with mock.patch("quota_reporters.read_claude_stats", return_value=None):
-                            payload = probe_claude(Path("/tmp/claude-home"))
+                        api_windows = {
+                            "5h": {"used_percent": 10.0, "remaining_percent": 90.0, "reset_at": (now + timedelta(hours=3)).isoformat()},
+                            "1week": {"used_percent": 100.0, "remaining_percent": 0.0, "reset_at": (now + timedelta(days=3)).isoformat()},
+                        }
+                        with mock.patch("quota_reporters.probe_claude_rate_limits", return_value={"available": True, "windows": api_windows, "status_code": 200}), \
+                             mock.patch("quota_reporters.read_claude_stats", return_value=None), \
+                             tempfile.TemporaryDirectory() as backoff_dir:
+                            payload = probe_claude(
+                                Path("/tmp/claude-home"),
+                                usage_backoff_path=Path(backoff_dir) / "b.json",
+                            )
 
         self.assertEqual(payload["email"], "leizhang0121@gmail.com")
         self.assertEqual(payload["name"], "Derek Zen")
@@ -1948,7 +1957,7 @@ Reading additional input from stdin...
         self.assertEqual(payload["usage_summary"]["organization"], "Derek Zen")
         self.assertEqual(payload["usage_summary"]["login_method"], "Claude Max account")
         self.assertEqual(payload["windows"]["5h"]["used_percent"], 10.0)
-        self.assertEqual(payload["usage_summary"]["quota_source"], "statusline_snapshot")
+        self.assertEqual(payload["usage_summary"]["quota_source"], "oauth_usage_api")
         self.assertEqual(payload["usage_summary"]["snapshot_reported_at"], now.replace(microsecond=0).isoformat().replace("+00:00", "Z"))
         self.assertNotIn("quota_status", payload["usage_summary"])
         self.assertNotIn("rate_limit_probe", payload["usage_summary"])
@@ -2096,6 +2105,96 @@ Reading additional input from stdin...
         self.assertEqual(payload["usage_summary"]["quota_source"], "oauth_usage_api")
         self.assertEqual(payload["usage_summary"]["oauth_usage_probe"]["status_code"], 200)
         self.assertEqual(usage_state["windows"], api_windows)
+
+    def test_probe_claude_does_not_report_unbound_statusline_windows(self):
+        """A live Claude session may keep emitting quota after the guard installs another token."""
+        auth_json, auth_text = self._claude_auth_mocks()
+        api_windows = {
+            "5h": {"used_percent": 12.0, "remaining_percent": 88.0, "reset_at": "2026-09-14T12:00:00Z"},
+            "1week": {"used_percent": 23.0, "remaining_percent": 77.0, "reset_at": "2026-09-20T12:00:00Z"},
+        }
+        statusline_windows = {
+            "five_hour": {"used_percentage": 100, "resets_at": 1789400000},
+            "seven_day": {"used_percentage": 59, "resets_at": 1789900000},
+        }
+        credentials = {"claudeAiOauth": {"accessToken": "current-token", "subscriptionType": "max"}}
+        with tempfile.TemporaryDirectory() as backoff_dir:
+            backoff = Path(backoff_dir) / "b.json"
+            with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+                 mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
+                 mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=(credentials, "credentials_file")), \
+                 mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value={"rate_limits": statusline_windows}), \
+                 mock.patch("quota_reporters.read_claude_stats", return_value=None), \
+                 mock.patch("quota_reporters.probe_claude_rate_limits", return_value={"available": True, "windows": api_windows, "status_code": 200}):
+                payload = probe_claude(Path("/tmp/claude-home"), now=1789300000, usage_backoff_path=backoff)
+
+        self.assertEqual(payload["windows"], api_windows)
+        self.assertEqual(payload["usage_summary"]["quota_source"], "oauth_usage_api")
+
+    def test_probe_claude_ignores_usage_cache_from_another_access_token(self):
+        auth_json, auth_text = self._claude_auth_mocks()
+        current_token = "current-token"
+        current_fingerprint = hashlib.sha256(current_token.encode("utf-8")).hexdigest()
+        cached_windows = {
+            "5h": {"remaining_percent": 0.0, "reset_at": "2026-09-14T12:00:00Z"},
+            "1week": {"remaining_percent": 41.0, "reset_at": "2026-09-20T12:00:00Z"},
+        }
+        api_windows = {
+            "5h": {"remaining_percent": 88.0, "reset_at": "2026-09-14T12:00:00Z"},
+            "1week": {"remaining_percent": 77.0, "reset_at": "2026-09-20T12:00:00Z"},
+        }
+        credentials = {"claudeAiOauth": {"accessToken": current_token, "subscriptionType": "max"}}
+        with tempfile.TemporaryDirectory() as backoff_dir:
+            backoff = Path(backoff_dir) / "b.json"
+            backoff.write_text(
+                json.dumps({
+                    "next_allowed_at": 1789500000,
+                    "access_token_fingerprint": hashlib.sha256(b"previous-token").hexdigest(),
+                    "windows": cached_windows,
+                }),
+                encoding="utf-8",
+            )
+            with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+                 mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
+                 mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=(credentials, "credentials_file")), \
+                 mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None), \
+                 mock.patch("quota_reporters.read_claude_stats", return_value=None), \
+                 mock.patch("quota_reporters.probe_claude_rate_limits", return_value={"available": True, "windows": api_windows, "status_code": 200}) as probe:
+                payload = probe_claude(Path("/tmp/claude-home"), now=1789300000, usage_backoff_path=backoff)
+                saved = json.loads(backoff.read_text(encoding="utf-8"))
+
+        probe.assert_called_once()
+        self.assertEqual(payload["windows"], api_windows)
+        self.assertEqual(saved["access_token_fingerprint"], current_fingerprint)
+
+    def test_probe_claude_binds_cache_and_report_to_token_used_by_usage_api(self):
+        auth_json, auth_text = self._claude_auth_mocks()
+        old_token = "access-token-before-refresh"
+        refreshed_token = "access-token-used-by-api"
+        measured_fingerprint = hashlib.sha256(refreshed_token.encode("utf-8")).hexdigest()
+        api_windows = {
+            "5h": {"remaining_percent": 88.0, "reset_at": "2026-09-14T12:00:00Z"},
+            "1week": {"remaining_percent": 77.0, "reset_at": "2026-09-20T12:00:00Z"},
+        }
+        credentials = {"claudeAiOauth": {"accessToken": old_token, "subscriptionType": "max"}}
+        with tempfile.TemporaryDirectory() as backoff_dir:
+            backoff = Path(backoff_dir) / "b.json"
+            with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+                 mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
+                 mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=(credentials, "credentials_file")), \
+                 mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None), \
+                 mock.patch("quota_reporters.read_claude_stats", return_value=None), \
+                 mock.patch("quota_reporters.probe_claude_rate_limits", return_value={
+                     "available": True,
+                     "windows": api_windows,
+                     "status_code": 200,
+                     "access_token_fingerprint": measured_fingerprint,
+                 }):
+                payload = probe_claude(Path("/tmp/claude-home"), now=1789300000, usage_backoff_path=backoff)
+                saved = json.loads(backoff.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["access_token_fingerprint"], measured_fingerprint)
+        self.assertEqual(saved["access_token_fingerprint"], measured_fingerprint)
 
     def test_probe_claude_marks_oauth_usage_401_as_invalid_auth(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
@@ -3944,6 +4043,24 @@ Reading additional input from stdin...
                     "status": "ok",
                     "error": None,
                 },
+                {
+                    "source": "claude",
+                    "account_id": "claude-leizhang0121@gmail.com",
+                    "email": "leizhang0121@gmail.com",
+                    "plan_name": "Max",
+                    "uploader_email": "derek@stardust.ai",
+                    "status": "ok",
+                    "error": None,
+                    "usage_summary": {
+                        "central_refresh": {
+                            "attempted": True,
+                            "ok": False,
+                            "auth_rejected": True,
+                            "status": 400,
+                        }
+                    },
+                    "refresh_validity": {"status": "rejected"},
+                },
             ],
             "archived_invalidated_items": [
                 {
@@ -3975,6 +4092,7 @@ Reading additional input from stdin...
 
         self.assertEqual([row["account_id"] for row in rows], [
             "sirui.chen@stardust.ai",
+            "claude-leizhang0121@gmail.com",
             "claude-dead@example.com",
         ])
 
@@ -6295,12 +6413,18 @@ Reading additional input from stdin...
 
     def test_probe_claude_respects_usage_endpoint_backoff(self):
         auth_json, auth_text = self._claude_auth_mocks()
+        token = "current-token"
+        fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
         with tempfile.TemporaryDirectory() as backoff_dir:
             backoff = Path(backoff_dir) / "b.json"
-            quota_reporters.write_claude_usage_backoff(5000.0, backoff)  # future vs now=1000
+            quota_reporters.write_claude_usage_backoff(
+                5000.0,
+                backoff,
+                access_token_fingerprint_value=fingerprint,
+            )  # future vs now=1000
             with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
                 with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
-                    with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"subscriptionType": "max"}}, "credentials_file")):
+                    with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"accessToken": token, "subscriptionType": "max"}}, "credentials_file")):
                         with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None):
                             with mock.patch("quota_reporters.read_claude_stats", return_value=None):
                                 with mock.patch("quota_reporters.probe_claude_rate_limits") as probe:
@@ -6310,6 +6434,8 @@ Reading additional input from stdin...
 
     def test_probe_claude_reuses_cached_usage_windows_during_backoff(self):
         auth_json, auth_text = self._claude_auth_mocks()
+        token = "current-token"
+        fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
         cached_windows = {
             "5h": {
                 "used_percent": 3.0,
@@ -6329,12 +6455,12 @@ Reading additional input from stdin...
         with tempfile.TemporaryDirectory() as backoff_dir:
             backoff = Path(backoff_dir) / "b.json"
             backoff.write_text(
-                json.dumps({"next_allowed_at": 5000.0, "windows": cached_windows}),
+                json.dumps({"next_allowed_at": 5000.0, "access_token_fingerprint": fingerprint, "windows": cached_windows}),
                 encoding="utf-8",
             )
             with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
                 with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
-                    with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"subscriptionType": "max"}}, "credentials_file")):
+                    with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"accessToken": token, "subscriptionType": "max"}}, "credentials_file")):
                         with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None):
                             with mock.patch("quota_reporters.read_claude_stats", return_value=None):
                                 with mock.patch("quota_reporters.probe_claude_rate_limits") as probe:
@@ -6360,12 +6486,15 @@ Reading additional input from stdin...
 
     def test_probe_claude_does_not_reuse_expired_cached_usage_windows(self):
         auth_json, auth_text = self._claude_auth_mocks()
+        token = "current-token"
+        fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()
         with tempfile.TemporaryDirectory() as backoff_dir:
             backoff = Path(backoff_dir) / "b.json"
             backoff.write_text(
                 json.dumps(
                     {
                         "next_allowed_at": 5000.0,
+                        "access_token_fingerprint": fingerprint,
                         "windows": {
                             "5h": {"remaining_percent": 97.0, "reset_at": "1970-01-01T00:15:00Z"},
                             "1week": {"remaining_percent": 96.0, "reset_at": "1970-01-01T00:16:00Z"},
@@ -6376,7 +6505,7 @@ Reading additional input from stdin...
             )
             with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
                 with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
-                    with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"subscriptionType": "max"}}, "credentials_file")):
+                    with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=({"claudeAiOauth": {"accessToken": token, "subscriptionType": "max"}}, "credentials_file")):
                         with mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None):
                             with mock.patch("quota_reporters.read_claude_stats", return_value=None):
                                 with mock.patch("quota_reporters.probe_claude_rate_limits") as probe:
