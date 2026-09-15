@@ -125,13 +125,18 @@ Code: `skills/quota-reporter/scripts/{quota_guard.py, quota_reporters.py, instal
 ### 3.2 The guard cycle (`quota_guard.py` `run_guard` `:1471-1642`)
 Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 1. **Self-update** from GitHub `main` unless disabled (`:1645-1664`).
-2. **Scheduler self-heal** — re-register launchd/cron if missing (`ensure_scheduler_registration` `:511-564`).
-3. **Probe Codex** — `probe_codex(..., capture_refreshed_auth=True)`, persist any CLI-refreshed `auth.json` back atomically, then strip the sensitive `refreshed_auth_json` from the payload (`:1463-1468`).
-4. **Probe Claude** — `probe_claude` (or a synthetic error if a custom ANTHROPIC provider is active).
-5. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool`, which always sends a **probe heartbeat** and attaches the quota payload only when the hub would accept it (see 3.7).
-6. **Rotate** — `maybe_replace_{codex,claude}_auth` (`:1559-1588`).
-7. **Codex app-server restart** if auth changed (`:1589-1609`).
-8. **Notifications** (toasts) unless `--no-toast`. The uploaded-auth recovery check follows the
+   The downloaded tarball is first checked so every member resolves under the temporary extraction
+   directory, then extracted with Python's explicit `data` filter. The two checks cover both member
+   paths and link/special-file semantics without relying on the extraction default that changes in
+   Python 3.14 (`quota_guard.py:225-232`).
+2. **Desktop launcher self-heal** — macOS recreates `~/Desktop/刷新code账号.command`; Windows recreates `~/Desktop/刷新code账号.lnk` and its adjacent batch runner. The launchers invoke this same guard script, so a manual click uses the full normal cycle rather than a reduced account-switch path.
+3. **Scheduler self-heal** — re-register launchd/cron if missing (`ensure_scheduler_registration` `:511-564`).
+4. **Probe Codex** — `probe_codex(..., capture_refreshed_auth=True)`, persist any CLI-refreshed `auth.json` back atomically, then strip the sensitive `refreshed_auth_json` from the payload (`:1463-1468`).
+5. **Probe Claude** — `probe_claude` (or a synthetic error if a custom ANTHROPIC provider is active).
+6. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool`, which always sends a **probe heartbeat** and attaches the quota payload only when the hub would accept it (see 3.7).
+7. **Rotate** — `maybe_replace_{codex,claude}_auth` (`:1559-1588`).
+8. **Codex app-server restart** if auth changed (`:1589-1609`).
+9. **Notifications** (toasts) unless `--no-toast`. The uploaded-auth recovery check follows the
    pool's sticky refresh verdict (`usage_summary.central_refresh.auth_rejected` or the derived
    `refresh_validity.status=rejected`), even while the last access token still makes the row's
    top-level probe `status=ok`; waiting for that access token to die would suppress the only useful

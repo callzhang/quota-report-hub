@@ -81,6 +81,11 @@ After install, teammates can either:
 - run one local guard check with `quota_guard.py`
 - install scheduled checking with `install_quota_guard.py`
 
+There is also a desktop launcher created/kept by the guard itself for manual runs:
+
+- macOS: `~/Desktop/刷新code账号.command`
+- Windows: `~/Desktop/刷新code账号.lnk`
+
 ## Local Frontend
 
 Run the static dashboard frontend on the fixed local port:

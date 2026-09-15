@@ -95,6 +95,9 @@ PROBE_FAILURE_NOTIFY_THRESHOLD = 3
 PROBE_FAILURE_REPEAT_SECONDS = 6 * 60 * 60
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 AUTH_POOL_MISSING_CONFIG_TEXT = "auth pool not configured (run install_quota_guard.py)"
+DESKTOP_SHORTCUT_DISPLAY_NAME = "刷新code账号"
+DESKTOP_SHORTCUT_NAME_DARWIN = f"{DESKTOP_SHORTCUT_DISPLAY_NAME}.command"
+DESKTOP_SHORTCUT_NAME_WINDOWS = f"{DESKTOP_SHORTCUT_DISPLAY_NAME}.lnk"
 
 
 def install_auth_with_usage_boundary(
@@ -228,7 +231,7 @@ def unpack_skill_from_tarball(archive_path: Path, destination: Path) -> Path:
             member_path = (destination / member.name).resolve()
             if destination.resolve() not in [member_path, *member_path.parents]:
                 raise RuntimeError(f"Unsafe path in downloaded archive: {member.name}")
-        archive.extractall(destination)
+        archive.extractall(destination, filter="data")
     candidates = sorted(destination.glob("*/skills/quota-reporter"))
     if not candidates:
         raise RuntimeError("Downloaded repository did not contain skills/quota-reporter")
@@ -1097,6 +1100,225 @@ def scheduler_warning_message(warning: dict) -> str:
         f"未检测到 quota_guard 的 15 分钟定时任务（{scheduler}: {reason}）。"
         f"请让 agent 运行安装命令修复：{command}"
     )
+
+
+def _desktop_shortcut_path() -> Path | None:
+    system = platform.system()
+    if system == "Darwin":
+        return Path.home() / "Desktop" / DESKTOP_SHORTCUT_NAME_DARWIN
+    if system == "Windows":
+        return Path.home() / "Desktop" / DESKTOP_SHORTCUT_NAME_WINDOWS
+    return None
+
+
+def _normalize_shortcut_contents(value: str) -> str:
+    return (value or "").replace("\r\n", "\n").replace("\r", "\n").rstrip("\n") + "\n"
+
+
+def _desktop_shortcut_contents() -> str:
+    script_path = Path(__file__).resolve()
+    if platform.system() == "Darwin":
+        return "\n".join(
+            [
+                "#!/bin/sh",
+                f"exec {shlex.quote(sys.executable)} {shlex.quote(str(script_path))} \"$@\"",
+                "",
+            ]
+        )
+    return ""
+
+
+def _desktop_shortcut_windows_launcher() -> str:
+    return "\n".join(
+        [
+            "@echo off",
+            f'"{sys.executable}" "{Path(__file__).resolve()}"',
+            "",
+        ]
+    )
+
+
+def _write_windows_shortcut(
+    shortcut_path: Path,
+    powershell_path: str,
+    existed: bool,
+) -> dict | None:
+    runner_path = shortcut_path.with_suffix(".bat")
+    runner_existed = runner_path.exists()
+    try:
+        runner_path.write_text(_normalize_shortcut_contents(_desktop_shortcut_windows_launcher()), encoding="utf-8")
+    except Exception as error:
+        return {
+            "ok": False,
+            "platform": platform.system(),
+            "shortcut_name": shortcut_path.name,
+            "shortcut_path": str(shortcut_path),
+            "reason": "shortcut_runner_write_failed",
+            "error": str(error)[:200],
+        }
+
+    ps_script = tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8")
+    installer_path = Path(ps_script.name)
+    installer_content = "\n".join(
+        [
+            "param(",
+            "  [Parameter(Mandatory = $true)][string]$ShortcutPath,",
+            "  [Parameter(Mandatory = $true)][string]$RunnerPath,",
+            "  [Parameter(Mandatory = $true)][string]$IconPath",
+            ")",
+            "",
+            "$ErrorActionPreference = 'Stop'",
+            "$wsh = New-Object -ComObject WScript.Shell",
+            "$shortcut = $wsh.CreateShortcut($ShortcutPath)",
+            "$shortcut.TargetPath = $env:ComSpec",
+            '$shortcut.Arguments = "/c `"{0}`"" -f $RunnerPath',
+            "$shortcut.WorkingDirectory = [System.IO.Path]::GetDirectoryName($RunnerPath)",
+            "$shortcut.WindowStyle = 1",
+            '$shortcut.IconLocation = "$IconPath,0"',
+            "$shortcut.Description = '刷新code账号: run quota_guard manually'",
+            "$shortcut.Save()",
+        ]
+    )
+
+    try:
+        ps_script.write(installer_content)
+        ps_script.flush()
+    finally:
+        ps_script.close()
+
+    try:
+        subprocess.run(
+            [
+                powershell_path,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(installer_path),
+                "-ShortcutPath",
+                str(shortcut_path),
+                "-RunnerPath",
+                str(runner_path),
+                "-IconPath",
+                str(sys.executable),
+            ],
+            check=True,
+        )
+    except Exception as error:
+        return {
+            "ok": False,
+            "platform": platform.system(),
+            "shortcut_name": shortcut_path.name,
+            "shortcut_path": str(shortcut_path),
+            "reason": "shortcut_link_failed",
+            "error": str(error)[:200],
+        }
+    finally:
+        try:
+            installer_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    return {
+        "ok": True,
+        "platform": platform.system(),
+        "shortcut_name": shortcut_path.name,
+        "shortcut_path": str(shortcut_path),
+        "runner_path": str(runner_path),
+        "updated": existed or runner_existed,
+        "created": not existed,
+    }
+
+
+def ensure_desktop_shortcut() -> dict:
+    shortcut_path = _desktop_shortcut_path()
+    if shortcut_path is None:
+        return {"ok": True, "reason": "unsupported_platform", "platform": platform.system()}
+
+    existed = shortcut_path.exists()
+
+    try:
+        shortcut_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as error:
+        return {
+            "ok": False,
+            "platform": platform.system(),
+            "shortcut_name": shortcut_path.name,
+            "reason": "desktop_dir_create_failed",
+            "error": str(error)[:200],
+        }
+    if not shortcut_path.parent.is_dir():
+        return {
+            "ok": False,
+            "platform": platform.system(),
+            "shortcut_name": shortcut_path.name,
+            "reason": "desktop_not_directory",
+            "path": str(shortcut_path.parent),
+        }
+
+    if platform.system() == "Darwin":
+        desired = _normalize_shortcut_contents(_desktop_shortcut_contents())
+        existing = _normalize_shortcut_contents(shortcut_path.read_text(encoding="utf-8")) if shortcut_path.exists() else None
+        if existing != desired:
+            try:
+                shortcut_path.write_text(desired, encoding="utf-8")
+            except Exception as error:
+                return {
+                    "ok": False,
+                    "platform": platform.system(),
+                    "shortcut_name": shortcut_path.name,
+                    "shortcut_path": str(shortcut_path),
+                    "reason": "shortcut_write_failed",
+                    "error": str(error)[:200],
+                }
+            shortcut_path.chmod(0o755)
+        return {
+            "ok": True,
+            "platform": platform.system(),
+            "shortcut_name": shortcut_path.name,
+            "shortcut_path": str(shortcut_path),
+            "updated": existing is not None and existing != desired,
+            "created": not existed,
+        }
+
+    if platform.system() == "Windows":
+        powershell_path = (
+            shutil.which("powershell")
+            or shutil.which("powershell.exe")
+            or shutil.which("pwsh")
+            or shutil.which("pwsh.exe")
+        )
+        if powershell_path is None:
+            return {
+                "ok": False,
+                "platform": platform.system(),
+                "shortcut_name": shortcut_path.name,
+                "shortcut_path": str(shortcut_path),
+                "reason": "shortcut_no_powershell",
+                "error": "PowerShell command not found",
+            }
+        shortcut_result = _write_windows_shortcut(
+            shortcut_path=shortcut_path,
+            powershell_path=powershell_path,
+            existed=existed,
+        )
+        if shortcut_result is None or shortcut_result.get("ok") is False:
+            return shortcut_result or {
+                "ok": False,
+                "platform": platform.system(),
+                "shortcut_name": shortcut_path.name,
+                "shortcut_path": str(shortcut_path),
+                "reason": "shortcut_write_failed",
+            }
+        return shortcut_result
+
+    return {
+        "ok": False,
+        "platform": platform.system(),
+        "shortcut_name": shortcut_path.name,
+        "reason": "unsupported_platform",
+        "details": f"{platform.system()} desktop shortcut not implemented",
+    }
 
 
 def notify_scheduler_warning(warning: dict) -> dict:
@@ -2329,6 +2551,16 @@ def run_guard(args: argparse.Namespace) -> dict:
         guard_errors["token_usage"] = guard_exception_result("token_usage_state_failed", error)
 
     warnings = {}
+    desktop_shortcut_check = run_guard_step(
+        "desktop_shortcut_check_failed",
+        lambda: timed_guard_step(
+            timings,
+            "desktop_shortcut_check",
+            lambda: ensure_desktop_shortcut(),
+        ),
+    )
+    if desktop_shortcut_check.get("ok") is False:
+        warnings["desktop_shortcut"] = desktop_shortcut_check
     scheduler_check = run_guard_step(
         "scheduler_check_failed",
         lambda: timed_guard_step(timings, "scheduler_check", lambda: ensure_scheduler_registration(config)),

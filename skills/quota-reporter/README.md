@@ -89,8 +89,11 @@ Older report-oriented scripts remain under `archive/` only for reference.
 2. Paste the emailed personal token
 3. Confirm the installer prints a successful `verification` block
 4. Let the scheduled guard run every 15 minutes
-5. Optionally run `quota_guard.py` manually after a login change
-6. Optionally run `trigger_remote_probe.py` to force one cloud probe cycle
+5. Double-click the desktop shortcut to run the guard manually:
+   - macOS: `~/Desktop/刷新code账号.command`
+   - Windows: `~/Desktop/刷新code账号.lnk`
+6. Optionally run `quota_guard.py` manually after a login change
+7. Optionally run `trigger_remote_probe.py` to force one cloud probe cycle
 
 Agents installing this skill for a teammate must finish the setup end-to-end. Do not stop after copying files or writing `~/.agents/auth/quota-reporter.json`; the install is not complete until scheduler registration is verified and one immediate guard cycle succeeds. If verification fails, inspect `~/.agents/auth/quota-guard.log` and `~/.agents/auth/quota-guard.error.log`, fix the environment, and rerun the installer or guard.
 
@@ -99,6 +102,13 @@ If the hub returns a newer personal token during upload, quota report, or fetch,
 `fetch-best` may return `repair_auth` when one of the user's uploaded auths has been invalidated. The guard installs that repair auth so the owner can re-login and refresh their own account instead of receiving someone else's shared replacement.
 
 Use `quota_guard.py --skip-self-update` only when debugging a local edit and you do not want the script to replace itself from GitHub first.
+
+`quota_guard.py` also keeps these desktop shortcuts self-healing: every run checks whether the
+macOS/Windows desktop launcher exists and rewrites it when the command target path changes.
+
+On macOS the launcher is a plain shell script (`.command`) under the same visible icon as a terminal
+script. On Windows the launcher is an `.lnk` shortcut with an executable icon so it appears as a normal
+desktop shortcut.
 
 Use `quota_guard.py --json` when you need the full structured result for debugging or automation. Manual runs should normally use the default summary output.
 

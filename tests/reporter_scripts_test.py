@@ -1,8 +1,10 @@
 import sys
 import subprocess
+import tarfile
 import tempfile
 import types
 import unittest
+import warnings
 import io
 import contextlib
 import importlib.util
@@ -5242,6 +5244,24 @@ Reading additional input from stdin...
 
         self.assertFalse(result["updated"])
         self.assertEqual(result["reason"], "already_current")
+
+    def test_self_update_tarball_extraction_does_not_rely_on_the_deprecated_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            archive_path = base / "archive.tar.gz"
+            destination = base / "unpacked"
+            destination.mkdir()
+            content = b"self-update fixture\n"
+            member = tarfile.TarInfo("quota-report-hub-sha/skills/quota-reporter/SKILL.md")
+            member.size = len(content)
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(member, io.BytesIO(content))
+
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", DeprecationWarning)
+                skill_root = quota_guard.unpack_skill_from_tarball(archive_path, destination)
+
+        self.assertEqual(skill_root.name, "quota-reporter")
 
     def test_github_latest_sha_falls_back_to_atom_when_api_is_rate_limited(self):
         api_error = urllib.error.HTTPError(
