@@ -95,6 +95,49 @@ test("a revival records no central-refresh verdict — it would describe the rep
   assert.equal(events[1].central_refresh_verdict, null);
 });
 
+test("a codex auth_last_refresh is stored as a parseable ISO timestamp", async () => {
+  const a = account();
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-06T06:51:00Z" }));
+  await db.upsertAuthPoolQuota(report(a, { status: "error", error: DEAD, at: "2026-09-06T07:13:06Z" }));
+
+  const events = await eventsFor(a);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].hub_last_refresh_at, "2026-09-06T05:59:27.839Z");
+  assert.ok(Number.isFinite(Date.parse(events[0].hub_last_refresh_at)));
+});
+
+test("a claude expiry masquerading as auth_last_refresh is not recorded as a rotation", async () => {
+  // claude's auth_last_refresh mirrors claudeAiOauth.expiresAt — a FUTURE timestamp. Recording it
+  // under hub_last_refresh_at would make every rotation-to-death interval on a claude row negative;
+  // 52 of the first 77 rows in production carried exactly this, one of them converting to
+  // 2026-09-29 for a death observed on 2026-09-12.
+  const a = `claude-${account()}`;
+  const claudeReport = (status, error, at) => ({
+    source: "claude",
+    account_id: a,
+    hostname: "test-host",
+    reporter_name: "tester@test-host",
+    reported_at: at,
+    plan_name: "Max",
+    auth_last_refresh: "1790708346219",
+    status,
+    error,
+    windows:
+      status === "ok"
+        ? { "5h": { remaining_percent: 80, reset_at: at }, "1week": { remaining_percent: 70, reset_at: at } }
+        : {},
+  });
+  await db.upsertAuthPoolQuota(claudeReport("ok", null, "2026-09-12T06:00:00Z"));
+  await db.upsertAuthPoolQuota(
+    claudeReport("error", "claude auth invalid (authentication_error)", "2026-09-12T07:00:00Z")
+  );
+
+  const events = await eventsFor(a);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, "death");
+  assert.equal(events[0].hub_last_refresh_at, null);
+});
+
 test("staying dead appends nothing — the row marks the transition, not the state", async () => {
   const a = account();
   await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-06T06:00:00Z" }));

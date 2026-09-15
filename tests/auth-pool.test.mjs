@@ -224,6 +224,58 @@ test("pickBestAuthPoolCandidate skips hard-invalidated reports and chooses best 
   assert.equal(candidate.report.account_id, "soft");
 });
 
+test("a transient Free in the probe payload does not evict an account whose credential says Pro", () => {
+  // 2026-09-12: professional@stardust.ai reported plan_name "Free" exactly once, between two Pro
+  // readings. The eligibility gate read the probe payload, so that single sample was enough to drop a
+  // working account out of selection. The credential's plan (id_token claim) is the authoritative
+  // one — reports.js already builds its dashboard rows from it.
+  const reports = [
+    {
+      source: "codex",
+      account_id: "misread",
+      status: "ok",
+      error: null,
+      plan_name: "Free",
+      windows: { "5h": { remaining_percent: 95 }, "1week": { remaining_percent: 90 } },
+      reported_at: "2026-09-12T10:40:09Z",
+    },
+  ];
+  const pool = [{ account_id: "misread", plan_name: "Pro" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: { five_h_remaining_percent: 10, one_week_remaining_percent: 10 },
+    now: "2026-09-12T10:45:00Z",
+  });
+
+  assert.equal(candidate?.entry.account_id, "misread");
+});
+
+test("an account whose credential really is Free stays ineligible", () => {
+  const reports = [
+    {
+      source: "codex",
+      account_id: "genuinely-free",
+      status: "ok",
+      error: null,
+      plan_name: "Pro",
+      windows: { "5h": { remaining_percent: 95 }, "1week": { remaining_percent: 90 } },
+      reported_at: "2026-09-12T10:40:09Z",
+    },
+  ];
+  const pool = [{ account_id: "genuinely-free", plan_name: "Free" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: { five_h_remaining_percent: 10, one_week_remaining_percent: 10 },
+    now: "2026-09-12T10:45:00Z",
+  });
+
+  assert.equal(candidate, null);
+});
+
 test("pickBestAuthPoolCandidate spreads fetches across similarly strong accounts", () => {
   const reports = [
     {

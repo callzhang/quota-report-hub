@@ -686,12 +686,32 @@ which came back 401 seventy-one minutes later.
 mengen.wang@ 73 — there measured from upload, here from the hub's own rotation). And this one is a
 **Pro** account, which is one more observation that the mechanism is not plan-bound.
 
-So the rule needs a third branch. "Hub refreshed inside the interval" conflates two cases: a refresh
-that *succeeded* and was later spent by someone else (points outward), and a refresh that was itself
-the last thing to touch a grant that then died (points inward). Separating them needs the outcome of
-that refresh, not just its timestamp — `central_refresh_verdict` already carries it, and this row shows
-`rejected` for the *later* attempt while the 07:17 rotation succeeded. One case is not a rate; what it
-establishes is that the classifier, not the data, is what needs work next.
+**Corrected rule (2026-09-15).** Two things were wrong with the one above, and both are properties of
+the column rather than of the data.
+
+First, `hub_last_refresh_at` does not mean "the hub refreshed at T". It is the blob's `last_refresh`,
+which the hub's central refresh writes **and a client's captured refresh also writes** — so it reads
+"the grant's last known rotation, by whoever performed it". Second, a timestamp in that column is
+itself proof the rotation **succeeded**: only a successful refresh advances it. A successful rotation
+hands back a live token, so it cannot be what killed the grant it just renewed.
+
+Put together, the branches are:
+
+| Observation | Reading |
+|---|---|
+| Rotation inside `[last_healthy, observed]`, and the death's own `central_refresh_verdict` is `rejected` | **External.** The rotation succeeded; something spent that generation before the hub's next attempt, which was then refused. |
+| Rotation inside the interval, verdict `not_attempted` | Unresolved — the grant rotated and died with the hub never testing it. |
+| Rotation **before** `last_healthy` | **External.** Nothing touched the grant during the window in which it died. |
+
+The two Team deaths that finally arrived both fall in the third row — `derek@` 2026-09-13T07:30 and
+`bd@` 2026-09-14T02:49, at 560 and 621 minutes past their last rotation. Neither carries the 71–76
+minute signature; across the whole pre-fix log only 5 of the 13 deaths with a usable rotation time sat
+inside 90 minutes (median 223). Both predate the handoff change below, so neither tests it.
+
+**The column is codex-only.** `auth_last_refresh` on a claude row mirrors `claudeAiOauth.expiresAt` —
+an expiry, in the future — so recording it as a rotation made every claude interval negative. 52 of
+the first 77 rows carried such a value; they are now null, which is the truth, and the writer records
+the field only for codex.
 
 **The measurement that would settle it** is not more of this one. It is a per-death record of
 **whether the grant's generation advanced, and who advanced it**:
