@@ -76,6 +76,7 @@ test("status returns the dashboard revision loaded with current state", async ()
     authPoolQuotaLatest: async () => [],
     authPoolInvalidatedNotifications: async () => [],
     authPoolFetchLog: async () => [],
+    authPoolActiveRequesterAssignments: async () => [],
     poolHealthSnapshots: async () => [],
     reporterProbeHeartbeats: async () => [],
     reporterHealthPayload: () => ({ items: [], silent_count: 0, probe_failing_count: 0, probe_error_count: 0 }),
@@ -90,6 +91,54 @@ test("status returns the dashboard revision loaded with current state", async ()
   assert.equal(payload.dashboard_revision, 17);
   assert.equal(payload.dashboard_updated_at, "2026-08-08T08:00:00Z");
   assert.equal(payload.dashboard_revision_token, "qrr.revision.ticket");
+});
+
+test("status returns every current requester assignment for the Fetched By column", async () => {
+  const { statusHandlerImpl } = await import(`../api/status.js?active-assignments=${Date.now()}`);
+  let body = "";
+  const res = { setHeader() {}, end(value) { body = value; } };
+  const assignments = [
+    {
+      source: "codex",
+      requester_email: "first@stardust.ai",
+      requester_id: "first@mac",
+      fetched_at: "2026-09-15T02:00:00.000Z",
+      active_account_id: "shared@stardust.ai",
+      reason: "refreshed_current",
+    },
+    {
+      source: "codex",
+      requester_email: "second@stardust.ai",
+      requester_id: "second@gpu",
+      fetched_at: "2026-09-15T01:00:00.000Z",
+      active_account_id: "shared@stardust.ai",
+      reason: "no_better_auth_available",
+    },
+  ];
+
+  await statusHandlerImpl({}, res, {
+    authenticateApiRequest: async () => ({ email: "member@stardust.ai" }),
+    sendServiceUnavailable() { assert.fail("unexpected service error"); },
+    sendUnauthorized() { assert.fail("unexpected unauthorized response"); },
+    withTokenUpgrade: (payload) => payload,
+    signDashboardRevisionToken: () => "qrr.revision.ticket",
+    dbConfigured: () => true,
+    dashboardRevision: async () => ({ revision: 17, updated_at: "2026-09-15T02:00:00.000Z" }),
+    authPoolEntrySummaries: async () => [],
+    authPoolQuotaLatest: async () => [],
+    authPoolInvalidatedNotifications: async () => [],
+    authPoolFetchLog: async () => [],
+    authPoolActiveRequesterAssignments: async () => assignments,
+    poolHealthSnapshots: async () => [],
+    reporterProbeHeartbeats: async () => [],
+    reporterHealthPayload: () => ({ items: [], silent_count: 0, probe_failing_count: 0, probe_error_count: 0 }),
+    authPoolStatusPayload: () => ({ items: [], archived_invalidated_items: [] }),
+    getFeatureFlag: async () => false,
+    adminRole: async () => null,
+    listAdmins: async () => [],
+  });
+
+  assert.deepEqual(JSON.parse(body).active_assignments, assignments);
 });
 
 test("status retries when a concurrent write changes revision and never tags stale data as current", async () => {
@@ -124,6 +173,7 @@ test("status retries when a concurrent write changes revision and never tags sta
     authPoolQuotaLatest: async () => [],
     authPoolInvalidatedNotifications: async () => [],
     authPoolFetchLog: async () => [],
+    authPoolActiveRequesterAssignments: async () => [],
     poolHealthSnapshots: async () => [],
     reporterProbeHeartbeats: async () => [],
     reporterHealthPayload: () => ({ items: [], silent_count: 0, probe_failing_count: 0, probe_error_count: 0 }),

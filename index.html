@@ -1407,15 +1407,15 @@
         scheduleDashboardTransition(items);
         checkQuotaFullNotifications(items);
         const invalidatedItems = (payload.archived_invalidated_items || []).sort((a, b) => (b.first_invalidated_at || "").localeCompare(a.first_invalidated_at || ""));
-        const fetchLogByAccount = new Map();
-        for (const log of (payload.fetch_log || [])) {
-          if (log.reason !== "served" && log.reason !== "repair_returned") continue;
-          const key = `${log.source}:${log.served_account_id}`;
-          const list = fetchLogByAccount.get(key);
+        const assignmentsByAccount = new Map();
+        for (const assignment of (payload.active_assignments || [])) {
+          if (!assignment.source || !assignment.active_account_id || !assignment.requester_email) continue;
+          const key = `${assignment.source}:${assignment.active_account_id}`;
+          const list = assignmentsByAccount.get(key);
           if (!list) {
-            fetchLogByAccount.set(key, [log]);
-          } else if (!list.some((l) => l.requester_email === log.requester_email)) {
-            list.push(log);
+            assignmentsByAccount.set(key, [assignment]);
+          } else if (!list.some((current) => current.requester_email === assignment.requester_email)) {
+            list.push(assignment);
           }
         }
         const totalActive = payload.auth_pool_count || 0;
@@ -1440,7 +1440,7 @@
             <td>${item.display_windows?.["5h"] ? progressCell(item.display_windows?.["5h"], item.display_windows_stale ?? item.windows_stale) : quotaWindowFallback()}</td>
             <td>${item.display_windows?.["1week"] ? progressCell(item.display_windows?.["1week"], item.display_windows_stale ?? item.windows_stale) : quotaWindowFallback()}</td>
             <td>${(() => {
-                const flList = fetchLogByAccount.get(`${item.source}:${item.account_id}`);
+                const flList = assignmentsByAccount.get(`${item.source}:${item.account_id}`);
                 if (!flList || !flList.length) return `<div class="meta">-</div>`;
                 const age = Math.max(0, Math.floor((Date.now() - Date.parse(flList[0].fetched_at || "")) / 1000));
                 return flList.map((fl) => {

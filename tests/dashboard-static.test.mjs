@@ -49,6 +49,14 @@ test("dashboard restores quota progress columns while keeping availability detai
   assert.doesNotMatch(html, /function tokenStateLine|function quotaSnapshotLine|function refreshValidityLine|function usageCell/);
 });
 
+test("Fetched By renders every current assignment instead of filtering the latest fetch audit", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  assert.match(html, /payload\.active_assignments/);
+  assert.match(html, /assignment\.active_account_id/);
+  assert.doesNotMatch(html, /for \(const log of \(payload\.fetch_log \|\| \[\]\)\)/);
+});
+
 test("active and invalidated account tables keep independent column layouts", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
 

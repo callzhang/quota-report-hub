@@ -259,7 +259,7 @@ Single module-load client (`lib/db.js:15-18`); schema created lazily + memoized 
 | `auth_users` | PK `email` | Known members. (`:421-427`) |
 | `auth_api_tokens` | PK `token_hash` | Issued tokens, **hash only**, one active per email. (`:428-435`) |
 | `auth_pool_fetch_log` | PK autoinc | Audit of every pool fetch (served / repair / no-match) + requester quota. (`:436-456`) |
-| `auth_pool_requester_assignments` | PK `(source, requester_key)` | Latest fetch/current-account state per requester. Used for active assignment counts and dashboard fetch summaries without scanning `auth_pool_fetch_log`. |
+| `auth_pool_requester_assignments` | PK `(source, requester_key)` | Latest fetch/current-account state per requester. Used for active assignment counts and the dashboard's complete `Fetched By` read model without scanning `auth_pool_fetch_log`. |
 | `auth_pool_reporter_assignments` | PK `(source, reporter_key)` | Latest quota-account state per reporting machine. Used for active reporter counts without scanning `auth_pool_quota_events`. |
 | `auth_pool_invalidated_notifications` | PK `(source, account_id)` | Since-when an account is hard-dead + last email sent. (`:459-468`) |
 | `feature_flags` | PK `key` | `disabled_refresh_token`, `require_contribution` (stored as `"true"`/`"false"`). (`:469-476`) |
@@ -374,6 +374,13 @@ In branches 2–3, when `disabled_refresh_token` is ON, the served blob is run t
 - Mailgun for token delivery + 24h-stale-auth alerts (`:127-275`).
 
 `/api/status` reads the revision before and after assembling current state. If a dashboard-visible write occurs between those reads, it retries the assembly once; if state keeps changing, it returns the normal service-unavailable response instead of labeling stale data with the new revision.
+
+The Accounts table's **Fetched By** column reads `active_assignments` from the compact
+`auth_pool_requester_assignments` table, keyed by its `active_account_id`. This returns every
+current machine-to-account assignment, including a machine whose most recent request refreshed the
+same account or found no better replacement; those are still evidence that it is using that account.
+It does not derive the column from the bounded `fetch_log` audit preview, which can omit older active
+assignments and does not represent current ownership after a non-serve request.
 
 The browser keys in-flight full-status requests by the exact session token and a request generation. Pasting or clearing a token invalidates older generations, so a delayed response from the previous session cannot clear or overwrite the current session. Revision responses also recheck tab visibility immediately before requesting full status.
 
