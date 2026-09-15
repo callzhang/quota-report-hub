@@ -6,6 +6,7 @@ async function loadWorkerModule() {
   const previousToken = process.env.TURSO_AUTH_TOKEN;
   process.env.TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL || "file:quota-report-hub-test.db";
   process.env.TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN || "test-token";
+  process.env.AUTH_POOL_ENCRYPTION_KEY = process.env.AUTH_POOL_ENCRYPTION_KEY || "0".repeat(64);
   try {
     return await import(`../scripts/probe_auth_pool_worker.mjs?ts=${Date.now()}`);
   } finally {

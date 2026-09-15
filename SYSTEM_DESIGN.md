@@ -133,9 +133,9 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 3. **Scheduler self-heal** — re-register launchd/cron if missing (`ensure_scheduler_registration` `:511-564`).
 4. **Probe Codex** — `probe_codex(..., capture_refreshed_auth=True)`, persist any CLI-refreshed `auth.json` back atomically, then strip the sensitive `refreshed_auth_json` from the payload (`:1463-1468`).
 5. **Probe Claude** — `probe_claude` (or a synthetic error if a custom ANTHROPIC provider is active).
-6. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool`, which always sends a **probe heartbeat** and attaches the quota payload only when the hub would accept it (see 3.7).
+6. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool`, which always sends a **probe heartbeat** and attaches the quota payload only when the hub would accept it (see 3.7). Before a Codex auth with a real RT can upload, the guard checks for an unmanaged local app-server; one means the upload is refused as `app_server_restart_required`, because the Hub verification would rotate an RT the process still has in memory.
 7. **Rotate** — `maybe_replace_{codex,claude}_auth` (`:1559-1588`).
-8. **Codex app-server restart** if auth changed (`:1589-1609`).
+8. **Codex app-server restart** if auth changed (`:1589-1609`). A successful Codex upload that installs the Hub's returned AT-only blob counts as an auth change, so it always enters this restart step after install/strip; it cannot silently continue after an unmanaged-daemon refusal.
 9. **Notifications** (toasts) unless `--no-toast`. The uploaded-auth recovery check follows the
    pool's sticky refresh verdict (`usage_summary.central_refresh.auth_rejected` or the derived
    `refresh_validity.status=rejected`), even while the last access token still makes the row's
@@ -187,6 +187,12 @@ immediate replacement trigger.
   shadowed — the strip is **withheld** (`strip_withheld_no_working_at`) and the real RT is kept for
   the next cycle. A machine that can still refresh is recoverable; one that cannot is not. This also
   means hub and clients can roll out in either order.
+- **Codex app-server boundary**: a full-RT Codex upload is allowed only after the guard finds no
+  unmanaged app-server for the current user. The Hub verifies that upload by rotating the RT, then
+  the client installs the returned AT-only credential, strips its RT, and restarts the managed
+  app-server in the same cycle. An unmanaged desktop app-server cannot be safely restarted by the
+  guard, so the upload is not attempted; the owner must close that session first. This is a safety
+  boundary, not a warning: continuing would leave the old RT resident and capable of replaying it.
 - Claude strip writes the placeholder to **every inference-capable grant** in each local store that can
   shadow the hub (macOS tokenCacheV2/tokenCache, keychain, an existing `.credentials.json`), not just
   the highest-scored cache entry — the cache holds one entry per scope set, and an unstripped sibling
@@ -720,6 +726,12 @@ management. `start_frontend.mjs` serves the static dashboards locally on `FRONTE
    needs it. Codex still verifies by refreshing.
 4. **Uploader goes AT-only too** — the upload response carries `refreshed_auth_json` (the AT the hub's verification refresh just minted, RT stripped); the client installs that, *then* strips its own local RT (Phase-4, [§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)), and thereafter relies on the hub. Without the handback the verification refresh would revoke the uploader's own access token and the strip would remove its only way back.
 5. **Hub refreshes centrally** — the worker proactively refreshes near-expiry ATs ([§7.2](#72-per-entry-processing-processauthpoolentry)) and clients pull fresh ATs via `refresh_current`.
+6. **Every Hub rotation is serialized by RT generation.** `auth_pool_refresh_leases` holds a
+   short lease keyed by `(source, account_id)` plus an HMAC fingerprint of the RT (never the RT).
+   Upload, fetch-best's id-token/`refresh_current` paths, and the worker all claim it before calling
+   OAuth. Worker and fetch-best re-read the canonical encrypted blob after claiming and refuse a
+   fingerprint mismatch as `refresh_superseded`, so an invocation queued behind a completed rotation
+   cannot replay the old single-use RT.
 
 **Lifecycle of one account under the flag:**
 
@@ -1012,6 +1024,11 @@ Both sources are held to the same thresholds, judged per window the report carri
   scope, `expires_in`, status, rejection. Stored expiry mirrors only show the result after the fact;
   this is what makes "which scope buys which lifetime" answerable from the Vercel and Actions logs.
   Telemetry is wrapped so it can never fail a refresh.
+- **The refresh endpoint is entered only under an RT-generation lease.** The lease record contains
+  an HMAC-SHA-256 fingerprint derived from `AUTH_POOL_ENCRYPTION_KEY`, not a raw token or an ordinary
+  token hash. The short expiry recovers from a terminated invocation; normal paths release after
+  the rotated credential is persisted. `refresh_current`, id-token refresh, upload verification,
+  and the worker therefore cannot race one another into an RT replay.
 - **Classification** (`postRefresh` `:12-39`): HTTP 400/401 → `auth_rejected` (RT dead, latest uploader must re-login); anything else (network, 5xx, 200-without-token) → transient.
 - **`applyRefreshToBlob`**: per-source field updates that preserve unrelated sections (e.g. claude `mcpOAuth`); sets `expiresAt`/`last_refresh`.
 - **`accessTokenMsUntilExpiry`** — the crux of selectivity:

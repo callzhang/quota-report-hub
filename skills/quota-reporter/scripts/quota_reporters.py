@@ -3502,6 +3502,7 @@ def sync_current_codex_auth_pool(
     auth_path: Path = SOURCE_AUTH_PATH,
     known_auth_path: Path = KNOWN_AUTH_PATH,
     quota_payload: dict | None = None,
+    allow_rotating_upload: bool = True,
 ) -> dict:
     if not auth_path.exists():
         return {"ok": True, "uploaded": False, "reason": "missing_auth"}
@@ -3509,6 +3510,11 @@ def sync_current_codex_auth_pool(
     auth_json_text = auth_path.read_text(encoding="utf-8")
     if auth_json_is_stripped("codex", auth_json_text):
         return {"ok": True, "uploaded": False, "reason": "local_auth_is_at_only"}
+    # The hub verifies a Codex upload by rotating its RT, which invalidates the RT already held by
+    # a running app-server. The guard calls us only after checking it can restart that process; a
+    # direct caller can explicitly withhold that clearance and must not spend the RT anyway.
+    if not allow_rotating_upload:
+        return {"ok": False, "uploaded": False, "reason": "app_server_restart_required"}
 
     metadata = auth_metadata(auth_path)
     result = sync_current_auth_pool_entry(

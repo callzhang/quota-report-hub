@@ -3,14 +3,17 @@ import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../.
 import {
   authPoolEntry,
   bestAuthPoolEntry,
+  claimAuthPoolRefreshLease,
   dbConfigured,
   getFeatureFlag,
   getInvalidatedUploaderEntry,
+  releaseAuthPoolRefreshLease,
   fetchPolicyInputs,
   poolScarcityState,
   recordAuthPoolFetch,
   upsertAuthPoolEntry,
 } from "../../lib/db.js";
+import { refreshSerializedAuthPoolEntry } from "../../lib/auth-pool-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
 import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch-best.js";
 import { NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy } from "../../lib/premium-ratio.js";
@@ -43,6 +46,30 @@ const REFRESH_CURRENT_MIN_LIFETIME_MS = 45 * 60 * 1000;
 // requires. Left in place deliberately: codex has zero outages and the churn it causes is harmless
 // (its client cannot re-mint, so there is no tug-of-war to start). Do not cite it as proof that a
 // fresh id_token is required.
+async function refreshCanonicalPoolAuth(authJson, entryMeta, source) {
+  return refreshSerializedAuthPoolEntry({
+    source,
+    accountId: entryMeta.account_id,
+    authJson,
+    claimLease: claimAuthPoolRefreshLease,
+    releaseLease: releaseAuthPoolRefreshLease,
+    loadCurrentAuthJson: async () => {
+      const current = await authPoolEntry(source, entryMeta.account_id);
+      return current ? decryptAuthJson(current) : null;
+    },
+    refreshAuthBlob: verifyAndRefreshAuthBlob,
+    persistRefreshedAuth: async (refreshedAuthJson) => {
+      await upsertAuthPoolEntry({
+        source,
+        auth_json: refreshedAuthJson,
+        uploader_email: entryMeta.uploader_email || null,
+        reporter_name: entryMeta.reporter_name || "hub@refresh-current",
+        hostname: entryMeta.hostname || "hub",
+      });
+    },
+  });
+}
+
 async function ensureCodexIdTokenFresh(authJson, entryMeta) {
   const idMsLeft = codexIdTokenMsUntilExpiry(authJson);
   const atMsLeft = accessTokenMsUntilExpiry(authJson, "codex");
@@ -51,15 +78,8 @@ async function ensureCodexIdTokenFresh(authJson, entryMeta) {
   if (!idStale || !atFresh) {
     return { authJson, deadRefreshToken: false };
   }
-  const refreshed = await verifyAndRefreshAuthBlob(authJson, "codex");
+  const refreshed = await refreshCanonicalPoolAuth(authJson, entryMeta, "codex");
   if (refreshed.ok) {
-    await upsertAuthPoolEntry({
-      source: "codex",
-      auth_json: refreshed.auth_json,
-      uploader_email: entryMeta.uploader_email || null,
-      reporter_name: entryMeta.reporter_name || "api-refresh-current",
-      hostname: entryMeta.hostname || "api-refresh-current",
-    });
     return { authJson: refreshed.auth_json, deadRefreshToken: false };
   }
   return { authJson, deadRefreshToken: Boolean(refreshed.auth_rejected) };
@@ -184,18 +204,10 @@ export default async function handler(req, res) {
       // real refresh token; this is precisely the moment it exists for.
       let msLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
       if (!idTokenRefreshDead && msLeft !== null && msLeft <= REFRESH_CURRENT_MIN_LIFETIME_MS) {
-        const refreshed = await verifyAndRefreshAuthBlob(sameAuthJson, source);
+        const refreshed = await refreshCanonicalPoolAuth(sameAuthJson, sameEntry, source);
         if (refreshed.ok) {
           sameAuthJson = refreshed.auth_json;
           msLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
-          await upsertAuthPoolEntry({
-            source,
-            auth_json: sameAuthJson,
-            uploader_email: sameEntry.uploader_email || null,
-            // a rotation write-back, not a new upload: keep the original owner's machine on it
-            reporter_name: sameEntry.reporter_name || "hub@refresh-current",
-            hostname: sameEntry.hostname || "hub",
-          });
         } else if (refreshed.auth_rejected) {
           // the pooled refresh token is dead; a different account is the only way to keep working
           idTokenRefreshDead = true;

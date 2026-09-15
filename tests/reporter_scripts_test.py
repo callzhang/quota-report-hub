@@ -4899,6 +4899,43 @@ Reading additional input from stdin...
         self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
         self.assertEqual(result["notifications"], {})
 
+    def test_run_guard_restarts_after_upload_installs_and_strips_codex_auth(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
+        )
+        installed_upload = {
+            "ok": True,
+            "uploaded": True,
+            "refreshed_auth_installed": {"installed": True},
+            "local_refresh_token_stripped": {"stripped": True},
+        }
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value=installed_upload):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True, "reported": False}):
+                                with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False}):
+                                    with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False}):
+                                        with mock.patch.object(quota_guard, "restart_codex_app_server", return_value={"ok": True, "restarted": True}) as restart:
+                                            result = quota_guard.run_guard(args)
+
+        restart.assert_called_once()
+        self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
+        self.assertTrue(result["codex_app_server"]["restarted"])
+
     def test_restart_codex_app_server_does_not_stop_unmanaged_ephemeral_server(self):
         daemon_result = mock.Mock(
             returncode=1,
@@ -5002,7 +5039,7 @@ Reading additional input from stdin...
                     with mock.patch.object(quota_guard.Path, "home", return_value=Path("/home/derek")):
                         self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101])
 
-    def test_unmanaged_codex_app_server_pids_excludes_chatgpt_managed_app_server(self):
+    def test_unmanaged_codex_app_server_pids_detects_current_users_bundled_app_server(self):
         ps_result = mock.Mock(
             returncode=0,
             stdout=(
@@ -5020,14 +5057,14 @@ Reading additional input from stdin...
                 with mock.patch.object(quota_guard.os, "getpid", return_value=999):
                     with mock.patch.object(quota_guard.os, "getuid", return_value=501):
                         with mock.patch.object(quota_guard.Path, "home", return_value=Path("/Users/derek")):
-                            self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [])
+                            self.assertEqual(quota_guard.unmanaged_codex_app_server_pids(), [101, 102])
 
     def test_unmanaged_codex_app_server_processes_ignores_ps_permission_error(self):
         with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
             with mock.patch.object(quota_guard.subprocess, "run", side_effect=PermissionError("Operation not permitted")):
                 self.assertEqual(quota_guard.unmanaged_codex_app_server_processes(), [])
 
-    def test_stale_codex_app_server_excludes_chatgpt_app_server_after_manual_login(self):
+    def test_stale_codex_app_server_detects_bundled_app_server_after_manual_login(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text("{}", encoding="utf-8")
@@ -5049,8 +5086,8 @@ Reading additional input from stdin...
                                 with mock.patch.object(quota_guard.Path, "home", return_value=Path("/Users/derek")):
                                     stale = quota_guard.stale_codex_app_server_for_auth(auth_path)
 
-        self.assertFalse(stale["stale"])
-        self.assertEqual(stale["reason"], "no_stale_app_server")
+        self.assertTrue(stale["stale"])
+        self.assertEqual(stale["reason"], "app_server_started_before_auth")
 
     def test_stale_codex_app_server_detects_running_server_when_auth_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5381,6 +5418,38 @@ Reading additional input from stdin...
         post_auth_pool_entry.assert_called_once()
         self.assertTrue(result["uploaded"])
         self.assertEqual(result["reason"], "reuploaded_existing_auth")
+
+    def test_sync_current_codex_auth_pool_refuses_a_real_rt_without_restart_clearance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "tokens": {
+                            "account_id": "acct-1",
+                            "refresh_token": "rt.1.REALFIXTURETOKEN",
+                            "id_token": "x.eyJlbWFpbCI6ICJhQGV4YW1wbGUuY29tIn0.y",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                    allow_rotating_upload=False,
+                )
+
+        post_auth_pool_entry.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "app_server_restart_required")
 
     def test_sync_current_codex_auth_pool_reuploads_when_same_auth_is_still_current(self):
         with tempfile.TemporaryDirectory() as temp_dir:

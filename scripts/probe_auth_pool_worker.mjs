@@ -5,16 +5,20 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   authPoolEntries,
+  authPoolEntry,
   authPoolQuotaLatestForEntry,
+  claimAuthPoolRefreshLease,
   deleteAuthPoolEntry,
   deleteAuthPoolEntryRow,
   getFeatureFlag,
   recomputePoolScarcity,
   recordAuthPoolTokenFingerprint,
   recordPoolHealthSnapshot,
+  releaseAuthPoolRefreshLease,
   upsertAuthPoolEntry,
   upsertAuthPoolQuota,
 } from "../lib/db.js";
+import { refreshSerializedAuthPoolEntry } from "../lib/auth-pool-refresh.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
 import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob } from "../lib/token-refresh.js";
@@ -53,7 +57,15 @@ async function refreshEntryIfNeeded(
   authJsonText,
   entry,
   source,
-  { refreshTokenImpl, upsertAuthPoolEntryImpl, nowImpl, force = false },
+  {
+    refreshTokenImpl,
+    upsertAuthPoolEntryImpl,
+    authPoolEntryImpl = null,
+    claimLeaseImpl = null,
+    releaseLeaseImpl = null,
+    nowImpl,
+    force = false,
+  },
 ) {
   const now = nowImpl().getTime();
   const msLeft = accessTokenMsUntilExpiry(authJsonText, source, now);
@@ -67,23 +79,51 @@ async function refreshEntryIfNeeded(
   // Claude refreshes carry the credential's own scopes: the narrow `user:inference` default mints an
   // 8-hour access token where the full set mints a 30-day one, and a short token means the pool has
   // to rotate (and risk orphaning a custodian) ~90x more often. Codex takes no scope argument.
-  const refreshed = source === "claude"
-    ? await refreshTokenImpl(refreshToken, claudeScopesFromAuthBlob(authJsonText))
-    : await refreshTokenImpl(refreshToken);
-  if (!refreshed.ok) {
-    return { authJsonText, result: { attempted: true, ok: false, auth_rejected: refreshed.auth_rejected, status: refreshed.status } };
-  }
-  const refreshedAuthJson = applyRefreshToBlob(authJsonText, source, refreshed, now);
-  await upsertAuthPoolEntryImpl({
+  const refreshAuthBlob = async (blobText) => {
+    const result = source === "claude"
+      ? await refreshTokenImpl(refreshToken, claudeScopesFromAuthBlob(blobText))
+      : await refreshTokenImpl(refreshToken);
+    if (!result.ok) return { attempted: true, ...result };
+    return {
+      ok: true,
+      attempted: true,
+      auth_json: applyRefreshToBlob(blobText, source, result, now),
+    };
+  };
+  const serialized = await refreshSerializedAuthPoolEntry({
     source,
-    auth_json: refreshedAuthJson,
-    uploader_email: entry.uploader_email || null,
-    // A refresh write-back rotates the token but is not a new upload — keep the original uploader's
-    // machine so the dashboard doesn't reattribute the entry to "github-actions".
-    reporter_name: entry.reporter_name || "actions@github-actions",
-    hostname: entry.hostname || "github-actions",
+    accountId: entry.account_id,
+    authJson: authJsonText,
+    // Unit-level callers use their supplied entry as the canonical snapshot; main passes the DB
+    // re-read so a queued worker item cannot present an RT another hub route has already replaced.
+    loadCurrentAuthJson: authPoolEntryImpl
+      ? async () => {
+          const current = await authPoolEntryImpl(source, entry.account_id);
+          return current ? decryptAuthJson(current) : null;
+        }
+      : async () => authJsonText,
+    claimLease: claimLeaseImpl || (async () => ({ claimed: true, reason: null })),
+    releaseLease: releaseLeaseImpl || (async () => {}),
+    refreshAuthBlob,
+    persistRefreshedAuth: async (refreshedAuthJson) => upsertAuthPoolEntryImpl({
+      source,
+      auth_json: refreshedAuthJson,
+      uploader_email: entry.uploader_email || null,
+      // A refresh write-back rotates the token but is not a new upload — keep the original uploader's
+      // machine so the dashboard doesn't reattribute the entry to "github-actions".
+      reporter_name: entry.reporter_name || "actions@github-actions",
+      hostname: entry.hostname || "github-actions",
+    }),
   });
-  return { authJsonText: refreshedAuthJson, result: { attempted: true, ok: true, forced: Boolean(force) } };
+  if (!serialized.ok) {
+    return {
+      authJsonText,
+      result: serialized.attempted
+        ? { attempted: true, ok: false, auth_rejected: serialized.auth_rejected, status: serialized.status }
+        : serialized,
+    };
+  }
+  return { authJsonText: serialized.auth_json, result: { attempted: true, ok: true, forced: Boolean(force) } };
 }
 
 function probeCodexAuthJson(authJsonText) {
@@ -352,6 +392,9 @@ export async function processAuthPoolEntry(
     probeClaudeAuthJsonImpl = probeClaudeAuthJson,
     upsertAuthPoolQuotaImpl = upsertAuthPoolQuota,
     upsertAuthPoolEntryImpl = upsertAuthPoolEntry,
+    authPoolEntryImpl = null,
+    claimLeaseImpl = null,
+    releaseLeaseImpl = null,
     recordTokenFingerprintImpl = recordAuthPoolTokenFingerprint,
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
     authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
@@ -388,6 +431,9 @@ export async function processAuthPoolEntry(
       const refreshed = await refreshEntryIfNeeded(authJsonText, entry, entry.source, {
         refreshTokenImpl,
         upsertAuthPoolEntryImpl,
+        authPoolEntryImpl,
+        claimLeaseImpl,
+        releaseLeaseImpl,
         nowImpl,
         force: verifyUnverified,
       });
@@ -424,6 +470,9 @@ export async function processAuthPoolEntry(
     const refreshed = await refreshEntryIfNeeded(authJsonText, entry, entry.source, {
       refreshTokenImpl,
       upsertAuthPoolEntryImpl,
+      authPoolEntryImpl,
+      claimLeaseImpl,
+      releaseLeaseImpl,
       nowImpl,
       force: true,
     });
@@ -598,7 +647,13 @@ export async function main() {
 
   const items = [];
   for (const entry of entries) {
-    items.push(await processAuthPoolEntry(entry, { atOnlyMode, forceRefreshUnverified }));
+    items.push(await processAuthPoolEntry(entry, {
+      atOnlyMode,
+      forceRefreshUnverified,
+      authPoolEntryImpl: async (source, accountId) => authPoolEntry(source, accountId),
+      claimLeaseImpl: claimAuthPoolRefreshLease,
+      releaseLeaseImpl: releaseAuthPoolRefreshLease,
+    }));
   }
 
   const health = summarizePoolHealth(items);

@@ -1,6 +1,15 @@
 import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
-import { dbConfigured, getFeatureFlag, upsertAuthPoolEntry, upsertAuthPoolQuota } from "../../lib/db.js";
+import {
+  claimAuthPoolRefreshLease,
+  dbConfigured,
+  getFeatureFlag,
+  releaseAuthPoolRefreshLease,
+  upsertAuthPoolEntry,
+  upsertAuthPoolQuota,
+} from "../../lib/db.js";
+import { deriveAuthPoolEntry } from "../../lib/auth-pool.js";
+import { refreshSerializedAuthPoolEntry } from "../../lib/auth-pool-refresh.js";
 import { codexClientPayloadAccepted, ingestClientQuota } from "../../lib/quota-ingest.js";
 import { stripRefreshToken } from "../../lib/fetch-best.js";
 import { probeClaudeAccessToken, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
@@ -112,16 +121,35 @@ export default async function handler(req, res) {
     res.end(JSON.stringify({ ok: false, error: "access_token_rejected", status: accessProbe.status }));
     return;
   }
-  const refreshVerification = !probeClaude && ["claude", "codex"].includes(source)
-    ? await verifyAndRefreshAuthBlob(body.auth_json, source)
+  let entry = null;
+  const refreshVerification = !probeClaude && source === "codex"
+    ? await refreshSerializedAuthPoolEntry({
+        source,
+        accountId: deriveAuthPoolEntry(source, body.auth_json, body).account_id,
+        authJson: body.auth_json,
+        claimLease: claimAuthPoolRefreshLease,
+        releaseLease: releaseAuthPoolRefreshLease,
+        refreshAuthBlob: verifyAndRefreshAuthBlob,
+        // Keep the lease until the rotated RT has become canonical. Releasing before this write
+        // would admit a second request holding the old generation into the provider endpoint.
+        persistRefreshedAuth: async (refreshedAuthJson) => {
+          entry = await upsertAuthPoolEntry({
+            ...body,
+            source,
+            auth_json: refreshedAuthJson,
+            uploader_email: authContext.email,
+          });
+        },
+      })
     : { ok: false, attempted: false, reason: probeClaude ? "claude_probed_not_refreshed" : "unsupported_source" };
 
-  if (refreshVerification.attempted && !refreshVerification.ok) {
-    res.statusCode = refreshVerification.auth_rejected ? 422 : 503;
+  if (source === "codex" && !refreshVerification.ok) {
+    const busyOrSuperseded = ["refresh_in_progress", "refresh_superseded"].includes(refreshVerification.reason);
+    res.statusCode = busyOrSuperseded ? 409 : refreshVerification.auth_rejected ? 422 : 503;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify({
       ok: false,
-      error: refreshVerification.auth_rejected ? "refresh_token_rejected" : "refresh_verification_failed",
+      error: busyOrSuperseded ? "refresh_generation_changed" : refreshVerification.auth_rejected ? "refresh_token_rejected" : "refresh_verification_failed",
       reason: refreshVerification.error || refreshVerification.reason,
       status: refreshVerification.status ?? null,
     }));
@@ -129,12 +157,14 @@ export default async function handler(req, res) {
   }
 
   const authJson = refreshVerification.ok ? refreshVerification.auth_json : body.auth_json;
-  const entry = await upsertAuthPoolEntry({
-    ...body,
-    source,
-    auth_json: authJson,
-    uploader_email: authContext.email,
-  });
+  if (!entry) {
+    entry = await upsertAuthPoolEntry({
+      ...body,
+      source,
+      auth_json: authJson,
+      uploader_email: authContext.email,
+    });
+  }
 
   // If the client bundled its freshly-probed quota with the upload, ingest it in the same request
   // so the dashboard reflects fresh quota immediately — closing the window where a just-uploaded

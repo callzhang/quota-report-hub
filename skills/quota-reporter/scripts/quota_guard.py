@@ -42,6 +42,7 @@ from quota_reporters import (
     SEED_STATE_READY,
     SOURCE_AUTH_PATH,
     auth_metadata,
+    auth_json_is_stripped,
     cli_auth_seed_state,
     access_token_fingerprint,
     claude_auth_blob_metadata,
@@ -1462,6 +1463,23 @@ def is_current_home_codex_app_server(args: str) -> bool:
     return f"{current_home}{os.sep}" in args
 
 
+def is_current_users_bundled_codex_app_server(args: str) -> bool:
+    """Recognize an app-server launched by this user's ChatGPT/Codex app bundle."""
+    if not is_codex_app_server_command(args):
+        return False
+    try:
+        tokens = shlex.split(args)
+    except ValueError:
+        tokens = args.split()
+    try:
+        app_server_index = tokens.index("app-server")
+    except ValueError:
+        return False
+    # The app can be named ChatGPT.app or Codex.app across releases. Its stable identity is the
+    # bundled `Contents/Resources/codex` executable, and the caller already filtered by uid.
+    return any(token.endswith("/Contents/Resources/codex") for token in tokens[:app_server_index])
+
+
 def is_current_home_codex_app_server_listener(args: str) -> bool:
     return is_current_home_codex_app_server(args)
 
@@ -1509,7 +1527,7 @@ def unmanaged_codex_app_server_processes() -> list[dict]:
             continue
         if " be-child ssh " in args or "/bin/bash -c" in args or " grep " in f" {args} ":
             continue
-        if not is_current_home_codex_app_server(args):
+        if not (is_current_home_codex_app_server(args) or is_current_users_bundled_codex_app_server(args)):
             continue
         processes.append(
             {
@@ -1555,6 +1573,28 @@ def stale_codex_app_server_for_auth(codex_auth_path: Path) -> dict:
         "auth_mtime_epoch": auth_mtime,
         "processes": stale_processes,
     }
+
+
+def codex_rotating_upload_preflight(codex_auth_path: Path, restart_enabled: bool = True) -> dict:
+    """Permit a full-RT upload only when no unmanaged app-server retains that RT in memory."""
+    if not codex_auth_path.exists():
+        return {"allowed": True, "reason": "missing_auth"}
+    try:
+        auth_json_text = codex_auth_path.read_text(encoding="utf-8")
+    except OSError as error:
+        return {"allowed": False, "reason": "auth_read_failed", "error": str(error)}
+    if auth_json_is_stripped("codex", auth_json_text):
+        return {"allowed": True, "reason": "local_auth_is_at_only"}
+    if not restart_enabled:
+        return {"allowed": False, "reason": "app_server_restart_required"}
+    processes = unmanaged_codex_app_server_processes()
+    if processes:
+        return {
+            "allowed": False,
+            "reason": "app_server_restart_required",
+            "processes": processes,
+        }
+    return {"allowed": True, "reason": "no_unmanaged_app_server"}
 
 
 def restart_codex_app_server() -> dict:
@@ -2591,20 +2631,33 @@ def run_guard(args: argparse.Namespace) -> dict:
     sync_result = {}
     quota_report_result = {}
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
-        sync_result["codex"] = run_guard_step(
-            "codex_auth_pool_sync_failed",
-            lambda: timed_guard_step(
-                timings,
-                "codex_auth_pool_sync",
-                lambda: sync_current_codex_auth_pool(
-                    config["auth_pool_url"],
-                    config["auth_pool_user_token"],
-                    auth_path=args.codex_auth_path,
-                    known_auth_path=args.known_auth_path,
-                    quota_payload=without_sensitive_refresh_capture(codex_payload),
-                ),
-            ),
+        codex_upload_preflight = codex_rotating_upload_preflight(
+            args.codex_auth_path,
+            restart_enabled=not getattr(args, "no_restart_codex_app_server", False),
         )
+        if not codex_upload_preflight.get("allowed"):
+            sync_result["codex"] = {
+                "ok": False,
+                "uploaded": False,
+                "reason": codex_upload_preflight["reason"],
+                "app_server": codex_upload_preflight,
+            }
+            timings["codex_auth_pool_sync"] = 0.0
+        else:
+            sync_result["codex"] = run_guard_step(
+                "codex_auth_pool_sync_failed",
+                lambda: timed_guard_step(
+                    timings,
+                    "codex_auth_pool_sync",
+                    lambda: sync_current_codex_auth_pool(
+                        config["auth_pool_url"],
+                        config["auth_pool_user_token"],
+                        auth_path=args.codex_auth_path,
+                        known_auth_path=args.known_auth_path,
+                        quota_payload=without_sensitive_refresh_capture(codex_payload),
+                    ),
+                ),
+            )
         quota_report_result["codex"] = run_guard_step(
             "codex_quota_report_failed",
             lambda: timed_guard_step(
@@ -2687,6 +2740,8 @@ def run_guard(args: argparse.Namespace) -> dict:
     )
     codex_auth_changed = bool(
         (codex_payload or {}).get("local_auth_refresh", {}).get("written")
+        or sync_result.get("codex", {}).get("refreshed_auth_installed", {}).get("installed")
+        or sync_result.get("codex", {}).get("local_refresh_token_stripped", {}).get("stripped")
         or codex_replacement.get("replaced")
         or codex_replacement.get("auth_refreshed")
     )

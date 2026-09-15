@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accessTokenFingerprint } from "../lib/fetch-best.js";
+import { refreshTokenFingerprint } from "../lib/token-refresh.js";
 
 const sha256 = (value) => createHash("sha256").update(value, "utf8").digest("hex");
 
@@ -92,6 +93,58 @@ test("storing an auth records its access token against its account, and older to
     );
 
     assert.equal(await mod.authPoolTokenOwner("claude", sha256("never-pooled")), null);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a refresh lease is exclusive to one account and RT generation", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    const firstFingerprint = refreshTokenFingerprint("codex", "rt-first");
+    const secondFingerprint = refreshTokenFingerprint("codex", "rt-second");
+    assert.notEqual(firstFingerprint, secondFingerprint, "the stored lease identifies an RT generation without storing the RT");
+
+    const first = await mod.claimAuthPoolRefreshLease({
+      source: "codex",
+      accountId: "owner@example.com",
+      refreshTokenFingerprint: firstFingerprint,
+      leaseId: "first-refresh",
+      now: new Date("2026-09-15T00:00:00.000Z"),
+    });
+    assert.deepEqual(first, { claimed: true, reason: null });
+
+    const concurrent = await mod.claimAuthPoolRefreshLease({
+      source: "codex",
+      accountId: "owner@example.com",
+      refreshTokenFingerprint: firstFingerprint,
+      leaseId: "second-refresh",
+      now: new Date("2026-09-15T00:00:01.000Z"),
+    });
+    assert.deepEqual(concurrent, { claimed: false, reason: "refresh_in_progress" });
+
+    const staleGeneration = await mod.claimAuthPoolRefreshLease({
+      source: "codex",
+      accountId: "owner@example.com",
+      refreshTokenFingerprint: secondFingerprint,
+      leaseId: "stale-generation",
+      now: new Date("2026-09-15T00:00:01.000Z"),
+    });
+    assert.deepEqual(staleGeneration, { claimed: false, reason: "refresh_in_progress" });
+
+    await mod.releaseAuthPoolRefreshLease({
+      source: "codex",
+      accountId: "owner@example.com",
+      leaseId: "first-refresh",
+    });
+    const next = await mod.claimAuthPoolRefreshLease({
+      source: "codex",
+      accountId: "owner@example.com",
+      refreshTokenFingerprint: secondFingerprint,
+      leaseId: "next-refresh",
+      now: new Date("2026-09-15T00:00:02.000Z"),
+    });
+    assert.deepEqual(next, { claimed: true, reason: null });
   } finally {
     cleanup();
   }
