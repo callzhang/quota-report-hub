@@ -3431,12 +3431,20 @@ def set_known_auth_state_source(source: str, known_auth_path: Path, state_source
     return True
 
 
-def set_known_codex_refresh_handoff(known_auth_path: Path, pending: bool) -> bool:
+def set_known_codex_refresh_handoff(
+    known_auth_path: Path,
+    pending: bool,
+    account_id: str | None = None,
+) -> bool:
     state = read_known_auth_state(known_auth_path)
     source_state = (state.get("sources") or {}).get("codex")
     if not isinstance(source_state, dict):
         return False
     source_state["refresh_handoff_pending"] = pending
+    if pending and account_id:
+        source_state["refresh_handoff_account_id"] = account_id
+    else:
+        source_state.pop("refresh_handoff_account_id", None)
     state["sources"]["codex"] = source_state
     known_auth_path.parent.mkdir(parents=True, exist_ok=True)
     known_auth_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
@@ -3554,6 +3562,25 @@ def sync_current_codex_auth_pool(
     if auth_json_is_stripped("codex", auth_json_text):
         return {"ok": True, "uploaded": False, "reason": "local_auth_is_at_only"}
     metadata = auth_metadata(auth_path)
+    known = known_auth_state_for_source(read_known_auth_state(known_auth_path), "codex")
+    pending_handoff_account_id = known.get("refresh_handoff_account_id")
+    local_auth_generation_changed = bool(
+        pending_handoff_account_id
+        and (
+            pending_handoff_account_id != metadata.get("account_id")
+            or known.get("last_uploaded_digest") != metadata.get("digest")
+        )
+    )
+    previous_handoff_completion = None
+    if local_auth_generation_changed:
+        # A changed local RT/AT generation is the app-server's account-switch signal. The old
+        # generation is no longer the local credential, so release only that older handoff before
+        # uploading the new generation. The new upload below remains pending for its own RT.
+        previous_handoff_completion = complete_codex_refresh_handoff(
+            auth_pool_url,
+            auth_pool_user_token,
+            pending_handoff_account_id,
+        )
     result = sync_current_auth_pool_entry(
         source="codex",
         auth_pool_url=auth_pool_url,
@@ -3567,6 +3594,12 @@ def sync_current_codex_auth_pool(
         # longer authorizes a rotation.
         defer_codex_refresh=True,
     )
+    if previous_handoff_completion is not None:
+        result["previous_refresh_handoff"] = {
+            "account_id": pending_handoff_account_id,
+            "completed": bool(previous_handoff_completion.get("ok")),
+            "reason": previous_handoff_completion.get("reason") or previous_handoff_completion.get("error"),
+        }
     # Phase 4: once the hub holds our real RT (just uploaded) and reports disabled_refresh_token
     # mode, strip the local RT so this owner also runs AT-only — its CLI can no longer rotate
     # the shared RT — and mark it fetched so the near-expiry path keeps its AT fresh.
@@ -3581,7 +3614,7 @@ def sync_current_codex_auth_pool(
             result["local_refresh_token_stripped"] = strip
             if strip.get("stripped") or strip.get("reason") == "already_stripped":
                 set_known_auth_state_source("codex", known_auth_path, "fetched_from_auth_pool")
-                set_known_codex_refresh_handoff(known_auth_path, True)
+                set_known_codex_refresh_handoff(known_auth_path, True, account_id=metadata.get("account_id"))
             return result
         # Install before stripping when talking to an older Hub that did rotate the grant. The hub's verification refresh rotated this
         # grant; the returned blob carries the access_token and the fresh ~1-hour id_token it minted,

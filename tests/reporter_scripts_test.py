@@ -5482,6 +5482,50 @@ Reading additional input from stdin...
         self.assertTrue(result["ok"])
         self.assertTrue(result["uploaded"])
 
+    def test_sync_current_codex_auth_pool_releases_previous_handoff_when_local_generation_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps({
+                    "tokens": {
+                        "account_id": "provider-b",
+                        "refresh_token": "rt.1.NEWGENERATION",
+                        "access_token": "AT.NEWGENERATION",
+                        "id_token": "x.eyJlbWFpbCI6ICJiQGV4YW1wbGUuY29tIn0.y",
+                    },
+                }),
+                encoding="utf-8",
+            )
+            known_auth_path.write_text(json.dumps({"sources": {"codex": {
+                "last_uploaded_account_id": "a@stardust.ai",
+                "last_uploaded_digest": "old-generation",
+                "refresh_handoff_pending": True,
+                "refresh_handoff_account_id": "a@stardust.ai",
+            }}}) + "\n", encoding="utf-8")
+
+            with mock.patch.object(quota_reporters, "complete_codex_refresh_handoff", return_value={"ok": True}) as complete:
+                with mock.patch.object(quota_reporters, "post_auth_pool_entry", return_value={
+                    "ok": True,
+                    "disabled_refresh_token": True,
+                    "local_auth_untouched": True,
+                    "entry": {"account_id": "b@stardust.ai"},
+                }) as post:
+                    result = quota_guard.sync_current_codex_auth_pool(
+                        "https://quota-report-hub.vercel.app",
+                        "qrp_token",
+                        auth_path=auth_path,
+                        known_auth_path=known_auth_path,
+                    )
+
+            complete.assert_called_once_with("https://quota-report-hub.vercel.app", "qrp_token", "a@stardust.ai")
+            post.assert_called_once()
+            self.assertTrue(result["previous_refresh_handoff"]["completed"])
+            self.assertTrue(result["local_refresh_token_stripped"]["stripped"])
+            state = json.loads(known_auth_path.read_text(encoding="utf-8"))
+            self.assertEqual(state["sources"]["codex"]["refresh_handoff_account_id"], "b@example.com")
+
     def test_sync_current_codex_auth_pool_reuploads_when_same_auth_is_still_current(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)

@@ -195,9 +195,11 @@ immediate replacement trigger.
   precautionary refresh all refuse to present the RT. The local exporter writes a redacted,
   120-second activity snapshot from the supported Desktop tool bridge. `active`, absent, malformed,
   stale, or unknown is never evidence of idleness: the guard does not restart. Only a fresh
-  `idle` snapshot plus either a successful app-server restart or confirmed retirement of the exact
-  unmanaged listener PIDs allows the uploader to call the owner-only completion acknowledgement;
-  then and only then the Hub removes `pending` and resumes being the
+  A changed local Codex RT/AT generation is also an explicit account-switch signal: the guard first
+  completes the previous account's pending handoff (without stopping the app-server), then uploads
+  the new account as its own pending generation. Otherwise, a fresh `idle` snapshot plus either a
+  successful app-server restart or confirmed retirement of the exact unmanaged listener PIDs allows
+  the uploader to call the owner-only completion acknowledgement; then and only then the Hub removes `pending` and resumes being the
   sole refresher. A real RT that reappears on disk before completion is uploaded again, keeping the
   Hub's canonical copy current without rotating it.
 - Claude strip writes the placeholder to **every inference-capable grant** in each local store that can
