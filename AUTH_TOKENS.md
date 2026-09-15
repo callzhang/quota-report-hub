@@ -610,10 +610,11 @@ holder of a real RT on that grant fires 40–60 minutes later, and one guard cyc
 73–76 minutes observed. The 3–4 day group is a different death: those three carry raw-UUID
 `session_id`s from a pre-`authsess_` client, and their machines simply stopped reporting.
 
-**Why the upload-verify refresh cannot close this, though it looks like it should.** The instinct is
-that the hub should refresh on upload so that it alone holds the live RT. It already does exactly
-that (`sync_current_codex_auth_pool` → hub verification refresh → `install_uploaded_codex_refresh` →
-`strip_local_codex_refresh_token`), and it cannot deliver sole custody:
+**Why the upload-verify refresh could not close this, though it looked like it should** — historical
+as of 2026-09-15; see the handoff note at the end of this subsection. The instinct is that the hub
+should refresh on upload so that it alone holds the live RT. It used to do exactly that
+(`sync_current_codex_auth_pool` → hub verification refresh → `install_uploaded_codex_refresh` →
+`strip_local_codex_refresh_token`), and it could not deliver sole custody:
 
 1. **The strip only reaches the machine running the guard.** A second laptop, the Codex desktop app,
    an IDE extension, or any machine without the guard keeps its real RT untouched.
@@ -628,6 +629,29 @@ exchanged for anything — but that it still *exists* somewhere that will presen
 [§6](#6-failure-modes--invariants-and-the-fixes) for this failure class eliminates a replay
 (one canonical entry per account, serialized worker runs) rather than trying to out-race the other
 holder.
+
+> **Superseded 2026-09-15 — the upload no longer rotates at all.** A full-RT codex upload is now a
+> **custody transfer, not permission to spend the grant**: the hub stores it with
+> `refresh_handoff_state:"pending"`, returns `local_auth_untouched:true`, and the guard strips its
+> disk RT without a refresh ever happening. The rotation is deferred until the app-server is known to
+> have moved on — a fresh `idle` snapshot, or a changed local RT/AT generation, which is itself proof
+> the app-server adopted the new generation and lets the *previous* account's handoff complete without
+> stopping it (`c18c626`, `367a0a8`, `2a04844`; [§1](#1-codex-auth) storage lanes,
+> [SYSTEM_DESIGN §9](SYSTEM_DESIGN.md)).
+>
+> This attacks point 2 above at its root: with no rotation on upload, there is no superseded `RT_n`
+> for a second custodian to be orphaned on. Points 1 and 3 are untouched — a machine without the guard
+> still holds whatever it holds, and a fresh `codex login` still mints a different grant.
+>
+> **Not yet demonstrated by the data, and do not read the current quiet as proof.** At
+> 2026-09-15T21:16Z the pool had gone 11.6 h without a death against a pre-fix rate of 10.25/day
+> (`auth_pool_death_events`, 62 deaths over 6.05 days). Poisson would call that a 0.7 % event, and
+> that is the wrong test twice over: deaths cluster, and **a 28.8 h quiet stretch had already occurred
+> on the old code**, ending at the last pre-fix death. Rollout is also partial — of 20 reporters
+> heartbeating in the preceding three hours, **14 were still on `877452f` and only 6 on `8486ba7`**,
+> i.e. roughly 30 % of the fleet was running the deferred-rotation path at all. The measurement that
+> would count is the rotation→death interval collapsing at the short end: pre-fix, 5 of the 13 deaths
+> with a usable `hub_last_refresh_at` fell within 90 minutes of a rotation (median 223 min).
 
 **The one genuinely Team-flavoured amplifier:** shared role mailboxes that sit on Team seats (`bd@`,
 `hr@`) get `codex login` run against them by several people, so their custodians rotate each other
