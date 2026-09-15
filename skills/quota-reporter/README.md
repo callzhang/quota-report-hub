@@ -52,7 +52,7 @@ The hub and local guard remain source-aware:
   - resolves the Claude CLI binary from common non-interactive install locations (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`) before falling back to `PATH`
   - fetches and installs a better Codex auth below the weekly threshold or a better Claude auth below its source thresholds
   - `--switch-account {codex,claude}` forces this cycle to fetch and install a *different* same-source auth regardless of the current quota (e.g. when the current account looks healthy but fails for another reason, such as a model-capacity error). It requires the current account to already be synced to the hub this cycle; otherwise it reports `current_account_not_on_hub` and leaves the local auth untouched. It still only succeeds if the pool has a healthy, different account to hand back.
-  - after a Codex write, requests only an official managed-daemon restart; it never terminates unmanaged or desktop app-server processes and never starts `codex login`
+  - uploads a real Codex RT without Hub-side refresh; when the local auth generation changes, completes the previous account handoff without stopping the app-server, then keeps the new account pending
 - `scripts/trigger_remote_probe.py`
   - triggers the GitHub Actions cloud probe worker
   - optionally watches the run
@@ -65,7 +65,7 @@ The hub and local guard remain source-aware:
   - shared helper library used by the scripts above
   - not intended as the main user entrypoint
 
-For Codex app-server auth reloads, the guard calls only the official managed-daemon restart. It does so after the guard writes Codex auth and when a manual login updates `auth.json` after the current app-server started. An unmanaged app-server is reported but never signaled.
+For Codex app-server handoffs, a full-RT upload is stored as pending and is never verified by a Hub-side refresh. If the local account or auth generation changes, the previous account's handoff is completed without stopping the app-server because the app-server has moved to the new RT/AT generation; the new account remains pending. Otherwise, maintenance requires a fresh explicit idle snapshot: the guard prefers the official managed-daemon restart, and only when Desktop owns an unmanaged server does it send `SIGTERM` to exact current-user/current-home listener PIDs and confirm they exited.
 
 For Codex quota reporting, a complete `1week` window is sufficient. The retired Codex `5H` window is not required for a stable local snapshot to be sent to the hub.
 
@@ -112,7 +112,7 @@ desktop shortcut.
 
 Use `quota_guard.py --json` when you need the full structured result for debugging or automation. Manual runs should normally use the default summary output.
 
-The guard may replace `~/.codex/auth.json` after a confirmed low weekly quota or hard invalidation. It only asks the official managed app-server daemon to restart after its own write; unmanaged app servers are left running, and already-open Codex sessions may need to be reopened.
+The guard may replace `~/.codex/auth.json` after a confirmed low weekly quota or hard invalidation. A full-RT Codex upload first strips the local RT without spending it. A changed local account or RT/AT generation completes the previous account handoff without a restart; the new account remains pending. If the generation did not change, the guard waits for an explicit fresh idle snapshot, then restarts the managed daemon or safely terminates only the exact unmanaged listener PIDs. Active, unknown, stale, or missing activity evidence never authorizes a stop.
 
 ## Help Output
 

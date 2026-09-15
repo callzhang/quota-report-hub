@@ -15,7 +15,7 @@ This skill installs and runs the local Codex and Claude quota guard.
 4. Probes current Codex and Claude quota to decide whether either source should rotate
 5. Publishes stable local quota snapshots back to the hub
 6. When quota is low, asks the cloud auth pool for a strictly better auth from the same source and installs it locally
-7. After writing Codex auth, requests an official managed-daemon restart; unmanaged and desktop app-server processes are never terminated
+7. Uploads a real Codex RT without Hub-side refresh; a changed local RT/AT generation completes the previous account handoff without stopping the app-server, while the new account remains pending. Without a local generation change, it waits for an explicit idle snapshot and then restarts or safely retires the exact unmanaged listener
 8. Installs a reboot-safe scheduler that runs every 15 minutes
 9. Notifies the local user when any auth uploaded by that same token user has a refresh token rejected by the cloud worker, even if that auth is not the currently installed local auth
 10. Stores the user's personal company-email auth-pool token locally so future runs can upload and fetch without prompting again
@@ -177,7 +177,7 @@ The guard then:
 - the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`; a Codex candidate without a `5H` window is held to the `1week` threshold only
 - if the server returns `repair_auth`, the guard installs that auth instead of a shared replacement so the uploader can re-login and refresh their own invalidated auth
 - only replaces local source credentials when the fetched auth is different from what is already installed
-- after a Codex write, or when a manual login makes `auth.json` newer than the running app-server, invokes only `codex app-server daemon restart`; an unmanaged app-server returns `unmanaged_app_server_not_restarted` and is left running
+- Codex full-RT uploads use a pending handoff and never spend the RT during upload verification. If the local account or auth generation changes, the guard completes the previous account's handoff without stopping the app-server, then records the new account as pending. Otherwise it requires a fresh explicit idle snapshot, prefers `codex app-server daemon restart`, and only after an unmanaged-daemon refusal sends `SIGTERM` to exact current-user/current-home listener PIDs and confirms they exited
 - shows a desktop notification after a successful local replacement
 - opens Claude CLI login only when a Claude auth uploaded by the current token user has a cloud-confirmed `refresh_token_rejected` result and `auto_relogin_owner_auth` is enabled; Codex login is never launched
 - does nothing when the cloud cannot provide a better auth than the current one
@@ -193,7 +193,7 @@ The guard then:
 Operational notes:
 
 - replacing `~/.codex/auth.json` affects new Codex sessions; an already-open session may need to be reopened
-- the guard never sends signals to Codex or app-server processes and never launches `codex login`
+- the guard never launches `codex login`; it sends `SIGTERM` only to exact unmanaged app-server listener PIDs after a fresh idle snapshot, and never signals an active, unknown, stale, or unverified process set
 - the local config file contains a personal token and should stay private
 - the cloud dashboard shows the latest effective quota for each auth entry
 - Codex rows may be refreshed by either the cloud worker or a stable local client report; a complete weekly window is enough for a local client report because Codex no longer has a live 5H window. It may replace stale worker-preserved windows, and a newer worker soft failure does not replace an existing good local Codex quota snapshot

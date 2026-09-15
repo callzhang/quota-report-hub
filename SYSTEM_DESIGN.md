@@ -732,8 +732,12 @@ management. `start_frontend.mjs` serves the static dashboards locally on `FRONTE
    `local_auth_untouched` and the client strips immediately. The gap this leaves — a session revoked
    out-of-band kills refresh tokens while issued access tokens live on — costs borrowers nothing,
    because they consume access tokens; the dead refresh token surfaces at the first renewal that
-   needs it. Codex still verifies by refreshing.
-4. **Uploader goes AT-only too** — the upload response carries `refreshed_auth_json` (the AT the hub's verification refresh just minted, RT stripped); the client installs that, *then* strips its own local RT (Phase-4, [§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)), and thereafter relies on the hub. Without the handback the verification refresh would revoke the uploader's own access token and the strip would remove its only way back.
+   needs it. Codex custody uploads now defer refresh verification until the local handoff is safe.
+4. **Uploader goes AT-only too** — a Codex full-RT upload returns `local_auth_untouched` and the
+   client strips its local RT without waiting for a Hub-minted replacement. A changed local account
+   or RT/AT generation completes the previous account's handoff without stopping the app-server;
+   the new account remains pending. Claude's verification-refresh path still returns
+   `refreshed_auth_json` (AT-only), which the client installs *before* stripping its local RT.
 5. **Hub refreshes centrally** — the worker proactively refreshes near-expiry ATs ([§7.2](#72-per-entry-processing-processauthpoolentry)) and clients pull fresh ATs via `refresh_current`.
 6. **Every Hub rotation is serialized by RT generation.** `auth_pool_refresh_leases` holds a
    short lease keyed by `(source, account_id)` plus an HMAC fingerprint of the RT (never the RT).
