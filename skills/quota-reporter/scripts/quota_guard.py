@@ -10,6 +10,7 @@ import os
 import platform
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -44,6 +45,7 @@ from quota_reporters import (
     auth_metadata,
     auth_json_is_stripped,
     cli_auth_seed_state,
+    complete_codex_refresh_handoff,
     access_token_fingerprint,
     claude_auth_blob_metadata,
     detect_claude_custom_provider_env,
@@ -58,6 +60,7 @@ from quota_reporters import (
     restart_claude_app_if_idle,
     iso_now,
     load_config,
+    known_codex_refresh_handoff,
     post_auth_pool_quota,
     probe_claude,
     probe_codex,
@@ -66,6 +69,7 @@ from quota_reporters import (
     runtime_cli_path,
     sync_current_claude_auth_pool,
     sync_current_codex_auth_pool,
+    set_known_codex_refresh_handoff,
     write_claude_keychain_credentials,
     write_known_auth_state,
 )
@@ -99,6 +103,8 @@ AUTH_POOL_MISSING_CONFIG_TEXT = "auth pool not configured (run install_quota_gua
 DESKTOP_SHORTCUT_DISPLAY_NAME = "刷新code账号"
 DESKTOP_SHORTCUT_NAME_DARWIN = f"{DESKTOP_SHORTCUT_DISPLAY_NAME}.command"
 DESKTOP_SHORTCUT_NAME_WINDOWS = f"{DESKTOP_SHORTCUT_DISPLAY_NAME}.lnk"
+CODEX_ACTIVITY_SNAPSHOT_PATH = Path.home() / ".agents" / "auth" / "codex-activity.json"
+CODEX_ACTIVITY_MAX_AGE_SECONDS = 120
 
 
 def install_auth_with_usage_boundary(
@@ -1575,8 +1581,43 @@ def stale_codex_app_server_for_auth(codex_auth_path: Path) -> dict:
     }
 
 
+def codex_app_server_activity(
+    snapshot_path: Path = CODEX_ACTIVITY_SNAPSHOT_PATH,
+    *,
+    now_epoch: float | None = None,
+) -> dict:
+    """Read the redacted Desktop exporter snapshot; unknown always blocks maintenance."""
+    try:
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {"status": "unknown", "reason": "snapshot_unavailable"}
+    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != 1:
+        return {"status": "unknown", "reason": "snapshot_schema_invalid"}
+    if snapshot.get("source") != "codex_desktop_app_tools":
+        return {"status": "unknown", "reason": "snapshot_source_invalid"}
+    observed_ms = snapshot.get("observed_at_ms")
+    if not isinstance(observed_ms, (int, float)):
+        return {"status": "unknown", "reason": "snapshot_time_invalid"}
+    now = time.time() if now_epoch is None else now_epoch
+    age_seconds = now - (float(observed_ms) / 1000.0)
+    if age_seconds < 0 or age_seconds > CODEX_ACTIVITY_MAX_AGE_SECONDS:
+        return {"status": "unknown", "reason": "snapshot_stale"}
+    status = snapshot.get("status")
+    active_count = snapshot.get("active_thread_count")
+    if status == "active" and isinstance(active_count, int) and active_count > 0:
+        return {"status": "active", "reason": "active_threads", "active_thread_count": active_count}
+    if status == "idle" and active_count == 0:
+        return {"status": "idle", "reason": "fresh_snapshot"}
+    return {"status": "unknown", "reason": "snapshot_state_invalid"}
+
+
 def codex_rotating_upload_preflight(codex_auth_path: Path, restart_enabled: bool = True) -> dict:
-    """Permit a full-RT upload only when no unmanaged app-server retains that RT in memory."""
+    """Allow custody upload without authorizing a Hub-side RT rotation.
+
+    `sync_current_codex_auth_pool` now asks the Hub for a pending handoff, so a live app-server
+    is a reason to block *refresh*, never a reason to discard a newly minted RT that the Hub needs
+    to hold. The later activity gate controls the restart and handoff completion.
+    """
     if not codex_auth_path.exists():
         return {"allowed": True, "reason": "missing_auth"}
     try:
@@ -1585,16 +1626,13 @@ def codex_rotating_upload_preflight(codex_auth_path: Path, restart_enabled: bool
         return {"allowed": False, "reason": "auth_read_failed", "error": str(error)}
     if auth_json_is_stripped("codex", auth_json_text):
         return {"allowed": True, "reason": "local_auth_is_at_only"}
-    if not restart_enabled:
-        return {"allowed": False, "reason": "app_server_restart_required"}
     processes = unmanaged_codex_app_server_processes()
-    if processes:
-        return {
-            "allowed": False,
-            "reason": "app_server_restart_required",
-            "processes": processes,
-        }
-    return {"allowed": True, "reason": "no_unmanaged_app_server"}
+    return {
+        "allowed": True,
+        "reason": "deferred_refresh_handoff",
+        "processes": processes,
+        "restart_enabled": restart_enabled,
+    }
 
 
 def restart_codex_app_server() -> dict:
@@ -1664,6 +1702,74 @@ def restart_codex_app_server() -> dict:
         "stdout": result.stdout.strip()[-1000:],
         "stderr": result.stderr.strip()[-1000:],
     }
+
+
+def retire_idle_unmanaged_codex_app_servers() -> dict:
+    """Stop only the exact local app-server processes after the activity gate proved them idle.
+
+    Desktop-owned app-servers are intentionally not registered with the standalone daemon, so its
+    restart command cannot clear their in-memory RT. This function is never a liveness heuristic:
+    the caller has already required a fresh explicit `idle` snapshot. SIGTERM gives an idle server
+    its normal shutdown path, and the original PIDs must be gone before a pending Hub handoff can
+    be completed.
+    """
+    processes = unmanaged_codex_app_server_processes()
+    pids = [process["pid"] for process in processes]
+    if not pids:
+        return {"ok": True, "retired": True, "reason": "no_unmanaged_app_server"}
+
+    failed = []
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as error:
+            failed.append({"pid": pid, "error": str(error)})
+    if failed:
+        return {
+            "ok": False,
+            "retired": False,
+            "reason": "unmanaged_app_server_termination_failed",
+            "failed": failed,
+        }
+
+    # A successful signal delivery is not proof that the process no longer owns the old RT. Keep
+    # this short: it is a maintenance tail only after confirmed idleness, and the next guard cycle
+    # remains fail-closed if a graceful shutdown takes longer.
+    deadline = time.monotonic() + 2.0
+    remaining = list(pids)
+    while remaining and time.monotonic() < deadline:
+        next_remaining = []
+        for pid in remaining:
+            try:
+                os.kill(pid, 0)
+                next_remaining.append(pid)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                # Permission and unexpected OS errors do not establish a safe handoff.
+                next_remaining.append(pid)
+        remaining = next_remaining
+        if remaining:
+            time.sleep(0.05)
+
+    if remaining:
+        return {
+            "ok": False,
+            "retired": False,
+            "reason": "unmanaged_app_server_still_running",
+            "remaining_pids": remaining,
+        }
+    return {"ok": True, "retired": True, "reason": "idle_unmanaged_app_server_terminated"}
+
+
+def restart_or_retire_idle_codex_app_server() -> dict:
+    """Prefer the supported daemon restart; retire a Desktop-owned server only after idle proof."""
+    restarted = restart_codex_app_server()
+    if restarted.get("reason") != "unmanaged_app_server_not_restarted":
+        return restarted
+    retired = retire_idle_unmanaged_codex_app_servers()
+    retired["daemon_restart"] = restarted
+    return retired
 
 
 def uploaded_invalidated_auths(status_payload: dict) -> list[dict]:
@@ -2746,7 +2852,18 @@ def run_guard(args: argparse.Namespace) -> dict:
         or codex_replacement.get("auth_refreshed")
     )
     codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged"}
-    if codex_auth_changed:
+    codex_activity = codex_app_server_activity()
+    if codex_activity.get("status") != "idle":
+        # A PID only proves an app-server exists; this exporter proves whether it hosts work. No
+        # snapshot is deliberately not evidence of idleness, so an upgrade cannot interrupt a task
+        # merely because the plugin has not yet started.
+        codex_app_server = {
+            "restarted": False,
+            "reason": "active_codex_agents" if codex_activity.get("status") == "active" else "codex_activity_unknown",
+            "activity": codex_activity,
+        }
+        timings["codex_app_server"] = 0.0
+    elif codex_auth_changed:
         if getattr(args, "no_restart_codex_app_server", False):
             codex_app_server = {
                 "restarted": False,
@@ -2755,7 +2872,7 @@ def run_guard(args: argparse.Namespace) -> dict:
             }
             timings["codex_app_server"] = 0.0
         else:
-            codex_app_server = timed_guard_step(timings, "codex_app_server", restart_codex_app_server)
+            codex_app_server = timed_guard_step(timings, "codex_app_server", restart_or_retire_idle_codex_app_server)
             codex_app_server["trigger"] = "codex_auth_changed"
     else:
         stale_check = stale_codex_app_server_for_auth(args.codex_auth_path)
@@ -2768,11 +2885,31 @@ def run_guard(args: argparse.Namespace) -> dict:
                 }
                 timings["codex_app_server"] = 0.0
             else:
-                codex_app_server = timed_guard_step(timings, "codex_app_server", restart_codex_app_server)
+                codex_app_server = timed_guard_step(timings, "codex_app_server", restart_or_retire_idle_codex_app_server)
                 codex_app_server["trigger"] = "auth_newer_than_app_server"
             codex_app_server["stale_check"] = stale_check
         else:
             timings["codex_app_server"] = 0.0
+
+    codex_refresh_handoff = {"completed": False, "reason": "not_pending"}
+    pending_handoff = known_codex_refresh_handoff(args.known_auth_path)
+    if pending_handoff:
+        if not (codex_app_server.get("restarted") or codex_app_server.get("retired")):
+            codex_refresh_handoff = {"completed": False, "reason": "local_app_server_not_retired"}
+        elif not pending_handoff.get("account_id"):
+            codex_refresh_handoff = {"completed": False, "reason": "pending_account_missing"}
+        else:
+            completed = run_guard_step(
+                "codex_refresh_handoff_completion_failed",
+                lambda: complete_codex_refresh_handoff(
+                    config["auth_pool_url"], config["auth_pool_user_token"], pending_handoff["account_id"],
+                ),
+            )
+            if completed.get("ok"):
+                set_known_codex_refresh_handoff(args.known_auth_path, False)
+                codex_refresh_handoff = {"completed": True, "account_id": pending_handoff["account_id"]}
+            else:
+                codex_refresh_handoff = {"completed": False, "reason": "hub_completion_failed"}
 
     if usage_state is None:
         token_usage = guard_errors["token_usage"]
@@ -2843,6 +2980,7 @@ def run_guard(args: argparse.Namespace) -> dict:
             "claude": claude_replacement,
         },
         "codex_app_server": codex_app_server,
+        "codex_refresh_handoff": codex_refresh_handoff,
         "token_usage": token_usage,
         "notifications": notifications,
         "warnings": warnings,

@@ -77,6 +77,13 @@ class ReporterScriptsTest(unittest.TestCase):
         )
         self.codex_restart_binary_guard.start()
         self.addCleanup(self.codex_restart_binary_guard.stop)
+        self.codex_activity_guard = mock.patch.object(
+            quota_guard,
+            "codex_app_server_activity",
+            return_value={"status": "idle", "reason": "fresh_snapshot"},
+        )
+        self.codex_activity_guard.start()
+        self.addCleanup(self.codex_activity_guard.stop)
         self.token_usage_state = mock.Mock()
         self.token_usage_state_guard = mock.patch.object(
             quota_guard,
@@ -4954,6 +4961,30 @@ Reading additional input from stdin...
         self.assertFalse(result["restarted"])
         self.assertEqual(result["reason"], "unmanaged_app_server_not_restarted")
 
+    def test_retire_idle_unmanaged_codex_app_servers_requires_the_exact_pid_to_exit(self):
+        processes = [{"pid": 123, "args": "/Applications/Codex.app/Contents/Resources/codex app-server --listen stdio://"}]
+        # SIGTERM is delivered first; the following existence check observes the process gone.
+        with mock.patch.object(quota_guard, "unmanaged_codex_app_server_processes", return_value=processes):
+            with mock.patch.object(quota_guard.os, "kill", side_effect=[None, ProcessLookupError()]) as kill:
+                result = quota_guard.retire_idle_unmanaged_codex_app_servers()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["retired"])
+        self.assertEqual(result["reason"], "idle_unmanaged_app_server_terminated")
+        self.assertEqual(kill.call_args_list[0].args, (123, quota_guard.signal.SIGTERM))
+        self.assertEqual(kill.call_args_list[1].args, (123, 0))
+
+    def test_restart_or_retire_idle_codex_app_server_only_retires_after_daemon_refusal(self):
+        refusal = {"ok": False, "restarted": False, "reason": "unmanaged_app_server_not_restarted"}
+        retired = {"ok": True, "retired": True, "reason": "idle_unmanaged_app_server_terminated"}
+        with mock.patch.object(quota_guard, "restart_codex_app_server", return_value=refusal):
+            with mock.patch.object(quota_guard, "retire_idle_unmanaged_codex_app_servers", return_value=retired) as retire:
+                result = quota_guard.restart_or_retire_idle_codex_app_server()
+
+        retire.assert_called_once()
+        self.assertTrue(result["retired"])
+        self.assertEqual(result["daemon_restart"], refusal)
+
     def test_restart_codex_app_server_does_not_stop_server_when_standalone_install_missing(self):
         daemon_result = mock.Mock(
             returncode=1,
@@ -5419,7 +5450,7 @@ Reading additional input from stdin...
         self.assertTrue(result["uploaded"])
         self.assertEqual(result["reason"], "reuploaded_existing_auth")
 
-    def test_sync_current_codex_auth_pool_refuses_a_real_rt_without_restart_clearance(self):
+    def test_sync_current_codex_auth_pool_uploads_a_real_rt_without_spending_it(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             auth_path = base / "auth.json"
@@ -5437,7 +5468,7 @@ Reading additional input from stdin...
                 encoding="utf-8",
             )
 
-            with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
+            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={"ok": True, "entry": {"account_id": "acct-1"}}) as post_auth_pool_entry:
                 result = quota_guard.sync_current_codex_auth_pool(
                     "https://quota-report-hub.vercel.app",
                     "qrp_token",
@@ -5446,10 +5477,10 @@ Reading additional input from stdin...
                     allow_rotating_upload=False,
                 )
 
-        post_auth_pool_entry.assert_not_called()
-        self.assertFalse(result["ok"])
-        self.assertFalse(result["uploaded"])
-        self.assertEqual(result["reason"], "app_server_restart_required")
+        post_auth_pool_entry.assert_called_once()
+        self.assertTrue(post_auth_pool_entry.call_args.kwargs["defer_codex_refresh"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["uploaded"])
 
     def test_sync_current_codex_auth_pool_reuploads_when_same_auth_is_still_current(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -6949,6 +6980,47 @@ class Phase2NearExpiryTests(unittest.TestCase):
                     threshold_percent=20.0, weekly_threshold_percent=5.0)
         fb.assert_not_called()
         self.assertEqual(result["reason"], "healthy")
+
+
+class CodexActivitySnapshotTests(unittest.TestCase):
+    def test_activity_snapshot_requires_a_recent_explicit_idle_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            snapshot = Path(d) / "codex-activity.json"
+            snapshot.write_text(json.dumps({
+                "schema_version": 1,
+                "source": "codex_desktop_app_tools",
+                "status": "idle",
+                "observed_at_ms": 1_700_000_000_000,
+                "active_thread_count": 0,
+            }), encoding="utf-8")
+            self.assertEqual(
+                quota_guard.codex_app_server_activity(snapshot, now_epoch=1_700_000_060),
+                {"status": "idle", "reason": "fresh_snapshot"},
+            )
+            self.assertEqual(
+                quota_guard.codex_app_server_activity(snapshot, now_epoch=1_700_000_121)["status"],
+                "unknown",
+            )
+
+    def test_activity_snapshot_active_and_malformed_fail_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            snapshot = Path(d) / "codex-activity.json"
+            snapshot.write_text(json.dumps({
+                "schema_version": 1,
+                "source": "codex_desktop_app_tools",
+                "status": "active",
+                "observed_at_ms": 1_700_000_000_000,
+                "active_thread_count": 1,
+            }), encoding="utf-8")
+            self.assertEqual(
+                quota_guard.codex_app_server_activity(snapshot, now_epoch=1_700_000_001)["status"],
+                "active",
+            )
+            snapshot.write_text("not json", encoding="utf-8")
+            self.assertEqual(
+                quota_guard.codex_app_server_activity(snapshot, now_epoch=1_700_000_001)["status"],
+                "unknown",
+            )
 
 
 class Phase4StripLocalRtTests(unittest.TestCase):

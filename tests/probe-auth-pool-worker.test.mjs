@@ -23,6 +23,37 @@ async function loadWorkerModule() {
   }
 }
 
+test("processAuthPoolEntry does not decrypt, probe, or refresh a pending Codex handoff", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const forbidden = () => {
+    throw new Error("pending handoff must not touch the credential");
+  };
+
+  const result = await processAuthPoolEntry(
+    {
+      source: "codex",
+      account_id: "acct-pending",
+      refresh_handoff_state: "pending",
+    },
+    {
+      decryptAuthJsonImpl: forbidden,
+      probeCodexAuthJsonImpl: forbidden,
+      refreshCodexTokenImpl: forbidden,
+      authPoolQuotaLatestForEntryImpl: forbidden,
+    },
+  );
+
+  assert.deepEqual(result, {
+    source: "codex",
+    account_id: "acct-pending",
+    status: "skipped",
+    error: null,
+    refreshed_auth_written: false,
+    refreshed_auth_result: null,
+    central_refresh: { attempted: false, reason: "local_refresh_handoff_pending" },
+  });
+});
+
 test("processAuthPoolEntry writes refreshed codex auth back to the pool", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const quotaReports = [];

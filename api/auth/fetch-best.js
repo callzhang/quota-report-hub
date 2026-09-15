@@ -20,6 +20,7 @@ import { NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy }
 import { scarcityFromState } from "../../lib/pool-scarcity.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
 import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
+import { isRefreshHandoffPending } from "../../lib/refresh-handoff.js";
 
 // The client trips refresh_current at T-20min. Anything at or below this is not worth serving back
 // to it — by the time it installs the copy, the copy is expiring too. Sized above the client's
@@ -71,6 +72,11 @@ async function refreshCanonicalPoolAuth(authJson, entryMeta, source) {
 }
 
 async function ensureCodexIdTokenFresh(authJson, entryMeta) {
+  if (isRefreshHandoffPending(entryMeta)) {
+    // The pooled RT is intentionally dormant until the uploader proves every local holder has
+    // stopped. A stale id_token is less harmful than revoking an active local task's AT.
+    return { authJson, deadRefreshToken: false };
+  }
   const idMsLeft = codexIdTokenMsUntilExpiry(authJson);
   const atMsLeft = accessTokenMsUntilExpiry(authJson, "codex");
   const idStale = idMsLeft !== null && idMsLeft <= 5 * 60 * 1000;
@@ -188,6 +194,7 @@ export default async function handler(req, res) {
     if (sameEntry) {
       let sameAuthJson = await decryptAuthJson(sameEntry);
       let idTokenRefreshDead = false;
+      const refreshBlocked = isRefreshHandoffPending(sameEntry);
       if (source === "codex") {
         const ensured = await ensureCodexIdTokenFresh(sameAuthJson, sameEntry);
         sameAuthJson = ensured.authJson;
@@ -203,7 +210,7 @@ export default async function handler(req, res) {
       // So refresh HERE when the pooled copy cannot outlive the client's need. The hub holds the
       // real refresh token; this is precisely the moment it exists for.
       let msLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
-      if (!idTokenRefreshDead && msLeft !== null && msLeft <= REFRESH_CURRENT_MIN_LIFETIME_MS) {
+      if (!refreshBlocked && !idTokenRefreshDead && msLeft !== null && msLeft <= REFRESH_CURRENT_MIN_LIFETIME_MS) {
         const refreshed = await refreshCanonicalPoolAuth(sameAuthJson, sameEntry, source);
         if (refreshed.ok) {
           sameAuthJson = refreshed.auth_json;

@@ -2896,6 +2896,7 @@ def post_auth_pool_entry(
     source: str,
     auth_json_text: str,
     quota_payload: dict | None = None,
+    defer_codex_refresh: bool = False,
 ) -> dict:
     upload_body = {
         "source": source,
@@ -2908,6 +2909,8 @@ def post_auth_pool_entry(
     # acceptance rules as /api/auth/quota and ignores an incomplete/unavailable payload.
     if quota_payload is not None:
         upload_body["quota_payload"] = quota_payload
+    if source == "codex" and defer_codex_refresh:
+        upload_body["defer_codex_refresh"] = True
     body = json.dumps(upload_body).encode("utf-8")
     request = urllib.request.Request(
         auth_pool_url.rstrip("/") + "/api/auth/upload",
@@ -2916,6 +2919,25 @@ def post_auth_pool_entry(
             "Content-Type": "application/json",
             "Authorization": f"Bearer {auth_pool_user_token}",
         },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return read_auth_pool_response(response)
+    except urllib.error.HTTPError as error:
+        return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
+
+
+def complete_codex_refresh_handoff(auth_pool_url: str, auth_pool_user_token: str, account_id: str) -> dict:
+    body = json.dumps({
+        "source": "codex",
+        "account_id": account_id,
+        "complete_codex_refresh_handoff": True,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        auth_pool_url.rstrip("/") + "/api/auth/upload",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {auth_pool_user_token}"},
         method="POST",
     )
     try:
@@ -3024,6 +3046,7 @@ def sync_current_auth_pool_entry(
     metadata: dict,
     known_auth_path: Path,
     quota_payload: dict | None = None,
+    defer_codex_refresh: bool = False,
 ) -> dict:
     known = known_auth_state_for_source(read_known_auth_state(known_auth_path), source)
     if is_excluded_free_plan(metadata.get("plan_name")):
@@ -3089,6 +3112,7 @@ def sync_current_auth_pool_entry(
             source=source,
             auth_json_text=auth_json_text,
             quota_payload=quota_payload,
+            defer_codex_refresh=defer_codex_refresh,
         )
         if uploaded.get("ok") is False:
             return {
@@ -3127,6 +3151,7 @@ def sync_current_auth_pool_entry(
         source=source,
         auth_json_text=auth_json_text,
         quota_payload=quota_payload,
+        defer_codex_refresh=defer_codex_refresh,
     )
     if uploaded.get("ok") is False:
         return {
@@ -3406,6 +3431,24 @@ def set_known_auth_state_source(source: str, known_auth_path: Path, state_source
     return True
 
 
+def set_known_codex_refresh_handoff(known_auth_path: Path, pending: bool) -> bool:
+    state = read_known_auth_state(known_auth_path)
+    source_state = (state.get("sources") or {}).get("codex")
+    if not isinstance(source_state, dict):
+        return False
+    source_state["refresh_handoff_pending"] = pending
+    state["sources"]["codex"] = source_state
+    known_auth_path.parent.mkdir(parents=True, exist_ok=True)
+    known_auth_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    known_auth_path.chmod(0o600)
+    return True
+
+
+def known_codex_refresh_handoff(known_auth_path: Path) -> dict | None:
+    source_state = (read_known_auth_state(known_auth_path).get("sources") or {}).get("codex")
+    return source_state if isinstance(source_state, dict) and source_state.get("refresh_handoff_pending") else None
+
+
 def upload_reported_disabled_refresh_token(sync_result: dict) -> bool:
     """The /api/auth/upload response carries the hub's disabled_refresh_token flag at the TOP LEVEL
     (api/auth/upload.js: {ok, entry, disabled_refresh_token, ...}). Read it from there so the client
@@ -3510,12 +3553,6 @@ def sync_current_codex_auth_pool(
     auth_json_text = auth_path.read_text(encoding="utf-8")
     if auth_json_is_stripped("codex", auth_json_text):
         return {"ok": True, "uploaded": False, "reason": "local_auth_is_at_only"}
-    # The hub verifies a Codex upload by rotating its RT, which invalidates the RT already held by
-    # a running app-server. The guard calls us only after checking it can restart that process; a
-    # direct caller can explicitly withhold that clearance and must not spend the RT anyway.
-    if not allow_rotating_upload:
-        return {"ok": False, "uploaded": False, "reason": "app_server_restart_required"}
-
     metadata = auth_metadata(auth_path)
     result = sync_current_auth_pool_entry(
         source="codex",
@@ -3525,12 +3562,28 @@ def sync_current_codex_auth_pool(
         metadata=metadata,
         known_auth_path=known_auth_path,
         quota_payload=quota_payload,
+        # Upload custody first, but do not spend this single-use RT until a later idle handoff.
+        # `allow_rotating_upload` remains accepted for callers from the previous protocol; it no
+        # longer authorizes a rotation.
+        defer_codex_refresh=True,
     )
     # Phase 4: once the hub holds our real RT (just uploaded) and reports disabled_refresh_token
     # mode, strip the local RT so this owner also runs AT-only — its CLI can no longer rotate
     # the shared RT — and mark it fetched so the near-expiry path keeps its AT fresh.
     if result.get("uploaded") and upload_reported_disabled_refresh_token(result):
-        # Install before stripping, as claude does. The hub's verification refresh rotated this
+        # A deferred Codex upload did not rotate this machine's AT, so unlike the legacy path no
+        # replacement blob is required before strip. The Hub's pending state blocks all refreshes
+        # until the local app-server is known idle.
+        untouched = upload_reported_local_auth_untouched(result)
+        if untouched:
+            result["refreshed_auth_installed"] = {"installed": False, "reason": "not_needed_hub_did_not_refresh"}
+            strip = strip_local_codex_refresh_token(auth_path)
+            result["local_refresh_token_stripped"] = strip
+            if strip.get("stripped") or strip.get("reason") == "already_stripped":
+                set_known_auth_state_source("codex", known_auth_path, "fetched_from_auth_pool")
+                set_known_codex_refresh_handoff(known_auth_path, True)
+            return result
+        # Install before stripping when talking to an older Hub that did rotate the grant. The hub's verification refresh rotated this
         # grant; the returned blob carries the access_token and the fresh ~1-hour id_token it minted,
         # and the id_token is what the codex CLI reads to decide when to refresh itself.
         installed = install_uploaded_codex_refresh(result, auth_path)

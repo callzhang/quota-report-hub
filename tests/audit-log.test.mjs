@@ -518,6 +518,41 @@ test("upsertAuthPoolEntry records the latest uploader for later same-account upl
   }
 });
 
+test("a pending Codex handoff keeps its original uploader as completion authority", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "provider-pending",
+        email: "shared@stardust.ai",
+        lastRefresh: "2026-06-08T03:09:11Z",
+        sid: "session-pending",
+      }),
+      uploader_email: "owner@stardust.ai",
+      refresh_handoff_state: "pending",
+    });
+
+    const update = await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({
+        accountId: "provider-pending",
+        email: "shared@stardust.ai",
+        lastRefresh: "2026-06-09T01:03:13Z",
+        sid: "session-pending",
+      }),
+      uploader_email: "other-user@stardust.ai",
+    });
+
+    assert.equal(update.uploader_email, "owner@stardust.ai");
+    const [entry] = (await mod.authPoolEntries()).filter((candidate) => candidate.account_id === "shared@stardust.ai");
+    assert.equal(entry.uploader_email, "owner@stardust.ai");
+    assert.equal(entry.refresh_handoff_state, "pending");
+  } finally {
+    cleanup();
+  }
+});
+
 test("upsertAuthPoolEntry keeps the authenticated uploader instead of assigning the account user", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {

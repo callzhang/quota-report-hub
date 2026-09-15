@@ -24,6 +24,7 @@ import { probeAuthJson } from "../lib/auth-pool-probe.js";
 import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob } from "../lib/token-refresh.js";
 import { isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
 import { probeClaudeUsage } from "../lib/claude-usage.js";
+import { isRefreshHandoffPending } from "../lib/refresh-handoff.js";
 
 // Proactively refresh an access token (claude OR codex) once it is within this window of expiry.
 // The cron nominally fires every ~15 min, but GitHub Actions can delay it; a 1-hour window keeps the
@@ -405,6 +406,19 @@ export async function processAuthPoolEntry(
     nowImpl = () => new Date(),
   } = {}
 ) {
+  if (isRefreshHandoffPending(entry)) {
+    // `codex exec` can self-refresh as part of a probe. While a local app-server may still own
+    // this RT generation, even probing would race the handoff and revoke live local ATs.
+    return {
+      source: entry.source,
+      account_id: entry.account_id,
+      status: "skipped",
+      error: null,
+      refreshed_auth_written: false,
+      refreshed_auth_result: null,
+      central_refresh: { attempted: false, reason: "local_refresh_handoff_pending" },
+    };
+  }
   const now = nowImpl();
   const previousReport = await authPoolQuotaLatestForEntryImpl({ source: entry.source, accountId: entry.account_id });
   const skipReason = probeSkipReason(entry, previousReport, now);

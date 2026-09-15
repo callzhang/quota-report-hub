@@ -133,9 +133,9 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 3. **Scheduler self-heal** — re-register launchd/cron if missing (`ensure_scheduler_registration` `:511-564`).
 4. **Probe Codex** — `probe_codex(..., capture_refreshed_auth=True)`, persist any CLI-refreshed `auth.json` back atomically, then strip the sensitive `refreshed_auth_json` from the payload (`:1463-1468`).
 5. **Probe Claude** — `probe_claude` (or a synthetic error if a custom ANTHROPIC provider is active).
-6. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool`, which always sends a **probe heartbeat** and attaches the quota payload only when the hub would accept it (see 3.7). Before a Codex auth with a real RT can upload, the guard checks for an unmanaged local app-server; one means the upload is refused as `app_server_restart_required`, because the Hub verification would rotate an RT the process still has in memory.
+6. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool`, which always sends a **probe heartbeat** and attaches the quota payload only when the hub would accept it (see 3.7). A Codex full-RT upload is persisted as a pending handoff: the Hub deliberately does not verify by refreshing it, so an app-server holding the preceding RT generation remains safe while it has work.
 7. **Rotate** — `maybe_replace_{codex,claude}_auth` (`:1559-1588`).
-8. **Codex app-server restart** if auth changed (`:1589-1609`). A successful Codex upload that installs the Hub's returned AT-only blob counts as an auth change, so it always enters this restart step after install/strip; it cannot silently continue after an unmanaged-daemon refusal.
+8. **Codex app-server handoff** after auth changes (`:1589-1609`). `active`, unknown, missing, or stale activity evidence blocks maintenance. With a fresh `idle` snapshot the guard first asks the supported daemon to restart; when Desktop owns an unmanaged app-server, it sends `SIGTERM` only to the exact current-user/current-home listener PIDs and confirms each is gone. Only either successful restart or confirmed retirement completes the owner-only Hub acknowledgement.
 9. **Notifications** (toasts) unless `--no-toast`. The uploaded-auth recovery check follows the
    pool's sticky refresh verdict (`usage_summary.central_refresh.auth_rejected` or the derived
    `refresh_validity.status=rejected`), even while the last access token still makes the row's
@@ -187,12 +187,19 @@ immediate replacement trigger.
   shadowed — the strip is **withheld** (`strip_withheld_no_working_at`) and the real RT is kept for
   the next cycle. A machine that can still refresh is recoverable; one that cannot is not. This also
   means hub and clients can roll out in either order.
-- **Codex app-server boundary**: a full-RT Codex upload is allowed only after the guard finds no
-  unmanaged app-server for the current user. The Hub verifies that upload by rotating the RT, then
-  the client installs the returned AT-only credential, strips its RT, and restarts the managed
-  app-server in the same cycle. An unmanaged desktop app-server cannot be safely restarted by the
-  guard, so the upload is not attempted; the owner must close that session first. This is a safety
-  boundary, not a warning: continuing would leave the old RT resident and capable of replaying it.
+- **Codex app-server handoff**: a full-RT Codex upload is a custody transfer, not permission for
+  the Hub to refresh it. The guard uploads with `defer_codex_refresh:true`; the Hub persists
+  `refresh_handoff_state:"pending"`, accepts the RT, and returns `local_auth_untouched:true` so the
+  client may read-back strip disk state without waiting for a replacement AT. While pending, the
+  upload verifier, worker (including `codex exec` probes), `refresh_current`, and id-token
+  precautionary refresh all refuse to present the RT. The local exporter writes a redacted,
+  120-second activity snapshot from the supported Desktop tool bridge. `active`, absent, malformed,
+  stale, or unknown is never evidence of idleness: the guard does not restart. Only a fresh
+  `idle` snapshot plus either a successful app-server restart or confirmed retirement of the exact
+  unmanaged listener PIDs allows the uploader to call the owner-only completion acknowledgement;
+  then and only then the Hub removes `pending` and resumes being the
+  sole refresher. A real RT that reappears on disk before completion is uploaded again, keeping the
+  Hub's canonical copy current without rotating it.
 - Claude strip writes the placeholder to **every inference-capable grant** in each local store that can
   shadow the hub (macOS tokenCacheV2/tokenCache, keychain, an existing `.credentials.json`), not just
   the highest-scored cache entry — the cache holds one entry per scope set, and an unstripped sibling
@@ -732,6 +739,11 @@ management. `start_frontend.mjs` serves the static dashboards locally on `FRONTE
    OAuth. Worker and fetch-best re-read the canonical encrypted blob after claiming and refuse a
    fingerprint mismatch as `refresh_superseded`, so an invocation queued behind a completed rotation
    cannot replay the old single-use RT.
+7. **A local handoff can temporarily freeze rotation.** `auth_pool_entries.refresh_handoff_state`
+   is `pending` from a deferred Codex upload until its authenticated uploader completes the handoff.
+   The freeze covers all Hub refresh mechanisms, including worker probes that could cause a CLI
+   self-refresh. It fails closed: no pending completion is inferred from process absence or a stale
+   local file.
 
 **Lifecycle of one account under the flag:**
 
