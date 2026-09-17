@@ -305,6 +305,55 @@ test("a rejected fallback refresh keeps the probe's own verdict and attaches the
   assert.equal(refreshValidityFromReport(quotaReports[0]), "rejected");
 });
 
+// A refresh that succeeds but mints another token the provider refuses for inference fixes nothing,
+// and each one revokes the access tokens borrowers already hold. Retrying it every cycle would turn a
+// grant that cannot infer into a borrower-wide revocation loop that only ends when a refresh is refused.
+test("a refresh that mints another inference-less token is not repeated on the next cycle", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const { refreshValidityFromReport } = await import("../lib/auth-status.js");
+  const now = new Date("2026-09-17T09:00:00Z");
+  const blob = (at, expiresAt) => JSON.stringify({
+    account_id: "acct-claude",
+    auth_last_refresh: String(expiresAt),
+    credentials: { claudeAiOauth: { accessToken: at, refreshToken: "RT", expiresAt, scopes: ["user:inference", "user:profile"] } },
+  });
+  const firstExpiry = now.getTime() + 20 * 24 * 60 * 60 * 1000;
+  const refreshedExpiry = now.getTime() + 30 * 24 * 60 * 60 * 1000;
+  let stored = blob("AT_NO_INFERENCE", firstExpiry);
+  let refreshes = 0;
+  const quotaReports = [];
+  const deps = (previousReport) => ({
+    atOnlyMode: true,
+    nowImpl: () => now,
+    decryptAuthJsonImpl: () => stored,
+    recordTokenFingerprintImpl: async () => {},
+    refreshClaudeTokenImpl: async () => {
+      refreshes += 1;
+      return { ok: true, access_token: "AT_STILL_NO_INFERENCE", refresh_token: "RT2", expires_in: 30 * 24 * 60 * 60 };
+    },
+    upsertAuthPoolEntryImpl: async ({ auth_json }) => { stored = auth_json; return { deduplicated: false }; },
+    probeClaudeAuthJsonImpl: async () => { throw new Error("claude access token lacks inference scope"); },
+    upsertAuthPoolQuotaImpl: async (report) => { quotaReports.push(report); },
+    authPoolQuotaLatestForEntryImpl: async () => previousReport,
+  });
+
+  const first = await processAuthPoolEntry({ source: "claude", account_id: "acct-claude", auth_last_refresh: String(firstExpiry) }, deps(null));
+  assert.equal(refreshes, 1, "the first refusal gets one refresh -- the grant may still be able to infer");
+  assert.equal(first.central_refresh.minted_without_inference, true);
+  assert.equal(first.central_refresh.auth_rejected, true, "a refresh that yields nothing usable is recorded as refused, so the verdict is sticky");
+  const firstReport = quotaReports.at(-1);
+  assert.equal(firstReport.error, "claude access token lacks inference scope");
+  assert.equal(refreshValidityFromReport(firstReport), "rejected", "the owner has to be told: only a re-login fixes a grant that cannot infer");
+
+  const storedExpiry = JSON.parse(stored).auth_last_refresh;
+  await processAuthPoolEntry({ source: "claude", account_id: "acct-claude", auth_last_refresh: storedExpiry }, deps(firstReport));
+  assert.equal(refreshes, 1, "the same credential is not refreshed again");
+
+  // A new upload is a different credential and earns its own one attempt.
+  await processAuthPoolEntry({ source: "claude", account_id: "acct-claude", auth_last_refresh: "999" }, deps(firstReport));
+  assert.equal(refreshes, 2);
+});
+
 test("a rejected central refresh still probes the access token and reports it alive when it is", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const { refreshValidityFromReport } = await import("../lib/auth-status.js");

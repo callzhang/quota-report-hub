@@ -382,13 +382,27 @@ function skippedProbeItem(entry, previousReport, skipReason, centralRefreshResul
   };
 }
 
-function shouldForceRefreshAfterAuthInvalid(entry, report, centralRefreshResult, atOnlyMode) {
+// The credential this entry holds was already refreshed once and came back still refused for
+// inference. auth_last_refresh names the credential generation: a refresh or a new upload changes it.
+function refreshAlreadyMintedWithoutInference(entry, previousReport) {
+  return (
+    previousReport?.usage_summary?.central_refresh?.minted_without_inference === true &&
+    previousReport?.auth_last_refresh != null &&
+    String(previousReport.auth_last_refresh) === String(entry?.auth_last_refresh)
+  );
+}
+
+function shouldForceRefreshAfterAuthInvalid(entry, report, centralRefreshResult, atOnlyMode, previousReport = null) {
   return (
     atOnlyMode &&
     (entry.source === "claude" || entry.source === "codex") &&
     report?.status === "error" &&
     isHardAuthError(report.error) &&
-    !centralRefreshResult?.attempted
+    !centralRefreshResult?.attempted &&
+    // A successful refresh revokes the access tokens borrowers hold. Repeating one that already minted
+    // a token the provider refuses for inference buys nothing and costs every borrower their token,
+    // every cycle, until some refresh happens to be refused.
+    !refreshAlreadyMintedWithoutInference(entry, previousReport)
   );
 }
 
@@ -487,7 +501,7 @@ export async function processAuthPoolEntry(
     }
     report = failureReport(entry, error);
   }
-  if (shouldForceRefreshAfterAuthInvalid(entry, report, centralRefreshResult, atOnlyMode) && authJsonText) {
+  if (shouldForceRefreshAfterAuthInvalid(entry, report, centralRefreshResult, atOnlyMode, previousReport) && authJsonText) {
     const refreshTokenImpl = entry.source === "claude" ? refreshClaudeTokenImpl : refreshCodexTokenImpl;
     const refreshed = await refreshEntryIfNeeded(authJsonText, entry, entry.source, {
       refreshTokenImpl,
@@ -512,6 +526,15 @@ export async function processAuthPoolEntry(
         };
       } catch (error) {
         report = failureReport(entry, error);
+      }
+      if (entry.source === "claude" && report?.error === CLAUDE_INFERENCE_SCOPE_MISSING_ERROR) {
+        // The grant itself cannot mint an inference token: only the owner re-logging in fixes that.
+        // Recorded as a refused refresh, not a successful one -- the refresh produced nothing usable, and
+        // a rejection is the verdict that stays sticky (mergeLatestReport) until a new upload or a
+        // refresh that works. Pinned to the credential the refresh just wrote, so the next cycle
+        // recognises it and does not spend another rotation on it.
+        centralRefreshResult = { ...centralRefreshResult, ok: false, auth_rejected: true, minted_without_inference: true };
+        report = { ...report, auth_last_refresh: JSON.parse(authJsonText)?.auth_last_refresh ?? report.auth_last_refresh };
       }
     }
   }

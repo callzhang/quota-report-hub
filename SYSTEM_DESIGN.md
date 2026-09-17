@@ -658,6 +658,19 @@ account staying "healthy" and broken indefinitely. It is a **distinct string** r
 `claude auth invalid (authentication_error)` because the death log's whole value is that the recorded
 fact is the observed one ([§12.1](#121-auth_pool_death_events-why-a-death-log-and-not-a-state-table)).
 
+**One refresh per credential, not one per cycle.** A refresh can succeed and still mint a token the
+provider refuses for inference — the grant itself lacks the scope. Retrying would be worse than
+useless: every successful refresh revokes the access tokens borrowers already hold, so a grant that
+cannot infer would revoke every borrower's token every 20 minutes until some refresh happened to be
+refused. When the forced refresh's re-probe still reports missing scope, the worker records
+`central_refresh: {ok: false, auth_rejected: true, minted_without_inference: true}` against the
+`auth_last_refresh` of the credential it just wrote, and `shouldForceRefreshAfterAuthInvalid` skips
+that same credential on later cycles. It is recorded as a *refused* refresh on purpose: that is the
+verdict `mergeLatestReport` keeps sticky, so a healthy report from a machine holding some other token
+cannot flip the row back, and the owner is notified. A new upload changes `auth_last_refresh`, earns
+its own single attempt, and — when it is a new refresh-token generation — ends the verdict
+([§9](#9-the-disabled_refresh_token-mechanism)).
+
 The guard runs the same check locally (`probe_claude_inference_access`, [§3.3](#33-readingwriting-local-auth-quota_reporterspy)).
 
 ---
