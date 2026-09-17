@@ -7486,6 +7486,78 @@ class ClaudeInferenceCapableSelectionTests(unittest.TestCase):
         self.assertEqual(probe.call_count, 1)
 
 
+class ClaudeTokenCacheSlotTests(unittest.TestCase):
+    """Claude.app keeps one cache entry per scope set, and a credential read from an entry takes that
+    entry's scopes as its own (claude_token_cache_scopes). On 2026-09-17 the `user:profile`-only entry
+    held the same token as the inference entries. An entry that cannot hold an inference credential is
+    never a credential this guard may read, upload or install into: read as one, its label becomes the
+    blob's `scopes`, and those are the scopes the hub's refresh asks for."""
+
+    PREFIX = f"{quota_reporters.CLAUDE_OAUTH_CLIENT_ID}:user:https://api.anthropic.com:"
+
+    def setUp(self):
+        quota_reporters.reset_claude_inference_cache()
+        self.addCleanup(quota_reporters.reset_claude_inference_cache)
+
+    def test_a_profile_only_entry_is_never_selected_even_with_the_only_real_refresh_token(self):
+        cache = {
+            self.PREFIX + "user:profile": {"token": "PROFILE_AT", "refreshToken": "sk-ant-ort01-REAL", "expiresAt": 9_999_999_999_999},
+            self.PREFIX + "user:inference user:profile user:sessions:claude_code": {
+                "token": "INFER_AT", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "expiresAt": 1,
+            },
+        }
+        with mock.patch("quota_reporters.probe_claude_inference_access",
+                        return_value={"checked": True, "status_code": 200, "lacks_inference": False}):
+            cache_key, entry = quota_reporters.select_claude_token_cache_entry(cache)
+        self.assertEqual(entry["token"], "INFER_AT")
+        self.assertIn("user:inference", cache_key)
+
+    def test_among_inference_entries_the_one_the_provider_accepts_wins(self):
+        cache = {
+            self.PREFIX + "user:inference user:profile user:sessions:claude_code": {
+                "token": "REFUSED_AT", "refreshToken": "sk-ant-ort01-REAL", "expiresAt": 9_999_999_999_999,
+            },
+            self.PREFIX + "user:file_upload user:inference user:profile user:sessions:claude_code": {
+                "token": "WORKING_AT", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "expiresAt": 1,
+            },
+        }
+
+        def probe(access_token):
+            refused = access_token == "REFUSED_AT"
+            return {"checked": True, "status_code": 403 if refused else 200, "lacks_inference": refused}
+
+        with mock.patch("quota_reporters.probe_claude_inference_access", side_effect=probe):
+            _, entry = quota_reporters.select_claude_token_cache_entry(cache)
+        self.assertEqual(entry["token"], "WORKING_AT")
+
+    def test_an_install_never_writes_into_the_profile_only_entry(self):
+        cache = {
+            self.PREFIX + "user:profile": {"token": "PROFILE_AT", "refreshToken": "sk-ant-ort01-APP", "expiresAt": 9_999_999_999_999},
+            self.PREFIX + "user:inference user:profile user:sessions:claude_code": {
+                "token": "OLD_AT", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "expiresAt": 1,
+            },
+        }
+        captured = {}
+        with tempfile.TemporaryDirectory() as d:
+            config = Path(d) / "config.json"
+            config.write_text(json.dumps({"oauth:tokenCacheV2": "enc"}), encoding="utf-8")
+            with mock.patch("quota_reporters.sys.platform", "darwin"), \
+                 mock.patch("quota_reporters.claude_application_config_path", return_value=config), \
+                 mock.patch("quota_reporters.read_claude_safe_storage_secret", return_value="secret"), \
+                 mock.patch("quota_reporters.decrypt_claude_safe_storage_json", side_effect=lambda *_: cache), \
+                 mock.patch("quota_reporters.encrypt_claude_safe_storage_json",
+                            side_effect=lambda payload, _secret: captured.setdefault("cache", json.loads(json.dumps(payload))) and "enc"), \
+                 mock.patch("quota_reporters.probe_claude_inference_access",
+                            return_value={"checked": True, "status_code": 200, "lacks_inference": False}):
+                quota_reporters.write_claude_token_cache_credentials(
+                    {"claudeAiOauth": {"accessToken": "NEW_AT", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "expiresAt": 5}},
+                    Path(d), "token_cache_v2",
+                )
+        written = captured["cache"]
+        self.assertEqual(written[self.PREFIX + "user:profile"]["token"], "PROFILE_AT")
+        self.assertEqual(written[self.PREFIX + "user:inference user:profile user:sessions:claude_code"]["token"], "NEW_AT")
+
+
 class ClaudeStripKeepsEachStoresOwnTokenTests(unittest.TestCase):
     """The strip used to write ONE credential -- whichever store won the read -- into every store. That
     is how the app's refused token reached the keychain and replaced a working login (2026-09-17). A

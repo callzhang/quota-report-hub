@@ -1312,6 +1312,19 @@ def claude_token_cache_entry_score(cache_key: str, entry: dict) -> tuple[int, in
 
 
 def select_claude_token_cache_entry(cache: dict) -> tuple[str | None, dict | None]:
+    """The cache entry this guard reads a credential from and installs one into.
+
+    Only entries whose scope set includes inference qualify. A credential read from an entry takes
+    that entry's scopes as its own, and those become the uploaded blob's `scopes` -- the scopes the
+    hub's refresh then asks for. A `user:profile`-only entry read as the machine's credential (it can
+    hold the only real refresh token, since the strip leaves such grants alone) would teach the pool
+    to mint tokens that cannot infer; installing into it hides a working token where Claude Code
+    never looks. On 2026-09-17 that entry held the same token as the inference entries.
+
+    Among qualifying entries the provider's own answer ranks first (claude_credential_can_infer), for
+    the same reason it does between stores; then the existing real-refresh-token, client and expiry
+    ordering.
+    """
     candidates = []
     for cache_key, entry in cache.items():
         if not isinstance(cache_key, str) or not isinstance(entry, dict):
@@ -1320,7 +1333,12 @@ def select_claude_token_cache_entry(cache: dict) -> tuple[str | None, dict | Non
             continue
         if not entry.get("refreshToken"):
             continue
-        candidates.append((claude_token_cache_entry_score(cache_key, entry), cache_key, entry))
+        # The entry's own scope set, not claude_cache_entry_can_mint_inference: that one also admits
+        # every hub-client entry so the strip reaches them all, including the profile-only one.
+        if "user:inference" not in claude_token_cache_scopes(cache_key):
+            continue
+        capability = claude_credential_can_infer(claude_token_cache_entry_to_credentials(cache_key, entry))
+        candidates.append(((capability, *claude_token_cache_entry_score(cache_key, entry)), cache_key, entry))
     if not candidates:
         return None, None
     _, cache_key, entry = max(candidates, key=lambda item: item[0])

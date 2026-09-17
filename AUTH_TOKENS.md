@@ -119,6 +119,15 @@
   to cover **every grant that can do inference**, not every entry of one client id: a second grant
   re-mints just as effectively, and rotating it revokes the tokens the hub is serving. That is what
   `claude_cache_entry_can_mint_inference` decides. Grants without inference scope are left alone.
+- **Only an entry whose scope set includes `user:inference` is ever a credential.**
+  `select_claude_token_cache_entry` skips every other entry for reading *and* for installing. A
+  credential read from an entry takes the entry's scopes as its own; those become the uploaded blob's
+  `scopes`, which is what the hub's refresh asks the provider for. A `user:profile`-only entry — which
+  can hold the only real refresh token, because the strip leaves non-inference grants alone — read as
+  the machine's credential would teach the pool to mint tokens that cannot infer, and installing into
+  it hides a working token where Claude Code never looks. Measured 2026-09-17: that entry held the
+  same access token as the inference entries. Among qualifying entries the provider's answer
+  (`claude_credential_can_infer`) ranks first, as it does between stores.
 - **Selection inside the cache is content-first too.** A cache may contain a high-scoring client/scope
   entry whose refresh token is the hub's `disabled-by-hub-refresh-token` placeholder alongside a
   lower-scoring entry with a real refresh token. `select_claude_token_cache_entry` ranks the real,
