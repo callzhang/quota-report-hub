@@ -1163,7 +1163,10 @@ def claude_credential_can_infer(credentials: dict | None) -> int:
         _CLAUDE_INFERENCE_VERDICTS[key] = verdict
     if verdict.get("lacks_inference"):
         return -1
-    return 1 if verdict.get("checked") and not verdict.get("status_code") in (401,) else 0
+    # Only a success is evidence of capability. A 429 or 5xx answered without saying anything about
+    # scope, and a 401 is a dead token -- neither may rank as "can infer".
+    status_code = verdict.get("status_code")
+    return 1 if isinstance(status_code, int) and 200 <= status_code < 300 else 0
 
 
 def claude_credential_rank(credentials: dict | None) -> tuple[int, int, float]:

@@ -7470,6 +7470,13 @@ class ClaudeInferenceCapableSelectionTests(unittest.TestCase):
                         return_value={"checked": False, "status_code": None, "lacks_inference": False}):
             self.assertGreater(quota_reporters.claude_credential_rank(rotatable), quota_reporters.claude_credential_rank(stripped))
 
+    def test_a_throttled_or_failed_answer_is_not_evidence_of_capability(self):
+        for status in (401, 429, 503):
+            quota_reporters.reset_claude_inference_cache()
+            with mock.patch("quota_reporters.probe_claude_inference_access",
+                            return_value={"checked": True, "status_code": status, "lacks_inference": False}):
+                self.assertEqual(quota_reporters.claude_credential_can_infer({"claudeAiOauth": {"accessToken": "T"}}), 0, status)
+
     def test_each_token_is_asked_about_once_per_run(self):
         creds = {"claudeAiOauth": {"accessToken": "SAME", "refreshToken": "R"}}
         with mock.patch("quota_reporters.probe_claude_inference_access",
