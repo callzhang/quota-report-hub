@@ -2761,8 +2761,12 @@ def probe_claude(
     # A token the provider will not let do inference is refused exactly as a 401 is: this machine
     # cannot use it, and the recovery -- a fresh token from whoever holds the refresh token -- is the
     # same. Treating it as healthy is what kept a profile-only token installed and pooled.
+    # And a 401 is a refused token whichever endpoint returns it: while the usage endpoint is in its
+    # polite backoff the inference check is the only live question asked (a10041, 2026-09-17: 401
+    # every cycle, reported ok).
     access_token_refused = bool(
         (oauth_usage_probe and oauth_usage_probe.get("status_code") == 401)
+        or inference_probe.get("status_code") == 401
         or inference_probe.get("lacks_inference")
     )
     auth_error = None
@@ -2771,7 +2775,7 @@ def probe_claude(
         # to a working one — i.e. the refresh token is gone/rejected, or a non-expired
         # token was rejected outright. A transient refresh failure (network/5xx) is not
         # proof the account died, so don't hard-invalidate it then.
-        refresh_status = (oauth_usage_probe.get("token_refresh") or {}).get("status")
+        refresh_status = ((oauth_usage_probe or {}).get("token_refresh") or {}).get("status")
         # Authority to condemn the account requires holding the credential the POOL holds — which is
         # a question about provenance, not about whether some refresh token is present.
         owns_pooled = claude_client_owns_the_pooled_credential()

@@ -2401,6 +2401,33 @@ Reading additional input from stdin...
         self.assertTrue(quota_guard.needs_fresh_access_token(payload))
         self.assertTrue(payload["usage_summary"]["inference_probe"]["lacks_inference"])
 
+    def test_probe_claude_refuses_a_dead_token_the_usage_probe_did_not_reach(self):
+        """a10041, 2026-09-17: the usage endpoint was in its polite backoff, so the only live question
+        asked of the token was the inference check -- which answered 401 every cycle while the guard
+        kept reporting ok. A 401 is a refused token whichever endpoint says it."""
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(returncode=0, stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n", stderr="")
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+             mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
+             mock.patch("quota_reporters.read_claude_oauth_credentials",
+                        return_value=({"claudeAiOauth": {"accessToken": "AT_DEAD", "subscriptionType": "max",
+                                                         "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}, "keychain")), \
+             mock.patch("quota_reporters.claude_client_owns_the_pooled_credential", return_value=False), \
+             mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None), \
+             mock.patch("quota_reporters.read_claude_usage_state", return_value={
+                 "next_allowed_at": 9_999_999_999,
+                 "access_token_fingerprint": hashlib.sha256(b"AT_DEAD").hexdigest(),
+             }), \
+             mock.patch("quota_reporters.probe_claude_rate_limits") as usage_probe, \
+             mock.patch("quota_reporters.probe_claude_inference_access",
+                        return_value={"checked": True, "status_code": 401, "lacks_inference": False}), \
+             mock.patch("quota_reporters.read_claude_stats", return_value=None):
+            with tempfile.TemporaryDirectory() as backoff_dir:
+                payload = probe_claude(Path("/tmp/claude-home"), now=1_789_000_000, usage_backoff_path=Path(backoff_dir) / "b.json")
+        usage_probe.assert_not_called()
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], quota_reporters.CLAUDE_AT_ONLY_TOKEN_REJECTED)
+
     def test_probe_claude_inference_access_reads_only_the_scope_gate_as_missing_scope(self):
         def http_error(code, body):
             return urllib.error.HTTPError("u", code, "x", {}, io.BytesIO(body))
