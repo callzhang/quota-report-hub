@@ -2278,6 +2278,52 @@ def probe_claude_rate_limits(claude_home: Path = CLAUDE_HOME) -> dict:
     }
 
 
+CLAUDE_INFERENCE_PROBE_URL = CLAUDE_DEFAULT_BASE_URL + "/v1/messages/count_tokens"
+CLAUDE_INFERENCE_PROBE_MODEL = "claude-haiku-4-5-20251001"
+
+
+def probe_claude_inference_access(access_token: str | None) -> dict:
+    """Whether the provider lets this access token do inference, without spending quota.
+
+    /api/oauth/usage answers for a token that carries profile scope alone, so a usage reading is no
+    evidence the token can do the one thing Claude Code needs it for. On 2026-09-17 the keychain held
+    such a token for claude-leizhang0121: usage reported normally every cycle while every `claude -p`
+    call failed 403 "OAuth token does not meet scope requirement". count_tokens sits behind the same
+    scope gate as /v1/messages and is not metered. Mirrors lib/token-refresh.js probeClaudeAccessToken.
+    """
+    if not access_token:
+        return {"checked": False, "status_code": None, "lacks_inference": False}
+    request = urllib.request.Request(
+        CLAUDE_INFERENCE_PROBE_URL,
+        data=json.dumps({
+            "model": CLAUDE_INFERENCE_PROBE_MODEL,
+            "messages": [{"role": "user", "content": "ok"}],
+        }).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return {"checked": True, "status_code": getattr(response, "status", None) or response.getcode(), "lacks_inference": False}
+    except urllib.error.HTTPError as exc:
+        error_type = None
+        if exc.code == 403:
+            # Only the scope gate's typed answer is evidence about scope; a proxy's 403 page is not.
+            try:
+                error_type = (json.loads(exc.read().decode("utf-8", "replace")).get("error") or {}).get("type")
+            except Exception:
+                error_type = None
+        return {"checked": True, "status_code": exc.code, "lacks_inference": error_type == "permission_error"}
+    except Exception as exc:
+        return {"checked": False, "status_code": None, "lacks_inference": False, "error": str(exc)[:200]}
+
+
 def claude_account_id(auth_text_details: dict | None = None) -> str:
     email = (auth_text_details or {}).get("email")
     if email:
@@ -2627,8 +2673,21 @@ def probe_claude(
         if oauth_usage_probe.get("available"):
             windows = oauth_usage_probe.get("windows") or empty_windows()
             quota_source = "oauth_usage_api"
+    # Checked after the usage probe, which renews an expired token first: an expired token would
+    # otherwise read as refused here although the owner's own refresh is about to fix it.
+    access_credentials, _ = read_claude_oauth_credentials(claude_home)
+    inference_probe = probe_claude_inference_access(
+        ((access_credentials or {}).get("claudeAiOauth") or {}).get("accessToken")
+    )
+    # A token the provider will not let do inference is refused exactly as a 401 is: this machine
+    # cannot use it, and the recovery -- a fresh token from whoever holds the refresh token -- is the
+    # same. Treating it as healthy is what kept a profile-only token installed and pooled.
+    access_token_refused = bool(
+        (oauth_usage_probe and oauth_usage_probe.get("status_code") == 401)
+        or inference_probe.get("lacks_inference")
+    )
     auth_error = None
-    if oauth_usage_probe and oauth_usage_probe.get("status_code") == 401:
+    if access_token_refused:
         # A 401 is a real auth failure only when the token couldn't be refreshed back
         # to a working one — i.e. the refresh token is gone/rejected, or a non-expired
         # token was rejected outright. A transient refresh failure (network/5xx) is not
@@ -2649,6 +2708,17 @@ def probe_claude(
         elif refresh_status != "transient_error":
             auth_error = "claude auth invalid (authentication_error)"
     summary = summarize_claude_stats(stats)
+    usage_summary = compact_claude_usage_summary(
+        auth_status,
+        auth_text_details,
+        oauth,
+        statusline_snapshot,
+        summary,
+        windows,
+        quota_source=quota_source,
+        oauth_usage_probe=oauth_usage_probe,
+    )
+    usage_summary["inference_probe"] = inference_probe
     return {
         **base,
         "account_id": claude_account_id(auth_text_details),
@@ -2669,16 +2739,7 @@ def probe_claude(
             else CLAUDE_LOGGED_OUT_ERROR
         ),
         "windows": windows,
-        "usage_summary": compact_claude_usage_summary(
-            auth_status,
-            auth_text_details,
-            oauth,
-            statusline_snapshot,
-            summary,
-            windows,
-            quota_source=quota_source,
-            oauth_usage_probe=oauth_usage_probe,
-        ),
+        "usage_summary": usage_summary,
     }
 
 

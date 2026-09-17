@@ -124,6 +124,15 @@
   lower-scoring entry with a real refresh token. `select_claude_token_cache_entry` ranks the real,
   non-placeholder token before client/scope metadata and expiry; otherwise the placeholder shadows
   the only rotatable credential and the next upload/probe repeats the same failure one level down.
+- **A credential's stored `scopes` are a label, not the token's permissions.** They are read from the
+  cache key the entry sits under (`claude_token_cache_scopes`) and copied along when the credential is
+  written to another store, while the scopes the provider actually granted are fixed when the token is
+  minted and are not observable from the blob. Measured 2026-09-17: the keychain, all three
+  `tokenCacheV2` entries — including the `user:profile`-only one — and the pooled blob all held the
+  same access token, every one of them labelled `user:inference`, and the provider refused it for
+  inference. **Never treat the label as capability**: ask, with
+  `probe_claude_inference_access` / `probeClaudeAccessToken`
+  ([SYSTEM_DESIGN §6.8](SYSTEM_DESIGN.md#68-what-makes-a-claude-credential-usable)).
 - **Two different things are both called "desktop".** The claude.ai *cookie session* really is separate
   and unaffected by a stripped keychain RT. But the OAuth *token cache* above lives in Claude.app's own
   config, and every Claude Code session runs as a child of the Claude.app process — so the app's process

@@ -21,8 +21,8 @@ import {
 import { refreshSerializedAuthPoolEntry } from "../lib/auth-pool-refresh.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
 import { probeAuthJson } from "../lib/auth-pool-probe.js";
-import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob } from "../lib/token-refresh.js";
-import { isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
+import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob, probeClaudeAccessToken } from "../lib/token-refresh.js";
+import { CLAUDE_INFERENCE_SCOPE_MISSING_ERROR, isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
 import { probeClaudeUsage } from "../lib/claude-usage.js";
 import { isRefreshHandoffPending } from "../lib/refresh-handoff.js";
 
@@ -157,7 +157,15 @@ function probeCodexAuthJson(authJsonText) {
 // Plan B -- driving the interactive UI -- stays behind PROBE_CLAUDE_MODE=tui for the day the endpoint
 // changes shape; it is a deliberate switch, never an automatic fallback, because it costs an inference
 // turn and registers a session against the pooled account.
-export async function probeClaudeAuthJson(authJsonText, { probeUsageImpl = probeClaudeUsage, nowImpl = () => new Date() } = {}) {
+//
+// The usage endpoint accepts a token with profile scope alone, so it cannot say whether the token can
+// do what borrowers borrow it for. The inference-scope check runs first, and a refusal takes the same
+// forced-refresh path as a 401 (claude-leizhang0121, 2026-09-17: usage ok, every inference call 403).
+export async function probeClaudeAuthJson(authJsonText, { probeAccessImpl = probeClaudeAccessToken, probeUsageImpl = probeClaudeUsage, nowImpl = () => new Date() } = {}) {
+  const access = await probeAccessImpl(authJsonText);
+  if (access?.lacks_inference) {
+    throw new Error(CLAUDE_INFERENCE_SCOPE_MISSING_ERROR);
+  }
   const usage = await probeUsageImpl(authJsonText);
   if (usage?.rejected) {
     // Exact string from AUTH_INVALIDATION_ERRORS: it is what drives the force-refresh path below.

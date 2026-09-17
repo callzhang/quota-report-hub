@@ -161,6 +161,14 @@ export default async function handler(req, res) {
     res.end(JSON.stringify({ ok: false, error: "access_token_rejected", status: accessProbe.status }));
     return;
   }
+  // A token that cannot do inference must not enter the pool: every borrower it is served to fails,
+  // while every quota and liveness check it passes says the account is healthy.
+  if (accessProbe?.lacks_inference) {
+    res.statusCode = 422;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: false, error: "access_token_lacks_inference", status: accessProbe.status }));
+    return;
+  }
   let entry = null;
   const refreshVerification = !refreshHandoffPending && !probeClaude && source === "codex"
     ? await refreshSerializedAuthPoolEntry({

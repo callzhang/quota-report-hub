@@ -21,6 +21,7 @@
 | [4](#4-data-model) | Data model — Turso tables, Tigris blobs |
 | [5](#5-encryption--storage-layering) | Encryption and storage layering |
 | [6](#6-component-serverless-api) | Serverless API — endpoints, fetch-best, identity, availability, data router, ingest |
+| [6.8](#68-what-makes-a-claude-credential-usable) | What makes a claude credential usable — the inference-scope check |
 | [7](#7-component-worker) | Worker — probe/refresh loop |
 | [8](#8-ops-scripts) | Ops scripts |
 | [9](#9-the-disabled_refresh_token-mechanism) | The `disabled_refresh_token` mechanism |
@@ -145,6 +146,13 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 ### 3.3 Reading/writing local auth (`quota_reporters.py`)
 - **Codex**: `~/.codex/auth.json`. Account id is **canonicalized to the lowercased email** (`canonical_codex_account_id` `:175-179`) so Team users sharing a provider UUID don't collide. Probe runs `codex exec` in an isolated temp `CODEX_HOME` with an **env blocklist** (`OPENAI_API_KEY`, `OPENAI_BASE_URL`, `CODEX_ACCESS_TOKEN`, …) so an ambient key can't mislabel another provider's quota (`:396-424`). The exec runs with stdin closed and a `CODEX_EXEC_TIMEOUT_SECONDS = 120` cap: `codex exec` waits for stdin to reach EOF before it starts, which launchd's `/dev/null` satisfies instantly but an inherited socket never does (2026-09-09: a manual run sat in the probe for 2h35m while scheduled runs took 20s); the cap is six times the worst of 800 scheduled probes (p99 17s, max 21s), so a stalled probe costs one reading rather than the guard. The probe also sweeps any `quota-report-*` home under the cache root older than twice that cap (`sweep_stale_codex_probe_homes`) before creating its own. A home outlives its run only when the guard dies mid-probe: launchd's SIGTERM on `launchctl bootout` / `kickstart -k` (the installer's restart sequence) or on logout ends Python without running the `finally`, and the copied `auth.json` stays behind. 88 such homes (1.7 GB, 2026-06-04..07-29) were found on 2026-09-10; the days with a dozen (06-08/09) were installer-development days, and none appeared after the last reinstall (plist 08-06). With the sweep, a dead run's credential copy never outlives the next probe.
 - **Claude**: the desktop app's bundled Claude Code stores its OAuth credential in the desktop's encrypted `oauth:tokenCacheV2` (`~/Library/Application Support/Claude/config.json`, key in the `"Claude Safe Storage"` keychain item); the standalone CLI uses the direct `"Claude Code-credentials"` keychain item; non-darwin uses `~/.claude/.credentials.json`. **These are separate stores belonging to separate installations, and a Mac routinely has both.** `read_claude_oauth_credentials` therefore ranks the stores by content rather than by order (`claude_credential_rank`): a real — non-placeholder, non-empty — refresh token first, then the later access-token expiry, with a stable sort keeping the old tokenCache → keychain → file precedence among equals. The same real-token-first rule applies inside each encrypted token cache: a cache can contain several grants, and a high-scoring client/scope entry carrying the hub's placeholder must not shadow a lower-scoring entry that still holds the only rotatable token. Ranking by order alone let the desktop store win every read on 2026-09-12 while it held a credential the guard had itself stripped to access-token-only the day before; four consecutive `claude auth logout && claude auth login` runs in the terminal wrote the *other* store and were invisible here, so no working refresh token reached the pool and the account ended up with none anywhere ([§5.2](#52-single-entry-per-account) covers what the pool then did with the uploads). A real refresh token is the right tiebreak because it is the only thing that can mint further access tokens, and its presence is proof the record came from an actual login rather than from a hub serve or this guard's own strip. Writes go back to the same source when possible. Claude account id = `claude-<email-lowercased>` — **this is where the `claude-` prefix originates** (the server derive takes `account_id` as-is).
+- **Claude inference check**: a local claude token is reported usable only when the provider lets it
+  run inference. `probe_claude_inference_access` asks `POST /v1/messages/count_tokens` — the same
+  scope gate as a real call, unmetered — after the usage probe, whose refresh path would otherwise
+  make an expired-but-renewable token read as refused. A `403 permission_error` is treated exactly
+  as a 401 is: the same `CLAUDE_AT_ONLY_TOKEN_REJECTED` / hard-invalidation split by whether this
+  machine owns the pooled credential ([§6.8](#68-what-makes-a-claude-credential-usable) for why the
+  usage endpoint cannot see this, and what it cost).
 - **Claude quota provenance**: Hub-bound quota comes only from live `/api/oauth/usage` measured
   through the credential being fingerprinted, or from the last successful usage response cached
   under that exact access-token fingerprint. A token change bypasses both the old windows and their
@@ -597,6 +605,48 @@ over the admin list itself.
   becomes owner. After seeding the env var is dead weight and can be deleted.
 - Admin-list changes bump the dashboard revision like any other dashboard-visible write, so open
   Settings tabs converge within a revision poll.
+
+### 6.8 What makes a claude credential usable
+
+A pooled claude credential exists to run inference, so "usable" has to mean "the provider lets this
+access token run inference" — and until 2026-09-17 nothing in the system asked that question.
+`/api/oauth/profile` (the old upload check) and `/api/oauth/usage` (the worker probe, the guard
+probe) both answer for a token carrying profile scope alone. A token that has lost inference scope
+therefore passes every check the hub makes, gets accepted into the pool, is served to borrowers, and
+reports healthy quota — while every borrower's first real call fails
+`403 permission_error: OAuth token does not meet scope requirement`.
+
+That is not hypothetical: `claude-leizhang0121@gmail.com` sat in the pool in exactly that state.
+Measured 2026-09-17, one token (`sha256:d28f5eaa…`, minted ~09-04): `/api/oauth/profile` 200,
+`/api/oauth/usage` served windows, `/v1/messages` 403. The dashboard showed the account ok all day;
+the owner's own `claude -p` and every borrower's call failed. The row's stored `scopes` listed
+`user:inference` — those are the scopes recorded in the blob, not the scopes the provider granted the
+token, and the two had drifted apart ([AUTH_TOKENS §2](AUTH_TOKENS.md#2-claude-auth)).
+
+`probeClaudeAccessToken` ([lib/token-refresh.js](lib/token-refresh.js)) therefore posts to
+`POST /v1/messages/count_tokens`. It sits behind the same scope gate as `/v1/messages`, is evaluated
+**before** the request body, and is not metered — so it answers the question for free, and a token
+that can infer answers 200 (verified against a freshly minted CLI token, 2026-09-17). Three verdicts:
+
+| Answer | Meaning | Who acts |
+|---|---|---|
+| 2xx | usable | — |
+| 401 | the credential is dead | unchanged: upload 422 `access_token_rejected`; worker retires it |
+| 403 **with** `error.type: "permission_error"` | cannot do inference | upload 422 `access_token_lacks_inference`; worker throws `claude access token lacks inference scope` |
+
+Any other 403 (a proxy page, an org policy) says nothing about scope and is treated as a bad day
+upstream — the typed error is the evidence, not the status code.
+
+The missing-scope error is in `AUTH_INVALIDATION_ERRORS` ([lib/auth-status.js](lib/auth-status.js))
+deliberately: for the pool it is exactly as unusable as a 401, and the remedy is the same one. It
+drives `shouldForceRefreshAfterAuthInvalid`, so the worker refreshes centrally, asking for the
+grant's own scopes; if the grant can still mint an inference token the account repairs itself in one
+cycle, and if it cannot, the refresh fails and the owner is asked to re-login — instead of the
+account staying "healthy" and broken indefinitely. It is a **distinct string** rather than a reuse of
+`claude auth invalid (authentication_error)` because the death log's whole value is that the recorded
+fact is the observed one ([§12.1](#121-auth_pool_death_events-why-a-death-log-and-not-a-state-table)).
+
+The guard runs the same check locally (`probe_claude_inference_access`, [§3.3](#33-readingwriting-local-auth-quota_reporterspy)).
 
 ---
 

@@ -70,6 +70,15 @@ CLAUDE_TUI_PROBE_UNAVAILABLE = probe_claude_auth_blob is None or probe_claude_au
 
 class ReporterScriptsTest(unittest.TestCase):
     def setUp(self):
+        # probe_claude asks the provider whether the installed token may do inference. Tests never
+        # reach the network; the ones about that check patch this with the answer they need.
+        self.inference_probe_guard = mock.patch.object(
+            quota_reporters,
+            "probe_claude_inference_access",
+            return_value={"checked": True, "status_code": 200, "lacks_inference": False},
+        )
+        self.inference_probe_guard.start()
+        self.addCleanup(self.inference_probe_guard.stop)
         self.codex_restart_binary_guard = mock.patch.object(
             quota_guard,
             "codex_binary_for_app_server_restart",
@@ -2358,6 +2367,60 @@ Reading additional input from stdin...
         # it reports a reason the rotation rule understands instead of an opaque command failure
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["error"], "claude auth email unavailable")
+
+    def test_probe_claude_refuses_a_token_without_inference_scope_that_usage_accepts(self):
+        """2026-09-17: the keychain held a profile-scoped token for claude-leizhang0121. The usage
+        endpoint answered for it every cycle, so the guard reported ok while every `claude -p` call got
+        403 "OAuth token does not meet scope requirement". Usable has to mean usable for inference."""
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
+            stderr="",
+        )
+        api_windows = {
+            "5h": {"used_percent": 20, "remaining_percent": 80, "window_minutes": 300, "reset_at": "2026-09-17T08:00:00Z"},
+            "1week": {"used_percent": 19, "remaining_percent": 81, "window_minutes": 10080, "reset_at": "2026-09-20T00:00:00Z"},
+        }
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+             mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]), \
+             mock.patch("quota_reporters.read_claude_oauth_credentials",
+                        return_value=({"claudeAiOauth": {"accessToken": "AT_PROFILE_ONLY", "subscriptionType": "max",
+                                                         "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}, "keychain")), \
+             mock.patch("quota_reporters.claude_client_owns_the_pooled_credential", return_value=False), \
+             mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None), \
+             mock.patch("quota_reporters.probe_claude_rate_limits", return_value={"available": True, "windows": api_windows, "status_code": 200}), \
+             mock.patch("quota_reporters.probe_claude_inference_access",
+                        return_value={"checked": True, "status_code": 403, "lacks_inference": True}) as inference, \
+             mock.patch("quota_reporters.read_claude_stats", return_value=None):
+            with tempfile.TemporaryDirectory() as backoff_dir:
+                payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=Path(backoff_dir) / "b.json")
+        inference.assert_called_once_with("AT_PROFILE_ONLY")
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], quota_reporters.CLAUDE_AT_ONLY_TOKEN_REJECTED)
+        self.assertTrue(quota_guard.needs_fresh_access_token(payload))
+        self.assertTrue(payload["usage_summary"]["inference_probe"]["lacks_inference"])
+
+    def test_probe_claude_inference_access_reads_only_the_scope_gate_as_missing_scope(self):
+        def http_error(code, body):
+            return urllib.error.HTTPError("u", code, "x", {}, io.BytesIO(body))
+        scope = json.dumps({"type": "error", "error": {"type": "permission_error", "message": "OAuth token does not meet scope requirement"}}).encode()
+        cases = [
+            (http_error(403, scope), {"status_code": 403, "lacks_inference": True}),
+            (http_error(403, b"<html>blocked</html>"), {"status_code": 403, "lacks_inference": False}),
+            (http_error(401, b"{}"), {"status_code": 401, "lacks_inference": False}),
+        ]
+        self.inference_probe_guard.stop()
+        try:
+            for error, expected in cases:
+                with mock.patch("quota_reporters.urllib.request.urlopen", side_effect=error):
+                    out = quota_reporters.probe_claude_inference_access("AT")
+                self.assertEqual({k: out[k] for k in expected}, expected)
+            with mock.patch("quota_reporters.urllib.request.urlopen") as urlopen:
+                self.assertFalse(quota_reporters.probe_claude_inference_access(None)["checked"])
+                urlopen.assert_not_called()
+        finally:
+            self.inference_probe_guard.start()
 
     def test_probe_claude_401_hard_invalidates_only_for_the_credential_s_owner(self):
         """The softening must not swallow the real signal: a machine whose claude credential IS the

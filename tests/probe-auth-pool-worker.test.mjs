@@ -980,6 +980,7 @@ test("probeClaudeAuthJson retires a rejected access token without shelling out t
   await assert.rejects(
     () =>
       probeClaudeAuthJson(authJsonText, {
+        probeAccessImpl: async () => ({ ok: true, status: 200, rejected: false, lacks_inference: false }),
         probeUsageImpl: async (text) => {
           seen = text;
           return { ok: false, status: 401, rejected: true, reason: "access_token_rejected", windows: null };
@@ -988,6 +989,28 @@ test("probeClaudeAuthJson retires a rejected access token without shelling out t
     /^Error: claude auth invalid \(authentication_error\)$/
   );
   assert.equal(seen, authJsonText);
+});
+
+// The usage endpoint only needs profile scope, so it cannot see a token that is useless for
+// inference (claude-leizhang0121, 2026-09-17: usage ok all day, every borrower's inference 403).
+test("probeClaudeAuthJson retires an access token that cannot do inference", async () => {
+  const { probeClaudeAuthJson } = await loadWorkerModule();
+  const authJsonText = JSON.stringify({ credentials: { claudeAiOauth: { accessToken: "profile-only" } } });
+  let usageCalled = false;
+  await assert.rejects(
+    () =>
+      probeClaudeAuthJson(authJsonText, {
+        probeAccessImpl: async () => ({ ok: false, status: 403, rejected: false, lacks_inference: true }),
+        probeUsageImpl: async () => {
+          usageCalled = true;
+          return { ok: true, rejected: false, status: 200, reason: null, windows: {} };
+        },
+      }),
+    /^Error: claude access token lacks inference scope$/
+  );
+  assert.equal(usageCalled, false);
+  const { isHardAuthError } = await import("../lib/auth-status.js");
+  assert.equal(isHardAuthError("claude access token lacks inference scope"), true, "must drive the forced central refresh");
 });
 
 // Quota comes from /api/oauth/usage as JSON -- the endpoint Claude Code itself reads -- not from
@@ -1008,6 +1031,7 @@ test("probeClaudeAuthJson reports the usage endpoint's windows as the account's 
     "1week": { used_percent: 7, remaining_percent: 93, window_minutes: 10080, reset_at: "2026-09-08T12:00:00Z" },
   };
   const report = await probeClaudeAuthJson(authJsonText, {
+    probeAccessImpl: async () => ({ ok: true, status: 200, rejected: false, lacks_inference: false }),
     probeUsageImpl: async () => ({ ok: true, rejected: false, status: 200, reason: null, windows }),
     nowImpl: () => new Date("2026-09-06T00:30:00Z"),
   });
@@ -1028,6 +1052,7 @@ test("probeClaudeAuthJson does not retire an account when the usage endpoint its
   // A 429 or a network blip is the endpoint having a bad day, not a dead account: the report says
   // what was observed and carries no quota, so the merge keeps the previous reading.
   const report = await probeClaudeAuthJson(authJsonText, {
+    probeAccessImpl: async () => ({ ok: true, status: 200, rejected: false, lacks_inference: false }),
     probeUsageImpl: async () => ({ ok: false, rejected: false, status: 429, reason: "http_429", windows: null }),
   });
   assert.equal(report.status, "error");
