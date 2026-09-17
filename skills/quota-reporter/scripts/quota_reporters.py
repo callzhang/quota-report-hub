@@ -1137,13 +1137,49 @@ def claude_credentials_have_oauth(credentials: dict | None) -> bool:
     return isinstance(oauth, dict) and bool(oauth.get("accessToken"))
 
 
-def claude_credential_rank(credentials: dict | None) -> tuple[int, float]:
+# One verdict per access token per run. Ranking is consulted several times a cycle (probe, sync,
+# strip), and the provider's answer cannot change within one short-lived guard process.
+_CLAUDE_INFERENCE_VERDICTS: dict[str, dict] = {}
+
+
+def reset_claude_inference_cache() -> None:
+    _CLAUDE_INFERENCE_VERDICTS.clear()
+
+
+def claude_credential_can_infer(credentials: dict | None) -> int:
+    """-1 when the provider refuses this token for inference, 1 when it allows it, 0 when unknown.
+
+    Unknown is the honest answer for an unreachable provider and must not demote anything: an
+    offline laptop would otherwise rank every store equal and start shuffling tokens between them.
+    """
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    access_token = oauth.get("accessToken")
+    if not access_token:
+        return 0
+    key = hashlib.sha256(str(access_token).encode("utf-8")).hexdigest()
+    verdict = _CLAUDE_INFERENCE_VERDICTS.get(key)
+    if verdict is None:
+        verdict = probe_claude_inference_access(access_token)
+        _CLAUDE_INFERENCE_VERDICTS[key] = verdict
+    if verdict.get("lacks_inference"):
+        return -1
+    return 1 if verdict.get("checked") and not verdict.get("status_code") in (401,) else 0
+
+
+def claude_credential_rank(credentials: dict | None) -> tuple[int, int, float]:
     """How much a local store's Claude credential is worth, for choosing between stores.
 
-    A real refresh token dominates: it is the only thing that can mint further access tokens, it is
-    what the pool is missing whenever it is missing anything, and its presence is proof the record
-    came from an actual login rather than from a hub serve or this guard's own strip. Among stores
-    that tie on that, the later access-token expiry wins -- after a strip every store is
+    Capability first: a token the provider refuses for inference cannot do the one thing this
+    credential exists for, so it loses to one that can no matter what else it carries. Measured
+    2026-09-17: Claude.app restored its own grant -- refused for inference -- into tokenCacheV2 with
+    a real refresh token minutes after a terminal login had written a working credential to the
+    keychain. Ranking on rotatability alone picked the app's token, uploaded it, and stripped it over
+    the login.
+
+    Then a real refresh token: it is the only thing that can mint further access tokens, it is what
+    the pool is missing whenever it is missing anything, and its presence is proof the record came
+    from an actual login rather than from a hub serve or this guard's own strip. Among stores that
+    tie on both, the later access-token expiry wins -- after a strip every store is
     access-token-only, and then "which token lives longer" is the only question left.
     """
     oauth = (credentials or {}).get("claudeAiOauth") or {}
@@ -1155,6 +1191,7 @@ def claude_credential_rank(credentials: dict | None) -> tuple[int, float]:
     )
     expires_at = oauth.get("expiresAt")
     return (
+        claude_credential_can_infer(credentials),
         1 if has_real_refresh_token else 0,
         float(expires_at) if isinstance(expires_at, (int, float)) else -1.0,
     )
@@ -1790,6 +1827,21 @@ def strip_claude_refresh_token_from_all_stores(credentials: dict, claude_home: P
     stripped["claudeAiOauth"] = oauth
 
     written = {"keychain": False, "token_cache": False, "token_cache_v2": False, "file": False}
+
+    def _stripped_copy_of(store_credentials: dict | None) -> dict | None:
+        """The store's OWN credential, minus its refresh token.
+
+        A strip removes rotatability; it is not a credential install, and writing the picked store's
+        access token into every other store is what let Claude.app's refused token replace a working
+        keychain login (2026-09-17). Each store keeps the token it already had.
+        """
+        store_oauth = (store_credentials or {}).get("claudeAiOauth") or {}
+        if not store_oauth.get("accessToken"):
+            return None
+        copy = json.loads(json.dumps(store_credentials))
+        copy["claudeAiOauth"]["refreshToken"] = STRIPPED_CLAUDE_REFRESH_TOKEN
+        return copy
+
     if sys.platform == "darwin":
         # Strip every hub-client entry in each cache, not just the highest-scored one — a sibling
         # entry left holding a real RT is a second custodian and rotates the pooled family.
@@ -1800,12 +1852,18 @@ def strip_claude_refresh_token_from_all_stores(credentials: dict, claude_home: P
         written["cache_detail"] = caches
         written["token_cache_v2"] = bool(caches.get("oauth:tokenCacheV2", {}).get("written"))
         written["token_cache"] = bool(written["token_cache_v2"] or caches.get("oauth:tokenCache", {}).get("written"))
-        written["keychain"] = write_claude_keychain_credentials(stripped)
-        if (claude_home / ".credentials.json").exists():
-            written["file"] = write_claude_credentials_file(stripped, claude_home)
+        keychain_stripped = _stripped_copy_of(read_claude_keychain_credentials())
+        if keychain_stripped:
+            written["keychain"] = write_claude_keychain_credentials(keychain_stripped)
+        file_stripped = _stripped_copy_of(read_claude_credentials(claude_home))
+        if file_stripped and (claude_home / ".credentials.json").exists():
+            written["file"] = write_claude_credentials_file(file_stripped, claude_home)
     else:
-        written["file"] = write_claude_credentials_file(stripped, claude_home)
-        written["keychain"] = write_claude_keychain_credentials(stripped)
+        file_stripped = _stripped_copy_of(read_claude_credentials(claude_home)) or stripped
+        written["file"] = write_claude_credentials_file(file_stripped, claude_home)
+        keychain_stripped = _stripped_copy_of(read_claude_keychain_credentials())
+        if keychain_stripped:
+            written["keychain"] = write_claude_keychain_credentials(keychain_stripped)
 
     # Read back. A write returning True is not proof the store is AT-only: Claude Code holds its
     # credentials in memory and rewrites the cache on its own refresh, so a strip can be undone

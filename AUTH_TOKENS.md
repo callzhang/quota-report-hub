@@ -133,6 +133,11 @@
   inference. **Never treat the label as capability**: ask, with
   `probe_claude_inference_access` / `probeClaudeAccessToken`
   ([SYSTEM_DESIGN §6.8](SYSTEM_DESIGN.md#68-what-makes-a-claude-credential-usable)).
+- **Capability outranks rotatability.** `claude_credential_rank` ranks a token the provider allows
+  for inference above one carrying a real refresh token. The app's own grant reappears in
+  `tokenCacheV2` with a real RT within minutes of a strip ([§7](#7-claude-desktop-vs-the-cli)); when
+  that grant cannot do inference, the old rank handed it the read, the upload and — through the strip
+  — the keychain, wiping a login that worked (measured 2026-09-17, 06:39 → 06:55).
 - **Two different things are both called "desktop".** The claude.ai *cookie session* really is separate
   and unaffected by a stripped keychain RT. But the OAuth *token cache* above lives in Claude.app's own
   config, and every Claude Code session runs as a child of the Claude.app process — so the app's process

@@ -7426,6 +7426,83 @@ class Phase4StripLocalRtTests(unittest.TestCase):
         strip.assert_called_once()
 
 
+class ClaudeInferenceCapableSelectionTests(unittest.TestCase):
+    """2026-09-17, measured on this machine: a terminal `claude auth login` put a working token in the
+    keychain (quota reported 5H 88% at 06:39). Claude.app then restored its own grant -- whose token
+    the provider refuses for inference -- into tokenCacheV2 with a real refresh token. A real RT
+    outranked everything, so the guard picked the app's token, uploaded it, and stripped it into every
+    store, overwriting the login in the keychain (06:55). Capability has to outrank rotatability:
+    a credential that cannot do the job is not the better credential."""
+
+    def setUp(self):
+        quota_reporters.reset_claude_inference_cache()
+        self.addCleanup(quota_reporters.reset_claude_inference_cache)
+
+    @staticmethod
+    def _verdicts(mapping):
+        def probe(access_token):
+            verdict = mapping.get(access_token)
+            if verdict is None:
+                return {"checked": False, "status_code": None, "lacks_inference": False}
+            return {"checked": True, "status_code": 403 if verdict else 200, "lacks_inference": verdict}
+        return probe
+
+    def test_a_token_refused_for_inference_loses_to_one_that_works(self):
+        working = {"claudeAiOauth": {"accessToken": "GOOD", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "expiresAt": 1_000}}
+        refused = {"claudeAiOauth": {"accessToken": "NO_INFERENCE", "refreshToken": "sk-ant-ort01-REAL", "expiresAt": 9_000_000}}
+        with mock.patch("quota_reporters.probe_claude_inference_access",
+                        side_effect=self._verdicts({"GOOD": False, "NO_INFERENCE": True})):
+            self.assertGreater(quota_reporters.claude_credential_rank(working), quota_reporters.claude_credential_rank(refused))
+            with mock.patch("quota_reporters.sys.platform", "darwin"), \
+                 mock.patch("quota_reporters.read_claude_token_cache_credentials", return_value=(refused, "token_cache_v2")), \
+                 mock.patch("quota_reporters.read_claude_keychain_credentials", return_value=working), \
+                 mock.patch("quota_reporters.read_claude_credentials", return_value=None):
+                credentials, source = quota_reporters.read_claude_oauth_credentials(Path("/tmp/claude-home"))
+        self.assertEqual(source, "keychain")
+        self.assertEqual(credentials["claudeAiOauth"]["accessToken"], "GOOD")
+
+    def test_an_unreachable_provider_never_demotes_a_credential(self):
+        """Offline is not evidence. Without an answer the old ranking must stand, or a laptop on a
+        plane would rank every store equal and start shuffling tokens between them."""
+        rotatable = {"claudeAiOauth": {"accessToken": "A", "refreshToken": "sk-ant-ort01-REAL", "expiresAt": 1}}
+        stripped = {"claudeAiOauth": {"accessToken": "B", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN, "expiresAt": 9}}
+        with mock.patch("quota_reporters.probe_claude_inference_access",
+                        return_value={"checked": False, "status_code": None, "lacks_inference": False}):
+            self.assertGreater(quota_reporters.claude_credential_rank(rotatable), quota_reporters.claude_credential_rank(stripped))
+
+    def test_each_token_is_asked_about_once_per_run(self):
+        creds = {"claudeAiOauth": {"accessToken": "SAME", "refreshToken": "R"}}
+        with mock.patch("quota_reporters.probe_claude_inference_access",
+                        side_effect=self._verdicts({"SAME": False})) as probe:
+            for _ in range(4):
+                quota_reporters.claude_credential_rank(creds)
+        self.assertEqual(probe.call_count, 1)
+
+
+class ClaudeStripKeepsEachStoresOwnTokenTests(unittest.TestCase):
+    """The strip used to write ONE credential -- whichever store won the read -- into every store. That
+    is how the app's refused token reached the keychain and replaced a working login (2026-09-17). A
+    strip removes the refresh token; it is not a credential install and must not move an access token
+    between stores."""
+
+    def test_the_keychain_keeps_its_own_access_token(self):
+        picked = {"claudeAiOauth": {"accessToken": "FROM_CACHE", "refreshToken": "sk-ant-ort01-REAL"}}
+        keychain_before = {"claudeAiOauth": {"accessToken": "KEYCHAIN_OWN", "refreshToken": "sk-ant-ort01-OTHER"}}
+        written = {}
+        with tempfile.TemporaryDirectory() as home_dir:
+            home = Path(home_dir)
+            with mock.patch("quota_reporters.sys.platform", "darwin"), \
+                 mock.patch("quota_reporters.strip_claude_token_cache_refresh_tokens", return_value={"written": True}), \
+                 mock.patch("quota_reporters.read_claude_keychain_credentials", return_value=keychain_before), \
+                 mock.patch("quota_reporters.write_claude_keychain_credentials",
+                            side_effect=lambda c: written.setdefault("keychain", c) is None or True), \
+                 mock.patch("quota_reporters.claude_stores_with_real_refresh_token", return_value=[]):
+                quota_reporters.strip_claude_refresh_token_from_all_stores(picked, home)
+        oauth = written["keychain"]["claudeAiOauth"]
+        self.assertEqual(oauth["accessToken"], "KEYCHAIN_OWN", "the strip must not install the picked store's token")
+        self.assertEqual(oauth["refreshToken"], quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN)
+
+
 class ClaudeCredentialSourceOrderTests(unittest.TestCase):
     KEYCHAIN = {"claudeAiOauth": {"refreshToken": "LIVE_RT", "accessToken": "LIVE_AT"}}
     TOKEN_CACHE = {"claudeAiOauth": {"refreshToken": "CACHE_RT", "accessToken": "CACHE_AT"}}
