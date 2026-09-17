@@ -643,7 +643,7 @@ that can infer answers 200 (verified against a freshly minted CLI token, 2026-09
 | Answer | Meaning | Who acts |
 |---|---|---|
 | 2xx | usable | — |
-| 401 | the credential is dead | unchanged: upload 422 `access_token_rejected`; worker retires it |
+| 401 | the credential is dead | unchanged: upload 422 `access_token_rejected`; the worker records `claude auth invalid (authentication_error)` and the row stops being served |
 | 403 **with** `error.type: "permission_error"` | cannot do inference | upload 422 `access_token_lacks_inference`; worker throws `claude access token lacks inference scope` |
 
 Any other 403 (a proxy page, an org policy) says nothing about scope and is treated as a bad day
