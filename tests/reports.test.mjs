@@ -1800,3 +1800,39 @@ test("statusPayload drops a window that has outlived its own length", () => {
   assert.equal(payload.items[0].display_windows["1week"].reset_unavailable_reason, null);
   assert.equal(payload.items[0].availability.state, "available");
 });
+
+// 2026-09-17, claude-leizhang0121@gmail.com: the hub was refused refreshing the pooled RT on 09-16
+// 18:00; a fresh login replaced the credential at 07:42 with a working RT. The verdict stayed on the
+// ACCOUNT, so the owner kept being told to re-login and the row read "rejected" for a token nobody
+// held any more. A claude upload is verified by probing, not refreshing, so the codex clearing path
+// (token_refresh.status "refreshed") never ran for it.
+test("an upload that replaces the rejected refresh token ends that token's verdict", async () => {
+  const { claudeUploadSupersedesRefreshVerdict } = await import("../lib/auth-status.js");
+  const live = { ok: true, status: 200, rejected: false, lacks_inference: false };
+
+  assert.equal(
+    claudeUploadSupersedesRefreshVerdict({ accessProbe: live, deduplicated: false, incomingHasRealRefreshToken: true, previousRefreshFingerprint: "old", incomingRefreshFingerprint: "new" }),
+    true,
+  );
+  // The same refresh token again -- a re-upload with fresher metadata -- is not proof: that RT is the
+  // one the hub was refused on. Clearing here would reopen the ten-day flip-flop on claude-qpt0311.
+  assert.equal(
+    claudeUploadSupersedesRefreshVerdict({ accessProbe: live, deduplicated: false, incomingHasRealRefreshToken: true, previousRefreshFingerprint: "same", incomingRefreshFingerprint: "same" }),
+    false,
+  );
+  assert.equal(claudeUploadSupersedesRefreshVerdict({ accessProbe: live, deduplicated: true, incomingHasRealRefreshToken: true, previousRefreshFingerprint: "old", incomingRefreshFingerprint: "new" }), false, "an upload the pool kept out changed nothing");
+  assert.equal(claudeUploadSupersedesRefreshVerdict({ accessProbe: { ...live, ok: false, status: 429 }, deduplicated: false, incomingHasRealRefreshToken: true, previousRefreshFingerprint: "old", incomingRefreshFingerprint: "new" }), false, "no live token, no evidence");
+  assert.equal(claudeUploadSupersedesRefreshVerdict({ accessProbe: live, deduplicated: false, incomingHasRealRefreshToken: true, previousRefreshFingerprint: "old", incomingRefreshFingerprint: null }), false, "an upload with no real RT cannot vouch for one");
+  assert.equal(
+    claudeUploadSupersedesRefreshVerdict({ accessProbe: live, deduplicated: false, incomingHasRealRefreshToken: false, previousRefreshFingerprint: "real", incomingRefreshFingerprint: "placeholder" }),
+    false,
+    "a borrower's AT-only upload is merged, not refused -- its placeholder is not a new refresh token",
+  );
+
+  const newGeneration = sanitizeReport({
+    ...HEALTHY_CLIENT,
+    usage_summary: { token_refresh: { status: "new_generation", source: "upload" } },
+  });
+  const merged = mergeLatestReport(sanitizeReport(CENTRAL_REJECTION), newGeneration);
+  assert.equal(refreshValidityFromReport(merged), "unverified", "lifted, but not claimed as confirmed: nobody refreshed it");
+});

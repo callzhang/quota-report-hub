@@ -10,11 +10,12 @@ import {
   upsertAuthPoolEntry,
   upsertAuthPoolQuota,
 } from "../../lib/db.js";
-import { deriveAuthPoolEntry } from "../../lib/auth-pool.js";
+import { decryptAuthJson, deriveAuthPoolEntry } from "../../lib/auth-pool.js";
+import { claudeUploadSupersedesRefreshVerdict } from "../../lib/auth-status.js";
 import { refreshSerializedAuthPoolEntry } from "../../lib/auth-pool-refresh.js";
 import { codexClientPayloadAccepted, ingestClientQuota } from "../../lib/quota-ingest.js";
-import { stripRefreshToken } from "../../lib/fetch-best.js";
-import { probeClaudeAccessToken, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
+import { isStrippedRefreshToken, stripRefreshToken } from "../../lib/fetch-best.js";
+import { probeClaudeAccessToken, refreshTokenFingerprint, refreshTokenFromAuthBlob, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
 import { isRefreshHandoffPending, requestedRefreshHandoffState } from "../../lib/refresh-handoff.js";
 
@@ -45,7 +46,7 @@ function acceptedBundledWindows({ source, quotaPayload, accountId }) {
     : empty;
 }
 
-export function refreshVerificationQuotaReport({ source, entry, quotaPayload, reporterEmail }) {
+export function refreshVerificationQuotaReport({ source, entry, quotaPayload, reporterEmail, tokenRefresh = { status: "refreshed", source: "upload" } }) {
   return {
     source,
     account_id: entry.account_id,
@@ -58,7 +59,7 @@ export function refreshVerificationQuotaReport({ source, entry, quotaPayload, re
     exhausted_until: quotaPayload?.exhausted_until ?? null,
     usage_summary: {
       ...(quotaPayload?.usage_summary || {}),
-      token_refresh: { status: "refreshed", source: "upload" },
+      token_refresh: tokenRefresh,
     },
     report_origin: "client",
     reporter_name: quotaPayload?.reporter_name || reporterEmail,
@@ -169,6 +170,18 @@ export default async function handler(req, res) {
     res.end(JSON.stringify({ ok: false, error: "access_token_lacks_inference", status: accessProbe.status }));
     return;
   }
+  // Which refresh token the pool held before this upload, so an accepted claude upload can tell a new
+  // credential generation from a re-upload of the one already there (claudeUploadSupersedesRefreshVerdict).
+  let previousClaudeRefreshFingerprint = null;
+  if (accessProbe?.ok) {
+    const previousEntry = await authPoolEntry(source, deriveAuthPoolEntry(source, body.auth_json, body).account_id);
+    if (previousEntry) {
+      previousClaudeRefreshFingerprint = refreshTokenFingerprint(
+        source,
+        refreshTokenFromAuthBlob(await decryptAuthJson(previousEntry), source),
+      );
+    }
+  }
   let entry = null;
   const refreshVerification = !refreshHandoffPending && !probeClaude && source === "codex"
     ? await refreshSerializedAuthPoolEntry({
@@ -253,6 +266,24 @@ export default async function handler(req, res) {
         entry,
         quotaPayload: body.quota_payload,
         reporterEmail: authContext.email,
+      })
+    );
+  } else if (claudeUploadSupersedesRefreshVerdict({
+    accessProbe,
+    deduplicated: Boolean(entry?.deduplicated),
+    incomingHasRealRefreshToken: !isStrippedRefreshToken(body.auth_json, source),
+    previousRefreshFingerprint: previousClaudeRefreshFingerprint,
+    incomingRefreshFingerprint: refreshTokenFingerprint(source, refreshTokenFromAuthBlob(body.auth_json, source)),
+  })) {
+    // Not "refreshed": nobody refreshed it, so refresh_validity stays unverified. The upload source is
+    // what lifts the previous generation's verdict (clearsCentralRefreshRejection).
+    await upsertAuthPoolQuota(
+      refreshVerificationQuotaReport({
+        source,
+        entry,
+        quotaPayload: body.quota_payload,
+        reporterEmail: authContext.email,
+        tokenRefresh: { status: "new_generation", source: "upload" },
       })
     );
   }

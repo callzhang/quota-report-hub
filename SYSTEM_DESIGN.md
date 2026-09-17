@@ -846,7 +846,24 @@ token, so only its `central_refresh.auth_rejected` is evidence about the blob th
 client's healthy probe describes the credential on *that machine*, which may never have been
 uploaded. `mergeLatestReport` therefore keeps a standing central-refresh rejection until something
 proves the pooled blob itself works — a verified upload (`token_refresh.source === "upload"`) or a
-successful central refresh. Symmetrically, an AT-only client's 401 is not allowed to declare death
+successful central refresh.
+
+**A verdict is about one refresh token, not about the account.** A codex upload proves itself by being
+refreshed on the way in (`token_refresh.status: "refreshed"`). A claude upload is only probed, so until
+2026-09-17 no claude upload could lift a rejection: `claude-leizhang0121` put a fresh, working
+refresh token in the pool at 07:42 and kept being told to re-login, because the account still carried
+the verdict recorded at 09-16 18:00 against the token that upload had just replaced.
+`claudeUploadSupersedesRefreshVerdict` ([lib/auth-status.js](lib/auth-status.js)) lifts it when the
+upload replaced the pooled blob, carries a **real** refresh token whose HMAC fingerprint differs from
+the pooled one, and has an access token live for inference (a refresh revokes earlier access tokens,
+so a live one witnesses an unspent refresh token beside it). The upload then writes
+`token_refresh: {status: "new_generation", source: "upload"}`, which ends the old verdict but leaves
+`refresh_validity` at `unverified` — nobody refreshed the new token, and the report does not claim it.
+A re-upload of the *same* refused token, or a borrower's AT-only blob merged into the stored one, is
+not a new generation and changes nothing: that is the flip-flop that kept `claude-qpt0311` "just
+invalidated" for ten days.
+
+Symmetrically, an AT-only client's 401 is not allowed to declare death
 either ([§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)): it holds a placeholder RT
 and has nothing to present. Evidence follows whoever holds the refresh token.
 
