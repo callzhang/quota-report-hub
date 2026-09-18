@@ -293,6 +293,68 @@ test("daily query combines compacted rows and recent detail", async () => {
   }
 });
 
+test("queryTokenUsage prices every aggregate with the gate's own cost expression", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai",
+      installationId: "cost-install",
+      batchId: "cost-batch",
+      receivedAt: "2026-08-18T12:00:00.000Z",
+      rows: [
+        // gpt-5.6-sol: $5.00/1M fresh input, $30.00/1M output -> $5 + $3 = $8.
+        usageRow({
+          bucket_start: "2026-08-18T11:00:00.000Z",
+          model_id: "gpt-5.6-sol",
+          input_tokens: 1_000_000,
+          output_tokens: 100_000,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          reasoning_tokens: 0,
+          total_tokens: 1_100_000,
+        }),
+        // A model the pool does not pay for is real usage and zero spend -- the same answer the
+        // fetch gate gives, because it is the same expression.
+        usageRow({
+          bucket_start: "2026-08-18T11:15:00.000Z",
+          model_id: "MiniMax-M2.5",
+          input_tokens: 5_000_000,
+          output_tokens: 1_000_000,
+          cache_read_tokens: 0,
+          cache_write_tokens: 0,
+          reasoning_tokens: 0,
+          total_tokens: 6_000_000,
+        }),
+      ],
+    });
+
+    const result = await mod.queryTokenUsage({
+      start: "2026-08-11T12:00:00.000Z",
+      end: "2026-08-18T12:00:00.000Z",
+      granularity: "hour",
+      groupBy: "model",
+      metric: "cost",
+      hubUsers: [],
+      providers: [],
+      modelAccounts: [],
+      models: [],
+    });
+
+    assert.equal(result.totals.cost_usd, 8);
+    const trendByModel = Object.fromEntries(result.trend.map((point) => [point.group_value, point.cost_usd]));
+    assert.equal(trendByModel["gpt-5.6-sol"], 8);
+    assert.equal(trendByModel["MiniMax-M2.5"], 0);
+    const breakdownByModel = Object.fromEntries(result.breakdown.map((row) => [row.model_id, row.cost_usd]));
+    assert.equal(breakdownByModel["gpt-5.6-sol"], 8);
+    assert.equal(breakdownByModel["MiniMax-M2.5"], 0);
+    // Tokens and spend rank these two rows in opposite orders, which is the whole reason the page
+    // needs the money column: the larger row is the one that cost nothing.
+    assert.ok(breakdownByModel["MiniMax-M2.5"] < breakdownByModel["gpt-5.6-sol"]);
+  } finally {
+    cleanup();
+  }
+});
+
 test("queryTokenUsage rejects result sets beyond finite trend and breakdown limits", async () => {
   const { mod, client, cleanup } = await loadDbWithTempStore();
   try {

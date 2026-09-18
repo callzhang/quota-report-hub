@@ -149,3 +149,32 @@ test("a refresh that shrinks the data clamps the open page instead of stranding 
   assert.equal(logBar.hidden, true);
   assert.equal(rowCount(harness.element("log-rows")), 5);
 });
+
+test("each token holder carries its pool spend, share, and where that sits against the line", async () => {
+  const harness = await usersHarness({
+    viewer_email: "derek@stardust.ai",
+    generated_at: "2026-09-17T12:00:00Z",
+    spend_window_days: 7,
+    demand_share_tolerance: 1,
+    users: [
+      { email: "derek@stardust.ai", created_at: "2026-01-01T00:00:00Z", last_token_issued_at: "2026-09-01T00:00:00Z", has_active_token: true, token_last_used_at: null, fetch_count: 3, last_fetched_at: null, spend_usd: 60 },
+      { email: "shawn@stardust.ai", created_at: "2026-01-01T00:00:00Z", last_token_issued_at: "2026-08-01T00:00:00Z", has_active_token: true, token_last_used_at: null, fetch_count: 2, last_fetched_at: null, spend_usd: 30 },
+      { email: "quiet@stardust.ai", created_at: "2026-01-01T00:00:00Z", last_token_issued_at: "2026-07-01T00:00:00Z", has_active_token: true, token_last_used_at: null, fetch_count: 1, last_fetched_at: null, spend_usd: 10 },
+    ],
+    fetch_log: [],
+  });
+
+  const rows = harness.element("users-rows").innerHTML;
+  assert.match(rows, /\$60\.00/);
+  assert.match(rows, /60\.0% of team · over fair share/);
+  // 30% is above a third of the team only in absolute terms; the line is 1/3, so it is not over it.
+  assert.match(rows, /30\.0% of team<\/div>/);
+  assert.match(rows, /10\.0% of team<\/div>/);
+
+  // The window and the line come from the hub, so the column can never describe a different rule
+  // than the gate applies.
+  assert.equal(harness.element("users-spend-header").textContent, "Pool Spend (7d)");
+  assert.match(harness.element("cards").innerHTML, /Pool spend · last 7d/);
+  assert.match(harness.element("cards").innerHTML, /\$100\.00/);
+  assert.match(harness.element("cards").innerHTML, /Fair share line 33\.3% per active user/);
+});

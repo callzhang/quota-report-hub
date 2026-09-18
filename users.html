@@ -309,6 +309,7 @@
                 <th>Latest Token Issued</th>
                 <th>Token Last Used</th>
                 <th>Auth Fetches</th>
+                <th id="users-spend-header">Pool Spend</th>
                 <th>Last Fetch</th>
               </tr>
             </thead>
@@ -375,6 +376,13 @@
       const PAGE_SIZE = 20;
       let currentToken = "";
       let viewerEmail = "";
+      // Filled from the payload: the window the hub prices demand over and the fair-share tolerance,
+      // read from the server rather than duplicated here so the column can never describe a
+      // different rule than the one the gate applies.
+      let spendWindowDays = 7;
+      let demandShareTolerance = 1;
+      let teamSpend = 0;
+      let fairShare = Infinity;
 
       // Rows arrive newest-first from the API (users by last_token_issued_at DESC, fetch log by
       // fetched_at DESC); the pager only slices, so page 1 is always the most recent activity.
@@ -460,6 +468,26 @@
           '"': "&quot;",
           "'": "&#39;",
         }[ch]));
+      }
+
+      // Two decimals, and "<$0.01" under a cent: a user who spent something and a user who spent
+      // nothing must not print the same figure.
+      function formatUsd(value) {
+        const n = Number(value || 0);
+        if (n > 0 && n < 0.01) return "<$0.01";
+        return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+
+      // What this user cost the shared pool over the gate's window, and where that sits against the
+      // average. Over the line is not a violation on its own -- the cooldown also needs the pool to
+      // be running dry -- so the mark says "over fair share", not "throttled".
+      function spendCell(u) {
+        const spend = Number(u.spend_usd || 0);
+        if (!teamSpend) return '<div class="wrap">$0.00</div>';
+        const share = spend / teamSpend;
+        const over = Number.isFinite(fairShare) && share > fairShare;
+        return `<div class="wrap" title="${escapeHtml(`$${spend.toFixed(2)} of $${teamSpend.toFixed(2)} team spend in the last ${spendWindowDays} days`)}">${formatUsd(spend)}</div>` +
+          `<div class="meta wrap">${(share * 100).toFixed(1)}% of team${over ? " · over fair share" : ""}</div>`;
       }
 
       function formatDate(value) {
@@ -576,12 +604,22 @@
 
         const totalFetches = users.reduce((acc, u) => acc + (u.fetch_count || 0), 0);
         const activeTokens = users.filter((u) => u.has_active_token).length;
+        spendWindowDays = Number(payload.spend_window_days || 7);
+        demandShareTolerance = Number(payload.demand_share_tolerance || 1);
+        teamSpend = users.reduce((acc, u) => acc + Number(u.spend_usd || 0), 0);
+        // Only users who actually drew on the pool divide the line, exactly as the gate counts them:
+        // averaging over everyone who ever held a token would put the line near zero and flag people
+        // for a normal week beside colleagues who did nothing.
+        const activeSpenders = users.filter((u) => Number(u.spend_usd || 0) > 0).length;
+        fairShare = activeSpenders >= 2 ? demandShareTolerance / activeSpenders : Infinity;
+        document.getElementById("users-spend-header").textContent = `Pool Spend (${spendWindowDays}d)`;
 
         summary.textContent = `Generated ${formatDate(payload.generated_at)} · ${users.length} users · ${activeTokens} active tokens · ${totalFetches} total fetches recorded`;
         cards.innerHTML = [
           `<article class="card"><div class="meta">Token holders</div><strong>${users.length}</strong><div class="meta">Email-issued personal tokens</div></article>`,
           `<article class="card"><div class="meta">Active tokens</div><strong>${activeTokens}</strong><div class="meta">Latest token still valid</div></article>`,
           `<article class="card"><div class="meta">Total fetches</div><strong>${totalFetches}</strong><div class="meta">Lifetime auth pool fetches</div></article>`,
+          `<article class="card"><div class="meta">Pool spend · last ${spendWindowDays}d</div><strong>${formatUsd(teamSpend)}</strong><div class="meta wrap">${Number.isFinite(fairShare) ? `Fair share line ${(fairShare * 100).toFixed(1)}% per active user` : "Too few active users to draw a line"}</div></article>`,
           `<article class="card"><div class="meta">Most recent fetch</div><strong>${formatRelative(log[0]?.fetched_at)}</strong><div class="meta wrap">${escapeHtml(log[0]?.requester_email || "—")}</div></article>`,
         ].join("");
 
@@ -607,6 +645,7 @@
               <div class="meta wrap">${formatRelative(u.token_last_used_at)}</div>
             </td>
             <td><div class="wrap">${u.fetch_count || 0}</div></td>
+            <td>${spendCell(u)}</td>
             <td>
               <div class="wrap">${formatDate(u.last_fetched_at)}</div>
               <div class="meta wrap">${formatRelative(u.last_fetched_at)}</div>

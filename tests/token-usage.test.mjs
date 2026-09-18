@@ -182,6 +182,18 @@ test("rejects duplicate singleton, unknown, invalid-range, and oversized query p
   );
 });
 
+test("spend is a selectable metric, and an unpriced one is still refused", () => {
+  const query = parseTokenUsageQuery(
+    "/api/token-usage-query?start=2026-08-11T12%3A00%3A00.000Z&end=2026-08-18T12%3A00%3A00.000Z&granularity=hour&group_by=hub_user&metric=cost",
+    { now },
+  );
+  assert.equal(query.metric, "cost");
+  assert.throws(() => parseTokenUsageQuery(
+    "/api/token-usage-query?start=2026-08-11T12%3A00%3A00.000Z&end=2026-08-18T12%3A00%3A00.000Z&granularity=hour&group_by=hub_user&metric=dollars",
+    { now },
+  ), /metric is invalid/);
+});
+
 test("allows daily queries older than the 90-day detail window", () => {
   const query = parseTokenUsageQuery(
     "/api/token-usage-query?start=2026-01-01T00%3A00%3A00.000Z&end=2026-08-18T12%3A00%3A00.000Z&granularity=day&group_by=provider&metric=cache_write",

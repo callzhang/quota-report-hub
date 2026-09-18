@@ -101,10 +101,13 @@ async function pageHarness(fetchImpl, initialToken = "saved-token") {
         const pageStatus = { _textContent: "", get textContent() { return this._textContent; }, set textContent(value) { this._textContent = value; } };
         Object.defineProperty(current, "innerHTML", {
           get() {
+            // Replacer functions, not replacement strings: rendered content carries dollar amounts,
+            // and `$12.50` in a replacement string is read as capture group 1 followed by "2.50",
+            // which silently rewrote the markup this harness exists to observe.
             return innerHTML
-              .replace(/(<div data-breakdown-table>)[\s\S]*?(<\/div>)/, `$1${table.innerHTML}$2`)
-              .replace(/(<span class="meta" data-breakdown-range>)[\s\S]*?(<\/span>)/, `$1${range.textContent}$2`)
-              .replace(/(<span aria-live="polite" data-breakdown-page-status>)[\s\S]*?(<\/span>)/, `$1${pageStatus.textContent}$2`)
+              .replace(/(<div data-breakdown-table>)[\s\S]*?(<\/div>)/, (_, open, close) => open + table.innerHTML + close)
+              .replace(/(<span class="meta" data-breakdown-range>)[\s\S]*?(<\/span>)/, (_, open, close) => open + range.textContent + close)
+              .replace(/(<span aria-live="polite" data-breakdown-page-status>)[\s\S]*?(<\/span>)/, (_, open, close) => open + pageStatus.textContent + close)
               .replace(/(<button data-breakdown-page="previous"[^>]*?)( disabled)?(>Previous)/, `$1${breakdownButtons.pager.find((button) => button.dataset.breakdownPage === "previous")?.disabled ? " disabled" : ""}$3`)
               .replace(/(<button data-breakdown-page="next"[^>]*?)( disabled)?(>Next)/, `$1${breakdownButtons.pager.find((button) => button.dataset.breakdownPage === "next")?.disabled ? " disabled" : ""}$3`);
           },
@@ -316,7 +319,7 @@ test("transient errors preserve auth, selected filters, and the last successful 
 
 test("summary and trend datasets carry exact counters without inventing data", async () => {
   const payload = usagePayload({
-    totals: { total_tokens: 1200, input_tokens: 700, output_tokens: 200, cache_read_tokens: 250, cache_write_tokens: 50, reasoning_tokens: 33 },
+    totals: { total_tokens: 1200, input_tokens: 700, output_tokens: 200, cache_read_tokens: 250, cache_write_tokens: 50, reasoning_tokens: 33, cost_usd: 3.5 },
     trend: [
       { bucket_start: "2026-08-18T09:00:00.000Z", group_value: "derek@stardust.ai", total_tokens: 100, input_tokens: 60, output_tokens: 20, cache_read_tokens: 15, cache_write_tokens: 5, reasoning_tokens: 3 },
       { bucket_start: "2026-08-18T10:00:00.000Z", group_value: "member@stardust.ai", total_tokens: 50, input_tokens: 30, output_tokens: 10, cache_read_tokens: 7, cache_write_tokens: 3, reasoning_tokens: 1 },
@@ -330,9 +333,12 @@ test("summary and trend datasets carry exact counters without inventing data", a
   const cards = [...summary.matchAll(/<span class="meta">([^<]+)<\/span><strong title="([^"]+)">/g)]
     .map(([, label, value]) => [label, value]);
   assert.deepEqual(cards, [
-    ["Total", "1,200"], ["Input", "700"], ["Output", "200"],
+    // Spend leads: it is the only figure that compares a Codex hour with a Claude hour, and the
+    // only one the fetch gate acts on.
+    ["Spend", "$3.5000"], ["Total", "1,200"], ["Input", "700"], ["Output", "200"],
     ["Cache read", "250"], ["Cache write", "50"], ["Reasoning", "33"],
   ]);
+  assert.match(summary, /Spend<\/span><strong title="\$3\.5000">\$3\.50<\/strong>/);
   // The subset relationship has to survive the split, or a reader adds these up past Total.
   assert.match(summary, /Cache read<\/span><strong title="250">250<\/strong><div class="meta">[^<]*subset of Input/);
   assert.match(summary, /Reasoning<\/span><strong title="33">33<\/strong><div class="meta">[^<]*subset of Output/);
@@ -520,6 +526,39 @@ test("usage-by-user bars aggregate the selected metric per user with share of th
   assert.match(inputMarkup, /Input tokens per Hub user/);
 
   assert.match(harness.evaluate("renderUserBars([])"), /No usage in this range/);
+});
+
+test("spend renders as money everywhere, and the spend share is the one the gate rations on", async () => {
+  // The token ranking and the money ranking disagree, which is the case the column exists for: the
+  // bigger row is somebody's own MiniMax, which the pool never paid for.
+  const rows = [
+    { hub_user_email: "alice@stardust.ai", provider: "codex", model_account_id: "a1", model_id: "MiniMax-M2.5", total_tokens: 900, cost_usd: 0 },
+    { hub_user_email: "bob@stardust.ai", provider: "codex", model_account_id: "b1", model_id: "gpt-5.6-sol", total_tokens: 100, cost_usd: 12.5 },
+  ];
+  const harness = await pageHarness(async () => response(200, usagePayload({
+    totals: { total_tokens: 1000, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0, cost_usd: 12.5 },
+    breakdown: rows,
+  })));
+
+  assert.equal(harness.evaluate("formatUsd(12.5)"), "$12.50");
+  assert.equal(harness.evaluate("formatUsd(0)"), "$0.00");
+  // A row that cost a fraction of a cent must not print the same figure as one that cost nothing.
+  assert.equal(harness.evaluate("formatUsd(0.004)"), "<$0.01");
+
+  // The breakdown carries spend for every row whatever metric is selected.
+  const breakdown = harness.element("breakdown-region").innerHTML;
+  assert.match(breakdown, /<th>Spend<\/th>/);
+  assert.match(breakdown, /\$12\.50/);
+  assert.match(breakdown, /\$0\.00/);
+
+  harness.element("metric").value = "cost";
+  const bars = harness.evaluate(`renderUserBars(${JSON.stringify(rows)})`);
+  assert.ok(bars.indexOf("bob@stardust.ai") < bars.indexOf("alice@stardust.ai"), "money ranks the bars, not tokens");
+  assert.match(bars, /\$12\.50<span class="meta"> · 100\.0%<\/span>/);
+  assert.match(bars, /\$0\.00<span class="meta"> · 0\.0%<\/span>/);
+  assert.match(bars, /the same share the fetch gate rations on/);
+  // Spend is not a token count and must never be scaled into 万/亿.
+  assert.doesNotMatch(bars, /亿/);
 });
 
 test("token counts render in 万/亿 units with the exact count kept in titles", async () => {

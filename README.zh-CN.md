@@ -2,7 +2,7 @@
 
 ## 团队 Token 用量统计
 
-Hub 提供独立的 `token-usage.html` 页面。登录后默认查询最近 7 天，按小时、Hub 用户分组并显示 Total；可按时间、Hub 用户、提供方、模型账户、原始模型名筛选，也可切换聚合颗粒度、分组和指标。每个 Hub 用户的汇总直接放在 Breakdown，不再重复设置右侧面板。页面只读取 `GET /api/token-usage-query`，同一登录会话中完全相同的查询缓存 5 分钟。
+Hub 提供独立的 `token-usage.html` 页面。登录后默认查询最近 7 天，按小时、Hub 用户分组并显示 Total；可按时间、Hub 用户、提供方、模型账户、原始模型名筛选，也可切换聚合颗粒度、分组和指标。每个 Hub 用户的汇总直接放在 Breakdown，不再重复设置右侧面板。所有数字同时按金额计价：Spend 是第一张汇总卡片、Breakdown 的独立列，也可以选为指标，选中后按金额排序用户条和明细表。计价表是 `lib/model-tiers.js`，与取号闸门用的是同一份，所以共享池不付费的模型（自带 key 的 DeepSeek、自托管 Qwen 或 MiniMax）会如实显示 token 数，但计为 $0 消耗。页面只读取 `GET /api/token-usage-query`，同一登录会话中完全相同的查询缓存 5 分钟。
 
 Token Usage Trend 按所选分组使用统一刻度绘制折线；没有采集数据的时间桶会保留为空档，不会被填充。Breakdown 在浏览器端分页，每页 20 行，切换页面时不会再次发起查询。
 
@@ -12,7 +12,7 @@ Total 保持提供方原始定义；Input、Output 是组成部分，Cache Read�
 
 隐私边界：上传内容仅包含 15 分钟数字汇总——Hub 用户由登录身份确定，另含提供方、模型账户、原始模型、时间桶和 6 个计数。不会上传 prompt、response、项目名、对话标题、工具内容、本地路径、session/message ID、记录指纹或文件位置。本地状态位于 `~/.agents/auth/token-usage.sqlite3`，权限仅限当前用户。待上传批次可幂等重试；服务端明确拒绝的无效批次只推进一次，不会无限重报。
 
-`POST /api/token-usage` 接收有上限且幂等的批次；`GET /api/token-usage-query` 返回总计、受限趋势点、四维明细和每个 Hub 用户的上报状态。15 分钟明细保留并可查询 90 天；受保护的每日 `/api/cron/token-usage-retention` 每次最多把 7 个旧 UTC 日期压缩为日汇总，同时清理旧回执。账户首页、revision 轮询、quota 写入/历史与 fetch-best 都不会读取 token 用量表。
+`POST /api/token-usage` 接收有上限且幂等的批次；`GET /api/token-usage-query` 返回总计、受限趋势点、四维明细和每个 Hub 用户的上报状态。15 分钟明细保留并可查询 90 天；受保护的每日 `/api/cron/token-usage-retention` 每次最多把 7 个旧 UTC 日期压缩为日汇总，同时清理旧回执。账户首页、revision 轮询与 quota 写入/历史都不会读取 token 用量表。只有两处会读，且都是一次有界的 `bucket_start` 区间扫描：取号闸门用它计算请求者的消耗占比，Users 页面用同一窗口显示每位成员的开销金额和公平线。
 
 Vercel Functions 固定运行在 `pdx1`，与 Turso 数据库的 AWS `us-west-2` 位置一致。数据库请求不再跨美国东西海岸，静态页面仍由 Vercel CDN 就近提供。
 

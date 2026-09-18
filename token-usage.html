@@ -127,6 +127,7 @@
             <select id="metric">
               <option value="total">Total</option><option value="input">Input</option><option value="output">Output</option>
               <option value="cache_read">Cache read</option><option value="cache_write">Cache write</option><option value="reasoning">Reasoning</option>
+              <option value="cost">Spend (USD)</option>
             </select>
           </label>
           <div class="actions"><button id="apply" class="primary">Apply</button><button id="retry">Retry</button></div>
@@ -254,18 +255,39 @@
         return n.toLocaleString();
       }
 
+      // Spend is small, so it keeps two decimals where a token count would be scaled into 万/亿.
+      // Below a cent it reads "<$0.01" rather than "$0.00": a row that cost something and a row that
+      // cost nothing must not print the same number.
+      function formatUsd(value) {
+        const n = Number(value || 0);
+        if (n > 0 && n < 0.01) return "<$0.01";
+        return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+
       const COUNTERS = [
         ["Total", "total_tokens"], ["Input", "input_tokens"], ["Output", "output_tokens"],
         ["Cache read", "cache_read_tokens"], ["Cache write", "cache_write_tokens"],
         ["Reasoning", "reasoning_tokens"],
       ];
 
+      const COST_KEY = "cost_usd";
+
       function selectedMetricCounter() {
         return {
           total: "total_tokens", input: "input_tokens", output: "output_tokens",
           cache_read: "cache_read_tokens", cache_write: "cache_write_tokens",
-          reasoning: "reasoning_tokens",
+          reasoning: "reasoning_tokens", cost: COST_KEY,
         }[metric.value] || "total_tokens";
+      }
+
+      // One formatter per metric, chosen by the series being drawn: dollars are not tokens and
+      // scaling them into 万 would make a $3 row unreadable.
+      function formatMetric(value, key = selectedMetricCounter()) {
+        return key === COST_KEY ? formatUsd(value) : formatTokens(value);
+      }
+
+      function exactMetric(value, key = selectedMetricCounter()) {
+        return key === COST_KEY ? `$${Number(value || 0).toFixed(4)}` : number(value);
       }
 
       function stableColor(value) {
@@ -367,12 +389,12 @@
                 },
                 ticks: { maxRotation: 0, autoSkipPadding: 16 },
               },
-              y: { beginAtZero: true, ticks: { callback: (value) => formatTokens(value) } },
+              y: { beginAtZero: true, ticks: { callback: (value) => formatMetric(value) } },
             },
             plugins: {
               tooltip: {
                 callbacks: {
-                  label: (item) => `${item.dataset.label}: ${formatTokens(item.parsed.y)}`,
+                  label: (item) => `${item.dataset.label}: ${formatMetric(item.parsed.y)}`,
                 },
               },
               // Drag a range to zoom into it, wheel to travel along the axis, double-click to get
@@ -428,7 +450,9 @@
       }
 
       function selectedMetricLabel() {
-        return COUNTERS.find(([, key]) => key === selectedMetricCounter())?.[0] || "Total";
+        const key = selectedMetricCounter();
+        if (key === COST_KEY) return "Spend";
+        return COUNTERS.find(([, counter]) => counter === key)?.[0] || "Total";
       }
 
       function renderUserBars(rows) {
@@ -443,20 +467,31 @@
         if (!total) return '<div class="empty">No usage in this range.</div>';
         const max = entries[0][1];
         const label = selectedMetricLabel();
-        return `<div class="meta">${escapeHtml(label)} tokens per Hub user under the current filters · % is the share of the filtered total (${formatTokens(total)})</div>` +
+        const isCost = metricCounter === COST_KEY;
+        // Only the Spend share is the share the fetch gate rations on. A token share counts a
+        // self-hosted model the pool never paid for exactly like an Opus turn it did, which is how a
+        // reader ends up arguing with a percentage that was never about them.
+        const caption = isCost
+          ? "Pool spend per Hub user under the current filters · % is the share of the filtered total, the same share the fetch gate rations on"
+          : `${label} tokens per Hub user under the current filters · % is the share of the filtered total`;
+        const rowUnit = isCost ? "" : ` ${label.toLowerCase()} tokens`;
+        return `<div class="meta">${escapeHtml(caption)} (${formatMetric(total, metricCounter)})</div>` +
           entries.map(([email, value]) => {
             const share = (value / total) * 100;
             return `
-            <div class="user-bar-row" title="${escapeHtml(`${email}: ${number(value)} ${label.toLowerCase()} tokens · ${share.toFixed(1)}% of filtered total`)}">
+            <div class="user-bar-row" title="${escapeHtml(`${email}: ${exactMetric(value, metricCounter)}${rowUnit} · ${share.toFixed(1)}% of filtered total`)}">
               <div class="user-bar-label">${escapeHtml(email)}</div>
               <div class="user-bar-track"><div class="user-bar-fill" style="width: ${((value / max) * 100).toFixed(2)}%"></div></div>
-              <div class="user-bar-value">${formatTokens(value)}<span class="meta"> · ${share.toFixed(1)}%</span></div>
+              <div class="user-bar-value">${formatMetric(value, metricCounter)}<span class="meta"> · ${share.toFixed(1)}%</span></div>
             </div>`;
           }).join("");
       }
 
       function renderBreakdown(rows) {
-        const sortedRows = [...rows].sort((a, b) => Number(b.total_tokens || 0) - Number(a.total_tokens || 0));
+        // Ranked by whatever the reader is looking at. Leaving it on tokens while the page is
+        // showing spend puts the cheapest rows on page one of a money question.
+        const sortKey = selectedMetricCounter() === COST_KEY ? COST_KEY : "total_tokens";
+        const sortedRows = [...rows].sort((a, b) => Number(b[sortKey] || 0) - Number(a[sortKey] || 0));
         breakdownRegion.dataset.rows = JSON.stringify(sortedRows);
         breakdownPage = 1;
         return renderBreakdownPage();
@@ -469,10 +504,11 @@
         breakdownPage = Math.min(pageCount, Math.max(1, breakdownPage));
         const startIndex = (breakdownPage - 1) * BREAKDOWN_PAGE_SIZE;
         const endIndex = Math.min(rows.length, startIndex + BREAKDOWN_PAGE_SIZE);
-        const headers = ["Hub user", "Provider", "Model account", "Model", ...COUNTERS.map(([label]) => label)];
+        const headers = ["Hub user", "Provider", "Model account", "Model", "Spend", ...COUNTERS.map(([label]) => label)];
         const body = rows.slice(startIndex, endIndex).map((row, index) => `<tr>` +
           `<td><button id="breakdown-${index}" data-breakdown-index="${startIndex + index}" aria-label="Filter to ${escapeHtml(row.hub_user_email)}, ${escapeHtml(row.provider)}, ${escapeHtml(row.model_account_id)}, ${escapeHtml(row.model_id)}">${escapeHtml(row.hub_user_email)}</button></td>` +
           `<td>${escapeHtml(row.provider)}</td><td>${escapeHtml(row.model_account_id)}</td><td>${escapeHtml(row.model_id)}</td>` +
+          `<td title="${exactMetric(row[COST_KEY], COST_KEY)}">${formatUsd(row[COST_KEY])}</td>` +
           COUNTERS.map(([, key]) => `<td title="${number(row[key])}">${formatTokens(row[key])}</td>`).join("") + `</tr>`).join("");
         const previousDisabled = breakdownPage === 1 ? " disabled" : "";
         const nextDisabled = breakdownPage === pageCount ? " disabled" : "";
@@ -569,6 +605,11 @@
       // so they get their own cards -- with the subset note kept per card, because a reader adding
       // Input + Output + Cache read would otherwise double-count their way past Total.
       const SUMMARY_CARDS = [
+        // Spend leads: it is the only figure here that compares a Codex hour with a Claude hour, and
+        // the only one the fetch gate acts on. A model the pool does not pay for -- an own-key
+        // DeepSeek, a self-hosted Qwen -- is real usage and zero spend, and the caption says so
+        // rather than leaving a reader to wonder why the two columns disagree.
+        ["Spend", "cost_usd", "Pool cost at vendor list price · own-key and self-hosted models cost $0"],
         ["Total", "total_tokens", "All provider-reported tokens"],
         ["Input", "input_tokens", "Provider input counter"],
         ["Output", "output_tokens", "Provider output counter"],
@@ -581,7 +622,7 @@
         const totals = payload.totals || {};
         summaryRegion.innerHTML = SUMMARY_CARDS.map(([label, counter, note]) =>
           `<article class="summary-card"><span class="meta">${escapeHtml(label)}</span>` +
-          `<strong title="${number(totals[counter])}">${formatTokens(totals[counter])}</strong>` +
+          `<strong title="${exactMetric(totals[counter], counter)}">${formatMetric(totals[counter], counter)}</strong>` +
           `<div class="meta">${escapeHtml(note)}</div></article>`
         ).join("");
         userUsageRegion.innerHTML = renderUserBars(payload.breakdown || []);

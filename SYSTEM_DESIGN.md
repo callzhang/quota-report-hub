@@ -54,7 +54,7 @@ Codex parsing uses structural `session_meta`, `turn_context`, and cumulative `to
 
 Account attribution has two cases. An automatic guard switch inserts a prepared boundary before credential installation, reads the installed target back, then finalizes or cancels that boundary. Collector events are split at finalized boundaries. A manual switch has no exact boundary, so events read in that cycle use the account observed during the report. This is intentionally approximate and is not a billing ledger.
 
-The authenticated ingestion API writes a receipt-gated `token_usage_15m` aggregate and reporter state in one batch. The query API reads indexed time ranges from 15-minute detail and, for daily queries, `token_usage_daily`. It returns only totals, trend, breakdown, and reporter freshness; trend and breakdown are capped. No token usage query selects installation IDs, batch IDs, payload digests, file paths, logical record IDs, or fingerprints. Existing status, revision, quota, history, and auth-selection paths do not join token usage.
+The authenticated ingestion API writes a receipt-gated `token_usage_15m` aggregate and reporter state in one batch. The query API reads indexed time ranges from 15-minute detail and, for daily queries, `token_usage_daily`. It returns only totals, trend, breakdown, and reporter freshness; trend and breakdown are capped. Each of those aggregates is also priced in dollars by the fetch gate's own cost expression, so what a reader sees on the page is the figure the gate acted on. No token usage query selects installation IDs, batch IDs, payload digests, file paths, logical record IDs, or fingerprints. Existing status, revision, quota, history, and auth-selection paths do not join token usage.
 
 The independent page defaults to seven days/hour/Hub-user/Total and lazily makes one authenticated query. Exact query plus auth-generation results are cached for five minutes and concurrent requests are deduplicated. Token rotation moves the successful result to the new auth generation. A stale old-token response cannot clear a newer login. Charts preserve missing-bucket gaps and expose exact values by keyboard and text; breakdown rows drill into Hub user, provider, model account, and raw model.
 
@@ -1160,7 +1160,14 @@ Both sources are held to the same thresholds, judged per window the report carri
 - **Dashboard trend** (`index.html` `renderHealthTrend`, at the top of the Accounts tab): per-source healthy ratio, hard-dead count + trend badge, an SVG sparkline of the hard-dead series, and central-refresh outcomes. The framing: *the death spiral is closed when hard-dead stops climbing*.
 - **Reporter health** (`index.html` `renderReporterHealth`, the Devices tab): per-machine guard heartbeat states ([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)).
 - **`assess_health.mjs`** — CLI verdict + abuse scan ([§8.1](#81-assess_healthmjs)).
-- **`auth_pool_fetch_log`** — full borrow audit surfaced on `users.html`.
+- **`auth_pool_fetch_log`** — full borrow audit surfaced on `users.html`. That page's Token Holders
+  table also carries each member's **pool spend over the gate's own window**: `authUsersList` takes
+  `spendSince` as an argument (never a clock of its own) and joins one `bucket_start` range scan over
+  `token_usage_15m`, the same shape `fetchPolicyInputs` already runs on every fetch-best call, grouped
+  by user instead of filtered to one. The page derives the fair-share line the way the gate does —
+  `DEMAND_SHARE_TOLERANCE / active_spenders`, minimum two — so somebody who was sent a demand-share
+  notice can see the number that produced it instead of a near-miss of it. Being over the line is not
+  a throttle on its own: the cooldown also needs the pool to be scarce (§9b).
 - **`auth_pool_death_events`** — append-only credential deaths and revivals ([§12.1](#121-auth_pool_death_events-why-a-death-log-and-not-a-state-table)).
 
 ### 12.1 `auth_pool_death_events` — why a death log and not a state table
@@ -1381,8 +1388,20 @@ record ids, fingerprints. Read-only analytics requests also skip schema creation
 the API-token lookup plus its `last_used_at` touch share one round trip before the bounded analytics
 batch.
 
+Every aggregate also carries **`cost_usd`**, summed with the same `MODEL_COST_SQL` the fetch gate
+spends (§9b, "What usage costs"). Tokens alone cannot answer what a week cost the pool: an hour of
+cache replay on Luna and an hour of Opus output are three orders of magnitude apart, and a model the
+pool does not pay for — an own-key DeepSeek, a self-hosted Qwen or MiniMax — is real usage worth zero
+demand. Sharing one expression is what stops the page and the gate reporting two different shares of
+the same week; measured on 2026-09-17, derek's 24-hour share read 97% by tokens and 95% by spend,
+and his codex-only share read 72% by tokens against 30% by spend, because 60% of those tokens were
+his own MiniMax. `cost` is therefore a selectable metric alongside the six counters, and it is the
+only one that is comparable across providers and models.
+
 The page (`token-usage.html`) defaults to 7 days / hour / Hub user / Total and makes one lazy
-authenticated query. Results are cached five minutes keyed by exact query **plus auth generation**,
+authenticated query. Spend leads the summary cards, is its own Breakdown column whatever metric is
+selected, and — when it is the selected metric — ranks the per-user bars and the Breakdown, with the
+per-user percentages then being exactly the demand share the fetch gate rations on. Results are cached five minutes keyed by exact query **plus auth generation**,
 concurrent identical requests are deduplicated, and a token rotation moves the successful result to
 the new generation so a stale old-token response cannot clear a newer login. Charts preserve
 missing-bucket gaps rather than interpolating, and expose exact values to keyboard and screen reader.

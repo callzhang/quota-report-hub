@@ -988,7 +988,7 @@ test("authUsersList joins active tokens and fetch counts per user", async () => 
       reason: "served",
     });
 
-    const users = await mod.authUsersList();
+    const users = await mod.authUsersList({ spendSince: "2026-05-01T00:00:00.000Z" });
     assert.equal(users.length, 2);
     const byEmail = Object.fromEntries(users.map((u) => [u.email, u]));
 
@@ -998,6 +998,56 @@ test("authUsersList joins active tokens and fetch counts per user", async () => 
 
     assert.equal(byEmail["bob@stardust.ai"].fetch_count, 1);
     assert.equal(byEmail["bob@stardust.ai"].has_active_token, true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("authUsersList prices each user's pool spend inside the demand-share window", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.issueApiToken("alice@stardust.ai");
+    await mod.issueApiToken("bob@stardust.ai");
+
+    const usage = (email, bucket, modelId, installation) => mod.ingestTokenUsageBatch({
+      hubUserEmail: email,
+      installationId: installation,
+      batchId: `${installation}-${bucket}`,
+      rows: [{
+        bucket_start: bucket,
+        provider: "codex",
+        model_account_id: "ir@stardust.ai",
+        model_id: modelId,
+        input_tokens: 1_000_000,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+        total_tokens: 1_000_000,
+      }],
+      receivedAt: "2026-06-10T00:00:00.000Z",
+    });
+
+    // gpt-5.6-sol is $5.00 per 1M input tokens, so each of these rows is exactly $5.
+    await usage("alice@stardust.ai", "2026-06-09T00:00:00.000Z", "gpt-5.6-sol", "alice-1");
+    // Outside the window: the same spend, and it must not reach the column.
+    await usage("alice@stardust.ai", "2026-06-01T00:00:00.000Z", "gpt-5.6-sol", "alice-2");
+    // A model the pool does not pay for costs nothing, exactly as the gate prices it.
+    await usage("bob@stardust.ai", "2026-06-09T00:00:00.000Z", "MiniMax-M2.5", "bob-1");
+
+    const users = await mod.authUsersList({ spendSince: "2026-06-05T00:00:00.000Z" });
+    const byEmail = Object.fromEntries(users.map((u) => [u.email, u]));
+    assert.equal(byEmail["alice@stardust.ai"].spend_usd, 5);
+    assert.equal(byEmail["bob@stardust.ai"].spend_usd, 0);
+  } finally {
+    cleanup();
+  }
+});
+
+test("authUsersList refuses to run without the spend window it reports against", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await assert.rejects(() => mod.authUsersList({}), TypeError);
   } finally {
     cleanup();
   }
@@ -1019,7 +1069,7 @@ test("authUsersList collapses duplicate token rows for the same email", async ()
       args: ["legacy-token-hash", "derek@stardust.ai", "2026-05-03T00:00:00Z", "2026-05-03T01:00:00Z"],
     });
 
-    const users = await mod.authUsersList();
+    const users = await mod.authUsersList({ spendSince: "2026-05-01T00:00:00.000Z" });
     const derekUsers = users.filter((u) => u.email === "derek@stardust.ai");
     assert.equal(derekUsers.length, 1);
     assert.equal(derekUsers[0].has_active_token, true);
