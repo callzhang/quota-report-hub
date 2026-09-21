@@ -328,6 +328,7 @@ class ReporterScriptsTest(unittest.TestCase):
             })
             scenarios = (
                 ("codex", "replacement", {"replacement": {"account_id": "new-codex", "auth_json": codex_blob}}),
+                ("codex", "repair", {"replacement": None, "repair_auth": {"account_id": "new-codex", "auth_json": codex_blob}}),
                 ("claude", "replacement", {"replacement": {"account_id": "new-claude", "auth_json": claude_blob}}),
                 ("claude", "repair", {"replacement": None, "repair_auth": {"account_id": "new-claude", "auth_json": claude_blob}}),
             )
@@ -373,7 +374,11 @@ class ReporterScriptsTest(unittest.TestCase):
                                 self.token_usage_state,
                             )
 
-                    self.assertTrue(result["replaced"])
+                    if provider == "codex" and path_kind == "repair":
+                        self.assertFalse(result["replaced"])
+                        self.assertTrue(result["repair_installed"])
+                    else:
+                        self.assertTrue(result["replaced"])
                     boundary.assert_called_once()
                     self.assertEqual(boundary.call_args.kwargs["provider"], provider)
                     self.assertIs(boundary.call_args.kwargs["usage_state"], self.token_usage_state)
@@ -4053,7 +4058,7 @@ Reading additional input from stdin...
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "no_better_auth_available")
 
-    def test_maybe_replace_codex_auth_never_installs_repair_auth_for_different_account(self):
+    def test_maybe_replace_codex_auth_installs_owner_repair_auth_and_pins_it_for_relogin(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             live_auth = base / "auth.json"
@@ -4095,7 +4100,11 @@ Reading additional input from stdin...
             }
             with mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=True):
                 with mock.patch.object(quota_guard, "fetch_best_auth", return_value=repair_response) as fetch:
-                    with mock.patch.object(quota_guard, "install_auth_with_usage_boundary") as boundary:
+                    with mock.patch.object(
+                        quota_guard,
+                        "install_auth_with_usage_boundary",
+                        wraps=quota_guard.install_auth_with_usage_boundary,
+                    ) as boundary:
                         replacement = quota_guard.maybe_replace_codex_auth(
                             config,
                             codex_payload,
@@ -4105,19 +4114,81 @@ Reading additional input from stdin...
                             weekly_threshold_percent=5.0,
                             usage_state=self.token_usage_state,
                         )
-            installed_auth = live_auth.read_text(encoding="utf-8")
+            installed_auth = json.loads(live_auth.read_text(encoding="utf-8"))
+            known_auth = json.loads(known_auth_path.read_text(encoding="utf-8"))["sources"]["codex"]
 
         self.assertTrue(fetch.call_args.kwargs["refresh_current"])
-        boundary.assert_not_called()
+        boundary.assert_called_once()
+        self.assertEqual(boundary.call_args.kwargs["provider"], "codex")
+        self.assertEqual(boundary.call_args.kwargs["from_account_id"], "other")
+        self.assertEqual(boundary.call_args.kwargs["to_account_id"], "junjie.zhou@stardust.ai")
+        self.assertFalse(replacement["replaced"])
+        self.assertTrue(replacement["repair"])
+        self.assertTrue(replacement["repair_required"])
+        self.assertTrue(replacement["repair_installed"])
+        self.assertEqual(replacement["reason"], "owner_relogin_required")
+        self.assertEqual(replacement["to_account_id"], "junjie.zhou@stardust.ai")
+        self.assertEqual(installed_auth["tokens"]["account_id"], "junjie.zhou@stardust.ai")
+        self.assertEqual(known_auth["account_id"], "junjie.zhou@stardust.ai")
+        self.assertEqual(known_auth["state_source"], "repair_auth_from_auth_pool")
+
+    def test_maybe_replace_codex_auth_keeps_pending_owner_repair_without_fetching(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            repair_auth = {
+                "last_refresh": "2026-09-21T08:00:00Z",
+                "tokens": {
+                    "account_id": "provider-repair",
+                    "refresh_token": "rt.1.INVALIDOWNERREPAIR",
+                    "access_token": "expired-access-token",
+                    "id_token": self._jwt({
+                        "email": "derek@stardust.ai",
+                        "name": "Derek",
+                        "https://api.openai.com/auth": {"chatgpt_plan_type": "team"},
+                    }),
+                },
+            }
+            live_auth.write_text(json.dumps(repair_auth), encoding="utf-8")
+            metadata = quota_guard.auth_metadata(live_auth)
+            quota_guard.write_known_auth_state(
+                source="codex",
+                metadata=metadata,
+                known_auth_path=known_auth_path,
+                last_uploaded_digest=metadata["digest"],
+                last_uploaded_account_id=metadata["account_id"],
+                last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+                state_source="repair_auth_from_auth_pool",
+            )
+            config = {
+                "auth_pool_url": "https://quota-report-hub.vercel.app",
+                "auth_pool_user_token": "qrp_token",
+            }
+            codex_payload = {
+                "account_id": "derek@stardust.ai",
+                "status": "error",
+                "error": "auth failed (401 unauthorized)",
+                "windows": {"5h": None, "1week": None},
+            }
+
+            with mock.patch.object(quota_guard, "fetch_best_auth") as fetch:
+                replacement = quota_guard.maybe_replace_codex_auth(
+                    config,
+                    codex_payload,
+                    live_auth,
+                    known_auth_path,
+                    threshold_percent=20.0,
+                    weekly_threshold_percent=5.0,
+                    usage_state=self.token_usage_state,
+                )
+
+        fetch.assert_not_called()
         self.assertFalse(replacement["replaced"])
         self.assertTrue(replacement["repair_required"])
+        self.assertTrue(replacement["repair_pending"])
         self.assertEqual(replacement["reason"], "owner_relogin_required")
-        self.assertEqual(replacement["account_id"], "other")
-        self.assertEqual(replacement["repair_account_id"], "junjie.zhou@stardust.ai")
-        self.assertNotIn("repair_installed", replacement)
-        self.assertNotIn("to_account_id", replacement)
-        self.assertEqual(installed_auth, original_auth)
-        self.assertFalse(known_auth_path.exists())
+        self.assertEqual(replacement["repair_account_id"], "derek@stardust.ai")
 
     def test_maybe_replace_codex_auth_does_not_reinstall_same_invalidated_account(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5820,6 +5891,110 @@ Reading additional input from stdin...
         post_auth_pool_entry.assert_not_called()
         self.assertFalse(result["uploaded"])
         self.assertEqual(result["reason"], "unchanged_auth_recently_reuploaded")
+
+    def test_sync_current_codex_auth_pool_keeps_unchanged_owner_repair_local(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-09-21T08:00:00Z",
+                        "tokens": {
+                            "account_id": "provider-repair",
+                            "refresh_token": "rt.1.INVALIDOWNERREPAIR",
+                            "access_token": "expired-access-token",
+                            "id_token": self._jwt({
+                                "email": "derek@stardust.ai",
+                                "name": "Derek",
+                                "https://api.openai.com/auth": {"chatgpt_plan_type": "team"},
+                            }),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            metadata = quota_guard.auth_metadata(auth_path)
+            quota_guard.write_known_auth_state(
+                source="codex",
+                metadata=metadata,
+                known_auth_path=known_auth_path,
+                last_uploaded_digest=metadata["digest"],
+                last_uploaded_account_id=metadata["account_id"],
+                last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+                state_source="repair_auth_from_auth_pool",
+            )
+
+            with mock.patch("quota_reporters.post_auth_pool_entry") as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                )
+
+        post_auth_pool_entry.assert_not_called()
+        self.assertFalse(result["uploaded"])
+        self.assertEqual(result["reason"], "repair_auth_pending_owner_relogin")
+
+    def test_sync_current_codex_auth_pool_resumes_after_owner_relogin_changes_auth(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            auth_path = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-09-21T08:00:00Z",
+                        "tokens": {
+                            "account_id": "provider-repair",
+                            "refresh_token": "rt.1.INVALIDOWNERREPAIR",
+                            "access_token": "expired-access-token",
+                            "id_token": self._jwt({"email": "derek@stardust.ai"}),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            old_metadata = quota_guard.auth_metadata(auth_path)
+            quota_guard.write_known_auth_state(
+                source="codex",
+                metadata=old_metadata,
+                known_auth_path=known_auth_path,
+                last_uploaded_digest=old_metadata["digest"],
+                last_uploaded_account_id=old_metadata["account_id"],
+                last_uploaded_auth_last_refresh=old_metadata["auth_last_refresh"],
+                state_source="repair_auth_from_auth_pool",
+            )
+            auth_path.write_text(
+                json.dumps(
+                    {
+                        "last_refresh": "2026-09-21T09:00:00Z",
+                        "tokens": {
+                            "account_id": "provider-repair",
+                            "refresh_token": "rt.1.REPAIREDGENERATION",
+                            "access_token": "fresh-access-token",
+                            "id_token": self._jwt({"email": "derek@stardust.ai"}),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch("quota_reporters.post_auth_pool_entry", return_value={
+                "ok": True,
+                "entry": {"account_id": "derek@stardust.ai"},
+            }) as post_auth_pool_entry:
+                result = quota_guard.sync_current_codex_auth_pool(
+                    "https://quota-report-hub.vercel.app",
+                    "qrp_token",
+                    auth_path=auth_path,
+                    known_auth_path=known_auth_path,
+                )
+
+        post_auth_pool_entry.assert_called_once()
+        self.assertTrue(result["uploaded"])
 
     def test_sync_current_codex_auth_pool_skips_free_plan_uploads(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -61,6 +61,7 @@ from quota_reporters import (
     iso_now,
     load_config,
     known_codex_refresh_handoff,
+    pending_codex_owner_repair,
     post_auth_pool_quota,
     probe_claude,
     probe_codex,
@@ -2019,6 +2020,20 @@ def maybe_replace_codex_auth(
         "five_h_remaining_percent": remaining_percent(current_codex_payload or {}, "5h"),
         "one_week_remaining_percent": remaining_percent(current_codex_payload or {}, "1week"),
     }
+    owner_repair = None if force_switch else pending_codex_owner_repair(codex_auth_path, known_auth_path)
+    if owner_repair is not None:
+        return {
+            "ok": True,
+            "replaced": False,
+            "repair_required": True,
+            "repair_pending": True,
+            "reason": "owner_relogin_required",
+            "triggered_by": ["codex"],
+            "account_id": current_account_id,
+            "repair_account_id": owner_repair.get("account_id"),
+            "repair_email": owner_repair.get("email"),
+            "repair_plan_name": owner_repair.get("plan_name"),
+        }
     if force_switch:
         # A manual switch only makes sense against an account the hub can already recognize as
         # the caller's own -- otherwise there is nothing to exclude and nothing to prove the
@@ -2054,21 +2069,56 @@ def maybe_replace_codex_auth(
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
     if replacement is None and repair_auth is not None:
-        # A repair handback names an account its owner must re-login; it is not usable auth. Never
-        # install it, even when it differs from the current account. Doing so replaced a healthy
-        # 29%-remaining account with the owner's dead auth, whose next 401 then fetched another
-        # account and recreated the 15-minute switch loop.
+        # The hub authenticates this request and only hands back an invalidated auth whose original
+        # uploader is that same user. Install it once so the owner lands on the account they must
+        # repair, then pin the exact digest in known-auth state. Later guard cycles keep it selected
+        # despite the expected 401; an explicit login changes the digest and releases the pin.
+        fetched_account_id = repair_auth.get("account_id")
+        repair_installed = fetched_account_id != current_account_id
+        if repair_installed:
+            def write_repair_auth():
+                codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
+                codex_auth_path.write_text(repair_auth["auth_json"], encoding="utf-8")
+                codex_auth_path.chmod(0o600)
+
+            install_auth_with_usage_boundary(
+                provider="codex",
+                from_account_id=current_account_id,
+                to_account_id=fetched_account_id,
+                usage_state=usage_state,
+                write_auth=write_repair_auth,
+                read_installed_account=lambda: fetched_account_id
+                if codex_auth_path.read_text(encoding="utf-8") == repair_auth["auth_json"]
+                else auth_metadata(codex_auth_path).get("account_id"),
+            )
+
+        metadata = auth_metadata(codex_auth_path)
+        known_auth = write_known_auth_state(
+            source="codex",
+            metadata=metadata,
+            known_auth_path=known_auth_path,
+            last_uploaded_digest=metadata["digest"],
+            last_uploaded_account_id=metadata["account_id"],
+            last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+            state_source="repair_auth_from_auth_pool",
+        )
         return {
             "ok": True,
             "replaced": False,
+            "repair": True,
             "repair_required": True,
+            "repair_installed": repair_installed,
+            "repair_pending": True,
             "reason": "owner_relogin_required",
             "triggered_by": ["codex"],
-            "account_id": current_account_id,
-            "repair_account_id": repair_auth.get("account_id"),
+            "account_id": metadata.get("account_id"),
+            "repair_account_id": fetched_account_id,
             "repair_email": repair_auth.get("email"),
             "repair_plan_name": repair_auth.get("plan_name"),
+            "from_account_id": current_account_id,
+            "to_account_id": metadata.get("account_id"),
             "latest_report": repair_auth.get("latest_report"),
+            "known_auth": known_auth,
         }
     if replacement is None:
         return {
@@ -2857,6 +2907,7 @@ def run_guard(args: argparse.Namespace) -> dict:
         or sync_result.get("codex", {}).get("local_refresh_token_stripped", {}).get("stripped")
         or codex_replacement.get("replaced")
         or codex_replacement.get("auth_refreshed")
+        or codex_replacement.get("repair_installed")
     )
     codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged"}
     codex_activity = codex_app_server_activity()
@@ -2959,7 +3010,7 @@ def run_guard(args: argparse.Namespace) -> dict:
     else:
         effective_codex_account_id = (
             codex_replacement.get("to_account_id")
-            if codex_replacement.get("replaced")
+            if codex_replacement.get("replaced") or codex_replacement.get("repair_installed")
             else (codex_payload or {}).get("account_id")
         )
         effective_claude_account_id = (

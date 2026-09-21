@@ -173,7 +173,7 @@ If a request presents an older hub-signed token, the server can verify the embed
   behavior:
   - looks at stored auth pool entries plus their latest effective quota metadata
   - allows fetching when the requester has uploaded at least one healthy auth in any supported source
-  - if the requester owns an invalidated auth, returns that auth as `repair_auth` so the owner can re-login and refresh it
+  - if the requester owns an invalidated auth, returns that auth as `repair_auth`; the guard installs the owner handback once and pins it until an explicit re-login changes the credential, rather than treating its expected 401 as a request for another shared account
   - records every returned `repair_auth` as `repair_auth_returned` in `auth_pool_fetch_log`
   - does not treat `repair_auth` as a usable replacement candidate
   - only compares candidates from the same source

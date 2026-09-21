@@ -334,6 +334,34 @@ def read_known_auth_state(path: Path = KNOWN_AUTH_PATH) -> dict:
     return payload
 
 
+def pending_codex_owner_repair(
+    auth_path: Path = SOURCE_AUTH_PATH,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
+) -> dict | None:
+    """Return the pinned owner-repair state while the handed-back auth is unchanged.
+
+    The hub only sends ``repair_auth`` to the email that originally uploaded that account. The
+    guard installs it so its owner can re-login, then must keep it selected instead of interpreting
+    the expected 401 as a request for another shared account. A successful explicit login changes
+    the auth digest (even when it repairs the same account), which is the durable evidence that the
+    pin may be released and normal upload/replacement behavior can resume.
+    """
+    if not auth_path.exists():
+        return None
+    known = known_auth_state_for_source(read_known_auth_state(known_auth_path), "codex")
+    if known.get("state_source") != "repair_auth_from_auth_pool":
+        return None
+    try:
+        metadata = auth_metadata(auth_path)
+    except Exception:
+        return None
+    if known.get("account_id") != metadata.get("account_id"):
+        return None
+    if known.get("digest") != metadata.get("digest"):
+        return None
+    return known
+
+
 def parse_iso_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -3703,6 +3731,14 @@ def sync_current_codex_auth_pool(
         return {"ok": True, "uploaded": False, "reason": "missing_auth"}
 
     auth_json_text = auth_path.read_text(encoding="utf-8")
+    owner_repair = pending_codex_owner_repair(auth_path, known_auth_path)
+    if owner_repair is not None:
+        return {
+            "ok": True,
+            "uploaded": False,
+            "reason": "repair_auth_pending_owner_relogin",
+            "account_id": owner_repair.get("account_id"),
+        }
     if auth_json_is_stripped("codex", auth_json_text):
         return {"ok": True, "uploaded": False, "reason": "local_auth_is_at_only"}
     metadata = auth_metadata(auth_path)
