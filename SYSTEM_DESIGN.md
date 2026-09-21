@@ -933,10 +933,16 @@ notices are advisory too; it must never arrive with a blocking `取号已限速`
 
 ### Cooldown, not a block
 
-Over the threshold, a user may fetch once every `PREMIUM_RATIO_COOLDOWN_MINUTES`. One flat duration,
-no per-path or per-severity multipliers: severity is already encoded in how long a user stays above
-the line, and a second dial would only make the rule harder to reason about. A refused attempt does
-not restart the clock — `last_served_at` advances only on `served` / `refreshed_current`.
+Over the threshold, a user's first fetch request starts a
+`PREMIUM_RATIO_COOLDOWN_MINUTES` wait and is refused; the first request after that full interval may
+be served. One flat duration, no per-path or per-severity multipliers: severity is already encoded
+in how long a user stays above the line, and a second dial would only make the rule harder to reason
+about. `cooldown_started_at` is written only when the cycle is empty, so retrying a refused request
+does not restart the clock. A successful `served` / `refreshed_current` clears the completed cycle;
+the next request, if the scarcity condition still holds, starts a new wait. The ordinary selection
+path clears only after the auth and response are fully prepared, and an unsuccessful candidate
+search never clears it, so a preparation failure cannot charge a second wait before another handoff
+attempt.
 
 Measured re-fetch intervals make this bite where it should: the heaviest users return every 5–15
 minutes (they hold AT-only credentials under `disabled_refresh_token` and must keep coming back),

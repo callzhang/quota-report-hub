@@ -261,25 +261,13 @@ export default async function handler(req, res) {
       if (!idTokenRefreshDead && (msLeft === null || msLeft > 5 * 60 * 1000)) {
         const disabledRefreshToken = await getFeatureFlag("disabled_refresh_token", false);
         const servedAuthJson = disabledRefreshToken ? stripRefreshToken(sameAuthJson, source) : sameAuthJson;
-        await recordAuthPoolFetch({
-          requesterEmail: authContext.email,
-          requesterId,
-          source,
-          servedEntry: sameEntry,
-          reason: "refreshed_current",
-          currentAccountId,
-          currentQuota,
-          clientVersion: requestClientVersion,
-        });
-        res.statusCode = 200;
-        res.setHeader("Content-Type", "application/json; charset=utf-8");
-        res.end(JSON.stringify(withTokenUpgrade({
+        const responseBody = JSON.stringify(withTokenUpgrade({
           ok: true,
           requested_by: authContext.email,
           disabled_refresh_token: disabledRefreshToken,
           notices: policy.notices,
           premium_share: policy.premium_share,
-      demand_share: policy.demand_share,
+          demand_share: policy.demand_share,
           refreshed_current: true,
           replacement: {
             source: sameEntry.source,
@@ -296,7 +284,20 @@ export default async function handler(req, res) {
             latest_report: null,
             auth_json: servedAuthJson,
           },
-        }, authContext)));
+        }, authContext));
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(responseBody);
+        await recordAuthPoolFetch({
+          requesterEmail: authContext.email,
+          requesterId,
+          source,
+          servedEntry: sameEntry,
+          reason: "refreshed_current",
+          currentAccountId,
+          currentQuota,
+          clientVersion: requestClientVersion,
+        });
         return;
       }
       // stale pooled copy -> fall through to a normal replacement (switch account)
@@ -382,17 +383,6 @@ export default async function handler(req, res) {
     return;
   }
 
-  await recordAuthPoolFetch({
-    requesterEmail: authContext.email,
-    requesterId,
-    source,
-    servedEntry: entry,
-    reason: "served",
-    currentAccountId,
-    currentQuota,
-    clientVersion: requestClientVersion,
-  });
-
   // A freshly-selected entry can just as easily have a stale id_token as the one being refreshed
   // above — nothing serves this account until now, so nothing has kept its id_token fresh either.
   // Best-effort: still serve what we have if the real RT turns out to be dead here (a borrowed,
@@ -407,31 +397,41 @@ export default async function handler(req, res) {
   const atOnlyMode = await getFeatureFlag("disabled_refresh_token", false);
   const servedAuthJson = atOnlyMode ? stripRefreshToken(entryAuthJson, entry.source) : entryAuthJson;
 
+  const responseBody = JSON.stringify(withTokenUpgrade({
+    ok: true,
+    requested_by: authContext.email,
+    disabled_refresh_token: atOnlyMode,
+    notices: policy.notices,
+    premium_share: policy.premium_share,
+    demand_share: policy.demand_share,
+    replacement: {
+      source: entry.source,
+      account_id: entry.account_id,
+      session_id: entry.session_id || "",
+      email: entry.email,
+      name: entry.name,
+      plan_name: entry.plan_name,
+      auth_last_refresh: entry.auth_last_refresh,
+      digest: entry.digest,
+      uploaded_at: entry.uploaded_at,
+      reporter_name: entry.reporter_name,
+      hostname: entry.hostname,
+      latest_report: entry.report,
+      auth_json: servedAuthJson,
+    },
+  }, authContext));
+
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(
-    JSON.stringify(withTokenUpgrade({
-      ok: true,
-      requested_by: authContext.email,
-      disabled_refresh_token: atOnlyMode,
-      notices: policy.notices,
-      premium_share: policy.premium_share,
-      demand_share: policy.demand_share,
-      replacement: {
-        source: entry.source,
-        account_id: entry.account_id,
-        session_id: entry.session_id || "",
-        email: entry.email,
-        name: entry.name,
-        plan_name: entry.plan_name,
-        auth_last_refresh: entry.auth_last_refresh,
-        digest: entry.digest,
-        uploaded_at: entry.uploaded_at,
-        reporter_name: entry.reporter_name,
-        hostname: entry.hostname,
-        latest_report: entry.report,
-        auth_json: servedAuthJson,
-      },
-    }, authContext))
-  );
+  res.end(responseBody);
+  await recordAuthPoolFetch({
+    requesterEmail: authContext.email,
+    requesterId,
+    source,
+    servedEntry: entry,
+    reason: "served",
+    currentAccountId,
+    currentQuota,
+    clientVersion: requestClientVersion,
+  });
 }

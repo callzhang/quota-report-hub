@@ -20,7 +20,7 @@ process.env.POOL_COOLDOWN_AT = "2000-01-01T00:00:00.000Z";
 
 // Dynamic like the modules above it: a static import would be hoisted above the phase-date env
 // overrides and freeze the gate/cooldown dates before the tests could move them.
-const { MIN_REPORTER_CLIENT_VERSION } = await import("../lib/premium-ratio.js");
+const { MIN_REPORTER_CLIENT_VERSION, PREMIUM_RATIO_COOLDOWN_MINUTES } = await import("../lib/premium-ratio.js");
 const db = await import("../lib/db.js");
 const { default: handler } = await import("../api/auth/fetch-best.js");
 const { createClient } = await import("@libsql/client");
@@ -201,13 +201,13 @@ test("cooldown holds a user driving a shortage, and a refused attempt does not e
   const email = "heavy@stardust.ai";
   const { token } = await db.issueApiToken(email);
   await seedUsage(email, "gpt-5.6-sol", "batch-heavy", { heavy: true });
-  await seedServe(email);
   await seedScarcePool(true);
 
   const first = await call(token);
   assert.equal(first.reason, "demand_share_cooldown");
   assert.equal(first.replacement, null);
-  assert.ok(first.retry_after_seconds > 0);
+  assert.equal(first.retry_after_seconds, PREMIUM_RATIO_COOLDOWN_MINUTES * 60,
+    "the first request must start the full wait rather than receive an account");
   assert.ok(first.demand_share > 0.25, "this user is the entire team's spend");
 
   const second = await call(token);
@@ -215,6 +215,71 @@ test("cooldown holds a user driving a shortage, and a refused attempt does not e
     second.retry_after_seconds <= first.retry_after_seconds,
     "being refused must not push the next allowed attempt further away",
   );
+});
+
+test("a failed auth handoff does not complete an elapsed cooldown cycle", async () => {
+  const email = "handoff-failure@stardust.ai";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.6-sol", "batch-handoff-failure", { heavy: true });
+  await seedContribution("handoff-supplier@stardust.ai", "handoff-pool@example.com");
+  await seedScarcePool(true);
+
+  const first = await call(token);
+  assert.match(first.reason, /_cooldown$/);
+  const elapsedStart = new Date(Date.now() - (PREMIUM_RATIO_COOLDOWN_MINUTES + 1) * 60 * 1000).toISOString();
+  await scarcityClient.execute({
+    sql: "UPDATE auth_pool_user_fetch_stats SET cooldown_started_at = ? WHERE requester_email = ?",
+    args: [elapsedStart, email],
+  });
+
+  const failedResponse = response();
+  failedResponse.setHeader = () => { throw new Error("response unavailable"); };
+  await assert.rejects(
+    handler(request(token), failedResponse),
+    /response unavailable/,
+  );
+
+  const afterFailure = await db.fetchPolicyInputs({
+    email,
+    since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+  });
+  assert.equal(afterFailure.cooldownStartedAt, elapsedStart,
+    "the cycle completes only after the auth handoff is ready to be emitted");
+});
+
+test("a failed refresh-current handoff does not complete an elapsed cooldown cycle", async () => {
+  const email = "refresh-handoff-failure@stardust.ai";
+  const accountId = "refresh-handoff-pool@example.com";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.5", "batch-refresh-handoff-failure");
+  await seedContribution("refresh-handoff-supplier@stardust.ai", accountId);
+  await seedScarcePool(true);
+
+  const first = await call(token);
+  assert.match(first.reason, /_cooldown$/);
+  const elapsedStart = new Date(Date.now() - (PREMIUM_RATIO_COOLDOWN_MINUTES + 1) * 60 * 1000).toISOString();
+  await scarcityClient.execute({
+    sql: "UPDATE auth_pool_user_fetch_stats SET cooldown_started_at = ? WHERE requester_email = ?",
+    args: [elapsedStart, email],
+  });
+
+  const failedResponse = response();
+  failedResponse.setHeader = () => { throw new Error("response unavailable"); };
+  await assert.rejects(
+    handler(request(token, {
+      source: "codex",
+      client_version: MIN_REPORTER_CLIENT_VERSION,
+      current_account_id: accountId,
+      refresh_current: true,
+    }), failedResponse),
+    /response unavailable/,
+  );
+
+  const afterFailure = await db.fetchPolicyInputs({
+    email,
+    since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+  });
+  assert.equal(afterFailure.cooldownStartedAt, elapsedStart);
 });
 
 test("the kill switch stops refusals without silencing the warning", async () => {
@@ -271,7 +336,6 @@ test("a scarce pool rate-limits a non-contributor, and supplying it lifts that",
   const email = "borrower2@stardust.ai";
   const { token } = await db.issueApiToken(email);
   await seedUsage(email, "gpt-5.5", "batch-borrower2");
-  await seedServe(email);
   await seedScarcePool(true);
 
   const held = await call(token);

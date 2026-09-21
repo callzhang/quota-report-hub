@@ -114,10 +114,30 @@ test("fetchPolicyInputs excludes buckets outside the rolling window", async () =
   }
 });
 
-test("only a real serve starts the cooldown clock", async () => {
+test("the first refusal starts one cooldown and a successful serve clears it", async () => {
   const { mod, cleanup } = await loadDb();
   try {
     const entry = { source: "codex", account_id: "pool@example.com", email: "pool@example.com" };
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "heavy@example.com", source: "codex",
+      servedEntry: null, reason: "demand_share_cooldown",
+    });
+    const afterFirstRefusal = await mod.fetchPolicyInputs({
+      email: "heavy@example.com", since: "2026-09-14T00:00:00.000Z",
+    });
+    assert.ok(afterFirstRefusal.cooldownStartedAt, "the first refused request starts the wait");
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "heavy@example.com", source: "codex",
+      servedEntry: null, reason: "demand_share_cooldown",
+    });
+    const afterRetry = await mod.fetchPolicyInputs({
+      email: "heavy@example.com", since: "2026-09-14T00:00:00.000Z",
+    });
+    assert.equal(afterRetry.cooldownStartedAt, afterFirstRefusal.cooldownStartedAt,
+      "a repeated refused request must not push the wait further away");
+
     await mod.recordAuthPoolFetch({
       requesterEmail: "heavy@example.com", source: "codex",
       servedEntry: entry, reason: "served",
@@ -125,17 +145,8 @@ test("only a real serve starts the cooldown clock", async () => {
     const afterServe = await mod.fetchPolicyInputs({
       email: "heavy@example.com", since: "2026-09-14T00:00:00.000Z",
     });
-    assert.ok(afterServe.lastServedAt, "a served fetch records last_served_at");
-
-    await mod.recordAuthPoolFetch({
-      requesterEmail: "heavy@example.com", source: "codex",
-      servedEntry: null, reason: "demand_share_cooldown",
-    });
-    const afterBlock = await mod.fetchPolicyInputs({
-      email: "heavy@example.com", since: "2026-09-14T00:00:00.000Z",
-    });
-    assert.equal(afterBlock.lastServedAt, afterServe.lastServedAt,
-      "a refused fetch must not push the next allowed attempt further away");
+    assert.equal(afterServe.cooldownStartedAt, null,
+      "serving the elapsed request completes the cycle so the next request starts a fresh wait");
   } finally {
     cleanup();
   }
