@@ -393,6 +393,11 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
         return False
     if is_hard_invalidated(payload):
         return True
+    # The provider can separately refuse inference because a workspace credit bucket is empty even
+    # while the measured 5h/week subscription windows remain healthy. That account is unavailable
+    # and a replacement can restore service, but this must not masquerade as synthetic 0% quota.
+    if payload.get("error") == "codex workspace out of credits":
+        return True
     if payload.get("status") != "ok":
         return False
     # A limit-hit probe reports no windows at all -- "unusable until T" travels as
@@ -453,17 +458,6 @@ def quota_payload_has_complete_window(payload: dict, window_key: str) -> bool:
     return window.get("remaining_percent") is not None and bool(window.get("reset_at"))
 
 
-def quota_payload_is_confirmed_out_of_credits(payload: dict) -> bool:
-    if not payload or payload.get("error") != "codex workspace out of credits":
-        return False
-    for window_key in ("5h", "1week"):
-        window = (payload.get("windows") or {}).get(window_key) or {}
-        if window.get("remaining_percent") != 0.0:
-            return False
-    credits = (payload.get("usage_summary") or {}).get("credits") or {}
-    return credits.get("has_credits") is False
-
-
 def quota_payload_should_report(payload: dict | None) -> bool:
     if not payload or not payload.get("account_id"):
         return False
@@ -477,10 +471,8 @@ def quota_payload_is_reportable(source: str, payload: dict | None) -> bool:
 
     Mirrors codexClientPayloadAccepted / ingestClientQuota in lib/quota-ingest.js -- posting a
     payload the hub will discard just burns a request. Accepted codex shapes: hard invalidation,
-    complete weekly window, or exhausted_until. The confirmed out-of-credits clause below is a
-    deliberate client-side superset: the hub currently DISCARDS that shape (its zero windows carry
-    no reset_at), and fixing the out-of-credits reporting path is an explicit follow-up -- see the
-    plan's known follow-ups.
+    complete weekly window, or exhausted_until. Workspace-credit exhaustion is an availability
+    error, not quota; it travels through the heartbeat while quota_payload stays absent.
     """
     if source == "codex":
         if not payload or not payload.get("account_id"):
@@ -488,7 +480,6 @@ def quota_payload_is_reportable(source: str, payload: dict | None) -> bool:
         return bool(
             is_hard_invalidated(payload)
             or (payload.get("status") == "ok" and quota_payload_has_complete_window(payload, "1week"))
-            or (payload.get("status") == "ok" and quota_payload_is_confirmed_out_of_credits(payload))
             or (payload.get("status") == "ok" and bool(payload.get("exhausted_until")))
         )
     return quota_payload_should_report(payload)
@@ -2794,6 +2785,11 @@ def run_guard(args: argparse.Namespace) -> dict:
     sync_result = {}
     quota_report_result = {}
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
+        codex_upload_quota = (
+            without_sensitive_refresh_capture(codex_payload)
+            if quota_payload_is_reportable("codex", codex_payload)
+            else None
+        )
         codex_upload_preflight = codex_rotating_upload_preflight(
             args.codex_auth_path,
             restart_enabled=not getattr(args, "no_restart_codex_app_server", False),
@@ -2817,7 +2813,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                         config["auth_pool_user_token"],
                         auth_path=args.codex_auth_path,
                         known_auth_path=args.known_auth_path,
-                        quota_payload=without_sensitive_refresh_capture(codex_payload),
+                        quota_payload=codex_upload_quota,
                     ),
                 ),
             )

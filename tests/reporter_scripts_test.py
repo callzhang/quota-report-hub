@@ -235,10 +235,19 @@ class ReporterScriptsTest(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(quota_guard, "load_config", return_value=config))
             stack.enter_context(mock.patch.object(quota_guard, "ensure_scheduler_registration", return_value={"ok": True}))
-            stack.enter_context(mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "codex-old", "status": "ok"}))
+            stack.enter_context(mock.patch.object(
+                quota_guard,
+                "current_codex_payload",
+                return_value={
+                    "account_id": "codex-old",
+                    "status": "error",
+                    "error": "codex workspace out of credits",
+                    "windows": {"5h": None, "1week": None},
+                },
+            ))
             stack.enter_context(mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None))
             stack.enter_context(mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-current", "status": "ok"}))
-            stack.enter_context(mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True}))
+            sync_codex = stack.enter_context(mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True}))
             stack.enter_context(mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True}))
             stack.enter_context(mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True}))
             replace_codex = stack.enter_context(mock.patch.object(
@@ -275,6 +284,10 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertLess(event_names.index("restart"), event_names.index("collect"))
         self.assertLess(event_names.index("collect"), event_names.index("notify"))
         self.assertIs(replace_codex.call_args.args[6], self.token_usage_state)
+        self.assertIsNone(
+            sync_codex.call_args.kwargs["quota_payload"],
+            "workspace-credit availability failures must heartbeat but never upload as quota",
+        )
         collector_args = self.token_usage_collector.call_args.kwargs
         self.assertEqual(collector_args["codex_account_id"], "codex-new")
         self.assertEqual(collector_args["claude_account_id"], "claude-current")
@@ -1502,7 +1515,7 @@ class ReporterScriptsTest(unittest.TestCase):
                          [{"slot": "primary", "window_minutes": 1440, "used_percent": 12}])
         self.assertEqual(odd_window["usage_summary"]["meter"]["limit_id"], "codex")
 
-    def test_probe_codex_maps_workspace_out_of_credits_to_zero_remaining_windows(self):
+    def test_probe_codex_reports_workspace_out_of_credits_without_fabricating_quota_windows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_path = Path(temp_dir) / "auth.json"
             auth_path.write_text(
@@ -1559,12 +1572,10 @@ class ReporterScriptsTest(unittest.TestCase):
                 ):
                     report = probe_codex(auth_path)
 
-        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["status"], "error")
         self.assertEqual(report["error"], "codex workspace out of credits")
-        self.assertEqual(report["windows"]["5h"]["remaining_percent"], 0.0)
-        self.assertEqual(report["windows"]["1week"]["remaining_percent"], 0.0)
-        self.assertIsNone(report["windows"]["5h"]["reset_at"])
-        self.assertIsNone(report["windows"]["1week"]["reset_at"])
+        self.assertIsNone(report["windows"]["5h"])
+        self.assertIsNone(report["windows"]["1week"])
         self.assertFalse(report["usage_summary"]["credits"]["has_credits"])
 
     def test_codex_usage_limit_reset_at_parses_time_only_cli_message(self):
@@ -2930,6 +2941,17 @@ Reading additional input from stdin...
         }
         self.assertTrue(quota_guard.source_needs_replacement(payload, 20.0, 5.0))
 
+    def test_source_needs_replacement_treats_workspace_credit_exhaustion_as_availability_not_quota(self):
+        payload = {
+            "account_id": "acct-1",
+            "status": "error",
+            "error": "codex workspace out of credits",
+            "windows": {"5h": None, "1week": None},
+        }
+        self.assertTrue(quota_guard.source_needs_replacement(payload, 20.0, 5.0))
+        self.assertEqual(quota_guard.remaining_percent(payload, "5h"), -1.0)
+        self.assertEqual(quota_guard.remaining_percent(payload, "1week"), -1.0)
+
     def test_source_needs_replacement_still_ignores_windowless_healthy_payloads(self):
         # Without exhausted_until, an all-None-windows payload stays the pre-existing "not
         # constrained" case (e.g. Codex tiers that never meter a 5h window).
@@ -3186,10 +3208,10 @@ Reading additional input from stdin...
         self.assertEqual(post_auth_pool_quota.call_args.kwargs["quota_payload"], payload)
         self.assertEqual(post_auth_pool_quota.call_args.kwargs["heartbeat"]["status"], "ok")
 
-    def test_report_current_quota_to_auth_pool_posts_confirmed_codex_out_of_credits(self):
+    def test_report_current_quota_to_auth_pool_heartbeats_workspace_exhaustion_without_fake_quota(self):
         payload = {
             "source": "codex",
-            "status": "ok",
+            "status": "error",
             "error": "codex workspace out of credits",
             "account_id": "acct-1",
             "usage_summary": {
@@ -3199,10 +3221,7 @@ Reading additional input from stdin...
                     "balance": None,
                 }
             },
-            "windows": {
-                "5h": {"remaining_percent": 0.0, "reset_at": None},
-                "1week": {"remaining_percent": 0.0, "reset_at": None},
-            },
+            "windows": {"5h": None, "1week": None},
         }
         config = {
             "auth_pool_url": "https://quota-report-hub.vercel.app",
@@ -3212,15 +3231,20 @@ Reading additional input from stdin...
         with mock.patch.object(quota_guard, "post_auth_pool_quota", return_value={"ok": True}) as post_auth_pool_quota:
             result = quota_guard.report_current_quota_to_auth_pool(config, "codex", payload)
 
-        self.assertTrue(result["reported"])
+        self.assertFalse(result["reported"])
+        self.assertEqual(result["reason"], "quota_unavailable")
         self.assertEqual(post_auth_pool_quota.call_count, 1)
         self.assertEqual(
             post_auth_pool_quota.call_args.args,
             ("https://quota-report-hub.vercel.app", "qrp_token"),
         )
         self.assertEqual(post_auth_pool_quota.call_args.kwargs["source"], "codex")
-        self.assertEqual(post_auth_pool_quota.call_args.kwargs["quota_payload"], payload)
-        self.assertEqual(post_auth_pool_quota.call_args.kwargs["heartbeat"]["status"], "ok")
+        self.assertIsNone(post_auth_pool_quota.call_args.kwargs["quota_payload"])
+        self.assertEqual(post_auth_pool_quota.call_args.kwargs["heartbeat"]["status"], "error")
+        self.assertEqual(
+            post_auth_pool_quota.call_args.kwargs["heartbeat"]["error"],
+            "codex workspace out of credits",
+        )
 
     def test_report_current_quota_to_auth_pool_skips_unavailable_quota(self):
         config = {
@@ -4594,7 +4618,7 @@ Reading additional input from stdin...
             "qrp_token",
             auth_path=args.codex_auth_path,
             known_auth_path=args.known_auth_path,
-            quota_payload={"account_id": "current"},
+            quota_payload=None,
         )
         sync_claude_auth_pool.assert_called_once()
         self.assertIs(sync_claude_auth_pool.call_args.kwargs["probed_payload"], probe_claude_mock.return_value)

@@ -133,25 +133,29 @@ export default async function handler(req, res) {
   // actually matters — the hub keeping one account's access token alive indefinitely — untouched.
   const policyWindowStart = new Date(Date.now() - PREMIUM_RATIO_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const requestClientVersion = body?.client_version ? String(body.client_version) : null;
-  const [policyInputs, scarcityState, requireContribution] = await Promise.all([
+  const [policyInputs, scarcityState, requireContribution, enforcePolicy] = await Promise.all([
     fetchPolicyInputs({ email: authContext.email, since: policyWindowStart }),
     poolScarcityState(source),
     getFeatureFlag("require_contribution", false),
+    getFeatureFlag("premium_ratio_enforcement", true),
   ]);
   const policy = evaluateFetchPolicy({
     ...policyInputs,
     requestClientVersion,
     poolScarce: scarcityFromState(scarcityState).scarce,
-    requireContribution,
+    // Owner repair is never a draw on the shared pool. It bypasses both the live ratio gate and
+    // the admin contribution requirement, so its notices must describe advice rather than a fetch
+    // that was blocked. The returned invalid auth is how its owner becomes a contributor again.
+    requireContribution: repairAuth ? false : requireContribution,
+    enforcementEnabled: enforcePolicy && !repairAuth,
   });
 
   // Live kill switch, separate from the hardcoded schedule: if a phase lands badly the flag turns
-  // refusals off within one request, while the notices keep flowing so users still see where they
-  // stand. Turning enforcement off must never also turn the warnings off.
-  const enforcePolicy = await getFeatureFlag("premium_ratio_enforcement", true);
+  // refusals off within one request, while advisory notices keep flowing so users still see where
+  // they stand. A served request must never carry a blocking "取号已限速" notice.
   // require_contribution is its own admin switch with its own kill path (turning the flag off);
   // the ratio-gate kill switch must not silently disarm it.
-  const policyRefused = !policy.allowed && (enforcePolicy || policy.reason === "contribution_required");
+  const policyRefused = !policy.allowed;
 
   if (repairAuth) {
     // Ownership, not candidate quality, decides this path. getInvalidatedUploaderEntry matched the

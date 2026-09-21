@@ -440,6 +440,14 @@ test("the cooldown releases itself, and says so", () => {
   assert.ok(at(1).retry_after_seconds > at(PREMIUM_RATIO_COOLDOWN_MINUTES - 1).retry_after_seconds);
   assert.equal(at(PREMIUM_RATIO_COOLDOWN_MINUTES).allowed, true, "the hold must lift on its own");
   assert.equal(at(PREMIUM_RATIO_COOLDOWN_MINUTES).reason, null);
+  assert.ok(
+    at(PREMIUM_RATIO_COOLDOWN_MINUTES).notices.some((notice) => notice.code === "demand_share_warning"),
+    "a fetch that is being served may warn about future cooldowns but must not claim it was held",
+  );
+  assert.ok(
+    !at(PREMIUM_RATIO_COOLDOWN_MINUTES).notices.some((notice) => notice.code === "demand_share_cooldown"),
+    "the blocking notice is only truthful on a fetch that was actually refused",
+  );
 
   // And the person reading the toast has to be able to tell that without asking anyone.
   const message = at(1).notices.find((notice) => notice.code === "demand_share_cooldown").message;
@@ -506,7 +514,10 @@ test("a scarce pool rate-limits whoever draws on it without supplying it", () =>
   assert.equal(elapsed.allowed, true);
 
   // And never a first-fetch lockout for somebody the pool has never served.
-  assert.equal(evaluateFetchPolicy(inputs({ ...light, hasHealthyUpload: false, lastServedAt: null })).allowed, true);
+  const firstFetch = evaluateFetchPolicy(inputs({ ...light, hasHealthyUpload: false, lastServedAt: null }));
+  assert.equal(firstFetch.allowed, true);
+  assert.ok(firstFetch.notices.some((notice) => notice.code === "contribution_warning"));
+  assert.ok(!firstFetch.notices.some((notice) => notice.code === "contribution_cooldown"));
 });
 
 test("supplying the pool costs nothing in standing, however much you then consume", () => {

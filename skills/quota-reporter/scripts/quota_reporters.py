@@ -874,16 +874,6 @@ def codex_usage_limit_reset_from_rate_limits(rate_limits: dict | None, now: date
     return None, None
 
 
-def zero_remaining_window(window_minutes: int, reset_at: str | None = None, reset_in_seconds: int | None = None) -> dict:
-    return {
-        "used_percent": 100.0,
-        "remaining_percent": 0.0,
-        "window_minutes": window_minutes,
-        "reset_in_seconds": reset_in_seconds,
-        "reset_at": reset_at,
-    }
-
-
 def codex_missing_binary_payload(base: dict) -> dict:
     return {
         **base,
@@ -1006,12 +996,12 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
             **base,
             "model_context_window": info.get("model_context_window") if isinstance(info, dict) else None,
             "plan_name": human_plan_name(rate_limits.get("plan_type")) or metadata["plan_name"],
-            "status": "ok",
+            # This is an availability verdict from the workspace-credit meter, not a measurement
+            # of either subscription quota window. Keep it actionable as an error (the guard may
+            # switch to a usable account) without manufacturing 0% values that look like quota.
+            "status": "error",
             "error": "codex workspace out of credits",
-            "windows": {
-                "5h": zero_remaining_window(300),
-                "1week": zero_remaining_window(10080),
-            },
+            "windows": empty_windows(),
             "usage_summary": {
                 "meter": meter,
                 "credits": rate_limits.get("credits"),

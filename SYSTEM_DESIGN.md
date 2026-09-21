@@ -177,10 +177,13 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 
 ### 3.4 Rotation decision (`source_needs_replacement` `:324-347`)
 Replace when the source is hard-invalidated. Neither `maybe_replace_*` gates the fetch on a healthy probe: a hub-fetched credential is AT-only ([§9](#9-the-disabled_refresh_token-mechanism)), so a machine whose access token died cannot refresh its own way out and a failed probe is exactly when the fetch matters most. Claude used to carry such a gate (`missing_stable_claude_auth`) and every hard-invalidated Claude state was therefore unrecoverable until a human re-logged in. A probe that failed without reaching a verdict on the credential (no binary, a timeout) still fetches nothing — `probe_unavailable` — because it is no evidence the account is unhealthy. `claude auth status` exits nonzero exactly when it is logged out and still prints its JSON, so that exit is parsed into the one `CLAUDE_LOGGED_OUT_ERROR` value `is_hard_invalidated` matches, not an opaque command failure. Quota-based replacement uses `5h_remaining < 20%` or `1week_remaining < 5%` for both sources, judged per window the probe actually reported: Plus-tier Codex accounts still meter a 5-hour window and are held to the 20% threshold, while Codex tiers without a 5-hour limit report no `5h` window and are judged on `1week` alone. (This corrects an earlier claim that Codex `5h` was legacy metadata — that was true only of the higher tiers, and treating it as universal let a Plus account run its 5-hour window to zero without rotating.)
-A codex usage-limit probe reports `exhausted_until` instead of fabricated zero windows (the
-workspace-out-of-credits branch still synthesizes them — its reports are discarded server-side
-and it is an explicit follow-up), and `source_needs_replacement` treats its presence as an
-immediate replacement trigger.
+A codex usage-limit probe reports `exhausted_until` instead of fabricated zero windows, and
+`source_needs_replacement` treats its presence as an immediate replacement trigger. The separate
+`workspace is out of credits` provider verdict is also an availability trigger, but it reports
+`status=error` with empty quota windows: switching can restore service without rewriting a
+workspace-credit failure as `5h=0%, 1week=0%` in the fetch audit or quota history. It travels to
+the Hub only as the reporter heartbeat; both the standalone quota report and the quota bundled
+with an auth upload leave `quota_payload` empty.
 `maybe_replace_*` then calls `/api/auth/fetch-best`. Two outcomes:
 - **`repair_auth`** — the hub authenticates the caller and hands back only an invalidated auth whose original `uploader_email` is that caller. Owner repair takes precedence over `refresh_current`, policy refusal, and shared candidate selection: a healthy pool candidate cannot hide the caller's dead contribution. The Codex guard installs it once so the contributor lands on the account they must repair, records `state_source=repair_auth_from_auth_pool`, and reports `owner_relogin_required`; this is an owner handback, not a usable replacement. While the installed digest is unchanged, sync does not re-upload it and ordinary guard cycles do not fetch another account, so the expected 401 cannot recreate the 15-minute switch loop. An explicit login changes the digest, releases the repair pin, and resumes normal upload/rotation. Claude retains its own store-specific repair flow.
 - **`replacement`** — install the better auth. If it's the same account it's an `auth_refreshed` (state `fetched_from_auth_pool`), else a true switch.
@@ -925,7 +928,8 @@ matters — the hub keeping one account's access token alive indefinitely — un
 
 The `repair_auth` path stays open even while gated: it hands back the caller's own invalidated auth
 so they can re-login, borrows nothing from the pool, and locking someone out of fixing their own
-credentials would make the gate inescapable.
+credentials would make the gate inescapable. Because the handback is actually served, its policy
+notices are advisory too; it must never arrive with a blocking `取号已限速` notice.
 
 ### Cooldown, not a block
 
@@ -1075,9 +1079,14 @@ Phase dates are hardcoded in `lib/premium-ratio.js` and cumulative:
 | cooldown | `PHASE_COOLDOWN_AT` | Over-share users and non-contributors cooled down |
 
 `PREMIUM_RATIO_REPORTER_GATE_AT` / `POOL_COOLDOWN_AT` override the dates (for a canary, an
-emergency rollback, or reaching a phase from a test). The `premium_ratio_enforcement` feature flag is
-a separate live kill switch: it stops refusals within one request while the notices keep flowing —
-turning enforcement off must never also turn the warnings off.
+emergency rollback, or reaching a phase from a test). The `premium_ratio_enforcement` feature flag
+is a separate live kill switch: it stops refusals within one request while advisory notices keep
+flowing. Notice wording follows the actual response, not merely the fact that scarcity exists: only
+a request refused inside its cooldown carries `demand_share_cooldown` /
+`contribution_cooldown` and the title `取号已限速`; the first allowed request, a request after the
+interval, a kill-switch bypass, and an owner-repair handback carry the corresponding warning
+instead. Turning enforcement off must never turn the warning off or claim a served request was
+refused.
 
 Clients surface notices through `notify_hub_notices()` (`quota_guard.py`), once per notice code per
 `repeat_seconds`, which the hub sends on every notice so the cadence can be re-tuned without a

@@ -228,9 +228,10 @@ test("the kill switch stops refusals without silencing the warning", async () =>
     const payload = await call(token);
     assert.notEqual(payload.reason, "demand_share_cooldown");
     assert.ok(
-      payload.notices.some((notice) => notice.code === "demand_share_cooldown"),
-      "disabling enforcement must not also disable the warning",
+      payload.notices.some((notice) => notice.code === "demand_share_warning"),
+      "disabling enforcement must preserve an advisory without claiming this fetch was refused",
     );
+    assert.ok(!payload.notices.some((notice) => notice.code === "demand_share_cooldown"));
   } finally {
     await db.setFeatureFlag("premium_ratio_enforcement", true, "test");
   }
@@ -296,10 +297,45 @@ test("the kill switch stops the contribution cooldown too, without silencing it"
   try {
     const payload = await call(token);
     assert.notEqual(payload.reason, "contribution_cooldown");
-    assert.ok(payload.notices.some((notice) => notice.code === "contribution_cooldown"));
+    assert.ok(payload.notices.some((notice) => notice.code === "contribution_warning"));
+    assert.ok(!payload.notices.some((notice) => notice.code === "contribution_cooldown"));
   } finally {
     await db.setFeatureFlag("premium_ratio_enforcement", true, "test");
   }
+});
+
+test("owner repair bypasses a live cooldown without claiming the repair handback was rate-limited", async () => {
+  const email = "repair-during-cooldown@stardust.ai";
+  const accountId = "repair-during-cooldown-account@stardust.ai";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.6-sol", "batch-repair-during-cooldown", { heavy: true });
+  await seedServe(email);
+  await seedScarcePool(true);
+  await seedContribution(email, accountId);
+  await db.upsertAuthPoolQuota({
+    source: "codex",
+    hostname: "github-actions",
+    reporter_name: "worker",
+    reported_at: new Date().toISOString(),
+    account_id: accountId,
+    email: accountId,
+    plan_name: "Team",
+    status: "error",
+    error: "auth invalidated (token_invalidated)",
+    windows: { "5h": null, "1week": null },
+  });
+
+  const payload = await call(token, {
+    source: "codex",
+    client_version: MIN_REPORTER_CLIENT_VERSION,
+    current_account_id: accountId,
+  });
+
+  assert.equal(payload.reason, "uploaded_auth_requires_reauth");
+  assert.equal(payload.replacement, null);
+  assert.equal(payload.repair_auth.account_id, accountId);
+  assert.ok(payload.notices.some((notice) => notice.code === "demand_share_warning"));
+  assert.ok(!payload.notices.some((notice) => notice.code === "demand_share_cooldown"));
 });
 
 test("require_contribution refuses a non-contributor even while the pool is healthy", async () => {
