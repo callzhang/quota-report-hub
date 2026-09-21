@@ -485,6 +485,32 @@ def quota_payload_is_reportable(source: str, payload: dict | None) -> bool:
     return quota_payload_should_report(payload)
 
 
+def effective_usage_account_id(
+    payload: dict | None,
+    replacement: dict | None,
+    *,
+    require_resolved_identity_on_error: bool = False,
+) -> str | None:
+    """Return an account id that is safe to attach to newly collected usage.
+
+    A failed probe may carry a diagnostic placeholder in ``account_id``. It is not an account
+    identity and must not become a billing dimension. Codex retains its historical behavior of
+    using the observed account through availability errors; Claude errors need an email-resolved
+    identity, while successful probes keep the existing account-id contract.
+    """
+    if replacement and (replacement.get("replaced") or replacement.get("repair_installed")):
+        return replacement.get("to_account_id") or None
+    if not payload:
+        return None
+    if (
+        require_resolved_identity_on_error
+        and payload.get("status") != "ok"
+        and not payload.get("email")
+    ):
+        return None
+    return payload.get("account_id") or None
+
+
 def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
     """Liveness + probe outcome for this run, sent to the hub whether or not the quota is reportable.
 
@@ -3004,15 +3030,14 @@ def run_guard(args: argparse.Namespace) -> dict:
         token_usage = guard_errors["token_usage"]
         timings["token_usage"] = 0.0
     else:
-        effective_codex_account_id = (
-            codex_replacement.get("to_account_id")
-            if codex_replacement.get("replaced") or codex_replacement.get("repair_installed")
-            else (codex_payload or {}).get("account_id")
+        effective_codex_account_id = effective_usage_account_id(
+            codex_payload,
+            codex_replacement,
         )
-        effective_claude_account_id = (
-            claude_replacement.get("to_account_id")
-            if claude_replacement.get("replaced")
-            else (claude_payload or {}).get("account_id")
+        effective_claude_account_id = effective_usage_account_id(
+            claude_payload,
+            claude_replacement,
+            require_resolved_identity_on_error=True,
         )
         token_usage = run_guard_step(
             "token_usage_collection_failed",

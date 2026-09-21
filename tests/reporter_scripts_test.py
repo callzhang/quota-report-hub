@@ -295,6 +295,44 @@ class ReporterScriptsTest(unittest.TestCase):
         self.token_usage_state.close.assert_called_once()
         self.assertEqual(result["token_usage"]["total_tokens"], 123)
 
+    def test_run_guard_does_not_attribute_failed_claude_probe_to_placeholder_account(self):
+        args = mock.Mock(
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=True,
+        )
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(quota_guard, "load_config", return_value={}))
+            stack.enter_context(mock.patch.object(quota_guard, "ensure_scheduler_registration", return_value={"ok": True}))
+            stack.enter_context(mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "codex-a", "status": "ok"}))
+            stack.enter_context(mock.patch.object(quota_guard, "detect_claude_custom_provider_env", return_value=None))
+            stack.enter_context(mock.patch.object(
+                quota_guard,
+                "probe_claude",
+                return_value={"account_id": "claude-auth-unavailable", "status": "error", "error": "claude is logged out"},
+            ))
+            stack.enter_context(mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False}))
+            stack.enter_context(mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False}))
+            stack.enter_context(mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}))
+            stack.enter_context(mock.patch.object(quota_guard, "maybe_start_usage_repair", return_value={"started": False}))
+            quota_guard.run_guard(args)
+
+        collector_args = self.token_usage_collector.call_args.kwargs
+        self.assertIsNone(collector_args["claude_account_id"])
+
+    def test_run_guard_keeps_email_verified_claude_identity_during_probe_error(self):
+        account_id = quota_guard.effective_usage_account_id(
+            {"account_id": "claude-owner@example.com", "email": "owner@example.com", "status": "error"},
+            {"replaced": False},
+            require_resolved_identity_on_error=True,
+        )
+
+        self.assertEqual(account_id, "claude-owner@example.com")
+
     def test_run_guard_isolates_token_usage_failure(self):
         self.token_usage_collector.side_effect = RuntimeError("collector exploded")
         args = mock.Mock(

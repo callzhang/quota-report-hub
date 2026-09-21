@@ -247,6 +247,17 @@ test("saved login loads automatically and missing login returns through login pa
   assert.deepEqual(missing.replacements, ["/login.html?next=%2Ftoken-usage.html"]);
 });
 
+test("defaults the usage query to Codex", async () => {
+  let requestedUrl;
+  const harness = await pageHarness(async (url) => {
+    requestedUrl = new URL(url, "https://hub.example");
+    return response(200, usagePayload());
+  });
+
+  assert.equal(harness.element("provider").value, "codex");
+  assert.equal(requestedUrl.searchParams.get("provider"), "codex");
+});
+
 test("identical and concurrent queries share the five minute cache", async () => {
   const pending = deferred();
   let calls = 0;
@@ -259,7 +270,7 @@ test("identical and concurrent queries share the five minute cache", async () =>
   await harness.evaluate("loadUsage()")
   await harness.evaluate("loadUsage()")
   assert.equal(calls, 1, "startup and identical reloads reuse the cached response");
-  harness.element("provider").value = "codex";
+  harness.element("provider").value = "claude";
   const first = harness.evaluate("loadUsage()")
   const second = harness.evaluate("loadUsage()")
   assert.equal(calls, 2, "changed filter starts one new request");
@@ -288,7 +299,7 @@ test("stale 401 cannot clear a replacement session but current 401 returns to lo
     if (calls === 1) return response(200, usagePayload());
     return oldRequest.promise;
   });
-  harness.element("provider").value = "codex";
+  harness.element("provider").value = "claude";
   const stale = harness.evaluate("loadUsage()")
   harness.evaluate('setCurrentToken("new-token")');
   oldRequest.resolve(response(401, { error: "unauthorized" }));

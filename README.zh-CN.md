@@ -2,7 +2,7 @@
 
 ## 团队 Token 用量统计
 
-Hub 提供独立的 `token-usage.html` 页面。登录后默认查询最近 7 天，按小时、Hub 用户分组并显示 Total；可按时间、Hub 用户、提供方、模型账户、原始模型名筛选，也可切换聚合颗粒度、分组和指标。每个 Hub 用户的汇总直接放在 Breakdown，不再重复设置右侧面板。所有数字同时按金额计价：Spend 是第一张汇总卡片、Breakdown 的独立列，也可以选为指标，选中后按金额排序用户条和明细表。计价表是 `lib/model-tiers.js`，与取号闸门用的是同一份，所以共享池不付费的模型（自带 key 的 DeepSeek、自托管 Qwen 或 MiniMax）会如实显示 token 数，但计为 $0 消耗。页面只读取 `GET /api/token-usage-query`，同一登录会话中完全相同的查询缓存 5 分钟。
+Hub 提供独立的 `token-usage.html` 页面。登录后默认查询最近 7 天，按小时、Hub 用户分组、只选 Codex 提供方并显示 Total；可按时间、Hub 用户、提供方、模型账户、原始模型名筛选，也可切换聚合颗粒度、分组和指标。每个 Hub 用户的汇总直接放在 Breakdown，不再重复设置右侧面板。所有数字同时按金额计价：Spend 是第一张汇总卡片、Breakdown 的独立列，也可以选为指标，选中后按金额排序用户条和明细表。计价表是 `lib/model-tiers.js`，与取号闸门用的是同一份，所以共享池不付费的模型（自带 key 的 DeepSeek、自托管 Qwen 或 MiniMax）会如实显示 token 数，但计为 $0 消耗。页面只读取 `GET /api/token-usage-query`，同一登录会话中完全相同的查询缓存 5 分钟。
 
 Token Usage Trend 按所选分组使用统一刻度绘制折线；没有采集数据的时间桶会保留为空档，不会被填充。Breakdown 在浏览器端分页，每页 20 行，切换页面时不会再次发起查询。
 

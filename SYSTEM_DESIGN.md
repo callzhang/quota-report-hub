@@ -53,10 +53,11 @@ Read-only token analytics requests do not run schema creation or migrations on s
 Codex parsing uses structural `session_meta`, `turn_context`, and cumulative `token_count` fields. Canonical numeric fingerprints remove copied parent history, and counter resets start a new non-negative epoch. Claude parsing uses assistant message ID, raw model, timestamp, and final usage counters; repeated records update only the positive difference. No parser output contains conversation content.
 
 Account attribution has two cases. An automatic guard switch inserts a prepared boundary before credential installation, reads the installed target back, then finalizes or cancels that boundary. Collector events are split at finalized boundaries. A manual switch has no exact boundary, so events read in that cycle use the account observed during the report. This is intentionally approximate and is not a billing ledger.
+An unhealthy Claude probe has no reportable usage account unless it still carries an email-resolved identity. Diagnostic placeholders such as `claude-auth-unavailable` are therefore treated as unknown and never written as `model_account_id`; Claude usage is attached only to a successful probe, an email-verified account, or a verified switch target.
 
 The authenticated ingestion API writes a receipt-gated `token_usage_15m` aggregate and reporter state in one batch. The query API reads indexed time ranges from 15-minute detail and, for daily queries, `token_usage_daily`. It returns only totals, trend, breakdown, and reporter freshness; trend and breakdown are capped. Each of those aggregates is also priced in dollars by the fetch gate's own cost expression, so what a reader sees on the page is the figure the gate acted on. No token usage query selects installation IDs, batch IDs, payload digests, file paths, logical record IDs, or fingerprints. Existing status, revision, quota, history, and auth-selection paths do not join token usage.
 
-The independent page defaults to seven days/hour/Hub-user/Total and lazily makes one authenticated query. Exact query plus auth-generation results are cached for five minutes and concurrent requests are deduplicated. Token rotation moves the successful result to the new auth generation. A stale old-token response cannot clear a newer login. Charts preserve missing-bucket gaps and expose exact values by keyboard and text; breakdown rows drill into Hub user, provider, model account, and raw model.
+The independent page defaults to seven days/hour/Hub-user/Total with the provider filter set to Codex and lazily makes one authenticated query. Exact query plus auth-generation results are cached for five minutes and concurrent requests are deduplicated. Token rotation moves the successful result to the new auth generation. A stale old-token response cannot clear a newer login. Charts preserve missing-bucket gaps and expose exact values by keyboard and text; breakdown rows drill into Hub user, provider, model account, and raw model.
 
 Detail ingestion and hourly queries are bounded to 90 days. The daily protected retention cron compacts at most seven old UTC dates atomically per run, deletes the compacted detail, and prunes old receipts. Reference full-scan sizing was 95 files/about 2.9 GB, 44.97 seconds, and about 54 MB peak memory; scheduled incremental work is byte-positioned and budgeted.
 
@@ -1375,8 +1376,9 @@ After a client updates past the version whose collector got history wrong, `mayb
 `token_usage_repair.py` **detached** — re-reading several gigabytes takes minutes and the guard's
 whole cycle budget is ten seconds, so blocking would make every machine look hung and skipping the
 collector would lose live usage to fix old usage. It runs once per installation, marked by
-`repair_generation` in the collector state, and a failed attempt backs off six hours rather than
-relaunching a multi-gigabyte parse every quarter hour.
+`repair_generation` in the collector state; a new generation reruns the repair when the corrected
+account-attribution rules change what can be safely proven. A failed attempt backs off six hours
+rather than relaunching a multi-gigabyte parse every quarter hour.
 
 The upload is chunked at `MAX_AGGREGATE_ROWS`. **Only the first batch carries `replace_from`**: that
 is what clears this installation's rows for the window (and the `''` blob for that user, which

@@ -234,6 +234,14 @@ class GuardRepairTriggerTest(unittest.TestCase):
         popen.assert_not_called()
         self.assertEqual(result, {"started": False, "reason": "already_repaired"})
 
+    def test_an_older_repair_generation_is_retried_after_attribution_rules_change(self):
+        self.state.set_meta(token_usage_repair.REPAIR_STATE_KEY, "1")
+        with mock.patch.object(self.quota_guard.subprocess, "Popen") as popen:
+            result = self.quota_guard.maybe_start_usage_repair(self.state, now=1000.0)
+
+        self.assertTrue(result["started"])
+        self.assertIn("token_usage_repair.py", popen.call_args.args[0][1])
+
 
 if __name__ == "__main__":
     unittest.main()

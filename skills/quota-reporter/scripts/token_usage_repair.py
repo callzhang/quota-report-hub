@@ -48,7 +48,9 @@ from token_usage_state import TokenUsageState, iso_timestamp, utc_now
 # produces buckets.
 REPAIR_WINDOW_DAYS = 90
 # Bumped when a fix changes what the recomputed numbers would be, so every machine repairs again.
-REPAIR_GENERATION = "1"
+# Bump this when attribution changes so installations replace the retained window with the new
+# account boundary rules instead of leaving rows produced by an older collector in place.
+REPAIR_GENERATION = "2"
 REPAIR_STATE_KEY = "repair_generation"
 
 

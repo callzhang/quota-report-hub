@@ -698,6 +698,7 @@
         const now = new Date();
         start.value = localInputValue(new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000));
         end.value = localInputValue(now);
+        provider.value = "codex";
         granularity.value = "hour";
         groupBy.value = "hub_user";
         metric.value = "total";
