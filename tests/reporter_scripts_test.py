@@ -328,7 +328,6 @@ class ReporterScriptsTest(unittest.TestCase):
             })
             scenarios = (
                 ("codex", "replacement", {"replacement": {"account_id": "new-codex", "auth_json": codex_blob}}),
-                ("codex", "repair", {"replacement": None, "repair_auth": {"account_id": "new-codex", "auth_json": codex_blob}}),
                 ("claude", "replacement", {"replacement": {"account_id": "new-claude", "auth_json": claude_blob}}),
                 ("claude", "repair", {"replacement": None, "repair_auth": {"account_id": "new-claude", "auth_json": claude_blob}}),
             )
@@ -374,11 +373,7 @@ class ReporterScriptsTest(unittest.TestCase):
                                 self.token_usage_state,
                             )
 
-                    if provider == "codex" and path_kind == "repair":
-                        self.assertFalse(result["replaced"])
-                        self.assertTrue(result["repair_installed"])
-                    else:
-                        self.assertTrue(result["replaced"])
+                    self.assertTrue(result["replaced"])
                     boundary.assert_called_once()
                     self.assertEqual(boundary.call_args.kwargs["provider"], provider)
                     self.assertIs(boundary.call_args.kwargs["usage_state"], self.token_usage_state)
@@ -4058,12 +4053,13 @@ Reading additional input from stdin...
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "no_better_auth_available")
 
-    def test_maybe_replace_codex_auth_installs_repair_auth_for_different_account(self):
+    def test_maybe_replace_codex_auth_never_installs_repair_auth_for_different_account(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             live_auth = base / "auth.json"
             known_auth_path = base / "known_auth.json"
-            live_auth.write_text(json.dumps({"tokens": {"account_id": "other"}}), encoding="utf-8")
+            original_auth = json.dumps({"tokens": {"account_id": "other"}})
+            live_auth.write_text(original_auth, encoding="utf-8")
             config = {
                 "auth_pool_url": "https://quota-report-hub.vercel.app",
                 "auth_pool_user_token": "qrp_token",
@@ -4071,10 +4067,11 @@ Reading additional input from stdin...
             codex_payload = {
                 "account_id": "other",
                 "status": "ok",
-                "windows": {"5h": {"remaining_percent": 0}, "1week": {"remaining_percent": 0}},
+                "reporter_name": "derek@macbook",
+                "windows": {"1week": {"remaining_percent": 29}},
             }
 
-            with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+            repair_response = {
                 "ok": True,
                 "replacement": None,
                 "repair_auth": {
@@ -4095,26 +4092,32 @@ Reading additional input from stdin...
                     "latest_report": None,
                 },
                 "reason": "uploaded_auth_requires_reauth",
-            }):
-                replacement = quota_guard.maybe_replace_codex_auth(
-                    config,
-                    codex_payload,
-                    live_auth,
-                    known_auth_path,
-                    threshold_percent=20.0,
-                    weekly_threshold_percent=5.0,
-                )
-            installed_account_id = json.loads(live_auth.read_text(encoding="utf-8"))["tokens"]["account_id"]
+            }
+            with mock.patch.object(quota_guard, "fetched_auth_near_expiry", return_value=True):
+                with mock.patch.object(quota_guard, "fetch_best_auth", return_value=repair_response) as fetch:
+                    with mock.patch.object(quota_guard, "install_auth_with_usage_boundary") as boundary:
+                        replacement = quota_guard.maybe_replace_codex_auth(
+                            config,
+                            codex_payload,
+                            live_auth,
+                            known_auth_path,
+                            threshold_percent=20.0,
+                            weekly_threshold_percent=5.0,
+                            usage_state=self.token_usage_state,
+                        )
+            installed_auth = live_auth.read_text(encoding="utf-8")
 
-        # The owner's own invalidated auth is now installed even when it isn't the
-        # current account, so they land on their dead account and re-login it.
+        self.assertTrue(fetch.call_args.kwargs["refresh_current"])
+        boundary.assert_not_called()
         self.assertFalse(replacement["replaced"])
-        self.assertTrue(replacement["repair"])
         self.assertTrue(replacement["repair_required"])
-        self.assertTrue(replacement["repair_installed"])
         self.assertEqual(replacement["reason"], "owner_relogin_required")
-        self.assertEqual(replacement["to_account_id"], "junjie.zhou@stardust.ai")
-        self.assertEqual(installed_account_id, "junjie.zhou@stardust.ai")
+        self.assertEqual(replacement["account_id"], "other")
+        self.assertEqual(replacement["repair_account_id"], "junjie.zhou@stardust.ai")
+        self.assertNotIn("repair_installed", replacement)
+        self.assertNotIn("to_account_id", replacement)
+        self.assertEqual(installed_auth, original_auth)
+        self.assertFalse(known_auth_path.exists())
 
     def test_maybe_replace_codex_auth_does_not_reinstall_same_invalidated_account(self):
         with tempfile.TemporaryDirectory() as temp_dir:

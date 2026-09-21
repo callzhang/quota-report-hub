@@ -2054,64 +2054,21 @@ def maybe_replace_codex_auth(
     replacement = result.get("replacement")
     repair_auth = result.get("repair_auth")
     if replacement is None and repair_auth is not None:
-        # The hub handed back an auth this user uploaded that has gone invalid — install
-        # it (even if it isn't the current account) so the owner lands on their own dead
-        # account and re-logs in, instead of borrowing a pool auth. The local auth that
-        # triggered this fetch was already unhealthy, so nothing healthy is overwritten.
-        fetched_account_id = repair_auth.get("account_id")
-        if fetched_account_id == current_account_id:
-            # `repair_auth` is a relogin handback, not a refreshed replacement. Reinstalling the
-            # same dead account only changes its token representation (for example AT-only versus
-            # full RT), which makes the next guard cycle appear to have switched accounts while
-            # leaving the underlying invalidation untouched.
-            return {
-                "ok": True,
-                "replaced": False,
-                "repair_required": True,
-                "reason": "owner_relogin_required",
-                "triggered_by": ["codex"],
-                "account_id": fetched_account_id,
-            }
-        def write_repair_auth():
-            codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
-            codex_auth_path.write_text(repair_auth["auth_json"], encoding="utf-8")
-            codex_auth_path.chmod(0o600)
-
-        install_auth_with_usage_boundary(
-            provider="codex",
-            from_account_id=current_account_id,
-            to_account_id=fetched_account_id,
-            usage_state=usage_state,
-            write_auth=write_repair_auth,
-            read_installed_account=lambda: fetched_account_id
-            if codex_auth_path.read_text(encoding="utf-8") == repair_auth["auth_json"]
-            else auth_metadata(codex_auth_path).get("account_id"),
-        )
-        metadata = auth_metadata(codex_auth_path)
-        known_auth = write_known_auth_state(
-            source="codex",
-            metadata=metadata,
-            known_auth_path=known_auth_path,
-            last_uploaded_digest=metadata["digest"],
-            last_uploaded_account_id=metadata["account_id"],
-            last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
-            state_source="repair_auth_from_auth_pool",
-        )
-
+        # A repair handback names an account its owner must re-login; it is not usable auth. Never
+        # install it, even when it differs from the current account. Doing so replaced a healthy
+        # 29%-remaining account with the owner's dead auth, whose next 401 then fetched another
+        # account and recreated the 15-minute switch loop.
         return {
             "ok": True,
             "replaced": False,
-            "repair": True,
             "repair_required": True,
-            "repair_installed": True,
             "reason": "owner_relogin_required",
             "triggered_by": ["codex"],
-            "from_account_id": current_account_id,
-            "to_account_id": fetched_account_id,
-            "to_email": repair_auth.get("email"),
-            "to_plan_name": repair_auth.get("plan_name"),
+            "account_id": current_account_id,
+            "repair_account_id": repair_auth.get("account_id"),
+            "repair_email": repair_auth.get("email"),
+            "repair_plan_name": repair_auth.get("plan_name"),
             "latest_report": repair_auth.get("latest_report"),
-            "known_auth": known_auth,
         }
     if replacement is None:
         return {
@@ -2445,7 +2402,8 @@ def format_replacement(result: dict | None) -> str:
     if not result:
         return "replacement skipped"
     if result.get("repair_required"):
-        return "repair required"
+        target = result.get("repair_email") or result.get("repair_account_id")
+        return f"repair required -> {target}" if target else "repair required"
     if result.get("replaced"):
         target = result.get("to_email") or result.get("to_account_id") or "new auth"
         return f"replaced -> {target}"
@@ -2899,7 +2857,6 @@ def run_guard(args: argparse.Namespace) -> dict:
         or sync_result.get("codex", {}).get("local_refresh_token_stripped", {}).get("stripped")
         or codex_replacement.get("replaced")
         or codex_replacement.get("auth_refreshed")
-        or codex_replacement.get("repair_installed")
     )
     codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged"}
     codex_activity = codex_app_server_activity()
@@ -3002,7 +2959,7 @@ def run_guard(args: argparse.Namespace) -> dict:
     else:
         effective_codex_account_id = (
             codex_replacement.get("to_account_id")
-            if codex_replacement.get("replaced") or codex_replacement.get("repair_installed")
+            if codex_replacement.get("replaced")
             else (codex_payload or {}).get("account_id")
         )
         effective_claude_account_id = (

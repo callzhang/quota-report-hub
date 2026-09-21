@@ -415,7 +415,7 @@ python3 skills/quota-reporter/scripts/quota_guard.py
 - if Codex reports a usage-limit hit with one missing window, the guard derives a complete `0%` snapshot from structured reset metadata before posting to the hub
 - when a local source is low, sends `source + current account + current quota` to `/api/auth/fetch-best`
 - installs a replacement only when the server returns a strictly better auth for that same source
-- if the uploader has an invalidated auth, the server returns it as `repair_auth` without a shared replacement; the local guard treats it as a relogin handback, leaves an already-installed same-account auth untouched (`owner_relogin_required`), and labels a different-account install `repair_installed` rather than a replacement
+- if the uploader has an invalidated Codex auth, the server returns it as `repair_auth` without a shared replacement; the local guard reports `owner_relogin_required` but never installs that auth or changes the current account. Repair requires an explicit owner login, while only `replacement` may rotate Codex automatically
 - each `repair_auth` return is also written to the audit log as `repair_auth_returned` and appears in the Users & Audit page
 
 5. If needed, trigger one immediate cloud probe cycle and watch the GitHub worker:

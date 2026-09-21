@@ -182,7 +182,7 @@ workspace-out-of-credits branch still synthesizes them — its reports are disca
 and it is an explicit follow-up), and `source_needs_replacement` treats its presence as an
 immediate replacement trigger.
 `maybe_replace_*` then calls `/api/auth/fetch-best`. Two outcomes:
-- **`repair_auth`** — the hub hands the dead auth back to its latest uploader so they re-login (state `repair_auth_from_auth_pool`). This is a repair handback, never a replacement. If it names the account already installed locally, the guard leaves the file untouched and reports `owner_relogin_required`; rewriting an AT-only/full-RT representation of the same dead account would create a false account-switch loop. If the local account differs, the guard may install the uploader's repair auth so they land on the account they must fix, but reports `repair_installed` rather than `replaced`.
+- **`repair_auth`** — the hub identifies an auth its latest uploader must repair by logging in again. This is a repair handback, never usable replacement material: the Codex guard reports `owner_relogin_required` with the repair account identity but never writes its `auth_json`, whether or not that account matches the current one. Installing a different repair account replaced a healthy 29%-remaining account with a dead credential; the next 401 then fetched a pool replacement and recreated a 15-minute switch loop. Re-login is an explicit owner action, separate from automatic rotation. Claude retains its own store-specific repair flow.
 - **`replacement`** — install the better auth. If it's the same account it's an `auth_refreshed` (state `fetched_from_auth_pool`), else a true switch.
 
 ### 3.5 `disabled_refresh_token` client behavior (Phase-4 strip)
