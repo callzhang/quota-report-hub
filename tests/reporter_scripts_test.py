@@ -93,6 +93,13 @@ class ReporterScriptsTest(unittest.TestCase):
         )
         self.codex_activity_guard.start()
         self.addCleanup(self.codex_activity_guard.stop)
+        self.codex_processes_guard = mock.patch.object(
+            quota_guard,
+            "guard_codex_app_server_processes",
+            return_value=[],
+        )
+        self.codex_processes_guard.start()
+        self.addCleanup(self.codex_processes_guard.stop)
         self.token_usage_state = mock.Mock()
         self.token_usage_state_guard = mock.patch.object(
             quota_guard,
@@ -367,7 +374,11 @@ class ReporterScriptsTest(unittest.TestCase):
                                 self.token_usage_state,
                             )
 
-                    self.assertTrue(result["replaced"])
+                    if provider == "codex" and path_kind == "repair":
+                        self.assertFalse(result["replaced"])
+                        self.assertTrue(result["repair_installed"])
+                    else:
+                        self.assertTrue(result["replaced"])
                     boundary.assert_called_once()
                     self.assertEqual(boundary.call_args.kwargs["provider"], provider)
                     self.assertIs(boundary.call_args.kwargs["usage_state"], self.token_usage_state)
@@ -4097,10 +4108,72 @@ Reading additional input from stdin...
 
         # The owner's own invalidated auth is now installed even when it isn't the
         # current account, so they land on their dead account and re-login it.
-        self.assertTrue(replacement["replaced"])
+        self.assertFalse(replacement["replaced"])
         self.assertTrue(replacement["repair"])
+        self.assertTrue(replacement["repair_required"])
+        self.assertTrue(replacement["repair_installed"])
+        self.assertEqual(replacement["reason"], "owner_relogin_required")
         self.assertEqual(replacement["to_account_id"], "junjie.zhou@stardust.ai")
         self.assertEqual(installed_account_id, "junjie.zhou@stardust.ai")
+
+    def test_maybe_replace_codex_auth_does_not_reinstall_same_invalidated_account(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            known_auth_path = base / "known_auth.json"
+            original_auth = {
+                "tokens": {
+                    "account_id": "owner@example.com",
+                    "access_token": "at-only",
+                    "refresh_token": "rt.1." + "A" * 32,
+                    "id_token": self._jwt({"email": "owner@example.com", "sub": "owner@example.com"}),
+                }
+            }
+            live_auth.write_text(json.dumps(original_auth), encoding="utf-8")
+            config = {
+                "auth_pool_url": "https://quota-report-hub.vercel.app",
+                "auth_pool_user_token": "qrp_token",
+            }
+            codex_payload = {
+                "account_id": "owner@example.com",
+                "status": "error",
+                "error": "auth invalidated (token_invalidated)",
+                "windows": {"5h": {"remaining_percent": 0}, "1week": {"remaining_percent": 0}},
+            }
+            repair_auth_json = json.dumps({
+                "tokens": {
+                    "account_id": "owner@example.com",
+                    "access_token": "new-at-only",
+                    "refresh_token": "rt.1." + "B" * 32,
+                }
+            })
+
+            with mock.patch.object(quota_guard, "fetch_best_auth", return_value={
+                "ok": True,
+                "replacement": None,
+                "repair_auth": {
+                    "account_id": "owner@example.com",
+                    "digest": "digest-repair",
+                    "email": "owner@example.com",
+                    "plan_name": "Team",
+                    "auth_json": repair_auth_json,
+                    "latest_report": {"status": "error", "error": "token_invalidated"},
+                },
+                "reason": "uploaded_auth_requires_reauth",
+            }):
+                replacement = quota_guard.maybe_replace_codex_auth(
+                    config,
+                    codex_payload,
+                    live_auth,
+                    known_auth_path,
+                    threshold_percent=20.0,
+                    weekly_threshold_percent=5.0,
+                )
+
+            self.assertFalse(replacement["replaced"])
+            self.assertTrue(replacement["repair_required"])
+            self.assertEqual(replacement["reason"], "owner_relogin_required")
+            self.assertEqual(live_auth.read_text(encoding="utf-8"), json.dumps(original_auth))
 
     def test_uploaded_invalidated_auths_filters_by_current_viewer_rejected_refresh_tokens(self):
         status_payload = {
@@ -4921,6 +4994,48 @@ Reading additional input from stdin...
         restart.assert_called_once()
         self.assertTrue(result["codex_app_server"]["restarted"])
         self.assertEqual(result["codex_app_server"]["trigger"], "codex_auth_changed")
+
+    def test_run_guard_does_not_restart_when_current_app_server_identity_is_unknown(self):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
+        )
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "current"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": True}):
+                                with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False}):
+                                    with mock.patch.object(
+                                        quota_guard,
+                                        "guard_codex_app_server_processes",
+                                        return_value=[{"pid": 123, "started_at_epoch": 1.0, "args": "codex app-server"}],
+                                    ):
+                                        with mock.patch.object(
+                                            quota_guard,
+                                            "codex_app_server_activity",
+                                            return_value={"status": "idle", "reason": "fresh_snapshot"},
+                                        ):
+                                            with mock.patch.object(quota_guard, "restart_codex_app_server") as restart:
+                                                result = quota_guard.run_guard(args)
+
+        restart.assert_not_called()
+        self.assertEqual(result["codex_app_server"]["reason"], "codex_app_server_identity_unknown")
+        self.assertEqual(
+            result["codex_app_server"]["app_server_identity"]["reason"],
+            "app_server_identity_missing",
+        )
 
     def test_run_guard_restarts_managed_codex_after_manual_login(self):
         args = mock.Mock(
@@ -7136,6 +7251,23 @@ class CodexActivitySnapshotTests(unittest.TestCase):
                 "unknown",
             )
 
+    def test_activity_snapshot_preserves_exporter_bound_app_server_pid(self):
+        with tempfile.TemporaryDirectory() as d:
+            snapshot = Path(d) / "codex-activity.json"
+            snapshot.write_text(json.dumps({
+                "schema_version": 1,
+                "source": "codex_desktop_app_tools",
+                "status": "idle",
+                "observed_at_ms": 1_700_000_000_000,
+                "active_thread_count": 0,
+                "app_server_pid": 202,
+            }), encoding="utf-8")
+
+            self.assertEqual(
+                quota_guard.codex_app_server_activity(snapshot, now_epoch=1_700_000_060),
+                {"status": "idle", "reason": "fresh_snapshot", "app_server_pid": 202},
+            )
+
     def test_activity_snapshot_active_and_malformed_fail_closed(self):
         with tempfile.TemporaryDirectory() as d:
             snapshot = Path(d) / "codex-activity.json"
@@ -7155,6 +7287,32 @@ class CodexActivitySnapshotTests(unittest.TestCase):
                 quota_guard.codex_app_server_activity(snapshot, now_epoch=1_700_000_001)["status"],
                 "unknown",
             )
+
+    def test_current_codex_app_server_requires_snapshot_pid_match(self):
+        processes = [
+            {"pid": 101, "started_at_epoch": 1_699_999_900, "args": "codex app-server --listen stdio://"},
+            {"pid": 202, "started_at_epoch": 1_699_999_950, "args": "codex app-server --listen stdio://"},
+        ]
+        activity = {"status": "idle", "reason": "fresh_snapshot", "app_server_pid": 202}
+
+        current = quota_guard.current_codex_app_server(activity, processes)
+
+        self.assertEqual(current["status"], "known")
+        self.assertEqual(current["pid"], 202)
+        self.assertEqual(current["process"]["pid"], 202)
+
+    def test_current_codex_app_server_fails_closed_without_or_with_stale_snapshot_pid(self):
+        processes = [{"pid": 101, "started_at_epoch": 1_699_999_900, "args": "codex app-server"}]
+
+        missing = quota_guard.current_codex_app_server(
+            {"status": "idle", "reason": "fresh_snapshot"}, processes
+        )
+        stale = quota_guard.current_codex_app_server(
+            {"status": "idle", "reason": "fresh_snapshot", "app_server_pid": 999}, processes
+        )
+
+        self.assertEqual(missing, {"status": "unknown", "reason": "app_server_identity_missing"})
+        self.assertEqual(stale, {"status": "unknown", "reason": "app_server_pid_not_running", "pid": 999})
 
 
 class Phase4StripLocalRtTests(unittest.TestCase):

@@ -136,7 +136,7 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 5. **Probe Claude** — `probe_claude` (or a synthetic error if a custom ANTHROPIC provider is active).
 6. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool`, which always sends a **probe heartbeat** and attaches the quota payload only when the hub would accept it (see 3.7). A Codex full-RT upload is persisted as a pending handoff: the Hub deliberately does not verify by refreshing it, so an app-server holding the preceding RT generation remains safe while it has work.
 7. **Rotate** — `maybe_replace_{codex,claude}_auth` (`:1559-1588`).
-8. **Codex app-server handoff** after auth changes (`:1589-1609`). `active`, unknown, missing, or stale activity evidence blocks maintenance. With a fresh `idle` snapshot the guard first asks the supported daemon to restart; when Desktop owns an unmanaged app-server, it sends `SIGTERM` only to the exact current-user/current-home listener PIDs and confirms each is gone. Only either successful restart or confirmed retirement completes the owner-only Hub acknowledgement.
+8. **Codex app-server handoff** after auth changes (`:1589-1609`). `active`, unknown, missing, or stale activity evidence blocks maintenance. The fresh activity snapshot must also carry the exporter-bound `app_server_pid`; the guard matches that PID against the current-user/current-home process inventory and refuses to guess when the identity is missing, stale, or ambiguous. It then asks the supported daemon to restart or, when Desktop owns that exact unmanaged app-server, sends `SIGTERM` only to the matched PID and confirms it is gone. Only either successful restart or confirmed retirement completes the owner-only Hub acknowledgement.
 9. **Notifications** (toasts) unless `--no-toast`. The uploaded-auth recovery check follows the
    pool's sticky refresh verdict (`usage_summary.central_refresh.auth_rejected` or the derived
    `refresh_validity.status=rejected`), even while the last access token still makes the row's
@@ -182,7 +182,7 @@ workspace-out-of-credits branch still synthesizes them — its reports are disca
 and it is an explicit follow-up), and `source_needs_replacement` treats its presence as an
 immediate replacement trigger.
 `maybe_replace_*` then calls `/api/auth/fetch-best`. Two outcomes:
-- **`repair_auth`** — the hub hands the dead auth back to its latest uploader so they re-login (state `repair_auth_from_auth_pool`).
+- **`repair_auth`** — the hub hands the dead auth back to its latest uploader so they re-login (state `repair_auth_from_auth_pool`). This is a repair handback, never a replacement. If it names the account already installed locally, the guard leaves the file untouched and reports `owner_relogin_required`; rewriting an AT-only/full-RT representation of the same dead account would create a false account-switch loop. If the local account differs, the guard may install the uploader's repair auth so they land on the account they must fix, but reports `repair_installed` rather than `replaced`.
 - **`replacement`** — install the better auth. If it's the same account it's an `auth_refreshed` (state `fetched_from_auth_pool`), else a true switch.
 
 ### 3.5 `disabled_refresh_token` client behavior (Phase-4 strip)
@@ -214,11 +214,12 @@ immediate replacement trigger.
   upload verifier, worker (including `codex exec` probes), `refresh_current`, and id-token
   precautionary refresh all refuse to present the RT. The local exporter writes a redacted,
   120-second activity snapshot from the supported Desktop tool bridge. `active`, absent, malformed,
-  stale, or unknown is never evidence of idleness: the guard does not restart. Only a fresh
-  A changed local Codex RT/AT generation is also an explicit account-switch signal: the guard first
+  stale, or unknown is never evidence of idleness: the guard does not restart. A changed local
+  Codex RT/AT generation is also an explicit account-switch signal: the guard first
   completes the previous account's pending handoff (without stopping the app-server), then uploads
   the new account as its own pending generation. Otherwise, a fresh `idle` snapshot plus either a
-  successful app-server restart or confirmed retirement of the exact unmanaged listener PIDs allows
+  successful app-server restart or confirmed retirement of the exact exporter-identified unmanaged
+  listener PID allows
   the uploader to call the owner-only completion acknowledgement; then and only then the Hub removes `pending` and resumes being the
   sole refresher. A real RT that reappears on disk before completion is uploaded again, keeping the
   Hub's canonical copy current without rotating it.

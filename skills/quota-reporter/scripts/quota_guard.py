@@ -1546,9 +1546,10 @@ def unmanaged_codex_app_server_processes() -> list[dict]:
     return processes
 
 
-def stale_codex_app_server_for_auth(codex_auth_path: Path) -> dict:
+def stale_codex_app_server_for_auth(codex_auth_path: Path, processes: list[dict] | None = None) -> dict:
     if not codex_auth_path.exists():
-        processes = unmanaged_codex_app_server_processes()
+        if processes is None:
+            processes = unmanaged_codex_app_server_processes()
         if processes:
             return {
                 "stale": True,
@@ -1563,7 +1564,9 @@ def stale_codex_app_server_for_auth(codex_auth_path: Path) -> dict:
         return {"stale": False, "reason": "auth_stat_failed", "error": str(error)}
 
     stale_processes = []
-    for process in unmanaged_codex_app_server_processes():
+    if processes is None:
+        processes = unmanaged_codex_app_server_processes()
+    for process in processes:
         started_at = process.get("started_at_epoch")
         if started_at is None:
             continue
@@ -1604,11 +1607,54 @@ def codex_app_server_activity(
         return {"status": "unknown", "reason": "snapshot_stale"}
     status = snapshot.get("status")
     active_count = snapshot.get("active_thread_count")
+    app_server_pid = snapshot.get("app_server_pid")
+    if app_server_pid is not None and (
+        isinstance(app_server_pid, bool) or not isinstance(app_server_pid, int) or app_server_pid <= 0
+    ):
+        return {"status": "unknown", "reason": "snapshot_app_server_pid_invalid"}
     if status == "active" and isinstance(active_count, int) and active_count > 0:
-        return {"status": "active", "reason": "active_threads", "active_thread_count": active_count}
+        result = {"status": "active", "reason": "active_threads", "active_thread_count": active_count}
+        if app_server_pid is not None:
+            result["app_server_pid"] = app_server_pid
+        return result
     if status == "idle" and active_count == 0:
-        return {"status": "idle", "reason": "fresh_snapshot"}
+        result = {"status": "idle", "reason": "fresh_snapshot"}
+        if app_server_pid is not None:
+            result["app_server_pid"] = app_server_pid
+        return result
     return {"status": "unknown", "reason": "snapshot_state_invalid"}
+
+
+def current_codex_app_server(activity: dict, processes: list[dict]) -> dict:
+    """Resolve the one app-server represented by the activity exporter.
+
+    A process listing proves only that app-servers exist; it cannot identify which one owns the
+    Desktop session whose activity snapshot we are reading. The exporter therefore has to bind its
+    snapshot to a PID. Missing or stale identity is deliberately unknown, even when only one
+    process happens to be visible, so maintenance never targets a guessed server.
+    """
+    if activity.get("status") not in {"idle", "active"}:
+        return {"status": "unknown", "reason": "activity_not_usable"}
+    pid = activity.get("app_server_pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return {"status": "unknown", "reason": "app_server_identity_missing"}
+    matches = [process for process in processes if process.get("pid") == pid]
+    if not matches:
+        return {"status": "unknown", "reason": "app_server_pid_not_running", "pid": pid}
+    if len(matches) != 1:
+        return {"status": "unknown", "reason": "app_server_identity_ambiguous", "pid": pid}
+    return {
+        "status": "known",
+        "reason": "activity_pid_match",
+        "pid": pid,
+        "process": matches[0],
+        "activity": activity,
+    }
+
+
+def guard_codex_app_server_processes() -> list[dict]:
+    """Read the process inventory once for a guard cycle."""
+    return unmanaged_codex_app_server_processes()
 
 
 def codex_rotating_upload_preflight(codex_auth_path: Path, restart_enabled: bool = True) -> dict:
@@ -1704,7 +1750,7 @@ def restart_codex_app_server() -> dict:
     }
 
 
-def retire_idle_unmanaged_codex_app_servers() -> dict:
+def retire_idle_unmanaged_codex_app_servers(processes: list[dict] | None = None) -> dict:
     """Stop only the exact local app-server processes after the activity gate proved them idle.
 
     Desktop-owned app-servers are intentionally not registered with the standalone daemon, so its
@@ -1713,7 +1759,8 @@ def retire_idle_unmanaged_codex_app_servers() -> dict:
     its normal shutdown path, and the original PIDs must be gone before a pending Hub handoff can
     be completed.
     """
-    processes = unmanaged_codex_app_server_processes()
+    if processes is None:
+        processes = unmanaged_codex_app_server_processes()
     pids = [process["pid"] for process in processes]
     if not pids:
         return {"ok": True, "retired": True, "reason": "no_unmanaged_app_server"}
@@ -1762,12 +1809,12 @@ def retire_idle_unmanaged_codex_app_servers() -> dict:
     return {"ok": True, "retired": True, "reason": "idle_unmanaged_app_server_terminated"}
 
 
-def restart_or_retire_idle_codex_app_server() -> dict:
+def restart_or_retire_idle_codex_app_server(processes: list[dict] | None = None) -> dict:
     """Prefer the supported daemon restart; retire a Desktop-owned server only after idle proof."""
     restarted = restart_codex_app_server()
     if restarted.get("reason") != "unmanaged_app_server_not_restarted":
         return restarted
-    retired = retire_idle_unmanaged_codex_app_servers()
+    retired = retire_idle_unmanaged_codex_app_servers(processes)
     retired["daemon_restart"] = restarted
     return retired
 
@@ -2012,22 +2059,19 @@ def maybe_replace_codex_auth(
         # account and re-logs in, instead of borrowing a pool auth. The local auth that
         # triggered this fetch was already unhealthy, so nothing healthy is overwritten.
         fetched_account_id = repair_auth.get("account_id")
-        current_digest = None
-        if codex_auth_path.exists():
-            try:
-                current_digest = auth_metadata(codex_auth_path).get("digest")
-            except Exception:
-                current_digest = None
-        repair_digest = fetched_auth_digest(repair_auth)
-        if fetched_account_id == current_account_id and repair_digest == current_digest:
+        if fetched_account_id == current_account_id:
+            # `repair_auth` is a relogin handback, not a refreshed replacement. Reinstalling the
+            # same dead account only changes its token representation (for example AT-only versus
+            # full RT), which makes the next guard cycle appear to have switched accounts while
+            # leaving the underlying invalidation untouched.
             return {
                 "ok": True,
                 "replaced": False,
-                "reason": "repair_auth_already_installed",
+                "repair_required": True,
+                "reason": "owner_relogin_required",
                 "triggered_by": ["codex"],
                 "account_id": fetched_account_id,
             }
-
         def write_repair_auth():
             codex_auth_path.parent.mkdir(parents=True, exist_ok=True)
             codex_auth_path.write_text(repair_auth["auth_json"], encoding="utf-8")
@@ -2056,8 +2100,11 @@ def maybe_replace_codex_auth(
 
         return {
             "ok": True,
-            "replaced": True,
+            "replaced": False,
             "repair": True,
+            "repair_required": True,
+            "repair_installed": True,
+            "reason": "owner_relogin_required",
             "triggered_by": ["codex"],
             "from_account_id": current_account_id,
             "to_account_id": fetched_account_id,
@@ -2397,6 +2444,8 @@ def format_quota_report(result: dict | None) -> str:
 def format_replacement(result: dict | None) -> str:
     if not result:
         return "replacement skipped"
+    if result.get("repair_required"):
+        return "repair required"
     if result.get("replaced"):
         target = result.get("to_email") or result.get("to_account_id") or "new auth"
         return f"replaced -> {target}"
@@ -2850,9 +2899,12 @@ def run_guard(args: argparse.Namespace) -> dict:
         or sync_result.get("codex", {}).get("local_refresh_token_stripped", {}).get("stripped")
         or codex_replacement.get("replaced")
         or codex_replacement.get("auth_refreshed")
+        or codex_replacement.get("repair_installed")
     )
     codex_app_server = {"restarted": False, "reason": "codex_auth_unchanged"}
     codex_activity = codex_app_server_activity()
+    codex_processes = guard_codex_app_server_processes()
+    codex_identity = current_codex_app_server(codex_activity, codex_processes)
     if codex_activity.get("status") != "idle":
         # A PID only proves an app-server exists; this exporter proves whether it hosts work. No
         # snapshot is deliberately not evidence of idleness, so an upgrade cannot interrupt a task
@@ -2861,6 +2913,21 @@ def run_guard(args: argparse.Namespace) -> dict:
             "restarted": False,
             "reason": "active_codex_agents" if codex_activity.get("status") == "active" else "codex_activity_unknown",
             "activity": codex_activity,
+            "app_server_identity": codex_identity,
+        }
+        timings["codex_app_server"] = 0.0
+    elif (
+        codex_identity.get("status") != "known"
+        and (codex_processes or codex_activity.get("app_server_pid") is not None)
+    ):
+        # Multiple local app-servers are common when the Desktop app and a standalone daemon have
+        # both been opened. An idle snapshot without its exporter-bound PID cannot tell us which
+        # one owns the current session, so no restart or retirement is safe.
+        codex_app_server = {
+            "restarted": False,
+            "reason": "codex_app_server_identity_unknown",
+            "activity": codex_activity,
+            "app_server_identity": codex_identity,
         }
         timings["codex_app_server"] = 0.0
     elif codex_auth_changed:
@@ -2869,24 +2936,42 @@ def run_guard(args: argparse.Namespace) -> dict:
                 "restarted": False,
                 "reason": "disabled",
                 "trigger": "codex_auth_changed",
+                "app_server_identity": codex_identity,
             }
             timings["codex_app_server"] = 0.0
         else:
-            codex_app_server = timed_guard_step(timings, "codex_app_server", restart_or_retire_idle_codex_app_server)
+            target_processes = [codex_identity["process"]] if codex_identity.get("status") == "known" else None
+            codex_app_server = timed_guard_step(
+                timings,
+                "codex_app_server",
+                lambda: restart_or_retire_idle_codex_app_server(target_processes),
+            )
             codex_app_server["trigger"] = "codex_auth_changed"
+            codex_app_server["app_server_identity"] = codex_identity
     else:
-        stale_check = stale_codex_app_server_for_auth(args.codex_auth_path)
+        stale_check = (
+            stale_codex_app_server_for_auth(args.codex_auth_path, codex_processes)
+            if codex_processes
+            else stale_codex_app_server_for_auth(args.codex_auth_path)
+        )
         if stale_check.get("reason") == "app_server_started_before_auth":
             if getattr(args, "no_restart_codex_app_server", False):
                 codex_app_server = {
                     "restarted": False,
                     "reason": "disabled",
                     "trigger": "auth_newer_than_app_server",
+                    "app_server_identity": codex_identity,
                 }
                 timings["codex_app_server"] = 0.0
             else:
-                codex_app_server = timed_guard_step(timings, "codex_app_server", restart_or_retire_idle_codex_app_server)
+                target_processes = [codex_identity["process"]] if codex_identity.get("status") == "known" else None
+                codex_app_server = timed_guard_step(
+                    timings,
+                    "codex_app_server",
+                    lambda: restart_or_retire_idle_codex_app_server(target_processes),
+                )
                 codex_app_server["trigger"] = "auth_newer_than_app_server"
+                codex_app_server["app_server_identity"] = codex_identity
             codex_app_server["stale_check"] = stale_check
         else:
             timings["codex_app_server"] = 0.0
@@ -2917,7 +3002,7 @@ def run_guard(args: argparse.Namespace) -> dict:
     else:
         effective_codex_account_id = (
             codex_replacement.get("to_account_id")
-            if codex_replacement.get("replaced")
+            if codex_replacement.get("replaced") or codex_replacement.get("repair_installed")
             else (codex_payload or {}).get("account_id")
         )
         effective_claude_account_id = (

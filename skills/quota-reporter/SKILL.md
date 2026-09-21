@@ -175,9 +175,9 @@ The guard then:
 - ordinary probe errors and unavailable quota snapshots do not trigger auth replacement; replacement requires a real low-quota window or a hard auth invalidation
 - only accepts a server response when it contains a strictly better replacement from that same source
 - the server only shares candidate auths that still have at least `20%` remaining in `5H` and at least `5%` remaining in `1week`; a Codex candidate without a `5H` window is held to the `1week` threshold only
-- if the server returns `repair_auth`, the guard installs that auth instead of a shared replacement so the uploader can re-login and refresh their own invalidated auth
+- if the server returns `repair_auth`, the guard treats it as a relogin handback instead of a shared replacement; when it names the already-installed invalidated account it leaves the file untouched and reports `owner_relogin_required`, while a different-account install is marked `repair_installed`, preventing a false switch loop
 - only replaces local source credentials when the fetched auth is different from what is already installed
-- Codex full-RT uploads use a pending handoff and never spend the RT during upload verification. If the local account or auth generation changes, the guard completes the previous account's handoff without stopping the app-server, then records the new account as pending. Otherwise it requires a fresh explicit idle snapshot, prefers `codex app-server daemon restart`, and only after an unmanaged-daemon refusal sends `SIGTERM` to exact current-user/current-home listener PIDs and confirms they exited
+- Codex full-RT uploads use a pending handoff and never spend the RT during upload verification. If the local account or auth generation changes, the guard completes the previous account's handoff without stopping the app-server, then records the new account as pending. Otherwise it requires a fresh explicit idle snapshot carrying the current app-server PID, prefers `codex app-server daemon restart`, and only after an unmanaged-daemon refusal sends `SIGTERM` to that exact listener PID and confirms it exited; missing or ambiguous identity blocks maintenance
 - shows a desktop notification after a successful local replacement
 - opens Claude CLI login only when a Claude auth uploaded by the current token user has a cloud-confirmed `refresh_token_rejected` result and `auto_relogin_owner_auth` is enabled; Codex login is never launched
 - does nothing when the cloud cannot provide a better auth than the current one
@@ -193,7 +193,7 @@ The guard then:
 Operational notes:
 
 - replacing `~/.codex/auth.json` affects new Codex sessions; an already-open session may need to be reopened
-- the guard never launches `codex login`; it sends `SIGTERM` only to exact unmanaged app-server listener PIDs after a fresh idle snapshot, and never signals an active, unknown, stale, or unverified process set
+- the guard never launches `codex login`; it sends `SIGTERM` only to the exporter-identified unmanaged app-server listener PID after a fresh idle snapshot, and never signals an active, unknown, stale, ambiguous, or unverified process set
 - the local config file contains a personal token and should stay private
 - the cloud dashboard shows the latest effective quota for each auth entry
 - Codex rows may be refreshed by either the cloud worker or a stable local client report; a complete weekly window is enough for a local client report because Codex no longer has a live 5H window. It may replace stale worker-preserved windows, and a newer worker soft failure does not replace an existing good local Codex quota snapshot
