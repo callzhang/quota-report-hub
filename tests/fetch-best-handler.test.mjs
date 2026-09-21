@@ -80,7 +80,7 @@ function mockResponse() {
   };
 }
 
-test("fetch-best serves a replacement (never a failed auth) when the requester has a valid upload", async () => {
+test("fetch-best serves a replacement but prioritizes the requester's own failed contribution", async () => {
   await withTempEnv(async () => {
     const db = await import(`../lib/db.js?ts=${Date.now()}`);
     const { default: handler } = await import(`../api/auth/fetch-best.js?ts=${Date.now()}`);
@@ -93,8 +93,8 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
         email: "current@stardust.ai",
         lastRefresh: "2026-05-06T00:00:00Z",
       }),
-      uploader_email: "derek@stardust.ai",
-      reporter_name: "derek@gpu4",
+      uploader_email: "another.owner@stardust.ai",
+      reporter_name: "another.owner@gpu4",
       hostname: "gpu4",
     });
     await db.upsertAuthPoolQuota({
@@ -161,7 +161,7 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     const payload = JSON.parse(res.body);
 
     assert.equal(res.statusCode, 200);
-    // derek has a valid uploaded auth, so they get a replacement — never the dead one.
+    // The failed auth belongs to somebody else, so Derek gets their healthy contributed auth.
     assert.equal(payload.replacement.account_id, "healthy@stardust.ai");
     assert.equal(payload.repair_auth, undefined);
     assert.equal(payload.disabled_refresh_token, true);
@@ -172,9 +172,9 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     assert.notEqual(served.tokens.refresh_token, "rt.1.REAL-healthy-provider");
     assert.match(served.tokens.refresh_token, /^rt\.1\./);
 
-    // No handback while a valid auth exists; the fetch is recorded as a normal serve.
+    // Nobody else's failed auth is handed back; the fetch is recorded as a normal serve.
     const log = await db.authPoolFetchLog({ limit: 5 });
-    assert.ok(!log.some((row) => row.reason === "repair_returned"), "must not hand back a dead auth when a valid one exists");
+    assert.ok(!log.some((row) => row.reason === "repair_returned"), "must not hand back another user's dead auth");
     assert.ok(log.some((row) => row.reason === "served"));
 
     // Phase 2: refresh_current returns the SAME account's fresh blob (stripped, flag still on),
@@ -283,12 +283,14 @@ test("fetch-best serves a replacement (never a failed auth) when the requester h
     const xinPayload = JSON.parse(xinRes.body);
 
     assert.equal(xinRes.statusCode, 200);
-    assert.equal(xinPayload.replacement.account_id, "healthy@stardust.ai");
-    assert.equal(xinPayload.repair_auth, undefined);
+    assert.equal(xinPayload.replacement, null);
+    assert.equal(xinPayload.repair_auth.account_id, "xin.jiang@stardust.ai");
+    assert.equal(xinPayload.reason, "uploaded_auth_requires_reauth");
 
     const xinLog = await db.authPoolFetchLog({ limit: 5 });
-    assert.ok(xinLog.some((row) => row.reason === "served"));
-    assert.ok(!xinLog.some((row) => row.reason === "repair_returned"), "healthy shared auth should be served before repair handback");
+    assert.ok(xinLog.some((row) => row.reason === "repair_returned"));
+    assert.ok(!xinLog.some((row) => row.requester_email === "xin.jiang@stardust.ai" && row.reason === "served"),
+      "an owner's invalidated contribution must be handed back before they borrow another account");
 
     // Phase 3: refresh_current must force a real upstream refresh when codex's id_token has gone
     // stale even though its access_token is still fresh for days. The codex CLI/app key their own

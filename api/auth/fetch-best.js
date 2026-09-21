@@ -153,6 +153,44 @@ export default async function handler(req, res) {
   // the ratio-gate kill switch must not silently disarm it.
   const policyRefused = !policy.allowed && (enforcePolicy || policy.reason === "contribution_required");
 
+  if (repairAuth) {
+    // Ownership, not candidate quality, decides this path. getInvalidatedUploaderEntry matched the
+    // authenticated token email to the entry's original uploader_email, so this is the caller's
+    // own account to repair. Hand it back before refresh_current or shared candidate selection;
+    // otherwise a healthy pool entry lets the contributor borrow indefinitely while their dead
+    // contribution is never returned to them.
+    await recordAuthPoolFetch({
+      requesterEmail: authContext.email,
+      requesterId,
+      source,
+      servedEntry: invalidatedEntry,
+      reason: "repair_returned",
+      currentAccountId,
+      currentQuota,
+      clientVersion: requestClientVersion,
+    });
+    const repairIdentity = repairAuth.email || repairAuth.account_id;
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(withTokenUpgrade({
+      ok: true,
+      requested_by: authContext.email,
+      replacement: null,
+      repair_auth: repairAuth,
+      reason: "uploaded_auth_requires_reauth",
+      notices: [
+        ...policy.notices,
+        {
+          code: "owner_auth_requires_relogin",
+          title: "你贡献的账号需要重新登录",
+          message: `${repairIdentity} 已失效，已交还给你并暂停自动换号；重新登录后会恢复正常共享。`,
+          repeat_seconds: NOTICE_REPEAT_SECONDS,
+        },
+      ],
+    }, authContext)));
+    return;
+  }
+
   if (policyRefused) {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
@@ -170,10 +208,6 @@ export default async function handler(req, res) {
       ok: true,
       requested_by: authContext.email,
       replacement: null,
-      // The repair path stays open even while gated: this hands back the caller's OWN invalidated
-      // auth so they can re-login. It borrows nothing from the pool, and locking someone out of
-      // fixing their own credentials would make the gate impossible to escape.
-      repair_auth: repairAuth,
       reason: policy.reason,
       retry_after_seconds: policy.retry_after_seconds,
       premium_share: policy.premium_share,
@@ -281,17 +315,16 @@ export default async function handler(req, res) {
 
   if (!entry) {
     // Nothing borrowable exists right now. Selection has already run and come back empty, so this
-    // branch refuses nobody -- it only distinguishes, for the audit log and for what the caller is
-    // told, between somebody who has a dead auth of their own to repair and somebody who is drawing
-    // on a pool they do not supply. Rationing non-contributors happens in the policy above, while
-    // there is still something to ration.
+    // branch refuses nobody -- it only reports that somebody is drawing on a pool they do not
+    // supply. Owner repair returned earlier, before candidate selection. Rationing
+    // non-contributors happens in the policy above, while there is still something to ration.
     if (!policyInputs.hasHealthyUpload) {
       await recordAuthPoolFetch({
         requesterEmail: authContext.email,
         requesterId,
         source,
-        servedEntry: repairAuth ? invalidatedEntry : null,
-        reason: repairAuth ? "repair_returned" : "no_uploaded_auth",
+        servedEntry: null,
+        reason: "no_uploaded_auth",
         currentAccountId,
         currentQuota,
         clientVersion: requestClientVersion,
@@ -304,8 +337,7 @@ export default async function handler(req, res) {
           ok: true,
           requested_by: authContext.email,
           replacement: null,
-          repair_auth: repairAuth,
-          reason: repairAuth ? "uploaded_auth_requires_reauth" : "pool_empty_no_contribution",
+          reason: "pool_empty_no_contribution",
           // Notices are what the client actually shows (`notify_hub_notices`), so anything the user
           // needs to read has to travel as one. The policy notices already carry the contribution
           // warning; this adds the one fact only this branch knows -- the pool is empty right now.
@@ -316,9 +348,7 @@ export default async function handler(req, res) {
               title: "共享池暂无可用账号",
               message:
                 "共享池当前没有额度可借的账号，因此这次没有给你换号——你手上正在用的账号不受影响。" +
-                (repairAuth
-                  ? "同时，你上传的账号已失效，已把它交还给你：重新登录一次即可恢复。"
-                  : "把你自己的 Codex 或 Claude 账号同步进池子，能直接缓解这种缺口。"),
+                "把你自己的 Codex 或 Claude 账号同步进池子，能直接缓解这种缺口。",
               repeat_seconds: NOTICE_REPEAT_SECONDS,
             },
           ],
