@@ -1173,7 +1173,7 @@ Both sources are held to the same thresholds, judged per window the report carri
 ## 12. Observability
 
 - **`pool_health_snapshots`** — one row per source per worker run: `total, ok_count, hard_dead_count, other_err_count, central_refresh_{attempted,ok,rejected}`.
-- **Account availability** (`index.html`): one primary lifecycle state per account. Detailed probe/token/refresh evidence and the lazy 24-hour quota chart are secondary diagnostics, not peer status lines.
+- **Account availability** (`index.html`): one primary lifecycle state per account. Detailed probe/token/refresh evidence and the lazy 24-hour quota chart are secondary diagnostics, not peer status lines. Its 5-hour and weekly series keep their teal and orange identities in both line/point/legend; historical evidence is faded rather than recolored gray so the two windows remain distinguishable.
 - **Dashboard trend** (`index.html` `renderHealthTrend`, at the top of the Accounts tab): per-source healthy ratio, hard-dead count + trend badge, an SVG sparkline of the hard-dead series, and central-refresh outcomes. The framing: *the death spiral is closed when hard-dead stops climbing*.
 - **Reporter health** (`index.html` `renderReporterHealth`, the Devices tab): per-machine guard heartbeat states ([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)).
 - **`assess_health.mjs`** — CLI verdict + abuse scan ([§8.1](#81-assess_healthmjs)).

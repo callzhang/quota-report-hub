@@ -160,6 +160,29 @@ test("mixed quota history colors expired evidence gray without graying current e
   assert.equal((markup.match(/history-current/g) || []).length, 1);
 });
 
+test("quota history identifies five-hour and weekly series independently", async () => {
+  const harness = await dashboardHarness(async (url) => {
+    if (url === "/api/status") return response(200, statusPayload(1, "revision-ticket"));
+    throw new Error(`unexpected request ${url}`);
+  });
+  const now = Date.now();
+  const markup = harness.evaluate(`renderQuotaHistoryChart(${JSON.stringify([
+    {
+      reported_at: new Date(now - 60000).toISOString(),
+      status: "ok",
+      five_h_remaining_percent: 70,
+      five_h_reset_at: new Date(now + 60 * 60 * 1000).toISOString(),
+      one_week_remaining_percent: 40,
+      one_week_reset_at: new Date(now + 6 * 24 * 60 * 60 * 1000).toISOString(),
+    },
+  ])})`);
+
+  assert.match(markup, /history-series-group five-hour/);
+  assert.match(markup, /history-series-group week/);
+  assert.match(markup, /history-legend-series five-hour/);
+  assert.match(markup, /history-legend-series week/);
+});
+
 test("quota history cache and in-flight requests do not cross auth sessions", async () => {
   const oldHistory = deferred();
   let historyCalls = 0;
@@ -218,7 +241,7 @@ test("quota chart never connects readings across reset boundaries", async () => 
   ];
   const markup = harness.evaluate(`renderQuotaHistoryChart(${JSON.stringify(points)})`);
 
-  assert.equal((markup.match(/<g class="history-current">/g) || []).length, 2);
+  assert.equal((markup.match(/<g class="history-current history-series-group week">/g) || []).length, 2);
   assert.doesNotMatch(markup, /L460\.0/);
 });
 
