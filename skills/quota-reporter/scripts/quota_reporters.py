@@ -2672,17 +2672,55 @@ def probe_claude(
     if auth_result.returncode != 0:
         # `claude auth status` exits nonzero exactly when it is not logged in, and still prints its
         # normal JSON on stdout. That is the CLI answering the question, not failing to be asked.
-        # Collapsing it into an opaque command failure buried the answer in a raw JSON blob -- which
-        # then reached the owner's desktop toast verbatim -- and left the rotation rule with nothing
-        # to match, so a dead AT-only credential could never trigger a fetch (SYSTEM_DESIGN.md 3.4).
+        # Keep any email the CLI still knows: dropping it made a real identity look unknown and sent
+        # newly collected usage to a diagnostic placeholder. If JSON has no email, ask the same CLI
+        # for its text status; a genuinely unavailable identity stays unassigned (SYSTEM_DESIGN.md 3.4).
         try:
-            logged_out = json.loads(auth_result.stdout).get("loggedIn") is False
+            auth_status = json.loads(auth_result.stdout)
+            if not isinstance(auth_status, dict):
+                auth_status = {}
         except Exception:
-            logged_out = False
+            auth_status = {}
+        logged_out = auth_status.get("loggedIn") is False
+        json_email = auth_status.get("email")
+        if isinstance(json_email, str):
+            json_email = json_email.strip()
+        if not isinstance(json_email, str) or "@" not in json_email:
+            json_email = None
+        auth_text_details = {
+            "email": json_email,
+            "organization": auth_status.get("orgName") if isinstance(auth_status.get("orgName"), str) else None,
+            "subscription_type": auth_status.get("subscriptionType") if isinstance(auth_status.get("subscriptionType"), str) else None,
+        }
+        if not auth_text_details["email"]:
+            try:
+                auth_text_result = run_claude_auth_status_command(
+                    claude_executable, ["auth", "status", "--text"], deadline=status_deadline
+                )
+                text_details = parse_claude_auth_status_text(auth_text_result.stdout or "")
+                auth_text_details.update({key: value for key, value in text_details.items() if value})
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        email = auth_text_details.get("email")
+        if not isinstance(email, str) or "@" not in email:
+            email = None
+        if not email:
+            try:
+                credentials, _ = read_claude_oauth_credentials(claude_home)
+            except OSError:
+                credentials = None
+            installed_identity = resolve_claude_installed_identity(credentials, known_auth_path)
+            if installed_identity:
+                auth_text_details["email"] = installed_identity["email"]
+                auth_text_details["organization"] = installed_identity.get("name")
+                email = installed_identity["email"]
+        identity_available = bool(email)
         return {
             **base,
-            "account_id": "claude-auth-unavailable",
-            "plan_name": None,
+            "account_id": claude_account_id(auth_text_details) if identity_available else "claude-auth-unavailable",
+            "email": email,
+            "name": auth_text_details.get("organization") if identity_available else None,
+            "plan_name": human_plan_name(auth_text_details.get("subscription_type")) if identity_available else None,
             "status": "error",
             "error": CLAUDE_LOGGED_OUT_ERROR
             if logged_out

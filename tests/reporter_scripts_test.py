@@ -2634,6 +2634,64 @@ Reading additional input from stdin...
 
         self.assertEqual(payload["account_id"], "claude-email-missing")
 
+    def test_probe_claude_keeps_email_when_nonzero_json_status_still_has_text_identity(self):
+        auth_json = mock.Mock(
+            returncode=1,
+            stdout='{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}',
+            stderr="",
+        )
+        auth_text = mock.Mock(
+            returncode=0,
+            stdout="Login method: Claude Max account\nOrganization: Derek Zen\nEmail: leizhang0121@gmail.com\n",
+            stderr="",
+        )
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
+                payload = probe_claude(Path("/tmp/claude-home"))
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], quota_reporters.CLAUDE_LOGGED_OUT_ERROR)
+        self.assertEqual(payload["email"], "leizhang0121@gmail.com")
+        self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
+        self.assertTrue(quota_guard.is_hard_invalidated(payload))
+
+    def test_probe_claude_keeps_email_from_nonzero_auth_status_json(self):
+        auth_json = mock.Mock(
+            returncode=1,
+            stdout='{"loggedIn": false, "email": "leizhang0121@gmail.com", "orgName": "Derek Zen", "subscriptionType": "max"}',
+            stderr="",
+        )
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+            with mock.patch("quota_reporters.subprocess.run", return_value=auth_json) as run:
+                payload = probe_claude(Path("/tmp/claude-home"))
+
+        self.assertEqual(payload["status"], "error")
+        self.assertEqual(payload["error"], quota_reporters.CLAUDE_LOGGED_OUT_ERROR)
+        self.assertEqual(payload["email"], "leizhang0121@gmail.com")
+        self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
+        run.assert_called_once()
+
+    def test_probe_claude_keeps_fingerprint_verified_identity_when_logged_out_status_has_no_email(self):
+        auth_json = mock.Mock(
+            returncode=1,
+            stdout='{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}',
+            stderr="",
+        )
+        auth_text = mock.Mock(returncode=1, stdout="Login method: None\n", stderr="")
+        credentials = {"claudeAiOauth": {"accessToken": "current-installed-token"}}
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
+                with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=(credentials, "token_cache_v2")):
+                    with mock.patch(
+                        "quota_reporters.resolve_claude_installed_identity",
+                        return_value={"email": "leizhang0121@gmail.com", "name": "Derek Zen"},
+                    ):
+                        payload = probe_claude(Path("/tmp/claude-home"))
+
+        self.assertEqual(payload["email"], "leizhang0121@gmail.com")
+        self.assertEqual(payload["name"], "Derek Zen")
+        self.assertEqual(payload["account_id"], "claude-leizhang0121@gmail.com")
+
     def test_probe_claude_reports_nonzero_exit_with_logged_out_json_as_the_logged_out_error(self):
         # Regression: `claude auth status` exits nonzero when it is not logged in and still prints
         # its JSON. Reporting that as an opaque command failure put a raw JSON blob in `error` --
@@ -2641,24 +2699,31 @@ Reading additional input from stdin...
         # so an expired AT-only credential could never trigger a fetch.
         logged_out = '{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}'
         auth_json = mock.Mock(returncode=1, stdout=logged_out, stderr="")
+        auth_text = mock.Mock(returncode=1, stdout="Login method: None\n", stderr="")
         with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
-            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json]):
-                payload = probe_claude(Path("/tmp/claude-home"))
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
+                with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=(None, "unavailable")):
+                    payload = probe_claude(Path("/tmp/claude-home"))
 
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["error"], quota_reporters.CLAUDE_LOGGED_OUT_ERROR)
         self.assertEqual(payload["account_id"], "claude-auth-unavailable")
+        self.assertIsNone(payload["email"])
         self.assertTrue(quota_guard.is_hard_invalidated(payload))
 
     def test_probe_claude_keeps_unparseable_nonzero_output_as_the_raw_failure(self):
         # The other half of the same branch: output that is not the CLI's answer stays a failure to
         # ask, and must not be laundered into "not logged in".
         auth_json = mock.Mock(returncode=1, stdout="", stderr="dyld: library not loaded")
+        auth_text = mock.Mock(returncode=1, stdout="", stderr="dyld: library not loaded")
         with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"):
-            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json]):
-                payload = probe_claude(Path("/tmp/claude-home"))
+            with mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, auth_text]):
+                with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=(None, "unavailable")):
+                    payload = probe_claude(Path("/tmp/claude-home"))
 
         self.assertEqual(payload["error"], "dyld: library not loaded")
+        self.assertEqual(payload["account_id"], "claude-auth-unavailable")
+        self.assertIsNone(payload["email"])
         self.assertFalse(quota_guard.is_hard_invalidated(payload))
 
     def test_probe_claude_falls_back_to_cli_state_oauth_email(self):

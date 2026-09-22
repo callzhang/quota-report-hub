@@ -235,7 +235,7 @@ class GuardRepairTriggerTest(unittest.TestCase):
         self.assertEqual(result, {"started": False, "reason": "already_repaired"})
 
     def test_an_older_repair_generation_is_retried_after_attribution_rules_change(self):
-        self.state.set_meta(token_usage_repair.REPAIR_STATE_KEY, "1")
+        self.state.set_meta(token_usage_repair.REPAIR_STATE_KEY, "2")
         with mock.patch.object(self.quota_guard.subprocess, "Popen") as popen:
             result = self.quota_guard.maybe_start_usage_repair(self.state, now=1000.0)
 
