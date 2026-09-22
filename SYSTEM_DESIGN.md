@@ -866,17 +866,29 @@ uploaded. `mergeLatestReport` therefore keeps a standing central-refresh rejecti
 proves the pooled blob itself works — a verified upload (`token_refresh.source === "upload"`) or a
 successful central refresh.
 
-**A verdict is about one refresh token, not about the account.** A codex upload proves itself by being
-refreshed on the way in (`token_refresh.status: "refreshed"`). A claude upload is only probed, so until
-2026-09-17 no claude upload could lift a rejection: `claude-leizhang0121` put a fresh, working
+**A verdict is about one refresh token, not about the account.** A codex upload the hub verifies
+proves itself by being refreshed on the way in (`token_refresh.status: "refreshed"`). Two uploads are
+not refreshed: a claude upload is only probed, and a codex custody upload is deferred until the
+uploader's app-server hands the refresh token over ([§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)).
+Until 2026-09-17 no claude upload could lift a rejection: `claude-leizhang0121` put a fresh, working
 refresh token in the pool at 07:42 and kept being told to re-login, because the account still carried
-the verdict recorded at 09-16 18:00 against the token that upload had just replaced.
-`claudeUploadSupersedesRefreshVerdict` ([lib/auth-status.js](lib/auth-status.js)) lifts it when the
+the verdict recorded at 09-16 18:00 against the token that upload had just replaced. Until 2026-09-22
+the same held for every deferred codex upload: `bd@stardust.ai` re-logged in and uploaded at 21:39Z
+with a bundled probe reading 5h 96% / week 69%, and the dashboard went on saying "refresh token
+rejected · usable until" the *new* access token's expiry, on the strength of a 09-14 rejection of the
+token that upload replaced.
+`uploadSupersedesRefreshVerdict` ([lib/auth-status.js](lib/auth-status.js)) lifts it when the
 upload replaced the pooled blob, carries a **real** refresh token whose HMAC fingerprint differs from
-the pooled one, and has an access token live for inference (a refresh revokes earlier access tokens,
-so a live one witnesses an unspent refresh token beside it). The upload then writes
+the pooled one, and has an access token seen working. For claude that is the upload's own inference
+probe (a refresh revokes earlier access tokens, so a live one witnesses an unspent refresh token
+beside it). For a deferred codex upload the hub may not present the credential at all, so the
+witness is the probe the guard bundled with it — `bundledProbeWitnessesAccessToken` accepts it only
+when it is `status: "ok"` and its `access_token_fingerprint` is the SHA-256 of the access token being
+uploaded; a CLI rotation between probe and upload breaks the match and proves nothing. The upload then writes
 `token_refresh: {status: "new_generation", source: "upload"}`, which ends the old verdict but leaves
 `refresh_validity` at `unverified` — nobody refreshed the new token, and the report does not claim it.
+The first central refresh after the handoff completes is what tests it, and a refusal there records
+a fresh verdict against *this* token.
 A re-upload of the *same* refused token, or a borrower's AT-only blob merged into the stored one, is
 not a new generation and changes nothing: that is the flip-flop that kept `claude-qpt0311` "just
 invalidated" for ten days.

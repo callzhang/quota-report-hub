@@ -11,10 +11,10 @@ import {
   upsertAuthPoolQuota,
 } from "../../lib/db.js";
 import { decryptAuthJson, deriveAuthPoolEntry } from "../../lib/auth-pool.js";
-import { claudeUploadSupersedesRefreshVerdict } from "../../lib/auth-status.js";
+import { bundledProbeWitnessesAccessToken, uploadSupersedesRefreshVerdict } from "../../lib/auth-status.js";
 import { refreshSerializedAuthPoolEntry } from "../../lib/auth-pool-refresh.js";
 import { codexClientPayloadAccepted, ingestClientQuota } from "../../lib/quota-ingest.js";
-import { isStrippedRefreshToken, stripRefreshToken } from "../../lib/fetch-best.js";
+import { accessTokenFingerprint, isStrippedRefreshToken, stripRefreshToken } from "../../lib/fetch-best.js";
 import { probeClaudeAccessToken, refreshTokenFingerprint, refreshTokenFromAuthBlob, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
 import { isRefreshHandoffPending, requestedRefreshHandoffState } from "../../lib/refresh-handoff.js";
@@ -170,13 +170,21 @@ export default async function handler(req, res) {
     res.end(JSON.stringify({ ok: false, error: "access_token_lacks_inference", status: accessProbe.status }));
     return;
   }
-  // Which refresh token the pool held before this upload, so an accepted claude upload can tell a new
-  // credential generation from a re-upload of the one already there (claudeUploadSupersedesRefreshVerdict).
-  let previousClaudeRefreshFingerprint = null;
-  if (accessProbe?.ok) {
+  // Whether this upload's access token has been seen working without the hub spending its refresh
+  // token: claude by the probe above, a deferred codex upload by the probe the guard bundled with it.
+  const accessTokenLive = probeClaude
+    ? Boolean(accessProbe?.ok)
+    : refreshHandoffPending && bundledProbeWitnessesAccessToken({
+      quotaPayload: body.quota_payload,
+      uploadedAccessTokenFingerprint: accessTokenFingerprint(body.auth_json, source),
+    });
+  // Which refresh token the pool held before this upload, so an unrefreshed upload can tell a new
+  // credential generation from a re-upload of the one already there (uploadSupersedesRefreshVerdict).
+  let previousRefreshFingerprint = null;
+  if (accessTokenLive) {
     const previousEntry = await authPoolEntry(source, deriveAuthPoolEntry(source, body.auth_json, body).account_id);
     if (previousEntry) {
-      previousClaudeRefreshFingerprint = refreshTokenFingerprint(
+      previousRefreshFingerprint = refreshTokenFingerprint(
         source,
         refreshTokenFromAuthBlob(await decryptAuthJson(previousEntry), source),
       );
@@ -268,11 +276,11 @@ export default async function handler(req, res) {
         reporterEmail: authContext.email,
       })
     );
-  } else if (claudeUploadSupersedesRefreshVerdict({
-    accessProbe,
+  } else if (uploadSupersedesRefreshVerdict({
+    accessTokenLive,
     deduplicated: Boolean(entry?.deduplicated),
     incomingHasRealRefreshToken: !isStrippedRefreshToken(body.auth_json, source),
-    previousRefreshFingerprint: previousClaudeRefreshFingerprint,
+    previousRefreshFingerprint,
     incomingRefreshFingerprint: refreshTokenFingerprint(source, refreshTokenFromAuthBlob(body.auth_json, source)),
   })) {
     // Not "refreshed": nobody refreshed it, so refresh_validity stays unverified. The upload source is
