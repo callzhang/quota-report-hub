@@ -131,6 +131,12 @@ test("a deferred codex upload of a new refresh token ends the replaced token's v
   const latest = await db.authPoolQuotaLatestForEntry({ source: "codex", accountId });
   assert.equal(refreshValidityFromReport(latest), "unverified", "nobody refreshed the new token; the report does not claim it");
   assert.equal(await openVerdict(accountId), false, "the owner is no longer told to re-login");
+  // The uploaded token is now the pool's current generation, so a later 401 on at-OLD is recognised
+  // as a superseded token (lib/quota-ingest.js reportsOnSupersededToken), not a death.
+  assert.equal(
+    await db.authPoolCurrentTokenFingerprint("codex", accountId),
+    createHash("sha256").update("at-NEW", "utf8").digest("hex"),
+  );
 });
 
 test("a deferred codex upload whose probe ran on another access token leaves the verdict", async () => {

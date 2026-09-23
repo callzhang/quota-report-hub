@@ -393,3 +393,28 @@ test("the self-updater's outcome is tri-state: working, failing, or too old to s
   });
   assert.equal(junk.heartbeat.self_update_ok, null);
 });
+
+// 2026-09-21T22:05Z: xienxu's machine, still on bd@stardust.ai's 09-13 access token, reported
+// token_invalidated two hours after bd had been re-uploaded. The hub recorded a death and told the
+// owner to re-login a credential that was working.
+test("ingestClientQuota does not let a superseded access token declare the account dead", async () => {
+  const written = [];
+  const tokenOwnerImpl = async (_source, fingerprint) => (["fp-old", "fp-new"].includes(fingerprint) ? { account_id: "bd" } : null);
+  const authPoolEntryImpl = async () => ({ email: "bd@stardust.ai" });
+  const currentTokenFingerprintImpl = async () => "fp-new";
+  const dead = (fingerprint) => ({
+    account_id: "bd", status: "error", error: "auth invalidated (token_invalidated)", access_token_fingerprint: fingerprint,
+  });
+  const ingest = (quotaPayload) => ingestClientQuota({
+    source: "codex", quotaPayload, upsertImpl: async (p) => { written.push(p); }, tokenOwnerImpl, authPoolEntryImpl, currentTokenFingerprintImpl,
+  });
+
+  assert.deepEqual(await ingest(dead("fp-old")), { ok: true, ignored: true, reason: "superseded_access_token", account_id: "bd" });
+  assert.equal(written.length, 0);
+
+  // The pool's own current token dying IS the account dying.
+  assert.deepEqual(await ingest(dead("fp-new")), { ok: true, account_id: "bd" });
+  // A token the pool never held is the machine's own login; its verdict stands.
+  assert.deepEqual(await ingest(dead("fp-own-login")), { ok: true, account_id: "bd" });
+  assert.equal(written.length, 2);
+});

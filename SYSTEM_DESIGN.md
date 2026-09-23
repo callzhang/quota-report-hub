@@ -485,6 +485,16 @@ in `auth_pool_token_fingerprints`, filing the report under the owning account an
 on a mismatch. An unknown fingerprint is a credential the pool never held — the machine's own login
 — and the claim stands.
 
+**A dead superseded token is not a dead account.** Once a hard invalidation is attributed, if its
+token is one the pool recorded for this account but not the **current** one
+(`authPoolCurrentTokenFingerprint`, the newest `auth_pool_token_fingerprints` row), ingest ignores it
+as `superseded_access_token`. Every codex rotation revokes the access tokens issued before it, and a
+borrower keeps probing its old copy until its next fetch. Before this rule, xienxu's machine,
+still on `bd@stardust.ai`'s 09-13 token, reported `token_invalidated` at 2026-09-21T22:05Z, two hours
+after bd had been re-uploaded, and the hub recorded a death and opened the re-login clock. The pool's
+own current token dying is still a death, and a token the pool never held (the machine's own login)
+keeps its verdict.
+
 The order matters: attribution runs **before** the gate, so a report is never judged against an
 account it does not belong to. Both sources send the fingerprint, computed from the same two blob
 shapes on both sides (`accessTokenFingerprint` in `lib/fetch-best.js`, `access_token_fingerprint` in
