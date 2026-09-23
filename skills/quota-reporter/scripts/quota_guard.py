@@ -2811,11 +2811,12 @@ def run_guard(args: argparse.Namespace) -> dict:
     sync_result = {}
     quota_report_result = {}
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
-        codex_upload_quota = (
-            without_sensitive_refresh_capture(codex_payload)
-            if quota_payload_is_reportable("codex", codex_payload)
-            else None
-        )
+        # Bundled whether or not it is reportable quota: the hub's ingest applies its own gate, and the
+        # probe is also the only witness the hub has that a deferred upload's access token works
+        # (uploadSupersedesRefreshVerdict). An account whose workspace is out of credits still
+        # authenticated and was metered -- hr@stardust.ai on 2026-09-22 -- and withholding that probe
+        # left its owner told to re-login a credential they had just re-logged in.
+        codex_upload_quota = without_sensitive_refresh_capture(codex_payload)
         codex_upload_preflight = codex_rotating_upload_preflight(
             args.codex_auth_path,
             restart_enabled=not getattr(args, "no_restart_codex_app_server", False),

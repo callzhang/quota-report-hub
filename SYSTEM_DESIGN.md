@@ -183,8 +183,11 @@ A codex usage-limit probe reports `exhausted_until` instead of fabricated zero w
 `workspace is out of credits` provider verdict is also an availability trigger, but it reports
 `status=error` with empty quota windows: switching can restore service without rewriting a
 workspace-credit failure as `5h=0%, 1week=0%` in the fetch audit or quota history. It travels to
-the Hub only as the reporter heartbeat; both the standalone quota report and the quota bundled
-with an auth upload leave `quota_payload` empty.
+the Hub as the reporter heartbeat; the standalone quota report leaves `quota_payload` empty. A Codex
+auth upload bundles the probe whatever it measured, because it is also the upload's evidence that
+its access token works ([§9](#9-the-disabled_refresh_token-mechanism),
+`bundledProbeWitnessesAccessToken`); the Hub's ingest gate and the upload's own window gate both
+refuse it as quota, so it still never becomes zero windows.
 `maybe_replace_*` then calls `/api/auth/fetch-best`. Two outcomes:
 - **`repair_auth`** — the hub authenticates the caller and hands back only an invalidated auth whose original `uploader_email` is that caller. Owner repair takes precedence over `refresh_current`, policy refusal, and shared candidate selection: a healthy pool candidate cannot hide the caller's dead contribution. The Codex guard installs it once so the contributor lands on the account they must repair, records `state_source=repair_auth_from_auth_pool`, and reports `owner_relogin_required`; this is an owner handback, not a usable replacement. While the installed digest is unchanged, sync does not re-upload it and ordinary guard cycles do not fetch another account, so the expected 401 cannot recreate the 15-minute switch loop. An explicit login changes the digest, releases the repair pin, and resumes normal upload/rotation. Claude retains its own store-specific repair flow.
 - **`replacement`** — install the better auth. If it's the same account it's an `auth_refreshed` (state `fetched_from_auth_pool`), else a true switch.
@@ -883,8 +886,13 @@ the pooled one, and has an access token seen working. For claude that is the upl
 probe (a refresh revokes earlier access tokens, so a live one witnesses an unspent refresh token
 beside it). For a deferred codex upload the hub may not present the credential at all, so the
 witness is the probe the guard bundled with it — `bundledProbeWitnessesAccessToken` accepts it only
-when it is `status: "ok"` and its `access_token_fingerprint` is the SHA-256 of the access token being
-uploaded; a CLI rotation between probe and upload breaks the match and proves nothing. The upload then writes
+when its `access_token_fingerprint` is the SHA-256 of the access token being
+uploaded, and it carries a provider meter (`usage_summary.meter.limit_id`), i.e. the provider
+authenticated that token and returned rate limits for it. That includes an out-of-credits answer:
+`hr@stardust.ai` re-logged in at 22:11Z the same day, its probe was metered but "workspace out of
+credits", the guard withheld it as non-quota, and the owner's guard kept printing
+`repair required -> hr@stardust.ai`. A token refused before any meter proves nothing, and a CLI
+rotation between probe and upload breaks the fingerprint match. The upload then writes
 `token_refresh: {status: "new_generation", source: "upload"}`, which ends the old verdict but leaves
 `refresh_validity` at `unverified` — nobody refreshed the new token, and the report does not claim it.
 The first central refresh after the handoff completes is what tests it, and a refusal there records

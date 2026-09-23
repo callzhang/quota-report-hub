@@ -78,7 +78,28 @@ async function seedRejectedCodexAccount(accountId) {
   assert.equal(await openVerdict(accountId), true, "seed: the verdict is open");
 }
 
-function deferredUpload({ accountId, accessToken, refreshToken, probedAccessToken }) {
+const HEALTHY_PROBE = {
+  status: "ok",
+  windows: {
+    "5h": { remaining_percent: 96, used_percent: 4, reset_at: "2026-09-23T02:00:00Z" },
+    "1week": { remaining_percent: 69, used_percent: 31, reset_at: "2026-09-27T00:00:00Z" },
+  },
+  usage_summary: { meter: { limit_id: "codex", limit_name: null, individual_limit: null } },
+};
+
+// The shape quota_reporters.py reports when the provider answered with rate limits but the
+// workspace's credit bucket is empty: an error for rotation, a metered (authenticated) token.
+const OUT_OF_CREDITS_PROBE = {
+  status: "error",
+  error: "codex workspace out of credits",
+  windows: { "5h": null, "1week": null },
+  usage_summary: {
+    meter: { limit_id: "codex", limit_name: null, individual_limit: null },
+    credits: { has_credits: false },
+  },
+};
+
+function deferredUpload({ accountId, accessToken, refreshToken, probedAccessToken, probe = HEALTHY_PROBE }) {
   return {
     source: "codex",
     auth_json: codexAuthJson({ accountId, email: accountId, accessToken, refreshToken }),
@@ -86,15 +107,11 @@ function deferredUpload({ accountId, accessToken, refreshToken, probedAccessToke
     reporter_name: "derek@mac",
     hostname: "mac",
     quota_payload: {
+      ...probe,
       source: "codex",
       account_id: accountId,
       email: accountId,
-      status: "ok",
       access_token_fingerprint: createHash("sha256").update(probedAccessToken, "utf8").digest("hex"),
-      windows: {
-        "5h": { remaining_percent: 96, used_percent: 4, reset_at: "2026-09-23T02:00:00Z" },
-        "1week": { remaining_percent: 69, used_percent: 31, reset_at: "2026-09-27T00:00:00Z" },
-      },
       reporter_name: "derek@mac",
       hostname: "mac",
     },
@@ -136,6 +153,36 @@ test("a deferred codex re-upload of the refused refresh token leaves the verdict
 
   const res = await upload(deferredUpload({
     accountId, accessToken: "at-NEW", refreshToken: "rt.1.OLD", probedAccessToken: "at-NEW",
+  }));
+
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(await openVerdict(accountId), true);
+});
+
+// 2026-09-22, hr@stardust.ai: re-logged in and uploaded at 22:11Z, but the probe answered "workspace
+// out of credits". The provider metered that token, so it was live; the verdict stayed anyway, and
+// the owner's guard kept printing "repair required -> hr@stardust.ai" instead of rotating away.
+test("a deferred codex upload whose probe was metered but out of credits ends the verdict", async () => {
+  const accountId = "out-of-credits@stardust.ai";
+  await seedRejectedCodexAccount(accountId);
+
+  const res = await upload(deferredUpload({
+    accountId, accessToken: "at-NEW", refreshToken: "rt.1.NEW", probedAccessToken: "at-NEW", probe: OUT_OF_CREDITS_PROBE,
+  }));
+
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(await openVerdict(accountId), false);
+  const latest = await db.authPoolQuotaLatestForEntry({ source: "codex", accountId });
+  assert.deepEqual(latest.windows, { "5h": null, "1week": null }, "a credit failure is still never written as 0% quota");
+});
+
+test("a deferred codex upload whose probe was refused before any meter leaves the verdict", async () => {
+  const accountId = "refused-token@stardust.ai";
+  await seedRejectedCodexAccount(accountId);
+
+  const res = await upload(deferredUpload({
+    accountId, accessToken: "at-NEW", refreshToken: "rt.1.NEW", probedAccessToken: "at-NEW",
+    probe: { status: "error", error: "codex exec failed", windows: { "5h": null, "1week": null }, usage_summary: null },
   }));
 
   assert.equal(res.statusCode, 200, res.body);

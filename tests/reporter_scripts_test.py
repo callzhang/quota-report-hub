@@ -284,10 +284,10 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertLess(event_names.index("restart"), event_names.index("collect"))
         self.assertLess(event_names.index("collect"), event_names.index("notify"))
         self.assertIs(replace_codex.call_args.args[6], self.token_usage_state)
-        self.assertIsNone(
-            sync_codex.call_args.kwargs["quota_payload"],
-            "workspace-credit availability failures must heartbeat but never upload as quota",
-        )
+        # Bundled as the upload's access-token witness; the hub's ingest gate refuses it as quota
+        # (tests/upload-codex-handoff-verdict.test.mjs pins that it lands no windows).
+        self.assertEqual(sync_codex.call_args.kwargs["quota_payload"]["error"], "codex workspace out of credits")
+        self.assertFalse(quota_guard.quota_payload_is_reportable("codex", sync_codex.call_args.kwargs["quota_payload"]))
         collector_args = self.token_usage_collector.call_args.kwargs
         self.assertEqual(collector_args["codex_account_id"], "codex-new")
         self.assertEqual(collector_args["claude_account_id"], "claude-current")
@@ -4721,7 +4721,7 @@ Reading additional input from stdin...
             "qrp_token",
             auth_path=args.codex_auth_path,
             known_auth_path=args.known_auth_path,
-            quota_payload=None,
+            quota_payload={"account_id": "current"},
         )
         sync_claude_auth_pool.assert_called_once()
         self.assertIs(sync_claude_auth_pool.call_args.kwargs["probed_payload"], probe_claude_mock.return_value)
@@ -4740,6 +4740,50 @@ Reading additional input from stdin...
         self.assertIn("claude", result)
         self.assertIn("timings", result)
         self.assertIn("claude_probe", result["timings"])
+
+    def test_run_guard_bundles_an_out_of_credits_codex_probe_with_the_upload(self):
+        # 2026-09-22, hr@stardust.ai: the probe was metered but out of credits, so it was not quota
+        # and was left off the upload -- and with it the hub's only evidence the re-logged-in token
+        # worked. The owner kept being told to re-login the credential they had just uploaded.
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            claude_bin=None,
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
+        )
+        probe = {
+            "account_id": "hr@stardust.ai",
+            "status": "error",
+            "error": "codex workspace out of credits",
+            "access_token_fingerprint": "fp-new",
+            "usage_summary": {"meter": {"limit_id": "codex"}, "credits": {"has_credits": False}},
+            "refresh_capture": {"refreshed_auth_json": "SECRET", "delta": {"refreshed": True}},
+        }
+        self.assertFalse(quota_guard.quota_payload_is_reportable("codex", probe))
+
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value=probe):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": True}) as sync_codex:
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": True}):
+                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False, "reason": "healthy"}):
+                                    with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                        quota_guard.run_guard(args)
+
+        bundled = sync_codex.call_args.kwargs["quota_payload"]
+        self.assertEqual(bundled["access_token_fingerprint"], "fp-new")
+        self.assertEqual(bundled["usage_summary"]["meter"], {"limit_id": "codex"})
+        self.assertNotIn("refreshed_auth_json", bundled["refresh_capture"], "the rotated credential never rides along")
 
     def test_run_guard_manages_codex_auth(self):
         args = mock.Mock(
