@@ -736,49 +736,69 @@ an expiry, in the future — so recording it as a rotation made every claude int
 the first 77 rows carried such a value; they are now null, which is the truth, and the writer records
 the field only for codex.
 
-**First evidence on the deferred-rotation build (2026-09-23): deferral stopped the hub spending the
-grant, and did not stop the grant dying.** Since `367a0a8` (2026-09-15T09:38Z) the death log holds 19
-codex deaths. Login-to-death gaps run from 0.9 h to 197.6 h with quartiles 3.1 / 10.6 / 16.7 h — far
-too scattered for a fixed server-side session lifetime, which would cluster. Nine of the 19 carry
-`central_refresh_verdict = not_attempted`: the hub was deferring, never touched the grant, and the
-access-token probe still went 401. Something outside the hub rotated those grants.
+**First evidence on the deferred-rotation build (2026-09-23), corrected the same day.** Since `367a0a8`
+(2026-09-15T09:38Z) the death log holds 19 codex deaths. Login-to-death gaps run from 0.9 h to 197.6 h
+with quartiles 3.1 / 10.6 / 16.7 h — too scattered for one fixed server-side lifetime, which would
+cluster. `central_refresh_verdict = not_attempted` on nine of them means only that the hub made no
+*central* refresh; it does **not** mean the hub left the grant alone (see below). Thirteen of the 19
+were first observed by a client's report and six by the hub worker.
 
-The clean single case is `derek@stardust.ai`. Fresh `codex login` at 2026-09-21T14:17:03, uploaded and
-stored `pending` at 14:17:04, and the hub made **no** refresh attempt for the next 45 hours
-(`central_refresh` absent on every event). The first attempt, at 2026-09-23T11:27, was refused with
-401 `token_invalidated`. The refresh token was already dead when the hub first reached for it.
+The clean single case is `derek@stardust.ai`, and the account has exactly one human holder, on one
+machine (`MacBook-Air-10.local`). A blob with `last_refresh` 2026-09-21T14:17:03 was stored at 14:17:04.
+For the next 45 hours the entry's `auth_last_refresh` never moved; the first central refresh, at
+2026-09-23T11:27, was refused 401 `token_invalidated`.
 
-**The tempting explanation did not hold on the machine that uploaded it.** The idea that the local
-app-server rotated it during the deferral predicts refresh lines in that machine's Codex log. There
-are none. `~/.codex/logs_2.sqlite`, target `codex_login::auth::manager`, records every attempt at INFO
-("Refreshing token", "Failed to refresh token: 401 …"); the window 09-21T14:00Z–09-23T12:00Z contains
-16 lines and all 16 are `Skipping auth reload due to account id mismatch` — the running app-server
-holds a different account than `auth.json`, so it neither reloads nor rotates this one. A window with
-known refreshes (09-21T09:00Z–10:30Z) shows six attempts, so the instrument does see them.
-`scripts/codex_local_auth_events.py` reproduces both readings on any machine, read-only and with
-tokens masked.
+**What is established about that window:**
 
-Three narrower facts came out of ruling things out, so nobody re-derives them:
+- *This machine's Codex did not rotate it.* `~/.codex/logs_2.sqlite`, target
+  `codex_login::auth::manager`, logs every refresh at INFO. 09-21T14:00Z–09-23T12:00Z holds 16 lines,
+  all `Skipping auth reload due to account id mismatch` — the running app-server is on a different
+  account than `auth.json`, so it neither reloads nor rotates this one. A known-active window in the
+  same log (09-21T09:00Z–10:30Z) shows six refresh attempts, so the instrument does see them.
+  `scripts/codex_local_auth_events.py` reproduces both readings, read-only with tokens masked.
+- *It cannot have been a login on this machine either.* `~/.codex/log/codex-login.log` records no
+  login between 09-15T07:33Z and 09-23T22:53Z, so the `last_refresh` at 14:17:03 was not minted by
+  `codex login` here. What produced it is **not established**, and neither is whether the entry was
+  `pending` at that moment: the hub keeps only the current handoff state, not its history.
+- *The hub was not idle.* It probed the entry about three times an hour from 15:23Z onward — 66
+  minutes after the write, which is the worker's own skip-recently-updated window — through the real
+  Codex CLI running against the stored blob (`probe_codex`, `capture_refreshed_auth=True`). That is
+  only possible when the entry is **not** pending: all fifteen currently-pending entries show zero worker
+  events since their upload. A refresh inside a probe would be written back and advance
+  `auth_last_refresh`; it did not move, so none is indicated — but the write-back is stripped from the
+  stored report, so this is inference and not a reading.
+- *The hub rotates a borrowed grant about hourly when it is not pending.* `derek@` was served 22
+  distinct blobs to `yifei@yifei-docker-console` between 09-20T02:37Z and 09-21T14:17Z, one about every
+  63 minutes, each `refreshed_current` (`ensureCodexIdTokenFresh` renews the ~1 h id_token by rotating
+  the grant). That grant survived more than 21 hours of hub-only hourly rotation. The blob that later
+  died then sat **unrotated for 45 hours** — no borrower fetched it after 14:17:04.
 
-- The AT-only placeholder RT (`rt.1.` + 32 × `A`) is refused by OpenAI with **HTTP 400
+Read together, the two spans are the interesting fact: the grant lived while the hub kept spending it
+every hour, and died after a long stretch in which nobody did. That is compatible with a
+refresh-token **idle expiry** on the provider side, and with nothing else in the data so far. It is a
+hypothesis: the scattered short-gap deaths in the log (0.9 h, 1.1 h, 1.2 h, 2.5 h) cannot be idleness,
+so at least two mechanisms are at work, and idle expiry would account for the 39–46 h cluster
+(`yanqiufu@` 39.3 h, `derek@` 45.2 h, `solutions@` 46.0 h) at best.
+
+Narrower facts, recorded so nobody re-derives them:
+
+- The AT-only placeholder RT (`rt.1.` + 32 × `A`) is refused with **HTTP 400
   `invalid_refresh_token_ciphertext_too_short`**, not the 401 "Your session has ended" the Mac logged at
-  09:43 and 09:56. Those attempts carried a real-shaped token belonging to an ended session, not the
-  placeholder the guard leaves on disk.
-- The upload path is not what blocks a rotated token reaching the hub.
+  09:43 and 09:56 on 09-21. Those attempts carried a real-shaped token of an ended session.
+- The upload path is not what blocks a rotated token reaching the hub:
   `codex_rotating_upload_preflight` always allows an upload, and `upsertAuthPoolEntry` accepts a newer
-  blob while an entry is `pending`. A refresh token that reached `auth.json` unstripped would be
-  uploaded within one 15-minute cycle.
-- `sync_current_codex_auth_pool` does return `local_auth_is_at_only` before the generation-change
-  branch (3,823 guard cycles on this machine), but that only ever skips a file that holds nothing to
-  upload.
+  blob while an entry is `pending`.
+- `sync_current_codex_auth_pool` returns `local_auth_is_at_only` before the generation-change branch
+  (3,823 guard cycles on this machine); that only ever skips a file holding nothing to upload.
+- Being `pending` proves nothing about the refresh token. Entries pending for up to 186 hours read
+  healthy because only their access tokens are being exercised; a dead RT surfaces only when the hub
+  first tries to spend it after the handoff completes.
 
-**So the holder that spent `derek@`'s grant is unidentified, and it is not a Codex on the uploading
-machine.** The remaining candidates are a process holding a pre-strip copy on another host, or a
-server-side revocation. What would tell them apart is running the script on every machine that has
-held a real RT for the account, over the interval between upload and death: a refresh line names the
-machine, and silence everywhere points at the provider. No guard change is justified until that
-answer exists — uploading rotated tokens more eagerly fixes a channel that the evidence says was not
-the break.
+**Deliberately no guard change.** Uploading rotated tokens more eagerly fixes a channel the local log
+says was never used for this grant. The unresolved question is whether the provider expires an
+unused refresh token, and what wrote the 14:17:03 blob. The cheap discriminator is a per-entry record
+of when the refresh token was last *successfully exercised* — not when the blob was last written — so a
+death can be read against the RT's real idle age.
 
 **The measurement that would settle it** is not more of this one. It is a per-death record of
 **whether the grant's generation advanced, and who advanced it**:
