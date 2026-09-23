@@ -736,6 +736,50 @@ an expiry, in the future — so recording it as a rotation made every claude int
 the first 77 rows carried such a value; they are now null, which is the truth, and the writer records
 the field only for codex.
 
+**First evidence on the deferred-rotation build (2026-09-23): deferral stopped the hub spending the
+grant, and did not stop the grant dying.** Since `367a0a8` (2026-09-15T09:38Z) the death log holds 19
+codex deaths. Login-to-death gaps run from 0.9 h to 197.6 h with quartiles 3.1 / 10.6 / 16.7 h — far
+too scattered for a fixed server-side session lifetime, which would cluster. Nine of the 19 carry
+`central_refresh_verdict = not_attempted`: the hub was deferring, never touched the grant, and the
+access-token probe still went 401. Something outside the hub rotated those grants.
+
+The clean single case is `derek@stardust.ai`. Fresh `codex login` at 2026-09-21T14:17:03, uploaded and
+stored `pending` at 14:17:04, and the hub made **no** refresh attempt for the next 45 hours
+(`central_refresh` absent on every event). The first attempt, at 2026-09-23T11:27, was refused with
+401 `token_invalidated`. The refresh token was already dead when the hub first reached for it.
+
+**The tempting explanation did not hold on the machine that uploaded it.** The idea that the local
+app-server rotated it during the deferral predicts refresh lines in that machine's Codex log. There
+are none. `~/.codex/logs_2.sqlite`, target `codex_login::auth::manager`, records every attempt at INFO
+("Refreshing token", "Failed to refresh token: 401 …"); the window 09-21T14:00Z–09-23T12:00Z contains
+16 lines and all 16 are `Skipping auth reload due to account id mismatch` — the running app-server
+holds a different account than `auth.json`, so it neither reloads nor rotates this one. A window with
+known refreshes (09-21T09:00Z–10:30Z) shows six attempts, so the instrument does see them.
+`scripts/codex_local_auth_events.py` reproduces both readings on any machine, read-only and with
+tokens masked.
+
+Three narrower facts came out of ruling things out, so nobody re-derives them:
+
+- The AT-only placeholder RT (`rt.1.` + 32 × `A`) is refused by OpenAI with **HTTP 400
+  `invalid_refresh_token_ciphertext_too_short`**, not the 401 "Your session has ended" the Mac logged at
+  09:43 and 09:56. Those attempts carried a real-shaped token belonging to an ended session, not the
+  placeholder the guard leaves on disk.
+- The upload path is not what blocks a rotated token reaching the hub.
+  `codex_rotating_upload_preflight` always allows an upload, and `upsertAuthPoolEntry` accepts a newer
+  blob while an entry is `pending`. A refresh token that reached `auth.json` unstripped would be
+  uploaded within one 15-minute cycle.
+- `sync_current_codex_auth_pool` does return `local_auth_is_at_only` before the generation-change
+  branch (3,823 guard cycles on this machine), but that only ever skips a file that holds nothing to
+  upload.
+
+**So the holder that spent `derek@`'s grant is unidentified, and it is not a Codex on the uploading
+machine.** The remaining candidates are a process holding a pre-strip copy on another host, or a
+server-side revocation. What would tell them apart is running the script on every machine that has
+held a real RT for the account, over the interval between upload and death: a refresh line names the
+machine, and silence everywhere points at the provider. No guard change is justified until that
+answer exists — uploading rotated tokens more eagerly fixes a channel that the evidence says was not
+the break.
+
 **The measurement that would settle it** is not more of this one. It is a per-death record of
 **whether the grant's generation advanced, and who advanced it**:
 
