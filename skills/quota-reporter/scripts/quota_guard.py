@@ -1564,6 +1564,56 @@ def unmanaged_codex_app_server_processes() -> list[dict]:
     return processes
 
 
+def local_codex_disk_refresh_token_state(codex_auth_path: Path) -> str:
+    """Whether auth.json could hand a real refresh token to the next Codex that starts.
+
+    "none" when it is absent or AT-only; "real" when it carries one; "unreadable" otherwise, which is
+    never treated as "none".
+    """
+    if not codex_auth_path.exists():
+        return "none"
+    try:
+        return "none" if auth_json_is_stripped("codex", codex_auth_path.read_text(encoding="utf-8")) else "real"
+    except OSError:
+        return "unreadable"
+
+
+def local_codex_process_pids() -> list[int] | None:
+    """This user's running Codex processes of any kind: Desktop app-server, TUI, `codex exec`.
+
+    Any of them may hold the refresh token it read before the guard stripped auth.json, and rotate it
+    on its own schedule. None means the inventory could not be read, which is never evidence that
+    nothing is running.
+    """
+    if platform.system().lower() == "windows":
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid=,uid=,comm="],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    current_uid = str(current_process_uid())
+    pids = []
+    for line in result.stdout.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) != 3 or parts[1] != current_uid:
+            continue
+        if Path(parts[2]).name != "codex":
+            continue
+        try:
+            pids.append(int(parts[0]))
+        except ValueError:
+            continue
+    return pids
+
+
 def stale_codex_app_server_for_auth(codex_auth_path: Path, processes: list[dict] | None = None) -> dict:
     if not codex_auth_path.exists():
         if processes is None:
@@ -3010,8 +3060,26 @@ def run_guard(args: argparse.Namespace) -> dict:
     codex_refresh_handoff = {"completed": False, "reason": "not_pending"}
     pending_handoff = known_codex_refresh_handoff(args.known_auth_path)
     if pending_handoff:
-        if not (codex_app_server.get("restarted") or codex_app_server.get("retired")):
-            codex_refresh_handoff = {"completed": False, "reason": "local_app_server_not_retired"}
+        # The handoff exists so the hub never rotates a refresh token some local Codex still holds.
+        # Two things prove nothing does: this cycle restarted or retired the app-server, or no Codex
+        # process is running and auth.json has no real refresh token for the next one to read. The
+        # first needs the Desktop activity exporter, which no machine but one ever ran -- 15 of 22
+        # pooled codex accounts sat pending for up to a week (2026-09-23), the hub unable to refresh
+        # them and their owners' Codex rotating them underneath the pool. The second needs only the
+        # process table and the file; the file condition is what makes a Codex launched a second
+        # later harmless.
+        disk_refresh_token = local_codex_disk_refresh_token_state(args.codex_auth_path)
+        local_codex_pids = (
+            []
+            if codex_app_server.get("restarted") or codex_app_server.get("retired")
+            else local_codex_process_pids()
+        )
+        if disk_refresh_token != "none" and not (codex_app_server.get("restarted") or codex_app_server.get("retired")):
+            codex_refresh_handoff = {"completed": False, "reason": f"local_disk_refresh_token_{disk_refresh_token}"}
+        elif local_codex_pids is None:
+            codex_refresh_handoff = {"completed": False, "reason": "local_codex_inventory_unavailable"}
+        elif local_codex_pids:
+            codex_refresh_handoff = {"completed": False, "reason": "local_codex_running", "pids": local_codex_pids}
         elif not pending_handoff.get("account_id"):
             codex_refresh_handoff = {"completed": False, "reason": "pending_account_missing"}
         else:

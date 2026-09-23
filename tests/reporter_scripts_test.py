@@ -5282,6 +5282,97 @@ Reading additional input from stdin...
             "app_server_identity_missing",
         )
 
+    def _run_guard_with_pending_codex_handoff(self, local_codex_pids, disk_refresh_token="none"):
+        args = mock.Mock(
+            auth_pool_url="https://quota-report-hub.vercel.app",
+            auth_pool_user_token="qrp_token",
+            codex_auth_path=Path("/tmp/auth.json"),
+            known_auth_path=Path("/tmp/known_auth.json"),
+            claude_home=Path("/tmp/claude"),
+            threshold_percent=20.0,
+            weekly_threshold_percent=5.0,
+            no_toast=True,
+            no_restart_codex_app_server=False,
+        )
+        with mock.patch.object(quota_guard, "load_config", return_value={
+            "auth_pool_url": "https://quota-report-hub.vercel.app",
+            "auth_pool_user_token": "qrp_token",
+        }):
+            with mock.patch.object(quota_guard, "current_codex_payload", return_value={"account_id": "hr@stardust.ai"}):
+                with mock.patch.object(quota_guard, "probe_claude", return_value={"account_id": "claude-a", "status": "ok"}):
+                    with mock.patch.object(quota_guard, "sync_current_codex_auth_pool", return_value={"ok": True, "uploaded": False}):
+                        with mock.patch.object(quota_guard, "sync_current_claude_auth_pool", return_value={"ok": True, "uploaded": False}):
+                            with mock.patch.object(quota_guard, "maybe_replace_codex_auth", return_value={"ok": True, "replaced": False}):
+                                with mock.patch.object(quota_guard, "maybe_replace_claude_auth", return_value={"ok": True, "replaced": False}):
+                                    # What every machine but one has seen since the handoff shipped:
+                                    # no activity exporter, so no snapshot.
+                                    with mock.patch.object(quota_guard, "codex_app_server_activity", return_value={"status": "unknown", "reason": "snapshot_unavailable"}):
+                                        with mock.patch.object(quota_guard, "known_codex_refresh_handoff", return_value={"refresh_handoff_pending": True, "account_id": "hr@stardust.ai"}):
+                                            with mock.patch.object(quota_guard, "local_codex_process_pids", return_value=local_codex_pids), \
+                                                    mock.patch.object(quota_guard, "local_codex_disk_refresh_token_state", return_value=disk_refresh_token):
+                                                with mock.patch.object(quota_guard, "complete_codex_refresh_handoff", return_value={"ok": True}) as complete:
+                                                    with mock.patch.object(quota_guard, "set_known_codex_refresh_handoff") as set_known:
+                                                        result = quota_guard.run_guard(args)
+        return result, complete, set_known
+
+    def test_run_guard_completes_codex_handoff_when_no_local_codex_can_hold_the_token(self):
+        # 2026-09-23: 15 of 22 pooled codex accounts had sat pending for up to a week, because the only
+        # completion path needed an activity exporter no machine but one ran. With no Codex process
+        # at all, nothing local can still hold the refresh token, so the hub may take it over.
+        result, complete, set_known = self._run_guard_with_pending_codex_handoff([])
+
+        complete.assert_called_once_with("https://quota-report-hub.vercel.app", "qrp_token", "hr@stardust.ai")
+        set_known.assert_called_once_with(Path("/tmp/known_auth.json"), False)
+        self.assertEqual(result["codex_refresh_handoff"], {"completed": True, "account_id": "hr@stardust.ai"})
+
+    def test_run_guard_keeps_codex_handoff_pending_while_any_local_codex_runs(self):
+        result, complete, _ = self._run_guard_with_pending_codex_handoff([36750])
+
+        complete.assert_not_called()
+        self.assertEqual(result["codex_refresh_handoff"], {"completed": False, "reason": "local_codex_running", "pids": [36750]})
+
+    def test_run_guard_keeps_codex_handoff_pending_when_the_process_table_is_unreadable(self):
+        result, complete, _ = self._run_guard_with_pending_codex_handoff(None)
+
+        complete.assert_not_called()
+        self.assertEqual(result["codex_refresh_handoff"]["reason"], "local_codex_inventory_unavailable")
+
+    def test_run_guard_keeps_codex_handoff_pending_while_auth_json_holds_a_real_refresh_token(self):
+        # With no process running, the next Codex to start would read this token and rotate it
+        # underneath the hub.
+        result, complete, _ = self._run_guard_with_pending_codex_handoff([], disk_refresh_token="real")
+
+        complete.assert_not_called()
+        self.assertEqual(result["codex_refresh_handoff"]["reason"], "local_disk_refresh_token_real")
+
+    def test_local_codex_disk_refresh_token_state_reads_auth_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            auth_path = Path(temp_dir) / "auth.json"
+            self.assertEqual(quota_guard.local_codex_disk_refresh_token_state(auth_path), "none")
+            auth_path.write_text(json.dumps({"tokens": {"access_token": "at", "refresh_token": "rt.1.REAL"}}), encoding="utf-8")
+            self.assertEqual(quota_guard.local_codex_disk_refresh_token_state(auth_path), "real")
+            auth_path.write_text(json.dumps({"tokens": {"access_token": "at", "refresh_token": ""}}), encoding="utf-8")
+            self.assertEqual(quota_guard.local_codex_disk_refresh_token_state(auth_path), "none")
+
+    def test_local_codex_process_pids_counts_only_this_users_codex_executables(self):
+        ps_output = "\n".join([
+            "36750   501 /Applications/ChatGPT.app/Contents/Resources/codex",
+            "  812   501 /Users/derek/.npm/lib/node_modules/@openai/codex/vendor/aarch64-apple-darwin/codex/codex",
+            "  900   501 /usr/bin/ssh",
+            "  901   501 /opt/homebrew/bin/node",
+            "  902     0 /usr/local/bin/codex",
+            "",
+        ])
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=ps_output, stderr="")
+        with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+            with mock.patch.object(quota_guard, "current_process_uid", return_value=501):
+                with mock.patch.object(quota_guard.subprocess, "run", return_value=completed):
+                    self.assertEqual(quota_guard.local_codex_process_pids(), [36750, 812])
+        failed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="ps: denied")
+        with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+            with mock.patch.object(quota_guard.subprocess, "run", return_value=failed):
+                self.assertIsNone(quota_guard.local_codex_process_pids())
+
     def test_run_guard_restarts_managed_codex_after_manual_login(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",

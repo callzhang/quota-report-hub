@@ -137,7 +137,7 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 5. **Probe Claude** — `probe_claude` (or a synthetic error if a custom ANTHROPIC provider is active).
 6. **Sync to pool** (only if configured) — `sync_current_{codex,claude}_auth_pool` (digest-gated upload) + `report_current_quota_to_auth_pool`, which always sends a **probe heartbeat** and attaches the quota payload only when the hub would accept it (see 3.7). A Codex full-RT upload is persisted as a pending handoff: the Hub deliberately does not verify by refreshing it, so an app-server holding the preceding RT generation remains safe while it has work.
 7. **Rotate** — `maybe_replace_{codex,claude}_auth` (`:1559-1588`).
-8. **Codex app-server handoff** after auth changes (`:1589-1609`). `active`, unknown, missing, or stale activity evidence blocks maintenance. The fresh activity snapshot must also carry the exporter-bound `app_server_pid`; the guard matches that PID against the current-user/current-home process inventory and refuses to guess when the identity is missing, stale, or ambiguous. It then asks the supported daemon to restart or, when Desktop owns that exact unmanaged app-server, sends `SIGTERM` only to the matched PID and confirms it is gone. Only either successful restart or confirmed retirement completes the owner-only Hub acknowledgement.
+8. **Codex app-server handoff** after auth changes (`:1589-1609`). `active`, unknown, missing, or stale activity evidence blocks maintenance. The fresh activity snapshot must also carry the exporter-bound `app_server_pid`; the guard matches that PID against the current-user/current-home process inventory and refuses to guess when the identity is missing, stale, or ambiguous. It then asks the supported daemon to restart or, when Desktop owns that exact unmanaged app-server, sends `SIGTERM` only to the matched PID and confirms it is gone. A successful restart or confirmed retirement completes the owner-only Hub acknowledgement; so does a cycle in which no Codex process of this user is running and `auth.json` holds no real refresh token (see §3.5).
 9. **Notifications** (toasts) unless `--no-toast`. The uploaded-auth recovery check follows the
    pool's sticky refresh verdict (`usage_summary.central_refresh.auth_rejected` or the derived
    `refresh_validity.status=rejected`), even while the last access token still makes the row's
@@ -230,6 +230,18 @@ refuse it as quota, so it still never becomes zero windows.
   the uploader to call the owner-only completion acknowledgement; then and only then the Hub removes `pending` and resumes being the
   sole refresher. A real RT that reappears on disk before completion is uploaded again, keeping the
   Hub's canonical copy current without rotating it.
+- **Completion without the exporter.** The exporter was a personal Codex plugin that lived only in
+  one machine's plugin cache, never in this repo or the installer, and never actually ran there
+  either. Measured 2026-09-23: 15 of 22 pooled codex accounts pending, the oldest since 09-16; codex
+  deaths in the 7.5 days after the handoff shipped (18) were no fewer than in the 7.5 days before (13).
+  While pending, the owner's Codex keeps rotating the grant hourly and the pool's copy is revoked
+  until the guard re-uploads the new generation. `hr@stardust.ai` died that way at 2026-09-22T21:56Z,
+  56 minutes after its pooled token was minted. So the guard also completes when
+  `local_codex_process_pids()` finds no process of this user whose executable is `codex` (Desktop
+  app-server, TUI, `codex exec`) **and** `local_codex_disk_refresh_token_state()` finds no real
+  refresh token in `auth.json`. The process condition means nothing holds the token now. The file
+  condition means a Codex launched a second later reads an AT-only blob and cannot rotate anything.
+  An unreadable process table or file is never read as absence.
 - Claude strip writes the placeholder to **every inference-capable grant** in each local store that can
   shadow the hub (macOS tokenCacheV2/tokenCache, keychain, an existing `.credentials.json`), not just
   the highest-scored cache entry — the cache holds one entry per scope set, and an unstripped sibling
@@ -841,8 +853,11 @@ management. `start_frontend.mjs` serves the static dashboards locally on `FRONTE
 7. **A local handoff can temporarily freeze rotation.** `auth_pool_entries.refresh_handoff_state`
    is `pending` from a deferred Codex upload until its authenticated uploader completes the handoff.
    The freeze covers all Hub refresh mechanisms, including worker probes that could cause a CLI
-   self-refresh. It fails closed: no pending completion is inferred from process absence or a stale
-   local file.
+   self-refresh. It fails closed: an unknown or stale activity snapshot never completes it, and
+   neither does an unreadable process table. Process absence counts only together with an AT-only
+   `auth.json` ([§3.5](#35-disabled_refresh_token-client-behavior-phase-4-strip)): absence alone once
+   read as unsafe, because the next Codex to start could pick a real refresh token off disk, and the
+   file condition closes exactly that.
 
 **Lifecycle of one account under the flag:**
 
