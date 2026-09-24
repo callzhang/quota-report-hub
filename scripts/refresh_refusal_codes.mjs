@@ -11,29 +11,44 @@
 // fails with "the request signature we calculated does not match". The GitHub Actions worker has the
 // real secret; the manual-only workflow .github/workflows/refresh-refusal-codes.yml runs this there.
 //
-// Safety: it presents ONLY tokens the hub has already had refused (central_refresh.auth_rejected), one
-// attempt each, so nothing that is still live can be spent. It prints codes and ages, never tokens, and
+// Safety: it presents ONLY tokens the hub has already had refused AFTER the current blob was stored and
+// that are not pending (isKnownRefused), one attempt each, so nothing that is still live can be spent. It prints codes and ages, never tokens, and
 // persists nothing except one auth_pool_refresh_attempts row per token (path "diagnostic"). If any token
 // unexpectedly succeeds it stops at once: that means the hub's verdict was wrong and the rotated token
 // exists nowhere but in this process's memory.
 import { pathToFileURL } from "node:url";
 import { authPoolEntry, authPoolQuotaLatest, recordAuthPoolRefreshAttempt } from "../lib/db.js";
 import { decryptAuthJson } from "../lib/auth-pool.js";
+import { isStrippedRefreshToken } from "../lib/fetch-best.js";
 import { refreshCodexToken, refreshTokenFromAuthBlob } from "../lib/token-refresh.js";
 import { refreshTokenAgeSeconds } from "../lib/auth-pool-refresh.js";
 
-const PLACEHOLDER_RT_PREFIX = "rt.1.";
-
-// Entries whose latest report records a refused central refresh. Pure, so it can be tested without a
-// database: the report is where the hub wrote down that the provider already said no.
-export function refusedAccountIds(latestReports) {
-  return latestReports
-    .filter((report) => report?.source === "codex" && report?.usage_summary?.central_refresh?.auth_rejected === true)
-    .map((report) => report.account_id);
+// Whether the CURRENT stored refresh token is one the provider is known to have refused. The report's
+// central_refresh verdict alone is not enough: mergeLatestReport keeps a rejection sticky, so it
+// outlives the token it was about. An owner who re-logs in and uploads leaves a fresh, live refresh
+// token beside a report that still says "refused" — hr@stardust.ai and projects@stardust.ai were
+// exactly that when this was written, both `pending`. Presenting such a token would rotate it and
+// lose the new one, destroying a working credential to answer a diagnostic question. So:
+//   - a `pending` entry is never selected (its RT has not been presented since the upload), and
+//   - the refusal must have been reported AFTER the current blob was stored.
+export function isKnownRefused(report, entry) {
+  if (report?.source !== "codex" || report?.usage_summary?.central_refresh?.auth_rejected !== true) {
+    return false;
+  }
+  if (!entry || entry.refresh_handoff_state === "pending") {
+    return false;
+  }
+  const refusedAt = Date.parse(report.reported_at || "");
+  const storedAt = Date.parse(entry.uploaded_at || "");
+  return Number.isFinite(refusedAt) && Number.isFinite(storedAt) && refusedAt > storedAt;
 }
 
-export function isRealRefreshToken(refreshToken) {
-  return Boolean(refreshToken) && !String(refreshToken).startsWith(PLACEHOLDER_RT_PREFIX);
+// Delegates to the repo's own detector instead of guessing at the shape. A real Codex refresh token
+// ALSO begins "rt.1." (that is the format's version prefix, which is why the hub's placeholder borrows
+// it), so a prefix test classifies every real token as a placeholder. This script's first run did
+// exactly that: it skipped all five accounts as "no real refresh token" and tested nothing.
+export function hasRealRefreshToken(authJson) {
+  return !isStrippedRefreshToken(authJson, "codex");
 }
 
 export function summarise(rows) {
@@ -46,18 +61,22 @@ export function summarise(rows) {
 }
 
 async function main() {
-  const accountIds = refusedAccountIds(await authPoolQuotaLatest({ source: "codex" }));
-  console.log(`codex accounts whose refresh token the hub has already had refused: ${accountIds.length}`);
+  const reports = (await authPoolQuotaLatest({ source: "codex" })).filter(
+    (report) => report?.usage_summary?.central_refresh?.auth_rejected === true,
+  );
+  console.log(`codex accounts whose latest report records a refused central refresh: ${reports.length}`);
   const rows = [];
-  for (const accountId of accountIds) {
+  for (const report of reports) {
+    const accountId = report.account_id;
     const entry = await authPoolEntry("codex", accountId);
-    if (!entry) {
-      console.log(`  ${accountId}: no pooled credential any more, skipped`);
+    if (!isKnownRefused(report, entry)) {
+      const why = !entry ? "no pooled credential" : entry.refresh_handoff_state === "pending" ? "pending (its RT has not been presented since upload; the refusal on record is older)" : "refusal not newer than the stored blob";
+      console.log(`  ${accountId}: skipped, ${why}`);
       continue;
     }
     const authJson = await decryptAuthJson(entry);
     const refreshToken = refreshTokenFromAuthBlob(authJson, "codex");
-    if (!isRealRefreshToken(refreshToken)) {
+    if (!hasRealRefreshToken(authJson)) {
       console.log(`  ${accountId}: no real refresh token (empty or the AT-only placeholder), skipped`);
       continue;
     }
