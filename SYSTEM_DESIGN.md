@@ -1287,6 +1287,17 @@ was dropped by `sanitizeReport`, so such a rotation left no trace but a moved `a
 worker now writes `usage_summary.codex_probe_refresh = {refreshed: bool}`; `false` means "instrument
 present, no rotation", which is different from the key being absent.
 
+**Owners' daily digest** ([lib/death-digest.js](lib/death-digest.js)). Once a day the hub emails the
+**owners** (not every admin) the deaths of the last 24 h that carry a `refresh_error_code`, each with the RT's
+idle hours and the provider's reason. Deaths seen only through an access-token probe have no code and, at ~2 a
+day and mostly flapping, would make it noise, so they are counted in one line rather than listed. Nothing is
+sent when there is nothing to list, and an unconfigured mailer sends nothing. It rides on the existing
+`api/cron/invalidated-auth-notifications` handler instead of adding a cron of its own: the Hobby plan caps the
+deployment at twelve serverless functions (`db-read-budget-static.test.mjs` enforces it), the schedule, the
+`CRON_SECRET` auth and the mail configuration are all the same, and a digest failure is caught so it cannot take
+the owner notifications' result down with it. Account ids come from users' own credentials, so every
+interpolated value is HTML-escaped.
+
 **Never pruned.** `pruneAuthPoolQuotaEvents` does not touch either table. Retention is the entire value: the
 question this table exists to answer is longitudinal, and losing the old rows recreates exactly the
 blindness it was built to remove.

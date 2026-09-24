@@ -1,6 +1,7 @@
 import { authMailConfigured, authPoolConfigured } from "../../lib/company-auth.js";
 import { dbConfigured } from "../../lib/db.js";
 import { notifyInvalidatedAuthOwners } from "../../lib/invalidated-auth-notifications.js";
+import { sendDeathDigest } from "../../lib/death-digest.js";
 
 function json(res, statusCode, payload) {
   res.statusCode = statusCode;
@@ -35,5 +36,15 @@ export default async function handler(req, res) {
   }
 
   const result = await notifyInvalidatedAuthOwners();
-  json(res, 200, result);
+  // The owners' daily death digest rides on this cron rather than getting its own: the Hobby plan caps
+  // the deployment at twelve serverless functions (asserted in db-read-budget-static.test.mjs), the
+  // schedule is the same, and so is the auth and the mail configuration. A digest failure must not
+  // take the owner notifications' result down with it.
+  let deathDigest;
+  try {
+    deathDigest = await sendDeathDigest();
+  } catch (error) {
+    deathDigest = { ok: false, sent: 0, error: String(error?.message || error).slice(0, 200) };
+  }
+  json(res, 200, { ...result, death_digest: deathDigest });
 }
