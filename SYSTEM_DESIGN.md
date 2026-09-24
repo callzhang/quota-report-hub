@@ -1510,8 +1510,11 @@ only one that is comparable across providers and models.
 
 The page (`token-usage.html`) defaults to 7 days / hour / Hub user / Total and makes one lazy
 authenticated query. Spend leads the summary cards, is its own Breakdown column whatever metric is
-selected, and — when it is the selected metric — ranks the per-user bars and the Breakdown, with the
-per-user percentages then being exactly the demand share the fetch gate rations on. Results are cached five minutes keyed by exact query **plus auth generation**,
+selected, and always ranks and sizes the per-user bars: that panel answers "who costs the pool the
+most", and its percentages are exactly the demand share the fetch gate rations on. The selected
+token counter (Total when the metric is Spend) rides alongside each bar as the second figure, so a
+user with a large own-key workload still shows up, at $0. The Breakdown ranks by spend only when
+Spend is the selected metric. Results are cached five minutes keyed by exact query **plus auth generation**,
 concurrent identical requests are deduplicated, and a token rotation moves the successful result to
 the new generation so a stale old-token response cannot clear a newer login. Charts preserve
 missing-bucket gaps rather than interpolating, and expose exact values to keyboard and screen reader.

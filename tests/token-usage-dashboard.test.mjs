@@ -512,29 +512,32 @@ test("successful zero usage remains visible without a duplicate user summary pan
   assert.match(harness.element("summary-region").innerHTML, />0</);
 });
 
-test("usage-by-user bars aggregate the selected metric per user with share of the filtered total", async () => {
+test("usage-by-user bars rank and size by spend, with the selected token counter alongside", async () => {
+  // Token order and spend order disagree here on purpose: alice's tokens are mostly a cheap model,
+  // bob's are few but expensive. The bars answer "who costs the pool the most", so bob leads even
+  // though the page is showing Total tokens.
   const rows = [
-    { hub_user_email: "alice@stardust.ai", provider: "codex", model_account_id: "a1", model_id: "m1", total_tokens: 600, input_tokens: 10 },
-    { hub_user_email: "alice@stardust.ai", provider: "claude", model_account_id: "a2", model_id: "m2", total_tokens: 150, input_tokens: 30 },
-    { hub_user_email: "bob@stardust.ai", provider: "codex", model_account_id: "b1", model_id: "m1", total_tokens: 250, input_tokens: 60 },
+    { hub_user_email: "alice@stardust.ai", provider: "codex", model_account_id: "a1", model_id: "m1", total_tokens: 600, input_tokens: 10, cost_usd: 1 },
+    { hub_user_email: "alice@stardust.ai", provider: "claude", model_account_id: "a2", model_id: "m2", total_tokens: 150, input_tokens: 30, cost_usd: 1 },
+    { hub_user_email: "bob@stardust.ai", provider: "codex", model_account_id: "b1", model_id: "m1", total_tokens: 250, input_tokens: 60, cost_usd: 6 },
   ];
   const harness = await pageHarness(async () => response(200, usagePayload({ breakdown: rows })));
   const markup = harness.element("user-usage-region").innerHTML;
 
-  // alice's two provider rows fold into one bar: 750 of the 1000 filtered total
-  assert.ok(markup.indexOf("alice@stardust.ai") < markup.indexOf("bob@stardust.ai"), "bars sort by usage descending");
-  assert.match(markup, /750<span class="meta"> · 75\.0%<\/span>/);
-  assert.match(markup, /250<span class="meta"> · 25\.0%<\/span>/);
-  // bar length is relative to the biggest user, share is relative to the total
+  assert.ok(markup.indexOf("bob@stardust.ai") < markup.indexOf("alice@stardust.ai"), "bars sort by spend descending, not tokens");
+  // alice's two provider rows fold into one bar: $2 of the $8 filtered spend, 750 total tokens
+  assert.match(markup, /\$6\.00<span class="meta"> · 75\.0% · 250 total tokens<\/span>/);
+  assert.match(markup, /\$2\.00<span class="meta"> · 25\.0% · 750 total tokens<\/span>/);
+  // bar length is relative to the biggest spender, share is relative to the filtered spend
   assert.match(markup, /width: 100\.00%/);
   assert.match(markup, /width: 33\.33%/);
+  assert.match(markup, /the same share the fetch gate rations on/);
 
-  // the Metric filter drives the aggregation: by input tokens bob (60) outranks alice (40)
+  // The Metric filter changes the token figure shown beside the spend, never the ranking.
   harness.element("metric").value = "input";
   const inputMarkup = harness.evaluate(`renderUserBars(${JSON.stringify(rows)})`);
   assert.ok(inputMarkup.indexOf("bob@stardust.ai") < inputMarkup.indexOf("alice@stardust.ai"));
-  assert.match(inputMarkup, /60<span class="meta"> · 60\.0%<\/span>/);
-  assert.match(inputMarkup, /Input tokens per Hub user/);
+  assert.match(inputMarkup, /\$2\.00<span class="meta"> · 25\.0% · 40 input tokens<\/span>/);
 
   assert.match(harness.evaluate("renderUserBars([])"), /No usage in this range/);
 });
@@ -565,8 +568,8 @@ test("spend renders as money everywhere, and the spend share is the one the gate
   harness.element("metric").value = "cost";
   const bars = harness.evaluate(`renderUserBars(${JSON.stringify(rows)})`);
   assert.ok(bars.indexOf("bob@stardust.ai") < bars.indexOf("alice@stardust.ai"), "money ranks the bars, not tokens");
-  assert.match(bars, /\$12\.50<span class="meta"> · 100\.0%<\/span>/);
-  assert.match(bars, /\$0\.00<span class="meta"> · 0\.0%<\/span>/);
+  assert.match(bars, /\$12\.50<span class="meta"> · 100\.0% · 100 total tokens<\/span>/);
+  assert.match(bars, /\$0\.00<span class="meta"> · 0\.0% · 900 total tokens<\/span>/);
   assert.match(bars, /the same share the fetch gate rations on/);
   // Spend is not a token count and must never be scaled into 万/亿.
   assert.doesNotMatch(bars, /亿/);
@@ -587,7 +590,8 @@ test("token counts render in 万/亿 units with the exact count kept in titles",
   const summary = harness.element("summary-region").innerHTML;
   assert.match(summary, /title="197,397,276,632">1974亿</);
   const bars = harness.element("user-usage-region").innerHTML;
-  assert.match(bars, />1974亿<span class="meta"> · 100\.0%<\/span>/);
+  // No spend at all (an own-key-only range) still lists the user, at $0 and their token count.
+  assert.match(bars, />\$0\.00<span class="meta"> · 0\.0% · 1974亿 total tokens<\/span>/);
   assert.match(bars, /197,397,276,632 total tokens/);
 });
 

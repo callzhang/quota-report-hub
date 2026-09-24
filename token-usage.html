@@ -455,34 +455,37 @@
         return COUNTERS.find(([, counter]) => counter === key)?.[0] || "Total";
       }
 
+      // Spend ranks and sizes the bars whatever metric is selected: "who costs the pool the most" is
+      // the question this panel answers, and a token ranking puts somebody's self-hosted Qwen above an
+      // Opus user the pool actually paid for. The selected counter rides alongside as the second
+      // figure (Total when the metric is Spend itself), and the % is the share of filtered spend --
+      // the same share the fetch gate rations on.
       function renderUserBars(rows) {
-        const metricCounter = selectedMetricCounter();
+        const tokenCounter = selectedMetricCounter() === COST_KEY ? "total_tokens" : selectedMetricCounter();
+        const tokenLabel = COUNTERS.find(([, counter]) => counter === tokenCounter)[0].toLowerCase();
         const byUser = new Map();
         for (const row of rows) {
           const key = row.hub_user_email || "Unknown";
-          byUser.set(key, (byUser.get(key) || 0) + Number(row[metricCounter] || 0));
+          const entry = byUser.get(key) || { spend: 0, tokens: 0 };
+          entry.spend += Number(row[COST_KEY] || 0);
+          entry.tokens += Number(row[tokenCounter] || 0);
+          byUser.set(key, entry);
         }
-        const entries = [...byUser.entries()].sort((a, b) => b[1] - a[1]);
-        const total = entries.reduce((sum, [, value]) => sum + value, 0);
-        if (!total) return '<div class="empty">No usage in this range.</div>';
-        const max = entries[0][1];
-        const label = selectedMetricLabel();
-        const isCost = metricCounter === COST_KEY;
-        // Only the Spend share is the share the fetch gate rations on. A token share counts a
-        // self-hosted model the pool never paid for exactly like an Opus turn it did, which is how a
-        // reader ends up arguing with a percentage that was never about them.
-        const caption = isCost
-          ? "Pool spend per Hub user under the current filters · % is the share of the filtered total, the same share the fetch gate rations on"
-          : `${label} tokens per Hub user under the current filters · % is the share of the filtered total`;
-        const rowUnit = isCost ? "" : ` ${label.toLowerCase()} tokens`;
-        return `<div class="meta">${escapeHtml(caption)} (${formatMetric(total, metricCounter)})</div>` +
-          entries.map(([email, value]) => {
-            const share = (value / total) * 100;
+        const entries = [...byUser.entries()].filter(([, entry]) => entry.spend || entry.tokens)
+          .sort((a, b) => b[1].spend - a[1].spend || b[1].tokens - a[1].tokens);
+        if (!entries.length) return '<div class="empty">No usage in this range.</div>';
+        const totalSpend = entries.reduce((sum, [, entry]) => sum + entry.spend, 0);
+        const maxSpend = entries[0][1].spend;
+        const caption = "Pool spend per Hub user under the current filters, highest first · % is the share of the filtered spend, the same share the fetch gate rations on";
+        return `<div class="meta">${escapeHtml(caption)} (${formatUsd(totalSpend)})</div>` +
+          entries.map(([email, { spend, tokens }]) => {
+            const share = totalSpend ? (spend / totalSpend) * 100 : 0;
+            const width = maxSpend ? (spend / maxSpend) * 100 : 0;
             return `
-            <div class="user-bar-row" title="${escapeHtml(`${email}: ${exactMetric(value, metricCounter)}${rowUnit} · ${share.toFixed(1)}% of filtered total`)}">
+            <div class="user-bar-row" title="${escapeHtml(`${email}: ${exactMetric(spend, COST_KEY)} · ${share.toFixed(1)}% of filtered spend · ${number(tokens)} ${tokenLabel} tokens`)}">
               <div class="user-bar-label">${escapeHtml(email)}</div>
-              <div class="user-bar-track"><div class="user-bar-fill" style="width: ${((value / max) * 100).toFixed(2)}%"></div></div>
-              <div class="user-bar-value">${formatMetric(value, metricCounter)}<span class="meta"> · ${share.toFixed(1)}%</span></div>
+              <div class="user-bar-track"><div class="user-bar-fill" style="width: ${width.toFixed(2)}%"></div></div>
+              <div class="user-bar-value">${formatUsd(spend)}<span class="meta"> · ${share.toFixed(1)}% · ${formatTokens(tokens)} ${tokenLabel} tokens</span></div>
             </div>`;
           }).join("");
       }
