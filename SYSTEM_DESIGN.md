@@ -952,8 +952,10 @@ that goes to premium models, and leaves absolute volume unlimited.
 ### The metric
 
 `modelCost(modelId, counters)` (`lib/model-tiers.js`) prices usage from a per-model **rate card**
-rather than counting tokens: fresh input (`input_tokens − cache_read_tokens`), cache reads, cache
-writes and output are each charged at their own per-million rate. `modelCostSql()` — exported as
+rather than counting tokens: fresh input (`input_tokens − cache_read_tokens − cache_write_tokens`),
+cache reads, cache writes and output are each charged at their own per-million rate. The
+subtraction relies on the stored counters having one meaning for every provider (§16.1): cache read
+and write are subsets of input. `modelCostSql()` — exported as
 `MODEL_COST_SQL` — is the SQL twin of that arithmetic, kept so the gate and any dashboard cannot
 drift. `premiumShare({ premiumCost, totalCost })` is then simply `premiumCost / totalCost`.
 
@@ -1409,6 +1411,25 @@ transcripts does not upload its history. Subsequent runs:
      repeated record contributes only the positive difference. Claude counters are per-message
      absolutes rather than session cumulatives, which is why none of the above applies to it — and
      why every contaminated bucket ever found was codex.
+
+   **One meaning for the counters, whatever the provider.** `input_tokens` is every input token;
+   `cache_read_tokens` and `cache_write_tokens` are subsets of it; `total_tokens = input + output`.
+   That is codex's native shape. Anthropic's `input_tokens` counts only the uncached part of the
+   prompt, so `parse_claude_line` adds the cache read and write back in at the source. Before
+   2026-09-24 the Claude rows kept Anthropic's shape, and the hub validated each provider against
+   its own rule. Every consumer then had to know which provider a row came from, and the cost
+   formula did not: it priced uncached Claude input at $0. The Usages page's "subset of Input"
+   captions were also false for Claude. (Claude's `total_tokens` was right under both shapes, since
+   it always added the cache back.)
+
+   The switch shipped in one push with no dual-format code on either side (client 2.11.0). A client
+   still on the old shape for its first cycle after the push sends Claude rows the hub now refuses
+   (400), and the collector drops that batch. That costs each active machine at most one 15-minute
+   cycle, Codex rows in the same batch included. Stored history was converted in place by
+   `UPDATE token_usage_15m SET input_tokens = total_tokens - output_tokens WHERE provider = 'claude'`
+   (and the same on `token_usage_daily`). That statement is idempotent and needs no cutoff: Claude's
+   total was correct in both shapes, so it also repairs a bucket that took old-shape rows before
+   the deploy and new-shape rows after it.
 3. Bucket each event into a 15-minute `bucket_start`, attribute it to an account
    (`account_for_event`, [§16.2](#162-account-attribution)), and aggregate — at most
    `MAX_AGGREGATE_ROWS = 400` rows per batch, inside a **10-second cycle budget**.
@@ -1446,9 +1467,10 @@ and `applied_at IS NULL`**, then mark it applied. Consequences:
   version carried on the fetch-best request ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)).
 
 Validation lives in `lib/token-usage.js` (`normalizeTokenUsageBatch`): canonical quarter-hour buckets
-inside the accepted window, known providers, non-negative safe counters, Codex cache/reasoning as
-subsets of the total, Claude totals that include input/output/cache-read/cache-write, and no unknown
-fields — a malformed batch is rejected, never partially stored.
+inside the accepted window, known providers, non-negative safe counters, and one rule for every
+provider: cache read and cache write each at most input, reasoning at most output, total equal to
+input plus output ([§16.1](#161-client-collector-skillsquota-reporterscriptstoken_usage_py)). No
+unknown fields. A malformed batch is rejected, never partially stored.
 
 Plus a plausibility ceiling: `TOKEN_USAGE_IMPOSSIBLE_BUCKET_TOKENS = 1e9`. A billion tokens in a
 900-second bucket for one account and model is 1.11M tokens/second — an order of magnitude past

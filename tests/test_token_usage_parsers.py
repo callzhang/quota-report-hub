@@ -145,14 +145,17 @@ class ClaudeTokenUsageParserTests(unittest.TestCase):
             "message": message,
         })
 
-    def test_assistant_usage_maps_cache_creation_and_derived_total(self):
+    def test_input_includes_cache_so_claude_counters_mean_what_codex_counters_mean(self):
+        # Anthropic's input_tokens excludes cache reads and writes; codex's includes them. The hub
+        # stores one meaning -- input is every input token, cache read and write are subsets of it,
+        # total is input plus output -- so the Claude record is normalised here, at the source.
         record = parse_claude_line(self.assistant_line())
         self.assertIsNotNone(record)
         self.assertEqual(record.provider, "claude")
         self.assertEqual(record.logical_record_key, "claude:msg-1")
         self.assertEqual(record.model_id, "claude-opus-4-8")
         self.assertEqual(record.counters, {
-            "input_tokens": 2,
+            "input_tokens": 952,
             "output_tokens": 100,
             "cache_read_tokens": 900,
             "cache_write_tokens": 50,
@@ -175,7 +178,7 @@ class ClaudeTokenUsageParserTests(unittest.TestCase):
             "cache_creation_input_tokens": 50,
         }))
         self.assertEqual(claude_counter_delta(increased.counters, first.counters), {
-            "input_tokens": 0,
+            "input_tokens": 10,
             "output_tokens": 20,
             "cache_read_tokens": 10,
             "cache_write_tokens": 0,
@@ -185,11 +188,11 @@ class ClaudeTokenUsageParserTests(unittest.TestCase):
 
     def test_lower_correction_never_emits_negative_tokens(self):
         current = {
-            "input_tokens": 2, "output_tokens": 90, "cache_read_tokens": 800,
+            "input_tokens": 842, "output_tokens": 90, "cache_read_tokens": 800,
             "cache_write_tokens": 40, "reasoning_tokens": 0, "total_tokens": 932,
         }
         acknowledged = {
-            "input_tokens": 2, "output_tokens": 100, "cache_read_tokens": 900,
+            "input_tokens": 952, "output_tokens": 100, "cache_read_tokens": 900,
             "cache_write_tokens": 50, "reasoning_tokens": 0, "total_tokens": 1052,
         }
         self.assertEqual(claude_counter_delta(current, acknowledged), {

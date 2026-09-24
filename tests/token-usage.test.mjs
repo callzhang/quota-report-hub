@@ -112,21 +112,28 @@ test("keeps Codex cache and reasoning as subsets of total", () => {
   );
 });
 
-test("requires Claude total to include input, output, cache read, and cache write", () => {
+test("Claude rows follow the same counter rules as Codex rows", () => {
+  // One meaning for every provider: input is all input with cache read and write as subsets of it,
+  // and total is input plus output. A Claude row in Anthropic's own shape -- input excluding the
+  // cache, total adding it back -- is refused rather than stored under a second meaning.
   const claude = codexRow({
     provider: "claude",
     model_id: "claude-opus-4-1",
-    input_tokens: 10,
+    input_tokens: 80,
     output_tokens: 20,
     cache_read_tokens: 30,
     cache_write_tokens: 40,
     reasoning_tokens: 0,
     total_tokens: 100,
   });
-  assert.equal(normalizeTokenUsageBatch(validBody({ rows: [claude] }), { now }).rows[0].total_tokens, 100);
+  assert.equal(normalizeTokenUsageBatch(validBody({ rows: [claude] }), { now }).rows[0].input_tokens, 80);
   assert.throws(
-    () => normalizeTokenUsageBatch(validBody({ rows: [{ ...claude, total_tokens: 60 }] }), { now }),
-    /total_tokens/i,
+    () => normalizeTokenUsageBatch(validBody({ rows: [{ ...claude, input_tokens: 10 }] }), { now }),
+    /cannot exceed input_tokens/i,
+  );
+  assert.throws(
+    () => normalizeTokenUsageBatch(validBody({ rows: [{ ...claude, input_tokens: 25, total_tokens: 45 }] }), { now }),
+    /cache_read_tokens/i,
   );
 });
 

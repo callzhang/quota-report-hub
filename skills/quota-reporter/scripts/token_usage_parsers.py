@@ -246,10 +246,13 @@ def parse_claude_line(
             parse_context.warning_count += 1
             return None
         counters[target] = counter
+    # Anthropic's input_tokens counts only the uncached part of the prompt; codex's counts all of it.
+    # The hub keeps one meaning -- input is every input token, cache read and write are subsets of
+    # it, total is input plus output -- so the Claude record takes codex's shape here, at the source,
+    # and nothing downstream has to know which provider a row came from.
+    counters["input_tokens"] += counters["cache_read_tokens"] + counters["cache_write_tokens"]
     counters["reasoning_tokens"] = 0
-    counters["total_tokens"] = sum(counters[field] for field in (
-        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"
-    ))
+    counters["total_tokens"] = counters["input_tokens"] + counters["output_tokens"]
     if counters["total_tokens"] > MAX_SAFE_INTEGER:
         parse_context.warning_count += 1
         return None
@@ -283,6 +286,11 @@ def claude_counter_delta(
         field: max(0, normalized_current[field] - normalized_acknowledged[field])
         for field in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
     }
+    # Each field is floored on its own, so a correction that moved tokens between the uncached and
+    # cached part of the prompt can leave the cache delta above the input delta. Clamp it back
+    # under input, as codex does, rather than send a row the hub refuses.
+    delta["cache_read_tokens"] = min(delta["cache_read_tokens"], delta["input_tokens"])
+    delta["cache_write_tokens"] = min(delta["cache_write_tokens"], delta["input_tokens"])
     delta["reasoning_tokens"] = 0
-    delta["total_tokens"] = sum(delta.values())
+    delta["total_tokens"] = delta["input_tokens"] + delta["output_tokens"]
     return delta

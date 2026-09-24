@@ -195,7 +195,7 @@ test("queryTokenUsage aggregates indexed detail with exact filters and determini
         provider: "claude",
         model_account_id: "claude@stardust.ai",
         model_id: "claude-opus-4-1",
-        input_tokens: 10,
+        input_tokens: 80,
         output_tokens: 20,
         cache_read_tokens: 30,
         cache_write_tokens: 40,

@@ -70,7 +70,7 @@ test("every pooled model seen in production is priced at its own rate card, not 
   const perMillion = (modelId) => ({
     input: modelCost(modelId, { input_tokens: 1e6, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0 }),
     cache_read: modelCost(modelId, { input_tokens: 1e6, cache_read_tokens: 1e6, cache_write_tokens: 0, output_tokens: 0 }),
-    cache_write: modelCost(modelId, { input_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 1e6, output_tokens: 0 }),
+    cache_write: modelCost(modelId, { input_tokens: 1e6, cache_read_tokens: 0, cache_write_tokens: 1e6, output_tokens: 0 }),
     output: modelCost(modelId, { input_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 1e6 }),
   });
   const expected = {
@@ -91,6 +91,17 @@ test("every pooled model seen in production is priced at its own rate card, not 
       assert.ok(Math.abs(actual[field] - rates[field]) < 1e-9, `${modelId} ${field} was ${actual[field]}, expected ${rates[field]}`);
     }
   }
+});
+
+test("cache reads and writes are subsets of input, priced once at their own rate", () => {
+  // A Claude turn as the hub stores it: 1M input tokens, of which 900K replayed from cache and 50K
+  // written to it, leaving 50K fresh. Charging the cache write as fresh input too would bill those
+  // 50K twice; charging nothing for the fresh 50K would make uncached Claude input free.
+  const cost = modelCost("claude-opus-5", {
+    input_tokens: 1_000_000, cache_read_tokens: 900_000, cache_write_tokens: 50_000, output_tokens: 0,
+  });
+  const expected = (50_000 * 5.00 + 900_000 * 0.50 + 50_000 * 6.25) / 1e6;
+  assert.ok(Math.abs(cost - expected) < 1e-9, `cost was ${cost}, expected ${expected}`);
 });
 
 test("output is priced far above input, as every rate card has it", () => {
