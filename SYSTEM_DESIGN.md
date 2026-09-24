@@ -1028,6 +1028,16 @@ behaviour rationing exists to encourage. Unrecognised models *within* a pooled f
 (`gpt-`, `claude-`, `codex-`) are charged that family's top rate, so a new flagship cannot read as
 free before somebody prices it.
 
+The fallback only guards against reading as free; it is not a price. A model left on it for long
+misprices the shares in both directions. On 2026-09-24 eight pooled models seen in production had
+never been priced: Opus 5.5 read at Fable rates (2.5x its real $4/$20) and GPT-6 Luna at GPT-5.6
+Sol's (50x), while GPT-6 Astra ($10/$50, now the `gpt-` fallback) read at half its price. Pricing
+them moved the 7-day team spend from $11,688 to $10,007, and moved individual shares enough to
+matter to the gate: derek $8,671 → $5,440, shawn.hou $1,865 → $3,038. When a new model shows up
+under `token_usage_15m.model_id`, price it from the vendor pages cited in `lib/model-tiers.js`.
+`gpt-reserve` (Codex's "Luna Reserve" fallback allowance) has no published price; it is charged as
+GPT-5.6 Luna, the model it runs.
+
 **Premium share only ever advises.** It is a proxy for "you are expensive", and once usage is priced
 there is no reason to enforce a proxy instead of the thing itself -- a user at 90% premium on a tiny
 volume costs the pool nothing. The list is now a blacklist: missing from it costs a hint, not a

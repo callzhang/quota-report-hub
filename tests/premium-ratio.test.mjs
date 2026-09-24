@@ -57,6 +57,34 @@ test("models the pool does not pay for cost nothing, and unpriced pooled models 
   assert.equal(unpriced, dearest, "an unrecognised pooled model is charged its family's top rate");
 });
 
+test("every pooled model seen in production is priced at its own rate card, not a family fallback", () => {
+  // Each of these reported real usage in the 30 days to 2026-09-24. Before they were priced they
+  // fell through to the family fallback: Opus 5.5 read at Fable rates (2.5x its real price) and
+  // GPT-6 Sol at GPT-5.6 Sol's (2.5x input, 3x output), so the spend column overstated exactly the
+  // cheaper models people had moved to.
+  const perMillion = (modelId) => ({
+    input: modelCost(modelId, { input_tokens: 1e6, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 0 }),
+    cache_read: modelCost(modelId, { input_tokens: 1e6, cache_read_tokens: 1e6, cache_write_tokens: 0, output_tokens: 0 }),
+    cache_write: modelCost(modelId, { input_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 1e6, output_tokens: 0 }),
+    output: modelCost(modelId, { input_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 1e6 }),
+  });
+  const expected = {
+    "gpt-6-astra": { input: 10, cache_read: 1, cache_write: 12.5, output: 50 },
+    "gpt-6-sol": { input: 2, cache_read: 0.2, cache_write: 2.5, output: 10 },
+    "gpt-6-luna": { input: 0.1, cache_read: 0.01, cache_write: 0.125, output: 0.5 },
+    "claude-opus-5-5": { input: 4, cache_read: 0.2, cache_write: 5, output: 20 },
+    "claude-fable-5-1": { input: 10, cache_read: 0.25, cache_write: 12.5, output: 50 },
+    "claude-opus-4-8": { input: 5, cache_read: 0.5, cache_write: 6.25, output: 25 },
+    "claude-haiku-4-5-20251001": { input: 1, cache_read: 0.1, cache_write: 1.25, output: 5 },
+  };
+  for (const [modelId, rates] of Object.entries(expected)) {
+    const actual = perMillion(modelId);
+    for (const field of Object.keys(rates)) {
+      assert.ok(Math.abs(actual[field] - rates[field]) < 1e-9, `${modelId} ${field} was ${actual[field]}, expected ${rates[field]}`);
+    }
+  }
+});
+
 test("output is priced far above input, as every rate card has it", () => {
   const million = (field) => ({
     input_tokens: field === "input" ? 1e6 : 0,
