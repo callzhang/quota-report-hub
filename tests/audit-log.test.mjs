@@ -1028,7 +1028,7 @@ test("authUsersList prices each user's pool spend inside the demand-share window
       receivedAt: "2026-06-10T00:00:00.000Z",
     });
 
-    // gpt-5.6-sol is $5.00 per 1M input tokens, so each of these rows is exactly $5.
+    // gpt-5.6-sol is $4.00 per 1M input tokens, so each of these rows is exactly $4.
     await usage("alice@stardust.ai", "2026-06-09T00:00:00.000Z", "gpt-5.6-sol", "alice-1");
     // Outside the window: the same spend, and it must not reach the column.
     await usage("alice@stardust.ai", "2026-06-01T00:00:00.000Z", "gpt-5.6-sol", "alice-2");
@@ -1037,7 +1037,7 @@ test("authUsersList prices each user's pool spend inside the demand-share window
 
     const users = await mod.authUsersList({ spendSince: "2026-06-05T00:00:00.000Z" });
     const byEmail = Object.fromEntries(users.map((u) => [u.email, u]));
-    assert.equal(byEmail["alice@stardust.ai"].spend_usd, 5);
+    assert.equal(byEmail["alice@stardust.ai"].spend_usd, 4);
     assert.equal(byEmail["bob@stardust.ai"].spend_usd, 0);
   } finally {
     cleanup();

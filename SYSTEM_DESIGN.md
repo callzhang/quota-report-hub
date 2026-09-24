@@ -1015,8 +1015,10 @@ Usage is priced from the vendors' public rate cards (`lib/model-tiers.js`), not 
 weighting. Only the RATIOS matter: the pool runs on subscriptions, but OpenAI's own price-cut notice
 says the Terra/Luna reductions "are also reflected in how usage is counted against paid
 subscriptions when using Codex and ChatGPT Work" -- subscription credit burn tracks API pricing.
-Standard rates only; Sol's >20% discount expires around November 2026 and a long-lived rationing
-mechanism must not drift with a three-month promotion.
+Current rates, promotions included (Derek, 2026-09-24): the spend column and the demand shares read
+what the pool is burning today. This reverses an earlier "standard rates only" rule. The cost is
+maintenance: GPT-5.6 Sol's $4/$20 is promotional through at least 2026-11-21, and when it ends its
+row in `lib/model-tiers.js` has to move back to the $5/$30 list rate by hand.
 
 The previous formula weighted output at 1x input. Every rate card puts it at **5-6x**, so output was
 systematically under-counted -- and that error had a direction: it under-weighted agent fleets and
@@ -1033,7 +1035,14 @@ misprices the shares in both directions. On 2026-09-24 eight pooled models seen 
 never been priced: Opus 5.5 read at Fable rates (2.5x its real $4/$20) and GPT-6 Luna at GPT-5.6
 Sol's (50x), while GPT-6 Astra ($10/$50, now the `gpt-` fallback) read at half its price. Pricing
 them moved the 7-day team spend from $11,688 to $10,007, and moved individual shares enough to
-matter to the gate: derek $8,671 → $5,440, shawn.hou $1,865 → $3,038. When a new model shows up
+matter to the gate: derek $8,671 → $5,440, shawn.hou $1,865 → $3,038. (Switching GPT-5.6 Sol to its
+promotional rate the same day took the 7-day total on to $9,576.)
+
+The premium list covers every flagship-tier model on the card: GPT-5.6 Sol, GPT-6 Astra, Fable
+5/5.1, Opus 4.8/5/5.5. The notices recommend GPT-6 Luna for Codex and Sonnet 5 for Claude. Adding
+Astra, Opus 5.5 and Fable 5.1 put nearly every active user over the 50% premium-share hint on
+2026-09-24 (7-day: shawn.hou 1% → 96%, lingling.zhang 0% → 70%, derek 71% → 86%). That is accurate,
+because the team has moved onto exactly those models, and the hint stays advisory. When a new model shows up
 under `token_usage_15m.model_id`, price it from the vendor pages cited in `lib/model-tiers.js`.
 `gpt-reserve` (Codex's "Luna Reserve" fallback allowance) has no published price; it is charged as
 GPT-5.6 Luna, the model it runs.

@@ -40,6 +40,11 @@ test("premium is a blacklist, because it only ever drives a hint", () => {
   assert.equal(isPremiumModel("gpt-5.6-terra"), false);
   assert.equal(isPremiumModel("GPT-5.6-SOL"), true, "case must not matter");
   assert.equal(isPremiumModel("  claude-opus-5  "), true, "whitespace must not matter");
+  // Every flagship-tier model on the rate card earns the hint, not only the ones that existed when
+  // the list was first written.
+  for (const modelId of ["gpt-6-astra", "claude-opus-5-5", "claude-fable-5-1", "claude-opus-4-8"]) {
+    assert.equal(isPremiumModel(modelId), true, modelId);
+  }
   // A model nobody has classified misses a hint, not a refusal -- cost decides who is held back.
   assert.equal(isPremiumModel("gpt-7-whatever-ships-next"), false);
 });
@@ -69,6 +74,9 @@ test("every pooled model seen in production is priced at its own rate card, not 
     output: modelCost(modelId, { input_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, output_tokens: 1e6 }),
   });
   const expected = {
+    // The rate OpenAI charges today, promotion included (Derek, 2026-09-24): the spend column
+    // should read what the pool is burning now, not what it will burn after November.
+    "gpt-5.6-sol": { input: 4, cache_read: 0.4, cache_write: 5, output: 20 },
     "gpt-6-astra": { input: 10, cache_read: 1, cache_write: 12.5, output: 50 },
     "gpt-6-sol": { input: 2, cache_read: 0.2, cache_write: 2.5, output: 10 },
     "gpt-6-luna": { input: 0.1, cache_read: 0.01, cache_write: 0.125, output: 0.5 },
@@ -96,6 +104,11 @@ test("output is priced far above input, as every rate card has it", () => {
     const ratio = modelCost(modelId, million("output")) / modelCost(modelId, million("input"));
     assert.ok(ratio >= 5, `${modelId} output/input was ${ratio}, expected >= 5`);
   }
+});
+
+test("the notices recommend GPT-6 Luna", () => {
+  assert.ok(SUGGESTED_STANDARD_MODEL_IDS.includes("gpt-6-luna"));
+  assert.ok(!SUGGESTED_STANDARD_MODEL_IDS.includes("gpt-5.6-terra"), "Luna replaces Terra as the Codex suggestion");
 });
 
 test("the models the notices recommend are cheaper than every premium model", () => {

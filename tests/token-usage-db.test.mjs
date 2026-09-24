@@ -302,7 +302,7 @@ test("queryTokenUsage prices every aggregate with the gate's own cost expression
       batchId: "cost-batch",
       receivedAt: "2026-08-18T12:00:00.000Z",
       rows: [
-        // gpt-5.6-sol: $5.00/1M fresh input, $30.00/1M output -> $5 + $3 = $8.
+        // gpt-5.6-sol: $4.00/1M fresh input, $20.00/1M output -> $4 + $2 = $6.
         usageRow({
           bucket_start: "2026-08-18T11:00:00.000Z",
           model_id: "gpt-5.6-sol",
@@ -340,12 +340,12 @@ test("queryTokenUsage prices every aggregate with the gate's own cost expression
       models: [],
     });
 
-    assert.equal(result.totals.cost_usd, 8);
+    assert.equal(result.totals.cost_usd, 6);
     const trendByModel = Object.fromEntries(result.trend.map((point) => [point.group_value, point.cost_usd]));
-    assert.equal(trendByModel["gpt-5.6-sol"], 8);
+    assert.equal(trendByModel["gpt-5.6-sol"], 6);
     assert.equal(trendByModel["MiniMax-M2.5"], 0);
     const breakdownByModel = Object.fromEntries(result.breakdown.map((row) => [row.model_id, row.cost_usd]));
-    assert.equal(breakdownByModel["gpt-5.6-sol"], 8);
+    assert.equal(breakdownByModel["gpt-5.6-sol"], 6);
     assert.equal(breakdownByModel["MiniMax-M2.5"], 0);
     // Tokens and spend rank these two rows in opposite orders, which is the whole reason the page
     // needs the money column: the larger row is the one that cost nothing.
