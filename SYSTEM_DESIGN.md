@@ -1263,7 +1263,31 @@ revocation* is still open, and only the second would implicate anything plan- or
 verdict computed by today's rule would silently outlive the rule. Facts in the table, judgement in
 the query.
 
-**Never pruned.** `pruneAuthPoolQuotaEvents` does not touch it. Retention is the entire value: the
+**Why a refused refresh token died.** Each death row also carries `refresh_error_code`, the provider's own
+word for the refusal, and every server-side refresh lands in `auth_pool_refresh_attempts` (below). Both
+exist because the hub used to keep only `refresh http 401`, which cannot separate three explanations of
+one dead grant: `refresh_token_expired` (unused too long), `refresh_token_reused` (someone else spent it),
+`refresh_token_invalidated` (the session was ended). The code is read by `providerRefreshErrorCode`
+([lib/token-refresh.js](lib/token-refresh.js)) and restricted to `[a-z0-9_.-]{1,80}`, so it cannot carry
+anything but an identifier. It follows the verdict's rule: recorded on a death, null on a revival.
+
+**`auth_pool_refresh_attempts`** — one append-only row per refresh that reached the provider, written at
+the single choke point every server-side rotation passes through, `refreshSerializedAuthPoolEntry`
+([lib/auth-pool-refresh.js](lib/auth-pool-refresh.js)): `path` (`worker` / `fetch_best` / `upload`), `ok`,
+`http_status`, `provider_error_code`, and `rt_age_seconds` — how long the RT had been unused when it was
+presented. A lease that was not won and a superseded RT are not uses of the token and are not recorded.
+`rt_age_seconds` is codex-only (the blob's `last_refresh` is the moment the current RT was minted);
+claude's `auth_last_refresh` mirrors the access token's *expiry*, so an age from it would be negative and
+look like data, and it is null. The recorder is injected and its failures are swallowed: the provider has
+already accepted the old RT by then, and losing the persist would strand the pool on a spent token.
+
+**Rotations inside a probe are now visible.** The worker's probe runs the real Codex CLI against a copy of
+the stored blob, and that CLI can rotate the RT itself. The capture that says so (`refresh_capture.delta`)
+was dropped by `sanitizeReport`, so such a rotation left no trace but a moved `auth_last_refresh`. The
+worker now writes `usage_summary.codex_probe_refresh = {refreshed: bool}`; `false` means "instrument
+present, no rotation", which is different from the key being absent.
+
+**Never pruned.** `pruneAuthPoolQuotaEvents` does not touch either table. Retention is the entire value: the
 question this table exists to answer is longitudinal, and losing the old rows recreates exactly the
 blindness it was built to remove.
 

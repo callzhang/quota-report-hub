@@ -796,9 +796,26 @@ Narrower facts, recorded so nobody re-derives them:
 
 **Deliberately no guard change.** Uploading rotated tokens more eagerly fixes a channel the local log
 says was never used for this grant. The unresolved question is whether the provider expires an
-unused refresh token, and what wrote the 14:17:03 blob. The cheap discriminator is a per-entry record
-of when the refresh token was last *successfully exercised* — not when the blob was last written — so a
-death can be read against the RT's real idle age.
+unused refresh token, and what wrote the 14:17:03 blob.
+
+**The instrument, shipped 2026-09-24.** The first proposal here — record when each RT was last
+*exercised* — turned out to be redundant: a successful codex refresh rotates the RT and bumps the blob's
+`last_refresh`, so `hub_last_refresh_at` in the death log already *is* the RT's idle age (the
+0.9 h–197.6 h spread above is that number). What was actually missing was the provider's reason.
+`postRefresh` kept only `refresh http 401`, discarding the error body, so "unused too long"
+(`refresh_token_expired`), "someone else spent it" (`refresh_token_reused`) and "the session was ended"
+(`refresh_token_invalidated`) were indistinguishable. The code is now read (identifier characters
+only), logged with every refresh, stored on each death as `refresh_error_code`, and every server-side
+refresh is appended to `auth_pool_refresh_attempts` with the RT's age at the moment it was presented
+([SYSTEM_DESIGN §12.1](SYSTEM_DESIGN.md)). Rotations that happen inside the worker's own probe are
+surfaced as `usage_summary.codex_probe_refresh`, closing the last place the hub could have spent a grant
+without leaving a mark.
+
+What to read when the next death lands: `refresh_token_expired` at a long idle age supports provider-side
+idle expiry; `refresh_token_reused` says another holder spent the generation and, since the local log
+rules this machine out, points at the hub's own probe or a route that was not instrumented;
+`refresh_token_invalidated` says the session itself was ended. Nothing recorded so far distinguishes them,
+so treat the idle-expiry reading above as unconfirmed until one of these codes appears.
 
 **The measurement that would settle it** is not more of this one. It is a per-death record of
 **whether the grant's generation advanced, and who advanced it**:

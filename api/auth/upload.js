@@ -5,6 +5,7 @@ import {
   authPoolEntry,
   dbConfigured,
   getFeatureFlag,
+  recordAuthPoolRefreshAttempt,
   releaseAuthPoolRefreshLease,
   setAuthPoolRefreshHandoff,
   upsertAuthPoolEntry,
@@ -199,6 +200,8 @@ export default async function handler(req, res) {
         claimLease: claimAuthPoolRefreshLease,
         releaseLease: releaseAuthPoolRefreshLease,
         refreshAuthBlob: verifyAndRefreshAuthBlob,
+        recordAttempt: recordAuthPoolRefreshAttempt,
+        path: "upload",
         // Keep the lease until the rotated RT has become canonical. Releasing before this write
         // would admit a second request holding the old generation into the provider endpoint.
         persistRefreshedAuth: async (refreshedAuthJson) => {

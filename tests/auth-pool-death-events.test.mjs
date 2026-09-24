@@ -138,6 +138,28 @@ test("a claude expiry masquerading as auth_last_refresh is not recorded as a rot
   assert.equal(events[0].hub_last_refresh_at, null);
 });
 
+test("a death records the provider's stated reason, and a revival does not inherit it", async () => {
+  // "hub_last_refresh_at" says how long the RT sat unused; this says what the provider made of it —
+  // expired (unused too long) versus reused (someone else spent it) versus invalidated (session ended).
+  const a = account();
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-23T10:01:40Z" }));
+  await db.upsertAuthPoolQuota(
+    report(a, {
+      status: "error",
+      error: DEAD,
+      at: "2026-09-23T11:27:27Z",
+      central: { attempted: true, ok: false, auth_rejected: true, status: 401, provider_error_code: "refresh_token_expired" },
+    })
+  );
+  await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-23T22:54:48Z" }));
+
+  const events = await eventsFor(a);
+  assert.deepEqual(events.map((e) => e.event), ["death", "revival"]);
+  assert.equal(events[0].refresh_error_code, "refresh_token_expired");
+  // Stale evidence about a credential the owner has replaced, same rule as the verdict beside it.
+  assert.equal(events[1].refresh_error_code, null);
+});
+
 test("staying dead appends nothing — the row marks the transition, not the state", async () => {
   const a = account();
   await db.upsertAuthPoolQuota(report(a, { status: "ok", at: "2026-09-06T06:00:00Z" }));

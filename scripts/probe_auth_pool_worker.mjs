@@ -12,6 +12,7 @@ import {
   deleteAuthPoolEntryRow,
   getFeatureFlag,
   recomputePoolScarcity,
+  recordAuthPoolRefreshAttempt,
   recordAuthPoolTokenFingerprint,
   recordPoolHealthSnapshot,
   releaseAuthPoolRefreshLease,
@@ -64,6 +65,7 @@ async function refreshEntryIfNeeded(
     authPoolEntryImpl = null,
     claimLeaseImpl = null,
     releaseLeaseImpl = null,
+    recordAttemptImpl = null,
     nowImpl,
     force = false,
   },
@@ -105,6 +107,9 @@ async function refreshEntryIfNeeded(
       : async () => authJsonText,
     claimLease: claimLeaseImpl || (async () => ({ claimed: true, reason: null })),
     releaseLease: releaseLeaseImpl || (async () => {}),
+    recordAttempt: recordAttemptImpl,
+    path: "worker",
+    now: () => now,
     refreshAuthBlob,
     persistRefreshedAuth: async (refreshedAuthJson) => upsertAuthPoolEntryImpl({
       source,
@@ -120,7 +125,13 @@ async function refreshEntryIfNeeded(
     return {
       authJsonText,
       result: serialized.attempted
-        ? { attempted: true, ok: false, auth_rejected: serialized.auth_rejected, status: serialized.status }
+        ? {
+            attempted: true,
+            ok: false,
+            auth_rejected: serialized.auth_rejected,
+            status: serialized.status,
+            provider_error_code: serialized.provider_error_code ?? null,
+          }
         : serialized,
     };
   }
@@ -252,6 +263,25 @@ function withCentralRefreshEvidence(report, centralRefreshResult) {
     usage_summary: {
       ...(report.usage_summary || {}),
       central_refresh: centralRefreshResult,
+    },
+  };
+}
+
+// The probe runs the real Codex CLI against a copy of the stored blob, and that CLI can rotate the
+// refresh token on its own. The capture that says so (`refresh_capture.delta`) never survives to the
+// stored report -- sanitizeReport drops it -- so a rotation inside a probe was invisible: the only
+// trace was a moved `auth_last_refresh`, and a rotation that failed to write back left no trace at
+// all. Surfacing the one boolean settles whether the hub's own probes are spending grants.
+function withProbeRefreshEvidence(report) {
+  const delta = report?.refresh_capture?.delta;
+  if (!delta) {
+    return report;
+  }
+  return {
+    ...report,
+    usage_summary: {
+      ...(report.usage_summary || {}),
+      codex_probe_refresh: { refreshed: Boolean(delta.refreshed) },
     },
   };
 }
@@ -419,6 +449,7 @@ export async function processAuthPoolEntry(
     claimLeaseImpl = null,
     releaseLeaseImpl = null,
     recordTokenFingerprintImpl = recordAuthPoolTokenFingerprint,
+    recordAttemptImpl = recordAuthPoolRefreshAttempt,
     deleteAuthPoolEntryImpl = deleteAuthPoolEntry,
     authPoolQuotaLatestForEntryImpl = authPoolQuotaLatestForEntry,
     refreshClaudeTokenImpl = refreshClaudeToken,
@@ -470,6 +501,7 @@ export async function processAuthPoolEntry(
         authPoolEntryImpl,
         claimLeaseImpl,
         releaseLeaseImpl,
+        recordAttemptImpl,
         nowImpl,
         force: verifyUnverified,
       });
@@ -509,6 +541,7 @@ export async function processAuthPoolEntry(
       authPoolEntryImpl,
       claimLeaseImpl,
       releaseLeaseImpl,
+      recordAttemptImpl,
       nowImpl,
       force: true,
     });
@@ -539,6 +572,7 @@ export async function processAuthPoolEntry(
     }
   }
   report = withCentralRefreshEvidence(report, centralRefreshResult);
+  report = withProbeRefreshEvidence(report);
   if (shouldDeleteUnusableAuthPoolEntry(entry, report, previousReport)) {
     await upsertAuthPoolQuotaImpl(withoutSensitiveRefreshCapture(report));
     const deleteResult = await deleteAuthPoolEntryImpl({ source: entry.source, accountId: entry.account_id });

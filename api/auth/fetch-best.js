@@ -4,6 +4,7 @@ import {
   authPoolEntry,
   bestAuthPoolEntry,
   claimAuthPoolRefreshLease,
+  recordAuthPoolRefreshAttempt,
   dbConfigured,
   getFeatureFlag,
   getInvalidatedUploaderEntry,
@@ -59,6 +60,8 @@ async function refreshCanonicalPoolAuth(authJson, entryMeta, source) {
       return current ? decryptAuthJson(current) : null;
     },
     refreshAuthBlob: verifyAndRefreshAuthBlob,
+    recordAttempt: recordAuthPoolRefreshAttempt,
+    path: "fetch_best",
     persistRefreshedAuth: async (refreshedAuthJson) => {
       await upsertAuthPoolEntry({
         source,
