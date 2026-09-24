@@ -817,6 +817,39 @@ rules this machine out, points at the hub's own probe or a route that was not in
 `refresh_token_invalidated` says the session itself was ended. Nothing recorded so far distinguishes them,
 so treat the idle-expiry reading above as unconfirmed until one of these codes appears.
 
+**First refusal codes (2026-09-24), from the hub itself.** They could not be read from a laptop, and the
+reason is worth keeping: Vercel marks `TIGRIS_STORAGE_SECRET_ACCESS_KEY` as a sensitive variable, so
+`vercel env pull` returns it as the empty string — the pulled file and the local `.env.local` are
+identical and both blank — and every blob read from a laptop fails with "the request signature we
+calculated does not match". It is not a stale credential. The worker's GitHub Actions run has the real
+secret, so `scripts/refresh_refusal_codes.mjs` runs there through a manual-only workflow.
+
+Three tokens were presented, once each: `jingwei.zou@`, `xingye.li@`, `guojian.liu@`, the August Team
+seats. All three answered **HTTP 401 `refresh_token_invalidated`** — not `refresh_token_expired`, not
+`refresh_token_reused`. The provider's word for that class is a token that was revoked or whose session
+was ended. Read it carefully:
+
+- It is what the provider says 38 days later. A token whose family was revoked after a reuse would
+  plausibly answer the same way afterwards, so `invalidated` does not by itself exclude an earlier
+  reuse; it excludes the provider calling these tokens *expired*.
+- These are not the derek@ case. All three were stored within three hours of each other on 08-17, before
+  the deferred-rotation build, while the hub was rotating borrowed grants about hourly — none of them sat
+  idle. They say nothing for or against idle expiry of an unused token, and derek@'s own dead token was
+  replaced by a re-login before the instrument existed, so that question is still open.
+- n = 3, one cohort, one plan.
+
+The script selects tokens with care because "the latest report says refused" is not "the stored token
+was refused": `mergeLatestReport` keeps a rejection sticky, so it outlives the token it described.
+`hr@` and `projects@` were re-logged-in, uploaded and `pending` beside a report still saying refused;
+presenting either would have rotated a live token and discarded the new one. It requires the entry not
+to be pending and the refusal to postdate the stored blob. (Its first run also used a
+`startsWith("rt.1.")` test for the AT-only placeholder — but a real refresh token begins `rt.1.` too, so
+it skipped all five and tested nothing; it now uses `isStrippedRefreshToken`.)
+
+The attempt log took its first production rows the same day, from two routes: `fetch_best` recording the
+hub's own hourly rotation of a borrowed grant (`mingkaixu115@gmail.com`, three rows, idle 0.0 d each),
+and `diagnostic`.
+
 **The measurement that would settle it** is not more of this one. It is a per-death record of
 **whether the grant's generation advanced, and who advanced it**:
 
