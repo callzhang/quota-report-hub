@@ -1,0 +1,35 @@
+name: Refresh Refusal Codes
+
+# Manual only. Reads, for every pooled codex refresh token the hub has already had refused, the
+# provider's own reason (expired / reused / invalidated). It needs the blob-store secret, which Vercel
+# treats as sensitive and never returns to a laptop, so it runs where the worker runs.
+# See scripts/refresh_refusal_codes.mjs for what it will and will not touch.
+on:
+  workflow_dispatch:
+
+# Its own group, deliberately NOT the probe worker's. Sharing it would let this run displace a queued
+# hourly probe (a new run in a group cancels the older pending one), and there is nothing to serialise:
+# this presents only tokens the provider has already refused, which the worker's rotations never touch.
+concurrency:
+  group: refresh-refusal-codes
+  cancel-in-progress: false
+
+jobs:
+  refusal-codes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install app dependencies
+        run: npm ci
+      - name: Read the provider's refusal codes
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          AUTH_POOL_ENCRYPTION_KEY: ${{ secrets.AUTH_POOL_ENCRYPTION_KEY }}
+          TIGRIS_STORAGE_ACCESS_KEY_ID: ${{ secrets.TIGRIS_STORAGE_ACCESS_KEY_ID }}
+          TIGRIS_STORAGE_SECRET_ACCESS_KEY: ${{ secrets.TIGRIS_STORAGE_SECRET_ACCESS_KEY }}
+          TIGRIS_STORAGE_BUCKET: ${{ secrets.TIGRIS_STORAGE_BUCKET }}
+        run: node scripts/refresh_refusal_codes.mjs
