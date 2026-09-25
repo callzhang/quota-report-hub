@@ -19,6 +19,7 @@ from token_usage_parsers import (
     CodexParseContext,
     UsageRecord,
     claude_counter_delta,
+    claude_message,
     codex_counter_delta,
     parse_claude_line,
     parse_codex_line,
@@ -37,6 +38,7 @@ DEFAULT_CODEX_SESSION_ROOTS = (
 )
 DEFAULT_CLAUDE_PROJECT_ROOT = Path.home() / ".claude" / "projects"
 MAX_AGGREGATE_ROWS = 400
+MAX_BATCH_MESSAGES = 400
 FINGERPRINT_RETENTION_DAYS = 90
 
 
@@ -189,6 +191,17 @@ def _response_notices(response: dict[str, Any]) -> list | None:
     return None
 
 
+def _payload_records(payload: dict[str, Any]) -> int:
+    return len(payload.get("rows", [])) + len(payload.get("messages", []))
+
+
+def _payload_tokens(payload: dict[str, Any]) -> int:
+    return sum(
+        int(record.get("total_tokens", 0))
+        for record in [*payload.get("rows", []), *payload.get("messages", [])]
+    )
+
+
 def _handle_pending_upload(
     *,
     state: TokenUsageState,
@@ -206,8 +219,8 @@ def _handle_pending_upload(
         response = post_token_usage_batch(auth_pool_url, auth_pool_user_token, payload)
     except Exception:
         return {
-            "ok": False, "reported": False, "rows": len(payload.get("rows", [])),
-            "total_tokens": sum(int(row.get("total_tokens", 0)) for row in payload.get("rows", [])),
+            "ok": False, "reported": False, "rows": _payload_records(payload),
+            "total_tokens": _payload_tokens(payload),
             "bytes_read": bytes_read, "backfill_complete": backfill_complete,
             "retry": True, "warnings": warnings or {"files": 0, "parse": 0},
             "elapsed_seconds": max(0.0, monotonic() - started), "reason": "upload_retry_pending",
@@ -216,8 +229,8 @@ def _handle_pending_upload(
     if response.get("ok"):
         state.ack_pending_batch(pending["batch_id"])
         return {
-            "ok": True, "reported": True, "rows": len(payload.get("rows", [])),
-            "total_tokens": sum(int(row.get("total_tokens", 0)) for row in payload.get("rows", [])),
+            "ok": True, "reported": True, "rows": _payload_records(payload),
+            "total_tokens": _payload_tokens(payload),
             "bytes_read": bytes_read, "backfill_complete": backfill_complete,
             "retry": False, "warnings": warnings or {"files": 0, "parse": 0},
             "elapsed_seconds": max(0.0, monotonic() - started),
@@ -228,8 +241,8 @@ def _handle_pending_upload(
             error_code=str(response.get("error") or response.get("reason") or "invalid_token_usage"),
         )
         return {
-            "ok": False, "reported": False, "rows": len(payload.get("rows", [])),
-            "total_tokens": sum(int(row.get("total_tokens", 0)) for row in payload.get("rows", [])),
+            "ok": False, "reported": False, "rows": _payload_records(payload),
+            "total_tokens": _payload_tokens(payload),
             "bytes_read": bytes_read, "backfill_complete": backfill_complete,
             "retry": False, "warnings": warnings or {"files": 0, "parse": 0},
             "elapsed_seconds": max(0.0, monotonic() - started), "reason": "upload_rejected",
@@ -244,8 +257,8 @@ def _handle_pending_upload(
     else:
         reason = "upload_retry_pending"
     return {
-        "ok": False, "reported": False, "rows": len(payload.get("rows", [])),
-        "total_tokens": sum(int(row.get("total_tokens", 0)) for row in payload.get("rows", [])),
+        "ok": False, "reported": False, "rows": _payload_records(payload),
+        "total_tokens": _payload_tokens(payload),
         "bytes_read": bytes_read, "backfill_complete": backfill_complete,
         "retry": True, "warnings": warnings or {"files": 0, "parse": 0},
         "elapsed_seconds": max(0.0, monotonic() - started),
@@ -311,6 +324,8 @@ def collect_and_report_token_usage(
         proposed_fingerprints: dict[str, dict[str, str]] = {}
         working_counters: dict[str, dict[str, int]] = {}
         aggregate: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        # Claude is sent per message rather than aggregated (token_usage_parsers.claude_message).
+        messages: dict[str, dict[str, Any]] = {}
         bytes_read = 0
         stopped = False
 
@@ -383,7 +398,13 @@ def collect_and_report_token_usage(
                                     stopped = True
                                     processed_offset = line_start
                                     break
-                                if should_emit and aggregate_key not in aggregate and len(aggregate) >= MAX_AGGREGATE_ROWS:
+                                is_message = record.provider == "claude"
+                                batch_full = (
+                                    record.logical_record_key not in messages and len(messages) >= MAX_BATCH_MESSAGES
+                                    if is_message
+                                    else aggregate_key not in aggregate and len(aggregate) >= MAX_AGGREGATE_ROWS
+                                )
+                                if should_emit and batch_full:
                                     stopped = True
                                     processed_offset = line_start
                                     break
@@ -394,7 +415,11 @@ def collect_and_report_token_usage(
                                 proposed_fingerprints[record.fingerprint] = {
                                     "digest": record.fingerprint, "event_at": record.event_at
                                 }
-                                if should_emit:
+                                if should_emit and is_message:
+                                    messages[record.logical_record_key] = claude_message(
+                                        record, bucket_start=bucket, account_id=account_id,
+                                    )
+                                elif should_emit:
                                     row = aggregate.setdefault(aggregate_key, {
                                         "bucket_start": bucket,
                                         "provider": record.provider,
@@ -432,8 +457,9 @@ def collect_and_report_token_usage(
         rows = sorted(aggregate.values(), key=lambda row: (
             row["bucket_start"], row["provider"], row["model_account_id"], row["model_id"]
         ))
+        message_list = sorted(messages.values(), key=lambda message: message["message_key"])
         backfill_complete = not stopped
-        if not rows:
+        if not rows and not message_list:
             if any(proposed.values()):
                 usage_state.apply_checkpoint(proposed)
             usage_state.prune_fingerprints(iso_timestamp(now - timedelta(days=FINGERPRINT_RETENTION_DAYS)))
@@ -451,6 +477,8 @@ def collect_and_report_token_usage(
             "client_version": CLIENT_VERSION,
             "rows": rows,
         }
+        if message_list:
+            payload["messages"] = message_list
         pending = usage_state.stage_batch(payload=payload, proposed=proposed)
         result = _handle_pending_upload(
             state=usage_state, pending=pending, auth_pool_url=auth_pool_url,

@@ -326,6 +326,7 @@ Single module-load client (`lib/db.js:15-18`); schema created lazily + memoized 
 | `auth_admins` | PK `email` | Admin/owner roles; one `owner` row, seeded once ([§6.7](#67-admins--owner)). |
 | `pool_health_snapshots` | PK autoinc | Observability time series: ok/hard-dead/other + central-refresh outcomes per source per worker run. (`:477-494`) |
 | `reporter_probe_heartbeats` | PK `(source, reporter_key)` | Last guard run per machine: outcome, consecutive probe failures, last good probe. Written on every run, including runs with no reportable quota — this is what separates a silent machine from a failing probe ([§3.7](#37-probe-heartbeat-why-a-failing-guard-is-not-silence)). |
+| `token_usage_claude_messages` | PK `message_key` | One row per Claude message (SHA-256 of the provider's message id), owned by whichever installation reported it first. The Claude rows of `token_usage_15m` are sums over it, which is what counts a message mirrored onto two machines once ([§16.3](#163-ingest-post-apitoken-usage--ingesttokenusagebatch)). |
 | `dashboard_revision` | Singleton row (`singleton = 1`) | Monotonic change marker for dashboard-visible writes. The browser reads this one row instead of rebuilding full status every minute. |
 
 **PK evolution** (`migrateAuthPoolEntriesTableShape` `:23-81`): older deployments are rebuilt to the canonical `(source, account_id, session_id)` PK with **nullable** encryption columns + `auth_blob_key`. The active PK column list lives in a mutable global `authPoolPkColumns` used to build `ON CONFLICT(...)` (`:21, 80, 734`).
@@ -1434,9 +1435,23 @@ transcripts does not upload its history. Subsequent runs:
    the backup first, then the rest, row by row: input = total − output, total unchanged, cache ≤
    input. Claude input went from 11.3M to 6.11B tokens. The first 2.11.0 batches then landed 725
    Claude rows, all passing the single rule.
-3. Bucket each event into a 15-minute `bucket_start`, attribute it to an account
-   (`account_for_event`, [§16.2](#162-account-attribution)), and aggregate — at most
-   `MAX_AGGREGATE_ROWS = 400` rows per batch, inside a **10-second cycle budget**.
+3. Bucket each event into a 15-minute `bucket_start` and attribute it to an account
+   (`account_for_event`, [§16.2](#162-account-attribution)). Codex is aggregated into rows. Claude is
+   sent **one record per message** (`claude_message`): a SHA-256 of the message id, the bucket and
+   account, and the message's own full counts rather than a difference. At most
+   `MAX_AGGREGATE_ROWS = 400` rows and `MAX_BATCH_MESSAGES = 400` messages per batch, inside a
+   **10-second cycle budget**.
+
+   Why Claude is per message: the Claude desktop app mirrors a remote session into the laptop's
+   `~/.claude/projects/ssh-<sessionId>/` byte for byte, with the same message ids, uuids and
+   timestamps. So the laptop and the remote host both hold, and both report, the same messages, and
+   neither can see the other. Found on 2026-09-25: stardust-GPU4 began reporting, and 21 desktop
+   sessions (1.76B tokens) were counted twice against derek's laptop. Only the hub sees both copies,
+   and only a key on the message lets it keep one. Matching the `ssh-` directory name was rejected:
+   it is an undocumented app convention and would miss any other copy (a synced or restored
+   `~/.claude`). Having the remote host skip those sessions was rejected too: no field
+   distinguishes a desktop-driven remote session from the desktop's own local ones, and the remote
+   host also runs sessions only it has (GPU4's 1,763 `sdk-cli` runs).
 4. Upload, then commit. The proposed file/counter/fingerprint checkpoint is written locally **only
    after the server acknowledges**, and a retry re-sends the same `batch_id` with the same payload.
 
@@ -1464,8 +1479,16 @@ and `applied_at IS NULL`**, then mark it applied. Consequences:
   not double.
 - The same `batch_id` with a *different* payload has a different digest, so no row applies and the
   API answers **409 `token_usage_batch_conflict`** rather than silently mixing two payloads.
-- Counters accumulate with `ON CONFLICT … DO UPDATE SET x = x + excluded.x` per
-  `(hub_user_email, provider, model_account_id, model_id, bucket_start)`.
+- Codex counters accumulate with `ON CONFLICT … DO UPDATE SET x = x + excluded.x` per
+  `(hub_user_email, installation_id, provider, model_account_id, model_id, bucket_start)`.
+- Claude messages upsert into `token_usage_claude_messages` on `message_key`, globally. A message
+  already on file keeps its owner (installation, account, bucket) and takes the larger of each
+  counter: a mirror can lag its original mid-stream, so the fuller copy wins, once. Every Claude
+  `token_usage_15m` row those messages belong to is then **recomputed** from the message table, the
+  owner's rows included, which need not be the sender's. So a second machine reporting a mirrored
+  message adds nothing.
+- A repair's `replace_from` also deletes the messages this installation owns in the window. It is
+  about to send them again, and a message still on file would read as already counted.
 - `token_usage_reporter_state` keeps the **maximum** `last_reported_at` and the reporting
   `client_version` — the version the reporter gate reads only for display; the gate itself judges the
   version carried on the fetch-best request ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)).
@@ -1504,8 +1527,18 @@ collector would lose live usage to fix old usage. It runs once per installation,
 `repair_generation` in the collector state; a new generation reruns the repair when the corrected
 account-attribution rules change what can be safely proven. Generation 3 re-derives recent usage
 after failed Claude status probes began retaining identities proven by JSON, text status, or an
-exact installed-token fingerprint; sessions without one remain unattributed. A failed attempt backs off six hours
-rather than relaunching a multi-gigabyte parse every quarter hour.
+exact installed-token fingerprint; sessions without one remain unattributed. Generation 4
+(2026-09-25) re-sends Claude as per-message records, so the hub can drop the copies a mirrored
+remote session left on a second machine. It is also how the history gets deduplicated: each machine
+replaces its own window, and a message another machine already owns is not counted again. A failed
+attempt backs off six hours rather than relaunching a multi-gigabyte parse every quarter hour.
+
+The order in which machines repair does not matter for the end state. If the remote host repairs
+first it takes ownership of the mirrored messages, and the laptop's older aggregate rows still
+hold the same usage until the laptop repairs. At that point its re-sent copies meet an owner and add
+nothing. Before generation 4 shipped, the overlap already on file was removed by hand: the 21
+desktop sessions' per-bucket totals were computed from GPU4's own transcripts and subtracted from
+GPU4's rows. 709 rows were touched, 702 of them deleted, verified row by row against a backup.
 
 The upload is chunked at `MAX_AGGREGATE_ROWS`. **Only the first batch carries `replace_from`**: that
 is what clears this installation's rows for the window (and the `''` blob for that user, which
@@ -1562,7 +1595,9 @@ missing-bucket gaps rather than interpolating, and expose exact values to keyboa
 ### 16.6 Retention (`/api/cron/token-usage-retention`, daily `30 18 * * *` UTC)
 
 `compactTokenUsage` moves at most **seven** UTC days older than the 90-day boundary into
-`token_usage_daily` atomically per run, deletes the compacted detail, and prunes old receipts. A
+`token_usage_daily` atomically per run, deletes the compacted detail and the per-message Claude records of
+those days, and prunes old receipts. Nothing past the ingest window can be re-reported, so a message
+record that old has nothing left to deduplicate against. A
 failed daily aggregation leaves that day's detail untouched — the compaction is all-or-nothing per
 day, so a partial run can only ever be retried, never lose rows.
 

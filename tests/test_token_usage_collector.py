@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sys
@@ -356,10 +357,18 @@ class TokenUsageCollectorTests(unittest.TestCase):
                     claude_account="claude-current@stardust.ai",
                 )
             codex = next(row for row in uploads[0]["rows"] if row["provider"] == "codex")
-            claude = next(row for row in uploads[0]["rows"] if row["provider"] == "claude")
             self.assertEqual(codex["total_tokens"], 240)
-            self.assertEqual(claude["total_tokens"], 14)
-            self.assertEqual(claude["model_account_id"], "claude-current@stardust.ai")
+            self.assertEqual({row["provider"] for row in uploads[0]["rows"]}, {"codex"})
+            # Claude goes up one record per message, keyed on a hash of the message id, so the hub
+            # can count a message once when a mirrored transcript puts it on two machines.
+            self.assertEqual(uploads[0]["messages"], [{
+                "message_key": hashlib.sha256(b"claude:msg-1").hexdigest(),
+                "bucket_start": "2026-08-18T11:45:00.000Z",
+                "model_account_id": "claude-current@stardust.ai",
+                "model_id": "claude-opus-4-8",
+                "input_tokens": 11, "output_tokens": 3, "cache_read_tokens": 4,
+                "cache_write_tokens": 5, "total_tokens": 14,
+            }])
             state.close()
 
     def test_time_budget_checkpoints_complete_lines_and_resumes_next_cycle(self):

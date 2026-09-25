@@ -29,6 +29,7 @@ from token_usage_collector import (
     DEFAULT_CLAUDE_PROJECT_ROOT,
     DEFAULT_CODEX_SESSION_ROOTS,
     MAX_AGGREGATE_ROWS,
+    MAX_BATCH_MESSAGES,
     _bucket_start,
     _parse_time,
     account_for_event,
@@ -37,7 +38,8 @@ from token_usage_parsers import (
     COUNTER_FIELDS,
     ClaudeParseContext,
     CodexParseContext,
-    claude_counter_delta,
+    MESSAGE_COUNTER_FIELDS,
+    claude_message,
     codex_counter_delta,
     parse_claude_line,
     parse_codex_line,
@@ -51,7 +53,9 @@ REPAIR_WINDOW_DAYS = 90
 # Bumped when a fix changes what the recomputed numbers would be, so every machine repairs again.
 # Bump this when attribution changes so installations replace the retained window with the new
 # account boundary rules instead of leaving rows produced by an older collector in place.
-REPAIR_GENERATION = "3"
+# Generation 4: Claude is re-sent one record per message so the hub can drop the copies a mirrored
+# remote session left on a second machine (§16.1).
+REPAIR_GENERATION = "4"
 REPAIR_STATE_KEY = "repair_generation"
 
 
@@ -71,8 +75,8 @@ def recompute_window(
     state: TokenUsageState,
     codex_roots: tuple[Path, ...] = DEFAULT_CODEX_SESSION_ROOTS,
     claude_root: Path = DEFAULT_CLAUDE_PROJECT_ROOT,
-) -> list[dict]:
-    """Every bucket this machine can prove, from the logs rather than from the checkpoint."""
+) -> tuple[list[dict], list[dict]]:
+    """Every codex bucket and Claude message this machine can prove, from the logs."""
     since_iso = iso_timestamp(since)
     range_end = iso_timestamp(utc_now() + timedelta(seconds=1))
     switches = {
@@ -88,6 +92,9 @@ def recompute_window(
     aggregate: dict[tuple, dict[str, int]] = defaultdict(lambda: {field: 0 for field in COUNTER_FIELDS})
     counters: dict[str, dict[str, int]] = {}
     seen: set[str] = set()
+    # Claude, per message: its first sighting fixes the bucket and account, and each counter keeps
+    # the largest value any copy reported -- streaming writes a message more than once.
+    claude_messages: dict[str, dict] = {}
 
     roots = [("codex", root) for root in codex_roots] + [("claude", claude_root)]
     for provider, root in roots:
@@ -115,11 +122,28 @@ def recompute_window(
                     if record is None or record.fingerprint in seen:
                         continue
                     seen.add(record.fingerprint)
-                    delta = (
-                        codex_counter_delta(record.counters, counters.get(record.logical_record_key))
-                        if provider == "codex"
-                        else claude_counter_delta(record.counters, counters.get(record.logical_record_key))
-                    )
+                    if provider == "claude":
+                        known = claude_messages.get(record.logical_record_key)
+                        if known is not None:
+                            for field in MESSAGE_COUNTER_FIELDS:
+                                known[field] = max(known[field], int(record.counters[field]))
+                            known["total_tokens"] = known["input_tokens"] + known["output_tokens"]
+                            continue
+                        event_time = _parse_time(record.event_at)
+                        bucket = _bucket_start(record.event_at)
+                        if event_time is None or bucket is None or event_time < since:
+                            continue
+                        account = account_for_event(
+                            event_at=record.event_at,
+                            report_account_id=opening[provider],
+                            switches=switches[provider],
+                        )
+                        if account is not None:
+                            claude_messages[record.logical_record_key] = claude_message(
+                                record, bucket_start=bucket, account_id=account,
+                            )
+                        continue
+                    delta = codex_counter_delta(record.counters, counters.get(record.logical_record_key))
                     # Seeded whether or not the delta is charged, so the next turn is measured
                     # against what this event reported rather than a stale predecessor.
                     counters[record.logical_record_key] = dict(record.counters)
@@ -143,13 +167,15 @@ def recompute_window(
                     for field in COUNTER_FIELDS:
                         row[field] += int(delta[field])
 
-    return [
+    rows = [
         {
             "bucket_start": key[0], "provider": key[1], "model_account_id": key[2],
             "model_id": key[3], **value,
         }
         for key, value in sorted(aggregate.items())
     ]
+    messages = sorted(claude_messages.values(), key=lambda message: message["message_key"])
+    return rows, messages
 
 
 def run_repair(config: dict, *, state: TokenUsageState) -> dict:
@@ -175,28 +201,40 @@ def run_repair(config: dict, *, state: TokenUsageState) -> dict:
         since = backfill_cutoff
     since = since.replace(minute=(since.minute // 15) * 15, second=0, microsecond=0)
 
-    rows = recompute_window(since, state=state)
-    if not rows:
+    rows, messages = recompute_window(since, state=state)
+    if not rows and not messages:
         state.set_meta(REPAIR_STATE_KEY, REPAIR_GENERATION)
         return {"ok": True, "repaired": True, "rows": 0, "reason": "nothing_to_report"}
 
-    chunks = [rows[start:start + MAX_AGGREGATE_ROWS] for start in range(0, len(rows), MAX_AGGREGATE_ROWS)]
+    row_chunks = [rows[start:start + MAX_AGGREGATE_ROWS] for start in range(0, len(rows), MAX_AGGREGATE_ROWS)]
+    message_chunks = [
+        messages[start:start + MAX_BATCH_MESSAGES] for start in range(0, len(messages), MAX_BATCH_MESSAGES)
+    ]
+    chunks = [
+        (row_chunks[index] if index < len(row_chunks) else [],
+         message_chunks[index] if index < len(message_chunks) else [])
+        for index in range(max(len(row_chunks), len(message_chunks)))
+    ]
     # Batch ids name this exact recomputation, not merely a chunk position. A retry over unchanged
     # history re-sends the same ids and payloads, so chunks the hub already applied are no-ops. But
     # history grows between attempts, and positional ids then paired an old id with a new payload:
     # the hub refused chunk 0 as a conflict (409) on every retry and the repair could never finish.
     # A new recomputation is a new attempt with new ids, and its first chunk clears again.
-    attempt = hashlib.sha256(json.dumps(rows, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    attempt = hashlib.sha256(
+        json.dumps({"rows": rows, "messages": messages}, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
     uploaded = 0
-    for index, chunk in enumerate(chunks):
+    for index, (row_chunk, message_chunk) in enumerate(chunks):
         payload = {
             "installation_id": state.installation_id,
             # Deterministic per attempt and chunk: a random id would apply the same tokens twice
             # when a half-finished repair is retried.
             "batch_id": f"repair-{REPAIR_GENERATION}-{iso_timestamp(since)}-{attempt}-{index}",
             "client_version": CLIENT_VERSION,
-            "rows": chunk,
+            "rows": row_chunk,
         }
+        if message_chunk:
+            payload["messages"] = message_chunk
         if index == 0:
             payload["replace_from"] = iso_timestamp(since)
         response = post_token_usage_batch(auth_pool_url, auth_pool_user_token, payload)
@@ -207,7 +245,7 @@ def run_repair(config: dict, *, state: TokenUsageState) -> dict:
                 "ok": False, "repaired": False, "uploaded": uploaded,
                 "reason": "upload_failed", "status_code": response.get("status_code"),
             }
-        uploaded += len(chunk)
+        uploaded += len(row_chunk) + len(message_chunk)
 
     state.set_meta(REPAIR_STATE_KEY, REPAIR_GENERATION)
     return {"ok": True, "repaired": True, "rows": uploaded, "since": iso_timestamp(since),

@@ -274,6 +274,29 @@ def parse_claude_line(
     )
 
 
+MESSAGE_COUNTER_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "total_tokens")
+
+
+def claude_message(record: UsageRecord, *, bucket_start: str, account_id: str) -> dict[str, Any]:
+    """One Claude message as the hub stores it: keyed on a hash of the message id, full counts.
+
+    The Claude desktop app mirrors a remote session into the local transcripts byte for byte, so
+    the same message can sit on two machines that cannot see each other. Only the hub sees both,
+    and only a key on the message itself lets it count the message once. The key is a SHA-256 of
+    the id -- the same on every machine, and not the raw id. The counts are the message's own
+    totals, not a difference against what this machine sent before: the hub keeps the larger of
+    each counter, so resending a fuller copy corrects it and resending the same copy changes
+    nothing.
+    """
+    return {
+        "message_key": hashlib.sha256(record.logical_record_key.encode("utf-8")).hexdigest(),
+        "bucket_start": bucket_start,
+        "model_account_id": account_id,
+        "model_id": record.model_id,
+        **{field: int(record.counters[field]) for field in MESSAGE_COUNTER_FIELDS},
+    }
+
+
 def claude_counter_delta(
     current: dict[str, int],
     acknowledged: dict[str, int] | None,

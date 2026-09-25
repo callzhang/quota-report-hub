@@ -189,17 +189,16 @@ test("queryTokenUsage aggregates indexed detail with exact filters and determini
       installationId: "member-install",
       batchId: "member-batch",
       receivedAt: "2026-08-18T12:00:00.000Z",
-      rows: [{
-        ...usageRow(),
+      rows: [],
+      messages: [{
+        message_key: "c".repeat(64),
         bucket_start: "2026-08-18T11:15:00.000Z",
-        provider: "claude",
         model_account_id: "claude@stardust.ai",
         model_id: "claude-opus-4-1",
         input_tokens: 80,
         output_tokens: 20,
         cache_read_tokens: 30,
         cache_write_tokens: 40,
-        reasoning_tokens: 0,
         total_tokens: 100,
       }],
     });
@@ -692,6 +691,109 @@ test("a retried repair batch clears once, not once per attempt", async () => {
     assert.equal(second.applied, false);
     const stored = await client.execute("SELECT total_tokens FROM token_usage_15m");
     assert.deepEqual(stored.rows.map((entry) => Number(entry.total_tokens)), [7]);
+  } finally {
+    cleanup();
+  }
+});
+
+function claudeMessage(key, overrides = {}) {
+  return {
+    message_key: key.repeat(64),
+    bucket_start: "2026-09-24T00:00:00.000Z",
+    model_account_id: "claude-leizhang0121@gmail.com",
+    model_id: "claude-opus-5",
+    input_tokens: 1_000_000,
+    output_tokens: 3_000,
+    cache_read_tokens: 950_000,
+    cache_write_tokens: 40_000,
+    total_tokens: 1_003_000,
+    ...overrides,
+  };
+}
+
+async function claudeRows(client) {
+  const result = await client.execute(`
+    SELECT installation_id, bucket_start, input_tokens, output_tokens, total_tokens
+    FROM token_usage_15m WHERE provider = 'claude' ORDER BY installation_id, bucket_start
+  `);
+  return result.rows.map((row) => [row.installation_id, row.bucket_start, Number(row.output_tokens), Number(row.total_tokens)]);
+}
+
+// Regression, 2026-09-25: the Claude desktop app mirrors a remote session into the laptop's
+// ~/.claude/projects byte for byte, so the laptop and the remote host (stardust-GPU4) both reported
+// the same 21 sessions -- 1.76B tokens counted twice. Neither machine can see the other, so only the
+// hub, keyed on the message, can count a message once.
+test("the same Claude message reported by two machines is counted once", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const ingest = (installationId, batchId, messages) => mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai", installationId, batchId, rows: [], messages,
+      receivedAt: "2026-09-25T00:00:00.000Z",
+    });
+    await ingest("gpu4", "g1", [claudeMessage("a"), claudeMessage("b", { bucket_start: "2026-09-24T00:15:00.000Z" })]);
+    await ingest("laptop", "l1", [claudeMessage("a"), claudeMessage("c")]);
+
+    assert.deepEqual(await claudeRows(client), [
+      ["gpu4", "2026-09-24T00:00:00.000Z", 3_000, 1_003_000],
+      ["gpu4", "2026-09-24T00:15:00.000Z", 3_000, 1_003_000],
+      // The mirrored message "a" stays with the machine that reported it first; only "c" is new.
+      ["laptop", "2026-09-24T00:00:00.000Z", 3_000, 1_003_000],
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a fuller copy of a message raises it to the larger count, once", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const ingest = (installationId, batchId, messages) => mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai", installationId, batchId, rows: [], messages,
+      receivedAt: "2026-09-25T00:00:00.000Z",
+    });
+    // A mirror can lag the original mid-stream: the first copy seen may be the shorter one.
+    await ingest("laptop", "l1", [claudeMessage("a", { output_tokens: 1_000, total_tokens: 1_001_000 })]);
+    await ingest("gpu4", "g1", [claudeMessage("a")]);
+    await ingest("laptop", "l2", [claudeMessage("a", { output_tokens: 1_000, total_tokens: 1_001_000 })]);
+
+    assert.deepEqual(await claudeRows(client), [["laptop", "2026-09-24T00:00:00.000Z", 3_000, 1_003_000]]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a repair re-sends its messages without counting them twice or taking another machine's", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const ingest = (installationId, batchId, messages, replaceFrom = null) => mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai", installationId, batchId, rows: [], messages, replaceFrom,
+      receivedAt: "2026-09-25T00:00:00.000Z",
+    });
+    await ingest("laptop", "l1", [claudeMessage("a"), claudeMessage("c")]);
+    await ingest("gpu4", "g1", [claudeMessage("a"), claudeMessage("b")]);
+    await ingest("gpu4", "g-repair", [claudeMessage("a"), claudeMessage("b")], "2026-09-20T00:00:00.000Z");
+    await ingest("laptop", "l-repair", [claudeMessage("a"), claudeMessage("c")], "2026-09-20T00:00:00.000Z");
+
+    const total = await client.execute("SELECT SUM(total_tokens) AS t FROM token_usage_15m WHERE provider = 'claude'");
+    assert.equal(Number(total.rows[0].t), 3 * 1_003_000, "three distinct messages, each counted once");
+  } finally {
+    cleanup();
+  }
+});
+
+test("compaction also drops the per-message records of the days it rolls up", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.ingestTokenUsageBatch({
+      hubUserEmail: "derek@stardust.ai", installationId: "laptop", batchId: "old", rows: [],
+      messages: [claudeMessage("a", { bucket_start: "2026-06-01T00:00:00.000Z" })],
+      receivedAt: "2026-06-01T01:00:00.000Z",
+    });
+    await mod.compactTokenUsage({ before: "2026-06-25T00:00:00.000Z" });
+    const ledger = await client.execute("SELECT COUNT(*) AS n FROM token_usage_claude_messages");
+    assert.equal(Number(ledger.rows[0].n), 0);
+    const daily = await client.execute("SELECT total_tokens FROM token_usage_daily WHERE provider = 'claude'");
+    assert.deepEqual(daily.rows.map((row) => Number(row.total_tokens)), [1_003_000]);
   } finally {
     cleanup();
   }

@@ -69,18 +69,19 @@ test("missing auth returns before body parsing and database writes", async () =>
   assert.equal(writes, 0);
 });
 
-test("uses authenticated email and passes normalized rows once", async () => {
+test("uses authenticated email and passes normalized rows and messages once", async () => {
   const { tokenUsageHandlerImpl } = await import("../lib/data-api.js");
   const recorder = responseRecorder();
   const requestBody = { installation_id: "raw", batch_id: "raw", rows: [] };
   const normalizedRows = [{ model_id: "gpt-5.6-sol" }];
+  const normalizedMessages = [{ message_key: "a".repeat(64) }];
   let normalizeArgs;
   let seenIngest;
   await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies({
     readJsonBody: async () => requestBody,
     normalizeTokenUsageBatch: (body, options) => {
       normalizeArgs = { body, options };
-      return { installation_id: "install-1", batch_id: "batch-1", rows: normalizedRows };
+      return { installation_id: "install-1", batch_id: "batch-1", rows: normalizedRows, messages: normalizedMessages };
     },
     ingestTokenUsageBatch: async (input) => {
       seenIngest = input;
@@ -97,6 +98,7 @@ test("uses authenticated email and passes normalized rows once", async () => {
     clientVersion: undefined,
     replaceFrom: undefined,
     rows: normalizedRows,
+    messages: normalizedMessages,
     receivedAt: "2026-08-18T12:00:00.000Z",
   });
   assert.equal(recorder.res.statusCode, 200);

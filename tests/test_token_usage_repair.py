@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 import tempfile
@@ -64,6 +65,29 @@ class RecomputeWindowTest(unittest.TestCase):
             since, state=self.state, codex_roots=(self.codex_root,), claude_root=self.claude_root,
         )
 
+    def test_claude_is_recomputed_one_record_per_message_at_its_final_count(self):
+        switch_id = self.state.prepare_account_switch(
+            provider="claude", from_account_id="claude-a", to_account_id="claude-a",
+            prepared_at="2026-09-01T00:00:00.000Z",
+        )
+        self.state.finalize_account_switch(switch_id, finalized_at="2026-09-01T00:00:00.000Z")
+        def line(output_tokens):
+            return json.dumps({"type": "assistant", "timestamp": "2026-09-05T10:05:00.000Z", "message": {
+                "id": "msg-1", "model": "claude-opus-5",
+                "usage": {"input_tokens": 2, "output_tokens": output_tokens,
+                          "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50},
+            }})
+        # Streaming writes the same message more than once; the last, fullest copy is its count.
+        (self.claude_root / "session.jsonl").write_text(line(10) + "\n" + line(40) + "\n")
+        rows, messages = self.recompute(datetime(2026, 9, 1, tzinfo=timezone.utc))
+        self.assertEqual(rows, [])
+        self.assertEqual(messages, [{
+            "message_key": hashlib.sha256(b"claude:msg-1").hexdigest(),
+            "bucket_start": "2026-09-05T10:00:00.000Z", "model_account_id": "claude-a",
+            "model_id": "claude-opus-5", "input_tokens": 952, "output_tokens": 40,
+            "cache_read_tokens": 900, "cache_write_tokens": 50, "total_tokens": 992,
+        }])
+
     def test_a_long_session_is_charged_its_turns_not_its_cumulative(self):
         # The bug in one file: a session whose cumulative was already huge before the window opened.
         # Reading from byte zero means the in-window turns are differenced against the turn before
@@ -73,7 +97,7 @@ class RecomputeWindowTest(unittest.TestCase):
             ("2026-09-05T10:00:00.000Z", 5_000_200_000, 10_000_100),
             ("2026-09-05T10:05:00.000Z", 5_000_400_000, 10_000_200),
         ]))
-        rows = self.recompute(datetime(2026, 9, 4, tzinfo=timezone.utc))
+        rows, _messages = self.recompute(datetime(2026, 9, 4, tzinfo=timezone.utc))
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["bucket_start"], "2026-09-05T10:00:00.000Z")
         self.assertEqual(rows[0]["total_tokens"], 400_200)
@@ -84,13 +108,13 @@ class RecomputeWindowTest(unittest.TestCase):
             ("2026-09-01T10:00:00.000Z", 100_000, 1_000),
             ("2026-09-02T10:00:00.000Z", 200_000, 2_000),
         ]))
-        self.assertEqual(self.recompute(datetime(2026, 9, 3, tzinfo=timezone.utc)), [])
+        self.assertEqual(self.recompute(datetime(2026, 9, 3, tzinfo=timezone.utc)), ([], []))
 
     def test_a_forked_session_does_not_pay_for_its_parent_twice(self):
         events = [("2026-09-05T10:00:00.000Z", 100_000, 1_000), ("2026-09-05T10:01:00.000Z", 200_000, 2_000)]
         (self.codex_root / "parent.jsonl").write_text(codex_session("shared", events))
         (self.codex_root / "fork.jsonl").write_text(codex_session("shared", events))
-        rows = self.recompute(datetime(2026, 9, 4, tzinfo=timezone.utc))
+        rows, _messages = self.recompute(datetime(2026, 9, 4, tzinfo=timezone.utc))
         self.assertEqual(sum(row["total_tokens"] for row in rows), 202_000)
 
     def test_a_window_opening_after_the_last_switch_still_has_an_account(self):
@@ -100,7 +124,7 @@ class RecomputeWindowTest(unittest.TestCase):
             ("2026-09-05T10:00:00.000Z", 100_000, 1_000),
             ("2026-09-05T10:05:00.000Z", 200_000, 2_000),
         ]))
-        rows = self.recompute(datetime(2026, 9, 4, tzinfo=timezone.utc))
+        rows, _messages = self.recompute(datetime(2026, 9, 4, tzinfo=timezone.utc))
         self.assertEqual([row["model_account_id"] for row in rows], ["acct-a"])
 
     def test_an_event_with_no_recorded_account_at_all_is_dropped_rather_than_misfiled(self):
@@ -111,12 +135,12 @@ class RecomputeWindowTest(unittest.TestCase):
                 ("2026-09-05T10:00:00.000Z", 100_000, 1_000),
                 ("2026-09-05T10:05:00.000Z", 200_000, 2_000),
             ]))
-            rows = token_usage_repair.recompute_window(
+            rows, messages = token_usage_repair.recompute_window(
                 datetime(2026, 9, 4, tzinfo=timezone.utc), state=state,
                 codex_roots=(self.codex_root,), claude_root=self.claude_root,
             )
             state.close()
-        self.assertEqual(rows, [])
+        self.assertEqual((rows, messages), ([], []))
 
 
 class RunRepairTest(unittest.TestCase):
@@ -142,7 +166,7 @@ class RunRepairTest(unittest.TestCase):
             for index in range(500)
         ]
         sent = []
-        with mock.patch.object(token_usage_repair, "recompute_window", return_value=rows), \
+        with mock.patch.object(token_usage_repair, "recompute_window", return_value=(rows, [])), \
                 mock.patch.object(token_usage_repair, "post_token_usage_batch",
                                   side_effect=lambda _u, _t, payload: sent.append(payload) or {"ok": True}):
             result = token_usage_repair.run_repair(self.config(), state=self.state)
@@ -160,7 +184,7 @@ class RunRepairTest(unittest.TestCase):
                  "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0,
                  "reasoning_tokens": 0, "total_tokens": 1}]
         attempts = []
-        with mock.patch.object(token_usage_repair, "recompute_window", return_value=rows), \
+        with mock.patch.object(token_usage_repair, "recompute_window", return_value=(rows, [])), \
                 mock.patch.object(token_usage_repair, "post_token_usage_batch",
                                   side_effect=lambda _u, _t, payload: attempts.append(payload) or
                                   {"ok": False, "status_code": 503}):
@@ -168,7 +192,7 @@ class RunRepairTest(unittest.TestCase):
         self.assertFalse(failed["ok"])
         self.assertFalse(token_usage_repair.repair_completed(self.state))
 
-        with mock.patch.object(token_usage_repair, "recompute_window", return_value=rows), \
+        with mock.patch.object(token_usage_repair, "recompute_window", return_value=(rows, [])), \
                 mock.patch.object(token_usage_repair, "post_token_usage_batch",
                                   side_effect=lambda _u, _t, payload: attempts.append(payload) or {"ok": True}):
             token_usage_repair.run_repair(self.config(), state=self.state)
@@ -189,12 +213,12 @@ class RunRepairTest(unittest.TestCase):
                      "cache_write_tokens": 0, "reasoning_tokens": 0, "total_tokens": 1}
                     for index in range(count)]
         attempts = []
-        with mock.patch.object(token_usage_repair, "recompute_window", return_value=rows(500)), \
+        with mock.patch.object(token_usage_repair, "recompute_window", return_value=(rows(500), [])), \
                 mock.patch.object(token_usage_repair, "post_token_usage_batch",
                                   side_effect=lambda _u, _t, payload: attempts.append(payload) or
                                   ({"ok": True} if len(attempts) == 1 else {"ok": False, "status_code": 503})):
             token_usage_repair.run_repair(self.config(), state=self.state)
-        with mock.patch.object(token_usage_repair, "recompute_window", return_value=rows(501)), \
+        with mock.patch.object(token_usage_repair, "recompute_window", return_value=(rows(501), [])), \
                 mock.patch.object(token_usage_repair, "post_token_usage_batch",
                                   side_effect=lambda _u, _t, payload: attempts.append(payload) or {"ok": True}):
             result = token_usage_repair.run_repair(self.config(), state=self.state)
@@ -216,7 +240,7 @@ class RunRepairTest(unittest.TestCase):
         # to whoever else reports under the same hub user.
         seen = {}
         with mock.patch.object(token_usage_repair, "recompute_window",
-                               side_effect=lambda since, **_: seen.setdefault("since", since) and []), \
+                               side_effect=lambda since, **_: seen.setdefault("since", since) and ([], [])), \
                 mock.patch.object(token_usage_repair, "post_token_usage_batch"):
             token_usage_repair.run_repair(self.config(), state=self.state)
         cutoff = datetime.fromisoformat(self.state.backfill_cutoff.replace("Z", "+00:00"))

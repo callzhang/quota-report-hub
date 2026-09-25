@@ -45,7 +45,7 @@ test("normalizes exact ingestion fields and sorts rows deterministically", () =>
 
   assert.equal(result.installation_id, "install-019f");
   assert.deepEqual(result.rows.map((row) => row.model_id), ["a-model", "z-model"]);
-  assert.deepEqual(Object.keys(result).sort(), ["batch_id", "client_version", "installation_id", "replace_from", "rows"]);
+  assert.deepEqual(Object.keys(result).sort(), ["batch_id", "client_version", "installation_id", "messages", "replace_from", "rows"]);
   assert.equal(result.client_version, null, "a reporter predating client_version still normalizes");
   assert.equal(result.rows[0].model_id, "a-model");
 });
@@ -112,28 +112,51 @@ test("keeps Codex cache and reasoning as subsets of total", () => {
   );
 });
 
-test("Claude rows follow the same counter rules as Codex rows", () => {
-  // One meaning for every provider: input is all input with cache read and write as subsets of it,
-  // and total is input plus output. A Claude row in Anthropic's own shape -- input excluding the
-  // cache, total adding it back -- is refused rather than stored under a second meaning.
-  const claude = codexRow({
-    provider: "claude",
-    model_id: "claude-opus-4-1",
+function claudeMessage(overrides = {}) {
+  return {
+    message_key: "a".repeat(64),
+    bucket_start: "2026-08-18T11:45:00.000Z",
+    model_account_id: "claude@stardust.ai",
+    model_id: "claude-opus-5",
     input_tokens: 80,
     output_tokens: 20,
     cache_read_tokens: 30,
     cache_write_tokens: 40,
-    reasoning_tokens: 0,
     total_tokens: 100,
-  });
-  assert.equal(normalizeTokenUsageBatch(validBody({ rows: [claude] }), { now }).rows[0].input_tokens, 80);
+    ...overrides,
+  };
+}
+
+test("Claude usage arrives one record per message, never as an aggregate row", () => {
+  // The same Claude message can sit on two machines -- the desktop app mirrors a remote session
+  // byte for byte -- and only a per-message key lets the hub count it once. An aggregate row has
+  // already lost the identity that deduplication needs, so it is refused outright.
   assert.throws(
-    () => normalizeTokenUsageBatch(validBody({ rows: [{ ...claude, input_tokens: 10 }] }), { now }),
-    /cannot exceed input_tokens/i,
+    () => normalizeTokenUsageBatch(validBody({ rows: [codexRow({ provider: "claude", reasoning_tokens: 0 })] }), { now }),
+    /claude/i,
   );
+  const normalized = normalizeTokenUsageBatch(validBody({ rows: [], messages: [claudeMessage()] }), { now });
+  assert.equal(normalized.rows.length, 0);
+  assert.deepEqual(normalized.messages, [claudeMessage()]);
   assert.throws(
-    () => normalizeTokenUsageBatch(validBody({ rows: [{ ...claude, input_tokens: 25, total_tokens: 45 }] }), { now }),
-    /cache_read_tokens/i,
+    () => normalizeTokenUsageBatch(validBody({ rows: [], messages: [] }), { now }),
+    /rows|messages/i,
+  );
+});
+
+test("a Claude message record follows the single counter rule and carries an opaque key", () => {
+  const reject = (message, pattern) => assert.throws(
+    () => normalizeTokenUsageBatch(validBody({ rows: [], messages: [message] }), { now }),
+    pattern,
+  );
+  // The key is a SHA-256 of the provider's message id: opaque, fixed length, never the raw id.
+  reject(claudeMessage({ message_key: "msg_011CebxM8Thresr1cRp1ftZp" }), /message_key/i);
+  reject(claudeMessage({ input_tokens: 10 }), /cannot exceed input_tokens/i);
+  reject(claudeMessage({ total_tokens: 99 }), /total_tokens/i);
+  reject({ ...claudeMessage(), content: "private" }, /unknown field/i);
+  assert.throws(
+    () => normalizeTokenUsageBatch(validBody({ rows: [], messages: [claudeMessage(), claudeMessage()] }), { now }),
+    /duplicate/i,
   );
 });
 
