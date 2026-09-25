@@ -16,6 +16,7 @@ overwriting work it cannot see.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from collections import defaultdict
@@ -180,14 +181,19 @@ def run_repair(config: dict, *, state: TokenUsageState) -> dict:
         return {"ok": True, "repaired": True, "rows": 0, "reason": "nothing_to_report"}
 
     chunks = [rows[start:start + MAX_AGGREGATE_ROWS] for start in range(0, len(rows), MAX_AGGREGATE_ROWS)]
+    # Batch ids name this exact recomputation, not merely a chunk position. A retry over unchanged
+    # history re-sends the same ids and payloads, so chunks the hub already applied are no-ops. But
+    # history grows between attempts, and positional ids then paired an old id with a new payload:
+    # the hub refused chunk 0 as a conflict (409) on every retry and the repair could never finish.
+    # A new recomputation is a new attempt with new ids, and its first chunk clears again.
+    attempt = hashlib.sha256(json.dumps(rows, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     uploaded = 0
     for index, chunk in enumerate(chunks):
         payload = {
             "installation_id": state.installation_id,
-            # Deterministic per chunk so a retry of a half-finished repair re-sends the same batch
-            # id with the same payload, and the hub's receipt makes it a no-op instead of a double
-            # count. A random id would apply the same tokens twice.
-            "batch_id": f"repair-{REPAIR_GENERATION}-{iso_timestamp(since)}-{index}",
+            # Deterministic per attempt and chunk: a random id would apply the same tokens twice
+            # when a half-finished repair is retried.
+            "batch_id": f"repair-{REPAIR_GENERATION}-{iso_timestamp(since)}-{attempt}-{index}",
             "client_version": CLIENT_VERSION,
             "rows": chunk,
         }

@@ -1513,9 +1513,14 @@ cannot be split and would double-count against the attributed rows replacing it)
 is an ordinary additive batch — the window is already clear and the buckets are disjoint, so
 accumulating is exact, and a second replace would delete the chunks before it. The clear runs inside
 the same batch and behind the same receipt guard as the rows, so a retried repair clears once, not
-once per attempt. Batch ids are **deterministic** (`repair-<generation>-<since>-<index>`) so a
-half-finished repair resumes by re-sending identical payloads that the receipt refuses as duplicates
-rather than counting twice.
+once per attempt. Batch ids are **deterministic per recomputation**
+(`repair-<generation>-<since>-<content digest>-<index>`). A half-finished repair over unchanged
+history resumes by re-sending identical payloads, which the receipt refuses as duplicates rather than
+counting twice. History that grew between attempts is a new recomputation with new ids, and its first
+chunk clears again. Until 2026-09-25 the ids were positional only
+(`repair-<generation>-<since>-<index>`). The laptop's generation-3 repair landed 12 chunks on
+2026-09-22 and died before its marker. Every retry since paired chunk 0's old id with a grown
+payload, the hub answered 409, and the repair could never finish.
 
 What it costs: a machine that never updates loses its historical contribution when some other
 machine under the same user clears the blob. That is the price of a number that can be trusted — the

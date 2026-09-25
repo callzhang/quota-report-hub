@@ -177,6 +177,33 @@ class RunRepairTest(unittest.TestCase):
         self.assertEqual(attempts[0]["batch_id"], attempts[1]["batch_id"])
         self.assertTrue(token_usage_repair.repair_completed(self.state))
 
+    def test_a_retry_over_grown_history_gets_new_batch_ids_instead_of_a_permanent_conflict(self):
+        # Regression, 2026-09-25: the laptop's generation-3 repair landed 12 chunks and died before
+        # writing its marker. Every retry since re-derived a window that had grown by then, under
+        # the same positional batch ids, so the hub refused chunk 0 as "same id, different payload"
+        # (409) forever and the repair could never finish.
+        def rows(count):
+            return [{"bucket_start": "2026-09-01T10:00:00.000Z", "provider": "codex",
+                     "model_account_id": "acct-a", "model_id": f"gpt-5.6-sol-{index}",
+                     "input_tokens": 1, "output_tokens": 0, "cache_read_tokens": 0,
+                     "cache_write_tokens": 0, "reasoning_tokens": 0, "total_tokens": 1}
+                    for index in range(count)]
+        attempts = []
+        with mock.patch.object(token_usage_repair, "recompute_window", return_value=rows(500)), \
+                mock.patch.object(token_usage_repair, "post_token_usage_batch",
+                                  side_effect=lambda _u, _t, payload: attempts.append(payload) or
+                                  ({"ok": True} if len(attempts) == 1 else {"ok": False, "status_code": 503})):
+            token_usage_repair.run_repair(self.config(), state=self.state)
+        with mock.patch.object(token_usage_repair, "recompute_window", return_value=rows(501)), \
+                mock.patch.object(token_usage_repair, "post_token_usage_batch",
+                                  side_effect=lambda _u, _t, payload: attempts.append(payload) or {"ok": True}):
+            result = token_usage_repair.run_repair(self.config(), state=self.state)
+
+        self.assertTrue(result["repaired"])
+        first, retry = attempts[0], attempts[2]
+        self.assertNotEqual(first["batch_id"], retry["batch_id"], "grown history is a new attempt")
+        self.assertIn("replace_from", retry, "and a new attempt clears again before re-adding")
+
     def test_a_completed_repair_never_runs_again(self):
         self.state.set_meta(token_usage_repair.REPAIR_STATE_KEY, token_usage_repair.REPAIR_GENERATION)
         with mock.patch.object(token_usage_repair, "recompute_window") as recompute:
