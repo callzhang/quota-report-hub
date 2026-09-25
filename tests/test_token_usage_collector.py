@@ -361,6 +361,9 @@ class TokenUsageCollectorTests(unittest.TestCase):
             self.assertEqual({row["provider"] for row in uploads[0]["rows"]}, {"codex"})
             # Claude goes up one record per message, keyed on a hash of the message id, so the hub
             # can count a message once when a mirrored transcript puts it on two machines.
+            # The account each provider was observed on is kept for the repair, which runs later in a
+            # detached process that cannot ask the guard.
+            self.assertEqual(state.meta("observed_account:claude"), "claude-current@stardust.ai")
             self.assertEqual(uploads[0]["messages"], [{
                 "message_key": hashlib.sha256(b"claude:msg-1").hexdigest(),
                 "bucket_start": "2026-08-18T11:45:00.000Z",

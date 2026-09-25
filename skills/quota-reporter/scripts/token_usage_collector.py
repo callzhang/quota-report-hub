@@ -301,6 +301,11 @@ def collect_and_report_token_usage(
             usage_state.reconcile_prepared_switches(
                 provider="claude", observed_account_id=claude_account_id, observed_at=now_iso
             )
+        # The repair runs later in a detached process that cannot ask the guard which account this
+        # machine is on; for a machine that has never switched, this is its only evidence.
+        for provider, observed in (("codex", codex_account_id), ("claude", claude_account_id)):
+            if observed is not None:
+                usage_state.set_meta(f"observed_account:{provider}", observed)
         pending = usage_state.pending_upload()
         if pending is not None:
             return _handle_pending_upload(

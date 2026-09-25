@@ -1538,7 +1538,29 @@ first it takes ownership of the mirrored messages, and the laptop's older aggreg
 hold the same usage until the laptop repairs. At that point its re-sent copies meet an owner and add
 nothing. Before generation 4 shipped, the overlap already on file was removed by hand: the 21
 desktop sessions' per-bucket totals were computed from GPU4's own transcripts and subtracted from
-GPU4's rows. 709 rows were touched, 702 of them deleted, verified row by row against a backup.
+GPU4's rows. 709 rows were touched, 702 of them deleted, verified row by row against a backup. That subtraction was
+wrong for everything before 2026-09-17. The laptop's files hold every mirrored message, but its hub
+rows did not, because of the next paragraph. So for those 1.29B tokens GPU4's upload had been the only
+copy. Generation 5 restores them.
+
+**Attribution labels usage; it never decides whether usage counts.** Deduplication is by message id
+and knows nothing of accounts. Generations 3 and 4 dropped every event they could not prove an
+account for. The laptop's only Claude boundary is "unknown → leizhang0121" at 2026-09-17 17:54,
+left by a `claude-auth-unavailable` probe outage ending, although the hub's quota history shows it
+never reported another account. So everything before that boundary was dropped, and the replace
+cleared what the live collector had filed: 9.57B tokens of local sessions were missing from the hub
+from 2026-09-22 on. GPU4 has no Claude boundary at all, so its generation-4 repair uploaded nothing.
+Generation 5 (`opening_account`, client 2.13.0) files usage before the first boundary under the
+nearest known account:
+1. the last boundary before the window;
+2. otherwise the first boundary's `from` account, or its `to` account when `from` is unknown (a
+   switch from an unknown account is no evidence of a different one);
+3. otherwise, with no boundary at all, the account the collector last observed
+   (`observed_account:<provider>`, written every run before the repair is spawned).
+
+Only a machine with no evidence whatsoever still drops. Dry run on the laptop: 59,672 Claude
+messages (19.9B tokens) re-derived, 11.9B of them from before 2026-09-17, all under
+claude-leizhang0121, and all 150 batches passing the hub validator.
 
 The upload is chunked at `MAX_AGGREGATE_ROWS`. **Only the first batch carries `replace_from`**: that
 is what clears this installation's rows for the window (and the `''` blob for that user, which

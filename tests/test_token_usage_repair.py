@@ -127,6 +127,36 @@ class RecomputeWindowTest(unittest.TestCase):
         rows, _messages = self.recompute(datetime(2026, 9, 4, tzinfo=timezone.utc))
         self.assertEqual([row["model_account_id"] for row in rows], ["acct-a"])
 
+    def claude_line(self, message_id, event_at):
+        return json.dumps({"type": "assistant", "timestamp": event_at, "message": {
+            "id": message_id, "model": "claude-opus-5",
+            "usage": {"input_tokens": 2, "output_tokens": 10,
+                      "cache_read_input_tokens": 900, "cache_creation_input_tokens": 50},
+        }})
+
+    def test_usage_before_a_switch_from_an_unknown_account_stays_on_the_account_it_switched_to(self):
+        # Regression, 2026-09-25: a probe outage ended with a boundary "unknown -> leizhang" on
+        # 2026-09-17, the laptop's only Claude boundary. Everything before it had no provable
+        # account and was dropped, and the replace cleared what the live collector had filed:
+        # 9.57B tokens of the laptop's own Claude usage gone from the hub. The account had never
+        # changed. A switch from an unknown account is not evidence of a different one.
+        switch_id = self.state.prepare_account_switch(
+            provider="claude", from_account_id=None, to_account_id="claude-a",
+            prepared_at="2026-09-17T17:54:56.000Z",
+        )
+        self.state.finalize_account_switch(switch_id, finalized_at="2026-09-17T17:54:56.000Z")
+        (self.claude_root / "early.jsonl").write_text(self.claude_line("msg-early", "2026-09-05T10:00:00.000Z") + "\n")
+        _rows, messages = self.recompute(datetime(2026, 9, 1, tzinfo=timezone.utc))
+        self.assertEqual([message["model_account_id"] for message in messages], ["claude-a"])
+
+    def test_a_machine_with_no_switch_on_record_files_under_the_account_it_was_last_seen_on(self):
+        # stardust-GPU4 has never switched Claude accounts, so it has no boundary at all, and its
+        # repair uploaded nothing. The collector records the account it observes every run.
+        self.state.set_meta("observed_account:claude", "claude-b")
+        (self.claude_root / "gpu.jsonl").write_text(self.claude_line("msg-gpu", "2026-09-05T10:00:00.000Z") + "\n")
+        _rows, messages = self.recompute(datetime(2026, 9, 1, tzinfo=timezone.utc))
+        self.assertEqual([message["model_account_id"] for message in messages], ["claude-b"])
+
     def test_an_event_with_no_recorded_account_at_all_is_dropped_rather_than_misfiled(self):
         # Undercounting is recoverable; putting one account's tokens on another name is not.
         with tempfile.TemporaryDirectory() as bare:

@@ -55,7 +55,9 @@ REPAIR_WINDOW_DAYS = 90
 # account boundary rules instead of leaving rows produced by an older collector in place.
 # Generation 4: Claude is re-sent one record per message so the hub can drop the copies a mirrored
 # remote session left on a second machine (§16.1).
-REPAIR_GENERATION = "4"
+# Generation 5: an unknown "from" account no longer makes earlier usage unattributable (see
+# opening_account), so machines re-derive the history generations 3 and 4 dropped.
+REPAIR_GENERATION = "5"
 REPAIR_STATE_KEY = "repair_generation"
 
 
@@ -63,10 +65,34 @@ def repair_completed(state: TokenUsageState) -> bool:
     return state.meta(REPAIR_STATE_KEY) == REPAIR_GENERATION
 
 
+OBSERVED_ACCOUNT_KEY = "observed_account:{provider}"
+
+
 def account_before(state: TokenUsageState, provider: str, moment: str) -> str | None:
     """The account this machine was on when the window opened, or None if it never recorded one."""
     switches = state.switches_for_range(provider, "", moment)
     return switches[-1]["to_account_id"] if switches else None
+
+
+def opening_account(state: TokenUsageState, provider: str, since: str, switches: list[dict]) -> str | None:
+    """The account usage before the window's first boundary belongs to: the nearest known one.
+
+    Attribution only labels usage with an account; it never decides whether the usage counts --
+    deduplication is by message id and knows nothing of accounts. So a gap in the evidence must not
+    drop usage. It did: a probe outage left the laptop's only Claude boundary reading
+    "unknown -> leizhang" (2026-09-17), everything before it was dropped as unattributable, and the
+    replace cleared what the live collector had filed -- 9.57B tokens, though the account had never
+    changed. A switch from an unknown account is no evidence of a different one, so the account it
+    switched to extends back; a machine with no boundary at all (stardust-GPU4 has never switched
+    Claude accounts) is on the account the collector last observed. Only a machine with no evidence
+    whatsoever still drops, since there is no account to file under.
+    """
+    before = account_before(state, provider, since)
+    if before is not None:
+        return before
+    if switches:
+        return switches[0].get("from_account_id") or switches[0].get("to_account_id")
+    return state.meta(OBSERVED_ACCOUNT_KEY.format(provider=provider))
 
 
 def recompute_window(
@@ -88,7 +114,10 @@ def recompute_window(
     # time. Offline the equivalent is the last switch finalized before the window -- the account the
     # machine was actually on -- and without it a window that opens after the most recent switch has
     # no boundaries at all and every event would be dropped as unattributable.
-    opening = {provider: account_before(state, provider, since_iso) for provider in ("codex", "claude")}
+    opening = {
+        provider: opening_account(state, provider, since_iso, switches[provider])
+        for provider in ("codex", "claude")
+    }
     aggregate: dict[tuple, dict[str, int]] = defaultdict(lambda: {field: 0 for field in COUNTER_FIELDS})
     counters: dict[str, dict[str, int]] = {}
     seen: set[str] = set()
