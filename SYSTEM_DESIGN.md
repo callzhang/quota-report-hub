@@ -1429,7 +1429,11 @@ transcripts does not upload its history. Subsequent runs:
    `UPDATE token_usage_15m SET input_tokens = total_tokens - output_tokens WHERE provider = 'claude'`
    (and the same on `token_usage_daily`). That statement is idempotent and needs no cutoff: Claude's
    total was correct in both shapes, so it also repairs a bucket that took old-shape rows before
-   the deploy and new-shape rows after it.
+   the deploy and new-shape rows after it. Run on 2026-09-24 after backing up every Claude row: 763 of 764
+   rows converted (one had no cache and was already in shape). A 10-row sample was checked against
+   the backup first, then the rest, row by row: input = total − output, total unchanged, cache ≤
+   input. Claude input went from 11.3M to 6.11B tokens. The first 2.11.0 batches then landed 725
+   Claude rows, all passing the single rule.
 3. Bucket each event into a 15-minute `bucket_start`, attribute it to an account
    (`account_for_event`, [§16.2](#162-account-attribution)), and aggregate — at most
    `MAX_AGGREGATE_ROWS = 400` rows per batch, inside a **10-second cycle budget**.
