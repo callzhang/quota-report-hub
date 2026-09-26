@@ -1004,14 +1004,16 @@ test("summarizePoolHealth aggregates per-source health and central-refresh outco
     { source: "codex", status: "error", error: "auth failed (401 unauthorized)" },
     { source: "codex", status: "error", error: "something transient" },
     { source: "codex", status: "ok", deleted_from_auth_pool: true }, // excluded from the snapshot
+    { source: "codex", status: "skipped", error: null }, // refresh handoff pending: not probed, not an error
     { source: "claude", status: "ok", central_refresh: { attempted: true, ok: true } },
     { source: "claude", status: "error", error: "refresh_token_rejected", central_refresh: { attempted: true, ok: false, auth_rejected: true } },
   ];
   const health = summarizePoolHealth(items);
-  assert.equal(health.codex.total, 3);
+  assert.equal(health.codex.total, 4);
   assert.equal(health.codex.ok_count, 1);
   assert.equal(health.codex.hard_dead_count, 1);
   assert.equal(health.codex.other_err_count, 1);
+  assert.equal(health.codex.skipped_count, 1);
   assert.equal(health.claude.total, 2);
   assert.equal(health.claude.ok_count, 1);
   assert.equal(health.claude.hard_dead_count, 1);

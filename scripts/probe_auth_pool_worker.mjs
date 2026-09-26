@@ -615,7 +615,9 @@ export async function processAuthPoolEntry(
 
 // Aggregate a worker run's per-entry results into one health row per source: how many auths are
 // ok vs hard-dead (RT gone, needs owner re-login) vs other errors, plus central-refresh outcomes.
-// Deleted entries are excluded (they're no longer in the pool).
+// Deleted entries are excluded (they're no longer in the pool). An entry the worker deliberately did
+// not probe (refresh handoff pending) is its own bucket: it says nothing about the account's health,
+// and counting it as an error made a pool of mostly-healthy accounts read as 2/19 healthy.
 export function summarizePoolHealth(items) {
   const bySource = {};
   for (const item of items) {
@@ -629,6 +631,7 @@ export function summarizePoolHealth(items) {
       ok_count: 0,
       hard_dead_count: 0,
       other_err_count: 0,
+      skipped_count: 0,
       central_refresh_attempted: 0,
       central_refresh_ok: 0,
       central_refresh_rejected: 0,
@@ -636,6 +639,8 @@ export function summarizePoolHealth(items) {
     h.total++;
     if (item.status === "ok") {
       h.ok_count++;
+    } else if (item.status === "skipped") {
+      h.skipped_count++;
     } else if (isHardAuthError(item.error, { includeNonRefresh: true })) {
       h.hard_dead_count++;
     } else {

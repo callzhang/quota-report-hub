@@ -546,7 +546,7 @@
       <div id="tab-panel-accounts" hidden>
       <section class="panel section" id="health-section" hidden>
         <h2>Pool health trend</h2>
-        <div class="meta">Per source, from each worker run (~15 min): how many pooled auths are healthy vs hard-dead (refresh token gone — needs the owner to re-login), and central-refresh outcomes. The death spiral is closed when hard-dead stops climbing.</div>
+        <div class="meta">Per source, from each worker run (~15 min): how many pooled auths are healthy vs hard-dead (refresh token gone — needs the owner to re-login), how many were not probed because a local app-server still owns their refresh token, and central-refresh outcomes. The death spiral is closed when hard-dead stops climbing.</div>
         <div id="health-rows" class="health-rows"></div>
       </section>
       <section class="panel section">
@@ -1564,7 +1564,7 @@
           return `
             <div class="health-row">
               <div>${sourceTag(source)}</div>
-              <div class="wrap"><strong>${latest.ok_count}/${latest.total}</strong> healthy</div>
+              <div class="wrap"><strong>${latest.ok_count}/${latest.total}</strong> healthy${latest.skipped_count ? ` <span class="meta">· ${latest.skipped_count} not probed (refresh handoff pending)</span>` : ""}</div>
               <div class="wrap">${latest.hard_dead_count} hard-dead · <span class="trend ${trendClass}">${trendLabel}</span> <span class="meta">/ ${series.length} runs</span></div>
               <div>${sparkline(deadSeries, trendClass === "good" ? "var(--green, #1a7f37)" : "var(--bad)")}</div>
               <div class="meta wrap">central refresh: ${crOk} ok · ${crRej} dead-RT</div>

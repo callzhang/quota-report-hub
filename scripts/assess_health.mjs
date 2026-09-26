@@ -69,7 +69,7 @@ for (const [source, series] of Object.entries(bySource)) {
   const crOk = series.reduce((a, s) => a + s.central_refresh_ok, 0);
   const crRej = series.reduce((a, s) => a + s.central_refresh_rejected, 0);
   console.log(
-    `  ${source}: ${latest.ok_count}/${latest.total} healthy · ` +
+    `  ${source}: ${latest.ok_count}/${latest.total} healthy · ${latest.skipped_count} not probed (handoff pending) · ` +
       `hard-dead ${latest.hard_dead_count} (${delta >= 0 ? "+" : ""}${delta} over ~${windowHours}h, ${trend}) · ` +
       `central-refresh ${crOk} ok / ${crRej} dead-RT (window)`
   );
