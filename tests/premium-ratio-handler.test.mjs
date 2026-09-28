@@ -311,10 +311,7 @@ test("an over-share user is only warned while the pool has room to spare", async
 
   const payload = await call(token);
   assert.notEqual(payload.reason, "demand_share_cooldown", "abundance must not throttle anyone");
-  assert.ok(
-    payload.notices.some((notice) => notice.code === "demand_share_warning"),
-    "the warning still goes out, so habits can change before the pool tightens",
-  );
+  assert.ok(!payload.notices.some((notice) => notice.code === "demand_share_warning"));
 });
 
 test("a non-contributor is warned while the pool is healthy, and still served", async () => {

@@ -1065,6 +1065,11 @@ Either alone is not worth throttling anyone over: a shortage nobody is driving n
 not less work, and a heavy user during abundance is just somebody getting their job done. A share of
 team demand needs no threshold in dollars and rescales itself as the team and pool change size.
 
+The demand-share warning and cooldown both require the pool to be scarce. A healthy pool has no
+reason to warn an over-share user, so the rule stays silent until there is something to protect.
+Demand share is computed from priced dollar spend (`MODEL_COST_SQL`), never raw token counts, so
+different models' token prices do not distort the standing.
+
 The line is simply the average: when quota has run out, everyone above average yields. A wider
 tolerance was tried and bought nothing -- spend is steep enough that 1.0 and 2.5 selected the same
 three people, so the wider line only moved the threshold into an empty stretch while being harder to
@@ -1168,7 +1173,7 @@ client release. Each notice picks one of two cadences (`lib/premium-ratio.js`): 
 something holding the user back right now (an outdated client, reporting debt, a live cooldown, a
 refused fetch, an empty pool) repeats every 6 h, because acting on it changes their situation within
 the hour; an advisory that refuses nothing and reports a seven-day rolling share (`premium_ratio_warning`,
-`demand_share_warning`, `contribution_warning`) repeats once per 24 h, because the number it reports
+scarce-pool `demand_share_warning`, `contribution_warning`) repeats once per 24 h, because the number it reports
 cannot move faster than the window it is measured over. The guard runs every 15 minutes; a toast on
 every run would train people to dismiss it without reading, which is the opposite of what a warning
 is for -- and so would the same seven-day percentage four times a day (2026-09-09: two advisories,

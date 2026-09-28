@@ -314,6 +314,21 @@ test("both ratio notices name the models on each side of the line", () => {
   }
 });
 
+test("demand notices state priced amount share, not token share", () => {
+  const result = evaluateFetchPolicy(inputs({
+    premiumCost: 3,
+    totalCost: 30,
+    teamCost: 100,
+    activeUsers: 10,
+    poolScarce: true,
+    cooldownStartedAt: null,
+  }));
+  const notice = result.notices.find((item) => item.code === "demand_share_cooldown");
+  assert.ok(notice);
+  assert.match(notice.message, /金额开销的 30%/);
+  assert.match(notice.message, /团队平均 10%/);
+});
+
 test("unreported consumption is measured as a debt from the last new account, not report recency", () => {
   const base = {
     now: new Date(PHASE_REPORTER_GATE_AT),
@@ -355,7 +370,7 @@ test("a refresh never starts the debt clock, only a new account does", async () 
   assert.match(source, /String\(reason\) === NEW_ACCOUNT_REASON \? fetchedAt : null/);
 });
 
-test("a warning that refuses nothing repeats daily, a hold repeats within the day", () => {
+test("a scarce warning repeats daily, a hold repeats within the day", () => {
   // Regression for 2026-09-09: the two advisories below re-toasted every six hours on a machine whose
   // seven-day share had not moved -- eight toasts a day saying the same percentage. The number they
   // report cannot change faster than the window it is measured over, so neither should the toast.
@@ -363,12 +378,15 @@ test("a warning that refuses nothing repeats daily, a hold repeats within the da
   assert.ok(NOTICE_REPEAT_SECONDS < ADVISORY_NOTICE_REPEAT_SECONDS, "a hold repeats more often than an advisory");
 
   const heavy = { premiumCost: BIG * 0.9, totalCost: BIG, teamCost: BIG * 2, activeUsers: 10 };
-  const warned = evaluateFetchPolicy(inputs({ ...heavy, poolScarce: false, cooldownStartedAt: PHASE_COOLDOWN_AT }));
+  const warned = evaluateFetchPolicy(inputs({ ...heavy, poolScarce: true, cooldownStartedAt: at(PHASE_COOLDOWN_AT, -31) }));
   assert.equal(warned.allowed, true);
   assert.deepEqual(warned.notices.map((notice) => notice.code), ["premium_ratio_warning", "demand_share_warning"]);
   for (const notice of warned.notices) {
     assert.equal(notice.repeat_seconds, ADVISORY_NOTICE_REPEAT_SECONDS, `${notice.code} nags within the day`);
   }
+
+  const abundant = evaluateFetchPolicy(inputs({ ...heavy, poolScarce: false, cooldownStartedAt: PHASE_COOLDOWN_AT }));
+  assert.deepEqual(abundant.notices.map((notice) => notice.code), ["premium_ratio_warning"]);
 
   const held = evaluateFetchPolicy(inputs({ ...heavy, cooldownStartedAt: at(PHASE_COOLDOWN_AT, -1) }));
   assert.equal(held.reason, "demand_share_cooldown");
@@ -434,14 +452,13 @@ test("a single report clears the debt on the very next fetch", () => {
   assert.deepEqual(after.notices, [], "and stop the nagging with it");
 });
 
-test("the cooldown holds fire while the pool has room, but the warning still goes out", () => {
-  // Throttling during abundance is pure friction -- nobody gains from it. The warning still lands,
-  // which is what gives people time to change habits before the pool tightens.
+test("the cooldown and demand warning stay silent while the pool has room", () => {
   const shared = inputs({ cooldownStartedAt: PHASE_COOLDOWN_AT, lastNewAccountAt: null });
 
   const healthy = evaluateFetchPolicy({ ...shared, poolScarce: false });
   assert.equal(healthy.allowed, true);
   assert.equal(healthy.notices[0].code, "premium_ratio_warning");
+  assert.ok(!healthy.notices.some((notice) => notice.code === "demand_share_warning"));
 
   const scarce = evaluateFetchPolicy({ ...shared, poolScarce: true });
   assert.equal(scarce.allowed, false);
@@ -517,12 +534,12 @@ test("the cooldown releases itself, and says so", () => {
 
 test("only the cooldown notice claims the pool is short, because only then is it", () => {
   const shared = { premiumCost: 0, totalCost: 90, teamCost: 100, activeUsers: 10, cooldownStartedAt: PHASE_COOLDOWN_AT };
-  const text = (poolScarce) => {
+  const notice = (poolScarce) => {
     const result = evaluateFetchPolicy(inputs({ ...shared, poolScarce }));
-    return result.notices.find((notice) => notice.code.startsWith("demand_share")).message;
+    return result.notices.find((item) => item.code.startsWith("demand_share"));
   };
-  assert.match(text(true), /供不应求/);
-  assert.doesNotMatch(text(false), /当前供不应求/, "a healthy pool must not be described as short");
+  assert.match(notice(true).message, /供不应求/);
+  assert.equal(notice(false), undefined, "a healthy pool must not emit a demand notice");
 });
 
 test("a non-contributor is warned before the phase, and never refused during abundance", () => {
