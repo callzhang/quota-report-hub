@@ -309,7 +309,13 @@ Note what the heartbeat does **not** change: a failing probe still does not rota
 ## 4. Data model
 
 ### 4.1 Turso (libsql/SQLite), `lib/db.js`
-Single module-load client (`lib/db.js:15-18`); schema created lazily + memoized (`ensureSchema` `:328-498`).
+Single module-load client (`lib/db.js`); schema created lazily + memoized (`ensureSchema`). The
+client's native `fetch` option sends `Connection: close` on database HTTP requests, preserving
+their authorization, body, and error handling. A probe waits on provider calls between SQL
+statements; reusing a socket the database closed during that interval failed with
+`UND_ERR_SOCKET` on Actions (2026-10-01). Closing each connection after its response adds connection
+setup time but avoids replaying a statement whose write outcome is unknown. Transport failures
+still fail the caller; there is no automatic database retry.
 
 | Table | Key | Purpose |
 |---|---|---|
@@ -708,7 +714,7 @@ The guard runs the same check locally (`probe_claude_inference_access`, [§3.3](
 
 ## 7. Component: Worker
 
-Code: `scripts/probe_auth_pool_worker.mjs`, spawning `scripts/probe_{codex,claude}_auth_blob.py`. Runs on GitHub Actions cron `7 * * * *`, manual dispatch (`.github/workflows/probe-auth-pool.yml`), and the stale-snapshot dispatch endpoint (`/api/cron/probe-auth-pool`). The scheduled workflow installs node 24, the Codex CLI, the Claude CLI, and `pexpect` once, then runs twelve probe cycles in the same runner with `PROBE_INTERVAL_SECONDS=720`.
+Code: `scripts/probe_auth_pool_worker.mjs`, spawning `scripts/probe_{codex,claude}_auth_blob.py`. Runs on GitHub Actions cron `7 * * * *`, manual dispatch (`.github/workflows/probe-auth-pool.yml`), and the stale-snapshot dispatch endpoint (`/api/cron/probe-auth-pool`). The scheduled workflow installs node 24, the Codex CLI, the Claude CLI, and `pexpect` once, then runs eight probe cycles in the same runner with `PROBE_INTERVAL_SECONDS=1200`.
 
 > The GitHub schedule is **best-effort**: high-frequency cron events can be delayed or skipped, so the production schedule uses one hourly runner and performs the probe loop inside that runner long enough to cover observed 2-3 hour gaps. Manual `workflow_dispatch` defaults to one cycle so a human-triggered repair does not wait for the full scheduled loop.
 
