@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           for cycle in $(seq 1 "${PROBE_CYCLES}"); do
             echo "probe cycle ${cycle}/${PROBE_CYCLES}"
-            node scripts/probe_auth_pool_worker.mjs
+            node --import ./scripts/trace_probe_db.mjs scripts/probe_auth_pool_worker.mjs
             if [ "${cycle}" != "${PROBE_CYCLES}" ]; then
               sleep "${PROBE_INTERVAL_SECONDS}"
             fi
