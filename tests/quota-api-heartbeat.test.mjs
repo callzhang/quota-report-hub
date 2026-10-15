@@ -33,6 +33,7 @@ function makeDeps(body, overrides = {}) {
     },
     // the write-path floor only refuses once the gate phase has begun; tests opt in explicitly
     activePhases: () => ({ notice: true, reporter_gate: false, cooldown: false }),
+    uploadExcludedAccountIds: async () => new Set(),
     ...overrides,
   };
   return { deps, calls };

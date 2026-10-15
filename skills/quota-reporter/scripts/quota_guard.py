@@ -52,7 +52,9 @@ from quota_reporters import (
     discover_codex_executable,
     fetch_auth_pool_status,
     seed_guidance_lines,
+    account_upload_excluded,
     fetch_best_auth,
+    fetch_upload_exclusions,
     CLAUDE_AT_ONLY_TOKEN_REJECTED,
     fetched_auth_near_expiry,
     install_claude_credentials,
@@ -422,7 +424,7 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
 # Reasons a same-cycle auth-pool sync can report that still mean "the hub has no confirmed copy
 # of the current account" -- a manual --switch-account must refuse rather than exclude an account
 # id the hub cannot actually recognize as the caller's own.
-_SYNC_REASONS_NOT_ON_HUB = {"missing_auth", "free_plan_excluded", "free_plan_removed_from_auth_pool"}
+_SYNC_REASONS_NOT_ON_HUB = {"missing_auth", "free_plan_excluded", "free_plan_removed_from_auth_pool", "upload_excluded"}
 
 
 def current_account_confirmed_on_hub(sync_outcome: dict | None) -> bool:
@@ -554,11 +556,27 @@ def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
     }
 
 
-def report_current_quota_to_auth_pool(config: dict, source: str, payload: dict | None) -> dict:
+def load_upload_exclusions(config: dict) -> frozenset:
+    """The (source, account_id) pairs this user asked never to send to the hub."""
+    result = fetch_upload_exclusions(config["auth_pool_url"], config["auth_pool_user_token"])
+    if result.get("ok") is not True:
+        raise RuntimeError(f"upload exclusions unavailable: {result.get('error') or result.get('reason')}")
+    return frozenset((item["source"], item["account_id"]) for item in result["exclusions"])
+
+
+def report_current_quota_to_auth_pool(
+    config: dict, source: str, payload: dict | None, upload_exclusions: frozenset | None = frozenset()
+) -> dict:
     if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
         return {"ok": True, "reported": False, "reason": "missing_auth_pool_config"}
     heartbeat = build_probe_heartbeat(source, payload)
-    reportable = quota_payload_is_reportable(source, payload)
+    excluded = account_upload_excluded(upload_exclusions, source, (payload or {}).get("account_id"))
+    if excluded:
+        # The heartbeat still goes: a machine that stopped being heard from would read as switched
+        # off. It simply stops saying which account it was probing.
+        heartbeat["account_id"] = None
+        heartbeat["access_token_fingerprint"] = None
+    reportable = not excluded and quota_payload_is_reportable(source, payload)
     quota_payload = without_sensitive_refresh_capture(payload) if reportable else None
     result = post_auth_pool_quota(
         config["auth_pool_url"],
@@ -2081,6 +2099,7 @@ def maybe_replace_codex_auth(
     usage_state: TokenUsageState | None = None,
     force_switch: bool = False,
     current_account_synced: bool = False,
+    upload_exclusions: frozenset | None = frozenset(),
 ) -> dict:
     current_account_id = current_codex_payload.get("account_id") if current_codex_payload else None
     current_quota = {
@@ -2125,7 +2144,9 @@ def maybe_replace_codex_auth(
         config["auth_pool_url"],
         config["auth_pool_user_token"],
         source="codex",
-        current_account_id=current_account_id,
+        # An excluded account is not named to the hub, not even to ask for a replacement: the
+        # quota numbers are all it needs to pick a better account.
+        current_account_id=None if account_upload_excluded(upload_exclusions, "codex", current_account_id) else current_account_id,
         current_quota=current_quota,
         exclude_account_ids=exclude_account_ids,
         requester_id=current_codex_payload.get("reporter_name") if current_codex_payload else None,
@@ -2285,6 +2306,7 @@ def maybe_replace_claude_auth(
     usage_state: TokenUsageState | None = None,
     force_switch: bool = False,
     current_account_synced: bool = False,
+    upload_exclusions: frozenset | None = frozenset(),
 ) -> dict:
     custom_provider = detect_claude_custom_provider_env(claude_home)
     if custom_provider is not None:
@@ -2344,7 +2366,7 @@ def maybe_replace_claude_auth(
         config["auth_pool_url"],
         config["auth_pool_user_token"],
         source="claude",
-        current_account_id=current_account_id,
+        current_account_id=None if account_upload_excluded(upload_exclusions, "claude", current_account_id) else current_account_id,
         current_quota=current_quota,
         exclude_account_ids=exclude_account_ids,
         requester_id=payload.get("reporter_name"),
@@ -2858,6 +2880,16 @@ def run_guard(args: argparse.Namespace) -> dict:
         claude_payload = source_probe_error_payload("claude", error, args.claude_home)
         guard_errors["claude_probe"] = guard_exception_result("claude_probe_failed", error)
 
+    # Read once per cycle, before anything is sent. None means the list could not be read, and every
+    # hub-bound step then treats every account as excluded (account_upload_excluded) -- that cycle
+    # sends no credential, quota identity or usage rather than risk sending a private account's.
+    upload_exclusions = None
+    if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
+        try:
+            upload_exclusions = timed_guard_step(timings, "upload_exclusions", lambda: load_upload_exclusions(config))
+        except Exception as error:
+            guard_errors["upload_exclusions"] = guard_exception_result("upload_exclusions_failed", error)
+
     sync_result = {}
     quota_report_result = {}
     if config.get("auth_pool_url") and config.get("auth_pool_user_token"):
@@ -2891,6 +2923,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                         auth_path=args.codex_auth_path,
                         known_auth_path=args.known_auth_path,
                         quota_payload=codex_upload_quota,
+                        upload_exclusions=upload_exclusions,
                     ),
                 ),
             )
@@ -2899,12 +2932,12 @@ def run_guard(args: argparse.Namespace) -> dict:
             lambda: timed_guard_step(
                 timings,
                 "codex_quota_report",
-                lambda: report_current_quota_to_auth_pool(config, "codex", codex_payload),
+                lambda: report_current_quota_to_auth_pool(config, "codex", codex_payload, upload_exclusions),
             ),
         )
         quota_report_result["claude"] = run_guard_step(
             "claude_quota_report_failed",
-            lambda: timed_guard_step(timings, "claude_quota_report", lambda: report_current_quota_to_auth_pool(config, "claude", claude_payload)),
+            lambda: timed_guard_step(timings, "claude_quota_report", lambda: report_current_quota_to_auth_pool(config, "claude", claude_payload, upload_exclusions)),
         )
         if claude_custom_provider is not None:
             sync_result["claude"] = {"ok": True, "uploaded": False, "reason": claude_payload.get("error")}
@@ -2922,6 +2955,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                         known_auth_path=args.known_auth_path,
                         probed_payload=claude_payload,
                         quota_payload=without_sensitive_refresh_capture(claude_payload),
+                        upload_exclusions=upload_exclusions,
                     ),
                 ),
             )
@@ -2953,6 +2987,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                 usage_state,
                 force_switch=getattr(args, "switch_account", None) == "codex",
                 current_account_synced=current_account_confirmed_on_hub(sync_result.get("codex")),
+                upload_exclusions=upload_exclusions,
             ),
         ),
     )
@@ -2971,6 +3006,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                 usage_state,
                 force_switch=getattr(args, "switch_account", None) == "claude",
                 current_account_synced=current_account_confirmed_on_hub(sync_result.get("claude")),
+                upload_exclusions=upload_exclusions,
             ),
         ),
     )
@@ -3118,6 +3154,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                     codex_account_id=effective_codex_account_id,
                     claude_account_id=effective_claude_account_id,
                     state=usage_state,
+                    upload_exclusions=upload_exclusions,
                 ),
             ),
         )

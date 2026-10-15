@@ -3,6 +3,7 @@ import {
   tokenUsageHandlerImpl,
   tokenUsageQueryHandlerImpl,
   tokenUsageRetentionHandlerImpl,
+  uploadExclusionsHandlerImpl,
 } from "../lib/data-api.js";
 
 const handlers = {
@@ -10,6 +11,7 @@ const handlers = {
   "token-usage": tokenUsageHandlerImpl,
   "token-usage-query": tokenUsageQueryHandlerImpl,
   "token-usage-retention": tokenUsageRetentionHandlerImpl,
+  "upload-exclusions": uploadExclusionsHandlerImpl,
 };
 
 export async function routeDataRequest(req, res, routes = handlers) {

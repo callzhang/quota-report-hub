@@ -8,6 +8,7 @@ import {
   recordAuthPoolRefreshAttempt,
   releaseAuthPoolRefreshLease,
   setAuthPoolRefreshHandoff,
+  uploadExcludedAccountIds,
   upsertAuthPoolEntry,
   upsertAuthPoolQuota,
 } from "../../lib/db.js";
@@ -131,6 +132,16 @@ export default async function handler(req, res) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ error: "source is required" }));
+    return;
+  }
+
+  // An owner who excluded this account does not want its credential here at all. Current clients
+  // never send it; this refuses an older client that has not yet learned the list, before anything
+  // is decrypted, probed, refreshed or stored.
+  if ((await uploadExcludedAccountIds(source)).has(deriveAuthPoolEntry(source, body.auth_json, body).account_id)) {
+    res.statusCode = 403;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ ok: false, error: "upload_excluded" }));
     return;
   }
 

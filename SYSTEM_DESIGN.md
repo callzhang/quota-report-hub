@@ -35,6 +35,7 @@
 | [15](#15-end-to-end-flow-recap) | End-to-end flow recap |
 | [16](#16-token-usage-pipeline) | Token usage pipeline (collector → ingest → query → retention) |
 | [17](#17-repo-layout-tests-and-deploy) | Repo layout, tests, deploy |
+| [18](#18-upload-exclusions-accounts-that-never-leave-the-machine) | Upload exclusions — accounts that never leave the machine |
 
 ---
 
@@ -328,6 +329,7 @@ still fail the caller; there is no automatic database retry.
 | `auth_pool_requester_assignments` | PK `(source, requester_key)` | Latest fetch/current-account state per requester. Used for active assignment counts and the dashboard's complete `Fetched By` read model without scanning `auth_pool_fetch_log`. |
 | `auth_pool_reporter_assignments` | PK `(source, reporter_key)` | Latest quota-account state per reporting machine. Used for active reporter counts without scanning `auth_pool_quota_events`. |
 | `auth_pool_invalidated_notifications` | PK `(source, account_id)` | Since-when an account is hard-dead + last email sent. (`:459-468`) |
+| `auth_pool_upload_exclusions` | PK `(source, account_id)` | Accounts whose owner (`owner_email`) opted out of every upload ([§18](#18-upload-exclusions-accounts-that-never-leave-the-machine)). |
 | `feature_flags` | PK `key` | `disabled_refresh_token`, `require_contribution` (stored as `"true"`/`"false"`). (`:469-476`) |
 | `auth_admins` | PK `email` | Admin/owner roles; one `owner` row, seeded once ([§6.7](#67-admins--owner)). |
 | `pool_health_snapshots` | PK autoinc | Observability time series: ok/hard-dead/other + central-refresh outcomes per source per worker run. (`:477-494`) |
@@ -474,7 +476,7 @@ History is excluded from `/api/status`. The browser requests it only when an acc
 
 ### 6.5 The data router (`api/data.js`)
 
-Four endpoints share one function. `routeDataRequest` reads `?route=` (set by the `vercel.json`
+Five endpoints share one function (the fifth, `upload-exclusions`, is [§18](#18-upload-exclusions-accounts-that-never-leave-the-machine)). `routeDataRequest` reads `?route=` (set by the `vercel.json`
 rewrites, so callers still use the clean paths), looks the handler up in a fixed map, strips the
 `route` parameter back off `req.url` so each handler parses its own query normally, and 404s an
 unknown route. The handlers themselves live in `lib/data-api.js` and take an injectable `deps`
@@ -1679,3 +1681,51 @@ CLI for manual or preview deploys). The worker deploys with the repo: GitHub Act
 15-minute run, which is why a client-visible protocol change must stay backward-compatible for at
 least one cycle, and why enforcement of anything client-side is put behind a phase date rather than
 shipped hot ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)).
+
+---
+
+## 18. Upload exclusions — accounts that never leave the machine
+
+A person may keep an account (typically a personal mailbox) out of the hub entirely and still draw
+from the pool. The credential is exactly what such an account must not give up, so exclusion is not a
+flag on the upload but the absence of every hub-bound channel that names the account.
+
+**Data.** `auth_pool_upload_exclusions (source, account_id, owner_email, created_at)`. Keyed by
+account, not uploader, so every machine holding the account reaches the same decision. There is no
+UI or endpoint to write it: rows are added by an operator (Turso HTTP API, [§8.5](#85-purge_contaminated_usagepy)
+for why not `@libsql/client`).
+
+**Four channels, each closed at both ends.**
+
+| Channel | Client (current version) | Hub (older clients that have not learned the list) |
+|---|---|---|
+| Credential upload | `sync_current_{codex,claude}_auth_pool` returns `upload_excluded` before anything is read into a request | `/api/auth/upload` → 403 `upload_excluded`, before decrypt/probe/refresh/store |
+| Quota report | `report_current_quota_to_auth_pool` sends no `quota_payload` and blanks `account_id` / `access_token_fingerprint` in the heartbeat; the heartbeat itself still goes, so the machine is not mistaken for a switched-off one | `/api/auth/quota` drops the payload (`reason: upload_excluded`) and blanks the same two heartbeat fields |
+| fetch-best | `maybe_replace_*` sends `current_account_id=None`; the quota numbers are all the hub needs to pick a better account | n/a — the id is only a hint, and an excluded account is not in the pool |
+| Token usage | the collector reads and checkpoints the events but does not emit them | `tokenUsageHandlerImpl` drops excluded rows/messages and still acknowledges the batch |
+
+`token_usage_repair.py` re-uploads historical usage on its own path and is covered by the hub filter
+only.
+
+**How the client learns the list.** `GET /api/auth/upload-exclusions` (a route of the data router,
+[§6.5](#65-the-data-router-apidatajs)) returns only the *caller's* exclusions — the list contains
+personal mailboxes and every member holds a token that can ask. It is read once per guard cycle,
+before any other hub call. **If it cannot be read, every account counts as excluded for that cycle**
+(`account_upload_excluded(None, …)`): the cycle sends no credential, no quota identity and no usage,
+and the next 15-minute run repairs it. Failing open would upload the one account the owner asked us
+to keep private.
+
+**The owner still borrows.** `fetchPolicyInputs.hasHealthyUpload` is true for any user who owns an
+exclusion row. Without it the contribution rules of [§9b](#9b-the-premium-share-gate-libpremium-ratiojs)
+would read "nothing uploaded" as "contributes nothing" and warn, cool down and, under
+`require_contribution`, refuse exactly the people who asked for privacy. Their usage on the excluded
+account is not reported, so the premium-share split does not see it.
+
+**Consequences worth knowing.**
+- A fetch replaces `auth.json` as it always did. For an excluded account that credential exists
+  nowhere else, so after a borrow the owner re-logs in to get it back.
+- An excluded account has `current_account_confirmed_on_hub` false (`upload_excluded` is in
+  `_SYNC_REASONS_NOT_ON_HUB`), so a manual `--switch-account` for it is refused rather than naming
+  the account to the hub.
+- Adding a row does not remove what the hub already holds: the pool entry, its blob and the
+  `auth_pool_quota_*` history rows for that account stay until deleted separately.

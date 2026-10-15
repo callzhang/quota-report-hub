@@ -24,19 +24,21 @@ function dependencies(overrides = {}) {
     installation_id: "install-1",
     batch_id: "batch-1",
     rows: [{ model_id: "gpt-5.6-sol" }],
+    messages: [],
   };
   return {
     authenticateApiRequest: async () => ({ email: "derek@stardust.ai" }),
     sendUnauthorized(res) { res.statusCode = 401; res.end("unauthorized"); },
     sendServiceUnavailable(res) { res.statusCode = 503; res.end("unavailable"); },
     withTokenUpgrade: (payload) => payload,
-    readJsonBody: async () => ({ installation_id: "install-1", batch_id: "batch-1", rows: [] }),
+    readJsonBody: async () => ({ installation_id: "install-1", batch_id: "batch-1", messages: [], rows: [] }),
     normalizeTokenUsageBatch: () => normalized,
     ingestTokenUsageBatch: async () => ({
       applied: true,
       received_at: "2026-08-18T12:00:00.000Z",
       applied_at: "2026-08-18T12:00:00.000Z",
     }),
+    uploadExcludedAccountIds: async () => new Set(),
     now: () => new Date("2026-08-18T12:00:00.000Z"),
     ...overrides,
   };
@@ -81,7 +83,7 @@ test("uses authenticated email and passes normalized rows and messages once", as
     readJsonBody: async () => requestBody,
     normalizeTokenUsageBatch: (body, options) => {
       normalizeArgs = { body, options };
-      return { installation_id: "install-1", batch_id: "batch-1", rows: normalizedRows, messages: normalizedMessages };
+      return { installation_id: "install-1", batch_id: "batch-1", messages: [], rows: normalizedRows, messages: normalizedMessages };
     },
     ingestTokenUsageBatch: async (input) => {
       seenIngest = input;
@@ -193,7 +195,7 @@ test("an out-of-date client is refused with 426 so its batch stays pending", asy
   let writes = 0;
   await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies({
     normalizeTokenUsageBatch: () => ({
-      installation_id: "install-1", batch_id: "batch-1", client_version: "2.1.0", rows: [],
+      installation_id: "install-1", batch_id: "batch-1", messages: [], client_version: "2.1.0", rows: [],
     }),
     activePhases: () => ({ notice: true, reporter_gate: true, cooldown: false }),
     ingestTokenUsageBatch: async () => { writes += 1; },
@@ -210,7 +212,7 @@ test("the version gate is inert before the reporter gate phase begins", async ()
   const recorder = responseRecorder();
   await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies({
     normalizeTokenUsageBatch: () => ({
-      installation_id: "install-1", batch_id: "batch-1", client_version: "2.1.0", rows: [],
+      installation_id: "install-1", batch_id: "batch-1", messages: [], client_version: "2.1.0", rows: [],
     }),
     activePhases: () => ({ notice: true, reporter_gate: false, cooldown: false }),
   }));
@@ -223,7 +225,7 @@ test("a current client is not gated, and the handler works without an activePhas
   const recorder = responseRecorder();
   await tokenUsageHandlerImpl({ method: "POST" }, recorder.res, dependencies({
     normalizeTokenUsageBatch: () => ({
-      installation_id: "install-1", batch_id: "batch-1",
+      installation_id: "install-1", batch_id: "batch-1", messages: [],
       client_version: MIN_REPORTER_CLIENT_VERSION, rows: [],
     }),
   }));

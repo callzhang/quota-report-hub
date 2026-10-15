@@ -33,6 +33,7 @@ test("Hobby deployment stays within twelve serverless functions", async () => {
     "/api/quota-history",
     "/api/token-usage",
     "/api/token-usage-query",
+    "/api/auth/upload-exclusions",
     "/api/cron/token-usage-retention",
   ]));
 });

@@ -3180,6 +3180,29 @@ def post_auth_pool_quota(
         return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
 
 
+def fetch_upload_exclusions(auth_pool_url: str, auth_pool_user_token: str) -> dict:
+    request = urllib.request.Request(
+        auth_pool_url.rstrip("/") + "/api/auth/upload-exclusions",
+        headers={"Authorization": f"Bearer {auth_pool_user_token}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request) as response:
+            return read_auth_pool_response(response)
+    except urllib.error.HTTPError as error:
+        return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
+
+
+def account_upload_excluded(exclusions: frozenset | None, source: str, account_id: str | None) -> bool:
+    """Whether nothing about this account may be sent to the hub.
+
+    `None` means the list could not be read, which is treated as "excluded": a list that failed to
+    load must not become a reason to upload the one account its owner asked us to keep private. The
+    cost is a skipped cycle, which the next 15-minute run repairs.
+    """
+    return exclusions is None or (source, account_id) in exclusions
+
+
 def post_token_usage_batch(
     auth_pool_url: str,
     auth_pool_user_token: str,
@@ -3754,6 +3777,7 @@ def sync_current_codex_auth_pool(
     known_auth_path: Path = KNOWN_AUTH_PATH,
     quota_payload: dict | None = None,
     allow_rotating_upload: bool = True,
+    upload_exclusions: frozenset | None = frozenset(),
 ) -> dict:
     if not auth_path.exists():
         return {"ok": True, "uploaded": False, "reason": "missing_auth"}
@@ -3770,6 +3794,8 @@ def sync_current_codex_auth_pool(
     if auth_json_is_stripped("codex", auth_json_text):
         return {"ok": True, "uploaded": False, "reason": "local_auth_is_at_only"}
     metadata = auth_metadata(auth_path)
+    if account_upload_excluded(upload_exclusions, "codex", metadata.get("account_id")):
+        return {"ok": True, "uploaded": False, "reason": "upload_excluded"}
     known = known_auth_state_for_source(read_known_auth_state(known_auth_path), "codex")
     pending_handoff_account_id = known.get("refresh_handoff_account_id")
     local_auth_generation_changed = bool(
@@ -3858,6 +3884,7 @@ def sync_current_claude_auth_pool(
     claude_bin: str | None = None,
     probed_payload: dict | None = None,
     quota_payload: dict | None = None,
+    upload_exclusions: frozenset | None = frozenset(),
 ) -> dict:
     blob_text, payload = build_claude_auth_blob(claude_home, claude_bin, probed_payload=probed_payload)
     if blob_text is None:
@@ -3868,6 +3895,8 @@ def sync_current_claude_auth_pool(
         }
 
     metadata = claude_auth_blob_metadata(blob_text)
+    if account_upload_excluded(upload_exclusions, "claude", metadata.get("account_id")):
+        return {"ok": True, "uploaded": False, "reason": "upload_excluded"}
     if auth_json_is_stripped("claude", blob_text):
         # No refresh token to hand over, but the access token may still be supply: the hub keeps
         # its own RT and takes this token only if it outlives the pooled one (a desktop re-mint on

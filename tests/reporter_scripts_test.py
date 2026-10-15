@@ -4690,7 +4690,8 @@ Reading additional input from stdin...
         self.assertFalse(replacement["replaced"])
         self.assertEqual(replacement["reason"], "unsupported_custom_provider")
 
-    def test_run_guard_syncs_pool_and_fetches_replacement(self):
+    @mock.patch.object(quota_guard, "load_upload_exclusions", return_value=frozenset())
+    def test_run_guard_syncs_pool_and_fetches_replacement(self, _exclusions):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
@@ -4722,6 +4723,7 @@ Reading additional input from stdin...
             auth_path=args.codex_auth_path,
             known_auth_path=args.known_auth_path,
             quota_payload={"account_id": "current"},
+            upload_exclusions=frozenset(),
         )
         sync_claude_auth_pool.assert_called_once()
         self.assertIs(sync_claude_auth_pool.call_args.kwargs["probed_payload"], probe_claude_mock.return_value)
@@ -4785,7 +4787,8 @@ Reading additional input from stdin...
         self.assertEqual(bundled["usage_summary"]["meter"], {"limit_id": "codex"})
         self.assertNotIn("refreshed_auth_json", bundled["refresh_capture"], "the rotated credential never rides along")
 
-    def test_run_guard_manages_codex_auth(self):
+    @mock.patch.object(quota_guard, "load_upload_exclusions", return_value=frozenset())
+    def test_run_guard_manages_codex_auth(self, _exclusions):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
             auth_pool_user_token="qrp_token",
@@ -4826,7 +4829,7 @@ Reading additional input from stdin...
         replace_codex.assert_called_once()
         stale_app_server.assert_called_once_with(args.codex_auth_path)
         restart_app_server.assert_not_called()
-        self.assertIn(mock.call(config, "codex", codex_payload), report_quota.call_args_list)
+        self.assertIn(mock.call(config, "codex", codex_payload, frozenset()), report_quota.call_args_list)
         self.assertEqual(result["codex"], codex_payload)
         self.assertEqual(result["replacement"]["codex"], codex_replacement)
 

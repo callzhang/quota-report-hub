@@ -22,6 +22,7 @@
     { "source": "/api/quota-history", "destination": "/api/data?route=quota-history" },
     { "source": "/api/token-usage", "destination": "/api/data?route=token-usage" },
     { "source": "/api/token-usage-query", "destination": "/api/data?route=token-usage-query" },
+    { "source": "/api/auth/upload-exclusions", "destination": "/api/data?route=upload-exclusions" },
     { "source": "/api/cron/token-usage-retention", "destination": "/api/data?route=token-usage-retention" }
   ],
   "crons": [

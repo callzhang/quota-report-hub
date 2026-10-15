@@ -1,6 +1,6 @@
 import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
-import { dbConfigured } from "../../lib/db.js";
+import { dbConfigured, uploadExcludedAccountIds } from "../../lib/db.js";
 import { ingestClientQuota, ingestReporterHeartbeat } from "../../lib/quota-ingest.js";
 import { readJsonBody } from "../../lib/http.js";
 import { activePhases, clientNeedsUpgrade, upgradeNotice } from "../../lib/premium-ratio.js";
@@ -19,6 +19,7 @@ export async function quotaHandlerImpl(req, res, deps = {
   ingestClientQuota,
   ingestReporterHeartbeat,
   activePhases,
+  uploadExcludedAccountIds,
 }) {
   if (req.method !== "POST") {
     res.statusCode = 405;
@@ -60,8 +61,16 @@ export async function quotaHandlerImpl(req, res, deps = {
   }
 
   const source = String(body.source);
+  // An excluded account is invisible here: its quota is not stored and its identity is stripped from
+  // the heartbeat, which is still kept so the machine reads as alive. Current clients already omit
+  // both; this is the refusal for one that has not yet learned the list.
+  const excluded = await deps.uploadExcludedAccountIds(source);
+  const quotaAccountExcluded = hasQuotaPayload && excluded.has(String(body.quota_payload.account_id));
+  const heartbeat = hasHeartbeat && excluded.has(String(body.heartbeat.account_id))
+    ? { ...body.heartbeat, account_id: null, access_token_fingerprint: null }
+    : body.heartbeat;
   const heartbeatResult = hasHeartbeat
-    ? await deps.ingestReporterHeartbeat({ source, heartbeat: body.heartbeat, reporterEmail: authContext.email })
+    ? await deps.ingestReporterHeartbeat({ source, heartbeat, reporterEmail: authContext.email })
     : null;
   // The version floor is enforced where data is WRITTEN, not only where auth is fetched. A machine
   // that only reports never asks fetch-best for anything, so the fetch gate never reaches it -- and
@@ -69,7 +78,7 @@ export async function quotaHandlerImpl(req, res, deps = {
   // always kept: it is how we see the machine and its version at all. Only the quota numbers are
   // refused, and only once the reporter_gate phase has begun; before that the response carries the
   // upgrade notice and the report is taken.
-  const clientVersion = body.heartbeat?.client_version ? String(body.heartbeat.client_version) : null;
+  const clientVersion = heartbeat?.client_version ? String(heartbeat.client_version) : null;
   const outdated = clientNeedsUpgrade(clientVersion);
   const notices = outdated ? [upgradeNotice()] : [];
   if (hasQuotaPayload && outdated && deps.activePhases().reporter_gate) {
@@ -86,6 +95,15 @@ export async function quotaHandlerImpl(req, res, deps = {
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify(deps.withTokenUpgrade(
       { ok: true, source, heartbeat: heartbeatResult, ignored: true, reason: "heartbeat_only", notices },
+      authContext,
+    )));
+    return;
+  }
+  if (quotaAccountExcluded) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify(deps.withTokenUpgrade(
+      { notices, ok: true, source, ignored: true, reason: "upload_excluded", heartbeat: heartbeatResult },
       authContext,
     )));
     return;

@@ -274,6 +274,7 @@ def collect_and_report_token_usage(
     config: dict,
     codex_account_id: str | None,
     claude_account_id: str | None,
+    upload_exclusions: frozenset | None = frozenset(),
     state: TokenUsageState | None = None,
     state_path: Path = DEFAULT_TOKEN_USAGE_STATE_PATH,
     codex_roots: tuple[Path, ...] = DEFAULT_CODEX_SESSION_ROOTS,
@@ -287,6 +288,10 @@ def collect_and_report_token_usage(
     auth_pool_user_token = str(config.get("auth_pool_user_token") or "").strip()
     if not auth_pool_url or not auth_pool_user_token:
         return _empty_summary(started=started, monotonic=monotonic, reason="missing_auth_pool_config")
+    if upload_exclusions is None:
+        # Without the list there is no telling which usage is private, and usage already read is
+        # checkpointed past: waiting one cycle costs nothing, sending the wrong rows cannot be undone.
+        return _empty_summary(started=started, monotonic=monotonic, reason="upload_exclusions_unavailable")
 
     owned_state = state is None
     usage_state = state or TokenUsageState(state_path, now=wall_now)
@@ -396,7 +401,13 @@ def collect_and_report_token_usage(
                                     report_account_id=report_accounts[record.provider],
                                     switches=switches[record.provider],
                                 )
-                                should_emit = event_time >= _parse_time(cutoff) and any(delta.values())
+                                # Excluded usage is read and checkpointed like any other, then simply not
+                                # emitted: the account stays private without the file being re-read forever.
+                                should_emit = (
+                                    event_time >= _parse_time(cutoff)
+                                    and any(delta.values())
+                                    and (record.provider, account_id) not in upload_exclusions
+                                )
                                 aggregate_key = (bucket, record.provider, account_id or "", record.model_id)
                                 if should_emit and account_id is None:
                                     warnings["parse"] += 1
