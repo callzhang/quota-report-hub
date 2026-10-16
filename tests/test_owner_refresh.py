@@ -52,6 +52,18 @@ class LoggedOutAfterPoolFetchTests(unittest.TestCase):
                 )
         self.assertFalse(fetch.call_args.kwargs["refresh_current"])
 
+    def test_a_lapsed_credential_cannot_wait_for_the_hub_to_renew_in_place(self):
+        # With no OAuth record left, the local expiry clock reads None and would defer forever when
+        # the hub answers a renewal with a different account.
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch.object(
+            quota_guard, "local_access_token_seconds_left", return_value=None
+        ):
+            base = Path(temp_dir)
+            self.assertTrue(quota_guard.current_auth_cannot_wait(
+                dict(LOGGED_OUT), known_auth(base, "fetched_from_auth_pool"), claude_home=base / "claude"))
+            self.assertFalse(quota_guard.current_auth_cannot_wait(
+                dict(LOGGED_OUT), known_auth(base, "owner_local"), claude_home=base / "claude"))
+
     def test_other_errors_do_not_count_as_a_lapsed_token(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             known = known_auth(Path(temp_dir), "fetched_from_auth_pool")

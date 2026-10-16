@@ -311,7 +311,10 @@ export default async function handler(req, res) {
           requesterId,
           source,
           servedEntry: sameEntry,
-          reason: "refreshed_current",
+          // Not "refreshed_current": that reason completes a cooldown cycle (COOLDOWN_COMPLETION_REASONS),
+          // and an exempt renewal is not a draw -- clearing the owner's running cooldown would make
+          // their next real switch start a fresh full wait instead of finishing this one.
+          reason: ownRefresh ? "owner_refreshed_current" : "refreshed_current",
           currentAccountId,
           currentQuota,
           clientVersion: requestClientVersion,

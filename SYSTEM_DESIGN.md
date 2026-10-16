@@ -294,7 +294,10 @@ refuse it as quota, so it still never becomes zero windows.
   current account, so on a pool whose only account is the caller's own (derek@, claude, 2026-10-15)
   it can never be answered. A person who signed out of a login they own (`owner_local`) is not
   affected; a person who signs out of a pool-fetched credential is handed it back, which is what
-  the guard does with that credential anyway.
+  the guard does with that credential anyway. The same condition also counts in
+  `current_auth_cannot_wait`: with no OAuth record left the local expiry clock reads nothing, and
+  without this the different-account deferral would keep a machine with no usable credential on
+  "kept current" forever whenever the hub could only offer another account.
 
 ### 3.6 Token handling
 - One personal **auth-pool user token** (issued per company email) is the Bearer for all hub calls and also unlocks the dashboard.
@@ -1171,7 +1174,10 @@ contribution alive, and an AT-only owner has no other way to mint a token: derek
 token lapsed during a demand-share cooldown on 2026-10-15, the hub refused 411 renewals of his own
 account over 14 days, and the CLI stayed logged out. The exemption covers the renewal only — if the
 pooled copy cannot be served in place and the request falls through to choosing another account, it
-is evaluated again as a switch and rationed like any other. The version floor
+is evaluated again as a switch and rationed like any other. A served owner renewal is logged as
+`owner_refreshed_current`, not `refreshed_current`: the latter completes (clears) a running cooldown
+cycle, and a renewal is not a hand-over, so the owner's next real switch must finish the wait it
+already started rather than queue for a fresh one. The version floor
 (`reporter_upgrade_required`) is bypassed too, as it is for owner repair. Of 2,370 renewals served
 2026-10-02..16, 369 were on the requester's own account; the cooldown log cannot tell renewals from
 switches, so the 679 cooldown refusals on an account the requester uploaded (two users) bound the

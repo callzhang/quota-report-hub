@@ -462,6 +462,15 @@ test("an owner's renewal of their own uploaded account is not rationed", async (
   assert.equal(renewal.replacement.account_id, accountId);
   assert.ok(!renewal.notices.some((notice) => notice.code === "demand_share_cooldown"),
     "a served renewal must not carry the blocking cooldown notice");
+
+  // The cycle the switch refusal started keeps running: a renewal is not a hand-over, so it must
+  // not complete (clear) it and make the next real switch queue for a fresh full wait.
+  const after = await db.fetchPolicyInputs({
+    email, since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+  });
+  assert.ok(after.cooldownStartedAt, "the owner's running cooldown survives the renewal");
+  const log = await db.authPoolFetchLog({ limit: 20 });
+  assert.ok(log.some((row) => row.requester_email === email && row.reason === "owner_refreshed_current"));
 });
 
 test("renewing an account somebody else uploaded is still rationed", async () => {

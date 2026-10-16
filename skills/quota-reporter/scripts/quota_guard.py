@@ -351,7 +351,9 @@ def is_hard_invalidated(payload: dict) -> bool:
 DEFER_MIN_ACCESS_TOKEN_SECONDS = 15 * 60
 
 
-def current_auth_cannot_wait(payload: dict, *, claude_home=None, now: float | None = None) -> bool:
+def current_auth_cannot_wait(
+    payload: dict, known_auth_path: Path, *, claude_home=None, now: float | None = None
+) -> bool:
     """True when keeping the current credential another cycle risks going dark.
 
     Either the access token was just refused, or it expires before the next guard run. The
@@ -361,6 +363,10 @@ def current_auth_cannot_wait(payload: dict, *, claude_home=None, now: float | No
     80 minutes before anything escalated.
     """
     if needs_fresh_access_token(payload):
+        return True
+    # A lapsed pool credential has no OAuth record left to read an expiry from, so the clock below
+    # cannot see it -- but a logged-out CLI is the clearest case of a credential that cannot wait.
+    if claude_logged_out_after_pool_fetch(payload, known_auth_path):
         return True
     seconds_left = local_access_token_seconds_left("claude", claude_home=claude_home, now=now)
     return seconds_left is not None and seconds_left < DEFER_MIN_ACCESS_TOKEN_SECONDS
@@ -2459,7 +2465,7 @@ def maybe_replace_claude_auth(
     if (
         refresh_current
         and replacement.get("account_id") != current_account_id
-        and not current_auth_cannot_wait(payload, claude_home=claude_home)
+        and not current_auth_cannot_wait(payload, known_auth_path, claude_home=claude_home)
     ):
         return {"ok": True, "replaced": False, "reason": "kept_current_refresh_deferred", "triggered_by": ["claude"], "account_id": current_account_id}
 
