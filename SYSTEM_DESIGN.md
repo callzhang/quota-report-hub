@@ -286,6 +286,18 @@ refuse it as quota, so it still never becomes zero windows.
   placeholder RT cannot distinguish a dead credential from a refused request, so it does not get to
   declare the account dead — only `auth_rejected`, where a real RT was presented and refused, does
   that ([`AUTH_TOKENS.md` §6](AUTH_TOKENS.md)).
+  A lapsed access token on a pool-fetched credential also reaches the user as a logged-out CLI
+  (`claude auth status` → `loggedIn=false`), because there is no refresh token to renew it with.
+  `claude_logged_out_after_pool_fetch` — logged out **and** `state_source=fetched_from_auth_pool` —
+  therefore takes the same `refresh_current` route instead of the plain replacement that
+  `source_needs_replacement` would choose for a dead credential. The plain request excludes the
+  current account, so on a pool whose only account is the caller's own (derek@, claude, 2026-10-15)
+  it can never be answered. A person who signed out of a login they own (`owner_local`) is not
+  affected; a person who signs out of a pool-fetched credential is handed it back, which is what
+  the guard does with that credential anyway. The same condition also counts in
+  `current_auth_cannot_wait`: with no OAuth record left the local expiry clock reads nothing, and
+  without this the different-account deferral would keep a machine with no usable credential on
+  "kept current" forever whenever the hub could only offer another account.
 
 ### 3.6 Token handling
 - One personal **auth-pool user token** (issued per company email) is the Bearer for all hub calls and also unlocks the dashboard.
@@ -1154,6 +1166,22 @@ their own invalidated auth to re-login, which remains the way to stop being one.
 notice (`contributionRequiredNotice`) names the admin decision, what counts as a valid account,
 and that renewal of the account currently in hand will also require contributing once its access
 token expires.
+
+**Owner renewal is not rationed.** A `refresh_current` request for an account the caller uploaded
+(`uploader_email` equals the token's email) bypasses the demand-share, contribution and
+`require_contribution` gates, as owner repair does. The hub is only keeping the caller's own
+contribution alive, and an AT-only owner has no other way to mint a token: derek@'s claude access
+token lapsed during a demand-share cooldown on 2026-10-15, the hub refused 411 renewals of his own
+account over 14 days, and the CLI stayed logged out. The exemption covers the renewal only — if the
+pooled copy cannot be served in place and the request falls through to choosing another account, it
+is evaluated again as a switch and rationed like any other. A served owner renewal is logged as
+`owner_refreshed_current`, not `refreshed_current`: the latter completes (clears) a running cooldown
+cycle, and a renewal is not a hand-over, so the owner's next real switch must finish the wait it
+already started rather than queue for a fresh one. The version floor
+(`reporter_upgrade_required`) is bypassed too, as it is for owner repair. Of 2,370 renewals served
+2026-10-02..16, 369 were on the requester's own account; the cooldown log cannot tell renewals from
+switches, so the 679 cooldown refusals on an account the requester uploaded (two users) bound the
+change from above.
 
 ### Schedule and kill switch
 

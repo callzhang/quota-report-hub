@@ -191,7 +191,7 @@ test("fetch-best serves a replacement but prioritizes the requester's own failed
     const refreshedServed = JSON.parse(refreshPayload.replacement.auth_json);
     assert.equal(refreshedServed.tokens.access_token, "access-healthy-provider");
     assert.match(refreshedServed.tokens.refresh_token, /^rt\.1\./);
-    assert.ok((await db.authPoolFetchLog({ limit: 8 })).some((row) => row.reason === "refreshed_current"));
+    assert.ok((await db.authPoolFetchLog({ limit: 8 })).some((row) => row.reason === "owner_refreshed_current"));
 
     // Fallback: refresh_current on an account whose pooled copy has an ALREADY-EXPIRED AT must NOT
     // serve that stale same-account copy (it would dead-lock the owner) — it falls through to a

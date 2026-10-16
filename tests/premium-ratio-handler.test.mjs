@@ -22,6 +22,8 @@ process.env.POOL_COOLDOWN_AT = "2000-01-01T00:00:00.000Z";
 // overrides and freeze the gate/cooldown dates before the tests could move them.
 const { MIN_REPORTER_CLIENT_VERSION, PREMIUM_RATIO_COOLDOWN_MINUTES } = await import("../lib/premium-ratio.js");
 const db = await import("../lib/db.js");
+const { decryptAuthJson } = await import("../lib/auth-pool.js");
+const { accessTokenMsUntilExpiry } = await import("../lib/token-refresh.js");
 const { default: handler } = await import("../api/auth/fetch-best.js");
 const { createClient } = await import("@libsql/client");
 const scarcityClient = createClient({
@@ -436,4 +438,83 @@ test("the ratio-gate kill switch does not disarm require_contribution", async ()
     await db.setFeatureFlag("premium_ratio_enforcement", true, "test");
     await db.setFeatureFlag("require_contribution", false, "test");
   }
+});
+
+// derek@, claude, 2026-10-15: an AT-only owner's access token expired while the demand-share
+// cooldown was running, the hub refused every renewal of his OWN account (32 in a row), and the
+// pool's only claude account sat behind a logged-out CLI. Renewing what you uploaded is not a draw.
+test("an owner's renewal of their own uploaded account is not rationed", async () => {
+  const email = "owner-refresh@stardust.ai";
+  const accountId = "owner-refresh-pool@example.com";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.6-sol", "batch-owner-refresh", { heavy: true });
+  await seedContribution(email, accountId);
+  await seedScarcePool(true);
+
+  const switching = await call(token);
+  assert.equal(switching.reason, "demand_share_cooldown", "the same user is rationed when switching");
+
+  const renewal = await call(token, {
+    source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION,
+    current_account_id: accountId, refresh_current: true,
+  });
+  assert.equal(renewal.refreshed_current, true);
+  assert.equal(renewal.replacement.account_id, accountId);
+  assert.ok(!renewal.notices.some((notice) => notice.code === "demand_share_cooldown"),
+    "a served renewal must not carry the blocking cooldown notice");
+
+  // The cycle the switch refusal started keeps running: a renewal is not a hand-over, so it must
+  // not complete (clear) it and make the next real switch queue for a fresh full wait.
+  const after = await db.fetchPolicyInputs({
+    email, since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+  });
+  assert.ok(after.cooldownStartedAt, "the owner's running cooldown survives the renewal");
+  const log = await db.authPoolFetchLog({ limit: 20 });
+  assert.ok(log.some((row) => row.requester_email === email && row.reason === "owner_refreshed_current"));
+});
+
+test("renewing an account somebody else uploaded is still rationed", async () => {
+  const email = "borrower-refresh@stardust.ai";
+  const accountId = "borrowed-refresh-pool@example.com";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.6-sol", "batch-borrower-refresh", { heavy: true });
+  await seedContribution("lender-refresh@stardust.ai", accountId);
+  await seedScarcePool(true);
+
+  const renewal = await call(token, {
+    source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION,
+    current_account_id: accountId, refresh_current: true,
+  });
+  assert.equal(renewal.reason, "demand_share_cooldown");
+  assert.equal(renewal.replacement, null);
+});
+
+test("an owner renewal that cannot be served in place is rationed as the switch it becomes", async () => {
+  const email = "owner-fallthrough@stardust.ai";
+  const accountId = "owner-fallthrough-pool@example.com";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.6-sol", "batch-owner-fallthrough", { heavy: true });
+  await seedContribution(email, accountId);
+  // An access token that is already dead, on a grant the hub may not refresh yet (custody
+  // handoff pending): the pooled copy cannot be served, so selection would hand out somebody else's.
+  const expired = `h.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 3600 })).toString("base64url")}.s`;
+  const entry = await db.authPoolEntry("codex", accountId);
+  const authJson = JSON.parse(await decryptAuthJson(entry));
+  authJson.tokens.access_token = expired;
+  // A reupload only replaces a strictly newer login.
+  authJson.last_refresh = new Date(Date.now() + 60_000).toISOString();
+  await db.upsertAuthPoolEntry({
+    source: "codex", auth_json: JSON.stringify(authJson), uploader_email: email,
+    reporter_name: `${email}@mac`, hostname: "mac", refresh_handoff_state: "pending",
+  });
+  await seedScarcePool(true);
+
+  const renewal = await call(token, {
+    source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION,
+    current_account_id: accountId, refresh_current: true,
+  });
+  assert.equal(accessTokenMsUntilExpiry(await decryptAuthJson(await db.authPoolEntry("codex", accountId)), "codex") < 0, true,
+    "the fixture must really hold a dead access token");
+  assert.equal(renewal.reason, "demand_share_cooldown");
+  assert.equal(renewal.replacement, null);
 });
