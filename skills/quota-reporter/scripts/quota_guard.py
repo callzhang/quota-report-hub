@@ -55,6 +55,8 @@ from quota_reporters import (
     account_upload_excluded,
     fetch_best_auth,
     fetch_upload_exclusions,
+    known_auth_state_for_source,
+    read_known_auth_state,
     CLAUDE_AT_ONLY_TOKEN_REJECTED,
     fetched_auth_near_expiry,
     install_claude_credentials,
@@ -371,6 +373,22 @@ def needs_fresh_access_token(payload: dict) -> bool:
     refresh THIS account. Deliberately absent from is_hard_invalidated so a transient 401 can no
     longer mark a working account dead for every borrower."""
     return payload.get("status") == "error" and payload.get("error") == CLAUDE_AT_ONLY_TOKEN_REJECTED
+
+
+def claude_logged_out_after_pool_fetch(payload: dict, known_auth_path: Path) -> bool:
+    """A CLI that reports "logged out" while the credential on this machine came from the pool.
+
+    A pool-fetched credential is access-token-only, so when its token lapses the CLI has nothing to
+    refresh with and says it is logged out. That is the same condition `needs_fresh_access_token`
+    describes -- not evidence that the account died, and not a person signing out -- and the cure
+    is the same: ask the hub, which holds the refresh token, to renew THIS account. Treating it as
+    a hard invalidation instead sends a plain replacement request, which excludes the current
+    account; when that account is the only one in the pool (derek@, 2026-10-15) there is nothing to
+    be handed and the machine stays logged out indefinitely."""
+    if payload.get("status") != "error" or payload.get("error") != CLAUDE_LOGGED_OUT_ERROR:
+        return False
+    state = known_auth_state_for_source(read_known_auth_state(known_auth_path), "claude")
+    return state.get("state_source") == "fetched_from_auth_pool"
 
 
 def refresh_token_rejected(payload: dict) -> bool:
@@ -2343,12 +2361,16 @@ def maybe_replace_claude_auth(
         # Quota-low (or invalidated) triggers a normal replacement; a healthy-but-near-expiry
         # fetched AT-only auth instead asks the hub to refresh the SAME account's access token.
         refresh_current = False
-        if not source_needs_replacement(payload, threshold_percent, weekly_threshold_percent):
-            # A rejected AT-only access token wants the same treatment as a near-expiry one: a fresh AT
-            # for THIS account, not somebody else's credential. refresh_current also engages the
-            # different-account guard below, so a hub that cannot refresh in place is declined rather
-            # than swapping a healthy owned account onto a borrowed one.
-            if needs_fresh_access_token(payload) or fetched_auth_near_expiry("claude", known_auth_path, claude_home=claude_home):
+        # A rejected or lapsed AT-only token wants the same treatment as a near-expiry one: a fresh AT
+        # for THIS account, not somebody else's credential. refresh_current also engages the
+        # different-account guard below, so a hub that cannot refresh in place is declined rather
+        # than swapping a healthy owned account onto a borrowed one. A lapsed one shows up as a
+        # logged-out CLI, which source_needs_replacement would otherwise read as a dead credential.
+        at_only_token_lapsed = needs_fresh_access_token(payload) or claude_logged_out_after_pool_fetch(
+            payload, known_auth_path
+        )
+        if at_only_token_lapsed or not source_needs_replacement(payload, threshold_percent, weekly_threshold_percent):
+            if at_only_token_lapsed or fetched_auth_near_expiry("claude", known_auth_path, claude_home=claude_home):
                 refresh_current = True
             else:
                 # A probe that failed for a reason other than a dead credential (no binary, a timeout)

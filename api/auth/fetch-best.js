@@ -1,4 +1,4 @@
-import { authPoolConfigured } from "../../lib/company-auth.js";
+import { authPoolConfigured, normalizeEmail } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
 import {
   authPoolEntry,
@@ -131,6 +131,16 @@ export default async function handler(req, res) {
   });
   const repairAuth = invalidatedEntryToRepairAuth(invalidatedEntry);
 
+  // Renewing the access token of an account the caller uploaded is not a draw on the shared pool:
+  // the hub is only keeping the caller's own contribution alive. Rationing it cuts the owner off
+  // from their own credential -- an AT-only owner whose token expires inside a cooldown has no way
+  // to mint another and is simply logged out (derek@, claude, 2026-10-15: 32 consecutive
+  // demand_share_cooldown refusals, then a logged-out CLI that the pool's only claude account was
+  // sitting behind). Same footing as owner repair below, but narrower: it covers the renewal alone,
+  // and a request that falls through to switching accounts is rationed again.
+  const ownEntry = body?.refresh_current && currentAccountId ? await authPoolEntry(source, currentAccountId) : null;
+  const ownRefresh = Boolean(ownEntry) && normalizeEmail(ownEntry.uploader_email) === normalizeEmail(authContext.email);
+
   // Premium-share gate. It runs before both fetch paths on purpose: 82% of pool traffic is
   // refresh_current, so a gate that only covered account switches would leave the subsidy that
   // actually matters — the hub keeping one account's access token alive indefinitely — untouched.
@@ -142,16 +152,17 @@ export default async function handler(req, res) {
     getFeatureFlag("require_contribution", false),
     getFeatureFlag("premium_ratio_enforcement", true),
   ]);
-  const policy = evaluateFetchPolicy({
+  const evaluatePolicy = ({ rationed }) => evaluateFetchPolicy({
     ...policyInputs,
     requestClientVersion,
     poolScarce: scarcityFromState(scarcityState).scarce,
     // Owner repair is never a draw on the shared pool. It bypasses both the live ratio gate and
     // the admin contribution requirement, so its notices must describe advice rather than a fetch
     // that was blocked. The returned invalid auth is how its owner becomes a contributor again.
-    requireContribution: repairAuth ? false : requireContribution,
-    enforcementEnabled: enforcePolicy && !repairAuth,
+    requireContribution: rationed ? requireContribution : false,
+    enforcementEnabled: enforcePolicy && rationed,
   });
+  const policy = evaluatePolicy({ rationed: !repairAuth && !ownRefresh });
 
   // Live kill switch, separate from the hardcoded schedule: if a phase lands badly the flag turns
   // refusals off within one request, while advisory notices keep flowing so users still see where
@@ -198,13 +209,13 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (policyRefused) {
+  const refuseByPolicy = async (refused) => {
     await recordAuthPoolFetch({
       requesterEmail: authContext.email,
       requesterId,
       source,
       servedEntry: null,
-      reason: policy.reason,
+      reason: refused.reason,
       currentAccountId,
       currentQuota,
       clientVersion: requestClientVersion,
@@ -215,13 +226,17 @@ export default async function handler(req, res) {
       ok: true,
       requested_by: authContext.email,
       replacement: null,
-      reason: policy.reason,
-      retry_after_seconds: policy.retry_after_seconds,
-      premium_share: policy.premium_share,
-      demand_share: policy.demand_share,
-      notices: policy.notices,
-      message: policy.notices[0]?.message || null,
+      reason: refused.reason,
+      retry_after_seconds: refused.retry_after_seconds,
+      premium_share: refused.premium_share,
+      demand_share: refused.demand_share,
+      notices: refused.notices,
+      message: refused.notices[0]?.message || null,
     }, authContext)));
+  };
+
+  if (policyRefused) {
+    await refuseByPolicy(policy);
     return;
   }
 
@@ -231,7 +246,7 @@ export default async function handler(req, res) {
   // account, a fresh access token, no rotation by the client. Falls through to a normal
   // replacement if that account is no longer in the pool.
   if (body?.refresh_current && currentAccountId) {
-    const sameEntry = await authPoolEntry(source, currentAccountId);
+    const sameEntry = ownEntry;
     if (sameEntry) {
       let sameAuthJson = await decryptAuthJson(sameEntry);
       let idTokenRefreshDead = false;
@@ -304,6 +319,16 @@ export default async function handler(req, res) {
         return;
       }
       // stale pooled copy -> fall through to a normal replacement (switch account)
+    }
+  }
+
+  // An owner renewal that could not be served in place now becomes a switch to somebody else's
+  // account, which is a draw on the pool and is judged like one.
+  if (ownRefresh) {
+    const switchPolicy = evaluatePolicy({ rationed: !repairAuth });
+    if (!switchPolicy.allowed) {
+      await refuseByPolicy(switchPolicy);
+      return;
     }
   }
 
