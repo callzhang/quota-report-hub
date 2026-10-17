@@ -195,6 +195,30 @@ test("a heartbeat keeps the quota bucket its probe read", async () => {
   assert.equal(oversized.heartbeat.meter_limit_id.length, 64);
 });
 
+test("a heartbeat keeps the client's identity diagnostics as bounded JSON and drops what will not fit", async () => {
+  const base = { reporter_name: "r", hostname: "h", status: "error" };
+  const kept = normalizeReporterHeartbeat({
+    source: "claude",
+    reporterEmail: "a@stardust.ai",
+    heartbeat: { ...base, diagnostics: { installed_fp: "ab12cd34", stores: { keychain: { has_access_token: true } } } },
+  });
+  assert.deepEqual(JSON.parse(kept.heartbeat.diagnostics_json), {
+    installed_fp: "ab12cd34",
+    stores: { keychain: { has_access_token: true } },
+  });
+
+  const absent = normalizeReporterHeartbeat({ source: "claude", reporterEmail: "a@stardust.ai", heartbeat: base });
+  assert.equal(absent.heartbeat.diagnostics_json, null);
+
+  // Cut mid-string it would be invalid JSON that looks like data; dropping it is the honest answer.
+  const oversized = normalizeReporterHeartbeat({
+    source: "claude",
+    reporterEmail: "a@stardust.ai",
+    heartbeat: { ...base, diagnostics: { blob: "x".repeat(9000) } },
+  });
+  assert.equal(oversized.heartbeat.diagnostics_json, null);
+});
+
 test("ingestClientQuota resolves a codex report by token too, and gates the resolved payload", async () => {
   // Attribution was built source-agnostic but only claude ever sent a fingerprint, so for codex
   // the claim was always taken at face value. The codex acceptance gate must see the RESOLVED

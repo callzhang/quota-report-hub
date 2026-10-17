@@ -576,6 +576,11 @@ def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
         # survives. It is the field that identified one machine reading GPT-5.3-Codex-Spark's bucket
         # for every account it touched, and it is how a new metered id would announce itself.
         "meter_limit_id": ((payload or {}).get("usage_summary") or {}).get("meter", {}).get("limit_id"),
+        # Why the probe cannot name the account it runs, present only while it cannot. It rides the
+        # heartbeat rather than the quota report because the facts that explain a missing identity
+        # live on this machine and nowhere the hub can reach; the heartbeat is the one message sent
+        # on every run whether or not the quota is reportable.
+        "diagnostics": (payload or {}).get("diagnostics"),
         "last_run_at": iso_now(),
     }
 
@@ -602,6 +607,9 @@ def report_current_quota_to_auth_pool(
         heartbeat["access_token_fingerprint"] = None
     reportable = not excluded and quota_payload_is_reportable(source, payload)
     quota_payload = without_sensitive_refresh_capture(payload) if reportable else None
+    if quota_payload is not None:
+        # Heartbeat-only: the quota report is stored verbatim as payload_json and is not the place for it.
+        quota_payload.pop("diagnostics", None)
     result = post_auth_pool_quota(
         config["auth_pool_url"],
         config["auth_pool_user_token"],

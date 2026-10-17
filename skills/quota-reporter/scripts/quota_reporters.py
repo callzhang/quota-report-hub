@@ -2628,6 +2628,80 @@ def run_claude_auth_status_command(claude_executable: str, args: list[str], dead
     raise last_timeout
 
 
+def claude_identity_diagnostics(
+    *,
+    executable: str | None,
+    auth_status: dict,
+    cli_state: dict | None,
+    claude_home: Path = CLAUDE_HOME,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
+) -> dict:
+    """Why this machine cannot name the account it is running, with no secret and no email in it.
+
+    Sent on the heartbeat only while the identity is missing. The guard already prints one word for
+    that state, and the facts that separate its causes live on a laptop nobody can open: which claude
+    binary answered, which of the credential stores hold a token and whether they hold the SAME one,
+    and whether the install record (known_auth) still names the token now in place. Every token is
+    reduced to the first 8 hex characters of its SHA-256 -- enough to compare two stores, useless
+    to anyone who wants the token.
+
+    Values are kept by shape, not by name: booleans and short strings without an "@" survive, so a
+    new field in `claude auth status` shows up here without a list to maintain and an address
+    never does.
+    """
+    readers = {"credentials_file": lambda: read_claude_credentials(claude_home)}
+    if sys.platform == "darwin":
+        readers = {
+            "token_cache": lambda: read_claude_token_cache_credentials(claude_home)[0],
+            "keychain": read_claude_keychain_credentials,
+            **readers,
+        }
+    stores = {}
+    for name, read in readers.items():
+        # A store that cannot be read is itself the finding; it must not take the probe down with it.
+        try:
+            credentials = read()
+        except Exception as error:
+            stores[name] = {"read_error": type(error).__name__}
+            continue
+        oauth = (credentials or {}).get("claudeAiOauth") or {}
+        stores[name] = {
+            "has_access_token": bool(oauth.get("accessToken")),
+            "token_fp": (access_token_fingerprint(credentials, "claude") or "")[:8] or None,
+            "has_refresh_token": bool(oauth.get("refreshToken")),
+            "expires_at": oauth.get("expiresAt"),
+        }
+    installed, installed_from = read_claude_oauth_credentials(claude_home)
+    installed_fp = access_token_fingerprint(installed, "claude")
+    known = known_auth_state_for_source(read_known_auth_state(known_auth_path), "claude")
+    oauth_account = (cli_state or {}).get("oauthAccount") if isinstance(cli_state, dict) else None
+    home = str(Path.home())
+    return {
+        "executable": executable.replace(home, "~", 1) if executable else None,
+        "status_json": {
+            key: value
+            for key, value in auth_status.items()
+            if isinstance(value, bool) or (isinstance(value, str) and "@" not in value and len(value) <= 40)
+        },
+        "status_json_keys": sorted(auth_status),
+        "cli_state": {
+            "exists": cli_state is not None,
+            "has_oauth_account": isinstance(oauth_account, dict),
+            "oauth_account_keys": sorted(oauth_account) if isinstance(oauth_account, dict) else [],
+        },
+        "stores": stores,
+        "installed_from": installed_from,
+        "installed_fp": (installed_fp or "")[:8] or None,
+        "known_auth": {
+            "email_set": bool(known.get("email")),
+            "token_fp": (known.get("access_token_fingerprint") or "")[:8] or None,
+            "matches_installed": bool(installed_fp) and known.get("access_token_fingerprint") == installed_fp,
+            "state_source": known.get("state_source"),
+            "observed_at": known.get("observed_at"),
+        },
+    }
+
+
 def probe_claude(
     claude_home: Path = CLAUDE_HOME,
     claude_bin: str | None = None,
@@ -2861,9 +2935,23 @@ def probe_claude(
         oauth_usage_probe=oauth_usage_probe,
     )
     usage_summary["inference_probe"] = inference_probe
+    identity_diagnostics = (
+        {}
+        if auth_text_details.get("email")
+        else {
+            "diagnostics": claude_identity_diagnostics(
+                executable=claude_executable,
+                auth_status=auth_status,
+                cli_state=cli_state,
+                claude_home=claude_home,
+                known_auth_path=known_auth_path,
+            )
+        }
+    )
     return {
         **base,
         "account_id": claude_account_id(auth_text_details),
+        **identity_diagnostics,
         # Which token these numbers were measured through. The hub files the report under the
         # account that token belongs to -- something this machine cannot determine for itself.
         "access_token_fingerprint": report_token_fingerprint,
