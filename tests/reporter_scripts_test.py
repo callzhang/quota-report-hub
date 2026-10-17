@@ -1827,14 +1827,17 @@ Reading additional input from stdin...
     def test_discover_codex_executable_finds_the_cli_inside_the_renamed_desktop_app(self):
         # The Codex app updates itself into ChatGPT.app, which leaves the app-installed
         # /usr/local/bin/codex symlink dangling. Neither that link nor PATH may be load-bearing:
-        # the CLI inside the renamed bundle is the one that still exists.
+        # the CLI inside the renamed bundle is the one that still exists. The app ships it as
+        # Resources/codex-cli/bin/codex (a wrapper into CodexCLI.app); the bare Resources/codex of
+        # earlier builds is gone, which left xienxu's healthy ChatGPT.app reported as "codex
+        # command not found" (2026-10-17).
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             common_dir = root / "bin"
             common_dir.mkdir()
             applications = root / "Applications"
-            (common_dir / "codex").symlink_to(applications / "Codex.app" / "Contents" / "Resources" / "codex")
-            bundled = applications / "ChatGPT.app" / "Contents" / "Resources" / "codex"
+            (common_dir / "codex").symlink_to(applications / "Codex.app" / "Contents" / "Resources" / "codex-cli" / "bin" / "codex")
+            bundled = applications / "ChatGPT.app" / "Contents" / "Resources" / "codex-cli" / "bin" / "codex"
             bundled.parent.mkdir(parents=True)
             bundled.write_text("#!/bin/sh\n", encoding="utf-8")
             bundled.chmod(0o755)

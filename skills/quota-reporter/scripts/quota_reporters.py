@@ -117,18 +117,21 @@ COMMON_CLI_DIRS = (
 # bundles are searched directly so that symlink is never load-bearing. Forcing case: melody's
 # probe flipped from ok to "codex command not found" on the app update (2026-09-09 16:40Z), with
 # no node or npm on the machine at all.
+#
+# The CLI's place inside the bundle moved too: builds from early October ship it as
+# Resources/codex-cli/bin/codex (a wrapper exec'ing CodexCLI.app/Contents/MacOS/codex) and the
+# bare Resources/codex is gone. Searching only the old spot reported "codex command not found" for
+# xienxu's healthy ChatGPT.app (2026-10-17). Only the current layout is searched: the app
+# updates itself, so a build with the old layout is not one this client will meet for long.
 APP_BUNDLE_DIRS = (Path("/Applications"), Path.home() / "Applications")
 APP_BUNDLED_CLI = {
-    "codex": ("ChatGPT.app", "Codex.app"),
+    "codex": (("ChatGPT.app", "Codex.app"), Path("Contents/Resources/codex-cli/bin/codex")),
 }
 
 
 def app_bundled_cli_candidates(binary_name: str) -> list[Path]:
-    return [
-        app_dir / bundle / "Contents" / "Resources" / binary_name
-        for bundle in APP_BUNDLED_CLI.get(binary_name, ())
-        for app_dir in APP_BUNDLE_DIRS
-    ]
+    bundles, relative_path = APP_BUNDLED_CLI.get(binary_name, ((), None))
+    return [app_dir / bundle / relative_path for bundle in bundles for app_dir in APP_BUNDLE_DIRS]
 
 
 def common_cli_binary_candidates(binary_name: str) -> list[Path]:
