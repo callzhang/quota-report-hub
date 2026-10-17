@@ -4,7 +4,7 @@ import {
   authUsersList,
   dbConfigured,
 } from "../lib/db.js";
-import { DEMAND_SHARE_TOLERANCE, PREMIUM_RATIO_WINDOW_DAYS } from "../lib/premium-ratio.js";
+import { DEMAND_SHARE_PERCENTILE, PREMIUM_RATIO_WINDOW_DAYS, teamDemand } from "../lib/premium-ratio.js";
 
 export default async function handler(req, res) {
   const authContext = await authenticateApiRequest(req);
@@ -21,7 +21,8 @@ export default async function handler(req, res) {
         viewer_email: authContext.email,
         generated_at: new Date().toISOString(),
         spend_window_days: PREMIUM_RATIO_WINDOW_DAYS,
-        demand_share_tolerance: DEMAND_SHARE_TOLERANCE,
+        demand_share_percentile: DEMAND_SHARE_PERCENTILE,
+        demand_share_line: null,
         users: [],
         fetch_log: [],
       }, authContext))
@@ -41,6 +42,11 @@ export default async function handler(req, res) {
     authPoolFetchLog({ limit, dedupe: false }),
   ]);
 
+  // The line comes from the same function the gate uses, over the same window, so the page cannot
+  // describe a different rule than the one that rations. null = nobody is above it (too few
+  // spenders); JSON would turn Infinity into null anyway, this just says so.
+  const { teamCost, demandCostLine } = teamDemand(users.map((user) => user.spend_usd));
+
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(
@@ -48,7 +54,8 @@ export default async function handler(req, res) {
       viewer_email: authContext.email,
       generated_at: new Date().toISOString(),
       spend_window_days: PREMIUM_RATIO_WINDOW_DAYS,
-      demand_share_tolerance: DEMAND_SHARE_TOLERANCE,
+      demand_share_percentile: DEMAND_SHARE_PERCENTILE,
+      demand_share_line: teamCost > 0 && Number.isFinite(demandCostLine) ? demandCostLine / teamCost : null,
       users,
       fetch_log: fetchLog,
     }, authContext))

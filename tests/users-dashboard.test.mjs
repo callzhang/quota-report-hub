@@ -155,7 +155,8 @@ test("each token holder carries its pool spend, share, and where that sits again
     viewer_email: "derek@stardust.ai",
     generated_at: "2026-09-17T12:00:00Z",
     spend_window_days: 7,
-    demand_share_tolerance: 1,
+    demand_share_percentile: 80,
+    demand_share_line: 0.5,
     users: [
       { email: "derek@stardust.ai", created_at: "2026-01-01T00:00:00Z", last_token_issued_at: "2026-09-01T00:00:00Z", has_active_token: true, token_last_used_at: null, fetch_count: 3, last_fetched_at: null, spend_usd: 60 },
       { email: "shawn@stardust.ai", created_at: "2026-01-01T00:00:00Z", last_token_issued_at: "2026-08-01T00:00:00Z", has_active_token: true, token_last_used_at: null, fetch_count: 2, last_fetched_at: null, spend_usd: 30 },
@@ -166,8 +167,8 @@ test("each token holder carries its pool spend, share, and where that sits again
 
   const rows = harness.element("users-rows").innerHTML;
   assert.match(rows, /\$60\.00/);
-  assert.match(rows, /60\.0% of team · over fair share/);
-  // 30% is above a third of the team only in absolute terms; the line is 1/3, so it is not over it.
+  assert.match(rows, /60\.0% of team · over the P80 line/);
+  // The hub draws the line (here at half the team); the page only compares each share to it.
   assert.match(rows, /30\.0% of team<\/div>/);
   assert.match(rows, /10\.0% of team<\/div>/);
 
@@ -176,5 +177,5 @@ test("each token holder carries its pool spend, share, and where that sits again
   assert.equal(harness.element("users-spend-header").textContent, "Pool Spend (7d)");
   assert.match(harness.element("cards").innerHTML, /Pool spend · last 7d/);
   assert.match(harness.element("cards").innerHTML, /\$100\.00/);
-  assert.match(harness.element("cards").innerHTML, /Fair share line 33\.3% per active user/);
+  assert.match(harness.element("cards").innerHTML, /P80 line 50\.0% of team/);
 });

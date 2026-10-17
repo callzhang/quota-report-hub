@@ -3513,6 +3513,7 @@ Reading additional input from stdin...
                 "https://quota-report-hub.vercel.app",
                 "qrp_token",
                 source="codex",
+                force=False,
                 current_account_id="current",
                 current_quota={
                     "five_h_remaining_percent": 12.0,
@@ -3522,6 +3523,48 @@ Reading additional input from stdin...
                 requester_id=None,
                 refresh_current=False,
             )
+
+    def test_maybe_replace_codex_auth_passes_force_fetch_to_the_hub(self):
+        # The desktop refresh shortcut asks the hub to skip its rationing wait for this one fetch.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            live_auth = base / "auth.json"
+            live_auth.write_text(json.dumps({"tokens": {"account_id": "current"}}), encoding="utf-8")
+            config = {"auth_pool_url": "https://quota-report-hub.vercel.app", "auth_pool_user_token": "qrp_token"}
+            codex_payload = {
+                "account_id": "current",
+                "status": "ok",
+                "windows": {"5h": {"remaining_percent": 12}, "1week": {"remaining_percent": 70}},
+            }
+            with mock.patch.object(quota_guard, "fetch_best_auth", return_value={"replacement": None}) as fetch_best_auth:
+                quota_guard.maybe_replace_codex_auth(
+                    config,
+                    codex_payload,
+                    live_auth,
+                    base / "known_auth.json",
+                    threshold_percent=20.0,
+                    weekly_threshold_percent=5.0,
+                    force_fetch=True,
+                )
+            self.assertIs(fetch_best_auth.call_args.kwargs["force"], True)
+
+    def test_fetch_best_auth_sends_command_force_only_when_asked(self):
+        def sent_body(**kwargs):
+            with mock.patch("quota_reporters.urllib.request.urlopen") as urlopen, \
+                    mock.patch.object(quota_reporters, "read_auth_pool_response", return_value={}):
+                quota_reporters.fetch_best_auth("https://hub.example", "qrp_token", source="codex", **kwargs)
+            return json.loads(urlopen.call_args.args[0].data.decode("utf-8"))
+
+        self.assertNotIn("command", sent_body(), "the scheduled guard never forces")
+        self.assertEqual(sent_body(force=True)["command"], "force")
+
+    def test_only_the_desktop_shortcut_forces(self):
+        with mock.patch.object(quota_guard.platform, "system", return_value="Darwin"):
+            self.assertIn(" --force ", quota_guard._desktop_shortcut_contents())
+        self.assertIn(" --force", quota_guard._desktop_shortcut_windows_launcher())
+        parser = quota_guard.build_parser()
+        self.assertFalse(parser.parse_args([]).force)
+        self.assertTrue(parser.parse_args(["--force"]).force)
 
     def test_maybe_replace_codex_auth_force_switch_refuses_when_current_account_not_synced(self):
         config = {
@@ -3606,6 +3649,7 @@ Reading additional input from stdin...
                 "https://quota-report-hub.vercel.app",
                 "qrp_token",
                 source="codex",
+                force=False,
                 current_account_id="current",
                 current_quota={
                     "five_h_remaining_percent": 90.0,

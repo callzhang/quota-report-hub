@@ -10,7 +10,7 @@ import {
   PREMIUM_MODEL_IDS,
   SUGGESTED_STANDARD_MODEL_IDS,
 } from "../lib/model-tiers.js";
-import { PHASE_COOLDOWN_AT, PHASE_REPORTER_GATE_AT, PREMIUM_RATIO_COOLDOWN_MINUTES, PREMIUM_RATIO_MIN_COST, DEMAND_SHARE_TOLERANCE, DEMAND_SHARE_MIN_ACTIVE_USERS, NOTICE_REPEAT_SECONDS, ADVISORY_NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_THRESHOLD, compareVersions, evaluateFetchPolicy, MIN_REPORTER_CLIENT_VERSION } from "../lib/premium-ratio.js";
+import { PHASE_COOLDOWN_AT, PHASE_REPORTER_GATE_AT, PREMIUM_RATIO_COOLDOWN_MINUTES, PREMIUM_RATIO_MIN_COST, DEMAND_SHARE_PERCENTILE, teamDemand, NOTICE_REPEAT_SECONDS, ADVISORY_NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_THRESHOLD, compareVersions, evaluateFetchPolicy, MIN_REPORTER_CLIENT_VERSION } from "../lib/premium-ratio.js";
 
 const BIG = PREMIUM_RATIO_MIN_COST * 10;
 
@@ -21,9 +21,9 @@ function inputs(overrides = {}) {
     requestClientVersion: MIN_REPORTER_CLIENT_VERSION,
     premiumCost: BIG * 0.9,
     totalCost: BIG,
-    // One user carrying the whole team's spend: far over any fair share.
+    // One user carrying the whole team's spend: far above the line, which sits at a tenth of it.
     teamCost: BIG,
-    activeUsers: 10,
+    demandCostLine: BIG * 0.1,
     cooldownStartedAt: null,
     // Most of these exercise the cooldown, which only bites while the pool is actually scarce.
     poolScarce: true,
@@ -180,7 +180,6 @@ test("a current client that has simply been idle is left alone entirely", () => 
     premiumCost: 0,
     totalCost: 0,
     teamCost: 0,
-    activeUsers: 0,
   }));
   assert.equal(result.allowed, true);
   assert.deepEqual(result.notices, []);
@@ -243,23 +242,86 @@ test("a user inside their fair share is never cooled down, however scarce the po
     premiumCost: BIG * 0.08 * 100,
     totalCost: BIG * 0.08 * 100,
     teamCost: BIG * 100,
-    activeUsers: 10,
+    demandCostLine: BIG * 10,
     cooldownStartedAt: PHASE_COOLDOWN_AT,
   }));
   assert.equal(result.allowed, true);
   assert.deepEqual(result.notices.map((notice) => notice.code), ["premium_ratio_warning"]);
 });
 
-test("the fair-share line scales with how many people are actually drawing on the pool", () => {
-  const share = (activeUsers) => evaluateFetchPolicy(inputs({
-    premiumCost: 0, totalCost: BIG * 0.2, teamCost: BIG, activeUsers,
+test("the line is the 80th percentile of the team's spend, and only strictly above it is over", () => {
+  assert.equal(DEMAND_SHARE_PERCENTILE, 80, "the percentile the cases below assume");
+  // 17 spenders, 2026-08-26 shape: three dominate, the rest are small. Nearest rank 14 of 17.
+  const costs = [46, 29.3, 14.7, 3.3, 3, 2.5, 2, 1.5, 1.2, 1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3];
+  const { teamCost, demandCostLine } = teamDemand(costs);
+  assert.equal(demandCostLine, 3.3, "rank ceil(0.8 * 17) = 14 ascending, i.e. the fourth-largest spend");
+  assert.equal(teamCost, costs.reduce((sum, cost) => sum + cost, 0));
+  assert.deepEqual(costs.filter((cost) => cost > demandCostLine), [46, 29.3, 14.7], "the same three the average line chose");
+  // Floating point: 0.8 * 15 is not exactly 12, which would move the rank by one.
+  assert.equal(teamDemand(Array.from({ length: 15 }, (_, index) => index + 1)).demandCostLine, 12);
+});
+
+test("with fewer than five spenders nobody is above the line, and spend-free users do not count", () => {
+  // The heaviest of four IS the 80th-percentile spender, so nobody is strictly above. A sole
+  // consumer holds nobody else back: throttling them frees capacity for no one.
+  for (const costs of [[], [5], [5, 1], [5, 1, 1], [5, 1, 1, 1]]) {
+    const { demandCostLine } = teamDemand(costs);
+    assert.ok(!costs.some((cost) => cost > demandCostLine), `${costs.length} spenders`);
+  }
+  assert.equal(teamDemand([]).demandCostLine, Infinity);
+  // Registered-but-idle users would drag the percentile to zero and flag a normal week.
+  assert.deepEqual(teamDemand([0, 0, 0, 0, 0, 0, 7]), teamDemand([7]));
+
+  const result = evaluateFetchPolicy(inputs({
+    premiumCost: 0, totalCost: BIG, ...teamDemand([BIG, 0, 0, 0]),
     cooldownStartedAt: PHASE_COOLDOWN_AT,
   }));
-  // At 20% of team spend: fine among 4 people (line 25%), too much among 10 (line 10%).
-  assert.equal(share(4).allowed, true);
-  assert.equal(share(10).allowed, false);
-  assert.equal(share(10).reason, "demand_share_cooldown");
-  assert.equal(DEMAND_SHARE_TOLERANCE, 1.0, "the tolerance the lines above assume");
+  assert.equal(result.allowed, true);
+});
+
+test("a flat team is not held for being ordinary, only a clear outlier is", () => {
+  // Ten equal spenders: every one of them is at the 80th percentile, so none is above it. The
+  // plain average would have called the same ten people half over their share on rounding noise.
+  const flat = Array.from({ length: 10 }, () => BIG);
+  const ordinary = evaluateFetchPolicy(inputs({
+    premiumCost: 0, totalCost: BIG, ...teamDemand(flat), cooldownStartedAt: PHASE_COOLDOWN_AT,
+  }));
+  assert.equal(ordinary.allowed, true);
+
+  const outlier = evaluateFetchPolicy(inputs({
+    premiumCost: 0, totalCost: BIG * 5, ...teamDemand([...flat.slice(1), BIG * 5]),
+    cooldownStartedAt: PHASE_COOLDOWN_AT,
+  }));
+  assert.equal(outlier.reason, "demand_share_cooldown");
+  assert.match(outlier.notices[0].message, /最高的 20%/);
+});
+
+test("a forced fetch skips the rationing wait but nothing else", () => {
+  const scarceHeavy = { premiumCost: 0, totalCost: BIG, teamCost: BIG * 2, demandCostLine: BIG * 0.2 };
+  assert.equal(evaluateFetchPolicy(inputs({ ...scarceHeavy })).reason, "demand_share_cooldown");
+
+  // The person at the keyboard asked for this fetch: it is served, and the notice describes a
+  // warning rather than claiming a served request was refused.
+  const forced = evaluateFetchPolicy(inputs({ ...scarceHeavy, forced: true }));
+  assert.equal(forced.allowed, true);
+  assert.deepEqual(forced.notices.map((notice) => notice.code), ["demand_share_warning"]);
+
+  // Same for the contribution cooldown.
+  const forcedNonContributor = evaluateFetchPolicy(inputs({
+    premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, demandCostLine: BIG * 10,
+    hasHealthyUpload: false, forced: true,
+  }));
+  assert.equal(forcedNonContributor.allowed, true);
+
+  // The measurement preconditions are not rationing and stay in force.
+  const outdated = evaluateFetchPolicy(inputs({ ...scarceHeavy, forced: true, requestClientVersion: "1.0.0" }));
+  assert.equal(outdated.reason, "reporter_upgrade_required");
+  // And the admin's hard mode is an access decision, not a wait.
+  const required = evaluateFetchPolicy(inputs({
+    premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, demandCostLine: BIG * 10,
+    hasHealthyUpload: false, requireContribution: true, forced: true,
+  }));
+  assert.equal(required.reason, "contribution_required");
 });
 
 test("a user below the spend floor is not judged on a noisy share", () => {
@@ -267,7 +329,7 @@ test("a user below the spend floor is not judged on a noisy share", () => {
     premiumCost: PREMIUM_RATIO_MIN_COST * 0.99,
     totalCost: PREMIUM_RATIO_MIN_COST * 0.99,
     teamCost: BIG * 100,
-    activeUsers: 10,
+    demandCostLine: BIG * 10,
     cooldownStartedAt: PHASE_COOLDOWN_AT,
   }));
   assert.equal(result.allowed, true);
@@ -319,14 +381,14 @@ test("demand notices state priced amount share, not token share", () => {
     premiumCost: 3,
     totalCost: 30,
     teamCost: 100,
-    activeUsers: 10,
+    demandCostLine: 10,
     poolScarce: true,
     cooldownStartedAt: null,
   }));
   const notice = result.notices.find((item) => item.code === "demand_share_cooldown");
   assert.ok(notice);
   assert.match(notice.message, /金额开销的 30%/);
-  assert.match(notice.message, /团队平均 10%/);
+  assert.match(notice.message, /分界线 10%/);
 });
 
 test("unreported consumption is measured as a debt from the last new account, not report recency", () => {
@@ -377,7 +439,7 @@ test("a scarce warning repeats daily, a hold repeats within the day", () => {
   assert.ok(ADVISORY_NOTICE_REPEAT_SECONDS >= 24 * 60 * 60, "an advisory repeats at most once a day");
   assert.ok(NOTICE_REPEAT_SECONDS < ADVISORY_NOTICE_REPEAT_SECONDS, "a hold repeats more often than an advisory");
 
-  const heavy = { premiumCost: BIG * 0.9, totalCost: BIG, teamCost: BIG * 2, activeUsers: 10 };
+  const heavy = { premiumCost: BIG * 0.9, totalCost: BIG, teamCost: BIG * 2, demandCostLine: BIG * 0.2 };
   const warned = evaluateFetchPolicy(inputs({ ...heavy, poolScarce: true, cooldownStartedAt: at(PHASE_COOLDOWN_AT, -31) }));
   assert.equal(warned.allowed, true);
   assert.deepEqual(warned.notices.map((notice) => notice.code), ["premium_ratio_warning", "demand_share_warning"]);
@@ -488,18 +550,6 @@ test("scarcity never excuses an unmetered client", () => {
 });
 
 
-test("nobody is held back when there is nobody to be fair to", () => {
-  // Freeing capacity for an empty room drains the pool just as fast and only stops work sooner.
-  // A shortage one person drives alone calls for more accounts, not for throttling the only user.
-  for (let activeUsers = 0; activeUsers < DEMAND_SHARE_MIN_ACTIVE_USERS; activeUsers += 1) {
-    const result = evaluateFetchPolicy(inputs({
-      premiumCost: 0, totalCost: BIG, teamCost: BIG, activeUsers,
-      cooldownStartedAt: PHASE_COOLDOWN_AT,
-    }));
-    assert.equal(result.allowed, true, `${activeUsers} active users must not trigger a fair-share hold`);
-  }
-});
-
 test("the cooldown releases itself, and says so", () => {
   const servedAt = "2026-09-21T10:00:00.000Z";
   const at = (minutes) => evaluateFetchPolicy(inputs({
@@ -533,7 +583,7 @@ test("the cooldown releases itself, and says so", () => {
 });
 
 test("only the cooldown notice claims the pool is short, because only then is it", () => {
-  const shared = { premiumCost: 0, totalCost: 90, teamCost: 100, activeUsers: 10, cooldownStartedAt: PHASE_COOLDOWN_AT };
+  const shared = { premiumCost: 0, totalCost: 90, teamCost: 100, demandCostLine: 10, cooldownStartedAt: PHASE_COOLDOWN_AT };
   const notice = (poolScarce) => {
     const result = evaluateFetchPolicy(inputs({ ...shared, poolScarce }));
     return result.notices.find((item) => item.code.startsWith("demand_share"));
@@ -544,7 +594,7 @@ test("only the cooldown notice claims the pool is short, because only then is it
 
 test("a non-contributor is warned before the phase, and never refused during abundance", () => {
   // Inside their fair share, so only the supply rule can have anything to say about them.
-  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, activeUsers: 10 };
+  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, demandCostLine: BIG * 10 };
   const beforePhase = evaluateFetchPolicy(inputs({
     ...light,
     hasHealthyUpload: false,
@@ -567,7 +617,7 @@ test("a non-contributor is warned before the phase, and never refused during abu
 });
 
 test("a scarce pool rate-limits whoever draws on it without supplying it", () => {
-  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, activeUsers: 10 };
+  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, demandCostLine: BIG * 10 };
   const held = evaluateFetchPolicy(inputs({
     ...light,
     hasHealthyUpload: false,
@@ -615,7 +665,7 @@ test("an over-share non-contributor is told about the share, and only that", () 
 });
 
 test("the contribution notice says what counts as supplying the pool", () => {
-  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, activeUsers: 10 };
+  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, demandCostLine: BIG * 10 };
   const warning = evaluateFetchPolicy(inputs({
     ...light, hasHealthyUpload: false, poolScarce: false, cooldownStartedAt: PHASE_COOLDOWN_AT,
   })).notices[0];
@@ -635,7 +685,7 @@ test("the contribution notice says what counts as supplying the pool", () => {
 });
 
 test("require_contribution refuses a non-contributor outright, abundance or not", () => {
-  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, activeUsers: 10 };
+  const light = { premiumCost: 0, totalCost: BIG * 0.01, teamCost: BIG * 100, demandCostLine: BIG * 10 };
   // Abundant pool, never served before — every softer rule would have let this caller through.
   const refused = evaluateFetchPolicy(inputs({
     ...light, hasHealthyUpload: false, requireContribution: true, poolScarce: false, cooldownStartedAt: null,

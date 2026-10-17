@@ -1188,7 +1188,7 @@ def _desktop_shortcut_contents() -> str:
         return "\n".join(
             [
                 "#!/bin/sh",
-                f"exec {shlex.quote(sys.executable)} {shlex.quote(str(script_path))} \"$@\"",
+                f"exec {shlex.quote(sys.executable)} {shlex.quote(str(script_path))} --force \"$@\"",
                 "",
             ]
         )
@@ -1199,7 +1199,7 @@ def _desktop_shortcut_windows_launcher() -> str:
     return "\n".join(
         [
             "@echo off",
-            f'"{sys.executable}" "{Path(__file__).resolve()}"',
+            f'"{sys.executable}" "{Path(__file__).resolve()}" --force',
             "",
         ]
     )
@@ -2122,6 +2122,7 @@ def maybe_replace_codex_auth(
     weekly_threshold_percent: float,
     usage_state: TokenUsageState | None = None,
     force_switch: bool = False,
+    force_fetch: bool = False,
     current_account_synced: bool = False,
     upload_exclusions: frozenset | None = frozenset(),
 ) -> dict:
@@ -2168,6 +2169,7 @@ def maybe_replace_codex_auth(
         config["auth_pool_url"],
         config["auth_pool_user_token"],
         source="codex",
+        force=force_fetch,
         # An excluded account is not named to the hub, not even to ask for a replacement: the
         # quota numbers are all it needs to pick a better account.
         current_account_id=None if account_upload_excluded(upload_exclusions, "codex", current_account_id) else current_account_id,
@@ -2771,6 +2773,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip the startup check that updates this installed skill from GitHub before running the guard.",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Ask the hub to skip its rationing wait for the Codex fetch this cycle makes. It does not "
+        "make the cycle fetch when it would not have: a healthy, unexpiring account is still left alone. "
+        "The desktop refresh shortcut passes it; the scheduled guard never does.",
+    )
+    parser.add_argument(
         "--switch-account",
         choices=["codex", "claude"],
         default=None,
@@ -3014,6 +3023,7 @@ def run_guard(args: argparse.Namespace) -> dict:
                 weekly_threshold_percent,
                 usage_state,
                 force_switch=getattr(args, "switch_account", None) == "codex",
+                force_fetch=getattr(args, "force", False),
                 current_account_synced=current_account_confirmed_on_hub(sync_result.get("codex")),
                 upload_exclusions=upload_exclusions,
             ),

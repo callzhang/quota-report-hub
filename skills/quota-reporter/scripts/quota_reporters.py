@@ -3967,6 +3967,7 @@ def fetch_best_auth(
     exclude_account_ids: list[str] | None = None,
     requester_id: str | None = None,
     refresh_current: bool = False,
+    force: bool = False,
 ) -> dict:
     body = json.dumps(
         {
@@ -3980,6 +3981,9 @@ def fetch_best_auth(
             # the last usage batch so a fresh install -- which fetches auth before it has any usage
             # to report -- can still be recognised as current.
             "client_version": CLIENT_VERSION,
+            # A person asking for this one fetch to skip the rationing wait. Sent only when asked:
+            # the scheduled guard never forces, so the field's absence is the ordinary request.
+            **({"command": "force"} if force else {}),
         }
     ).encode("utf-8")
     request = urllib.request.Request(

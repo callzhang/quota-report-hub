@@ -79,13 +79,19 @@ function quarterHoursAgo(count) {
   return new Date(Math.floor(ms / (15 * 60 * 1000)) * 15 * 60 * 1000).toISOString();
 }
 
+// The line is the 80th percentile of spend and a user must be strictly above it, so a tie at the top
+// is not "over". Real dollar spend never ties; identical fixtures would, once enough heavy users
+// exist to fill the top fifth. Each heavy user is therefore one row heavier than the last, which
+// makes the newest always the largest spender -- the one the test about to run is exercising.
+let heavyRowsSeeded = 0;
+
 async function seedUsage(email, modelId, batchId, { heavy = false } = {}) {
   await db.ingestTokenUsageBatch({
     hubUserEmail: email,
     installationId: "install-1",
     batchId,
     clientVersion: MIN_REPORTER_CLIENT_VERSION,
-    rows: Array.from({ length: heavy ? 40 : 1 }, (_, index) => usageRow(quarterHoursAgo(index + 1), modelId)),
+    rows: Array.from({ length: heavy ? 40 + heavyRowsSeeded++ : 1 }, (_, index) => usageRow(quarterHoursAgo(index + 1), modelId)),
     receivedAt: new Date().toISOString(),
   });
 }
@@ -148,7 +154,8 @@ async function seedServe(email) {
   });
 }
 
-// Fair share presupposes a team. Without colleagues in the window the rule stands down, so these
+// The line is a percentile of the team's spend, so it needs a team: with fewer than five active
+// users the heaviest spender is the 80th-percentile spender and nobody is above the line. These
 // tests seed a realistic set of small consumers once, up front.
 test("seed a team of ordinary consumers", async () => {
   for (let index = 0; index < 6; index += 1) {
@@ -301,6 +308,36 @@ test("the kill switch stops refusals without silencing the warning", async () =>
     assert.ok(!payload.notices.some((notice) => notice.code === "demand_share_cooldown"));
   } finally {
     await db.setFeatureFlag("premium_ratio_enforcement", true, "test");
+  }
+});
+
+test("a forced codex fetch skips the wait without starting or consuming a cooldown cycle", async () => {
+  const email = "heavy-forced@stardust.ai";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.6-sol", "batch-heavy-forced", { heavy: true });
+  await seedScarcePool(true);
+
+  const forced = await call(token, { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION, command: "force" });
+  assert.notEqual(forced.reason, "demand_share_cooldown", "the shortcut's fetch must not be told to wait");
+  assert.ok(!forced.notices.some((notice) => notice.code === "demand_share_cooldown"),
+    "a request that was not refused must not carry the 取号已限速 notice");
+
+  // Forcing is for this request only: it neither opened a wait nor lifted the rule for the guard's
+  // next ordinary request, which is still rationed and is the one that starts the clock.
+  const ordinary = await call(token);
+  assert.equal(ordinary.reason, "demand_share_cooldown");
+  assert.equal(ordinary.retry_after_seconds, PREMIUM_RATIO_COOLDOWN_MINUTES * 60);
+});
+
+test("only the exact command force lifts the wait", async () => {
+  const email = "heavy-not-forced@stardust.ai";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.6-sol", "batch-heavy-not-forced", { heavy: true });
+  await seedScarcePool(true);
+
+  for (const command of ["Force", "refresh", true, "force "]) {
+    const payload = await call(token, { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION, command });
+    assert.equal(payload.reason, "demand_share_cooldown", `command=${JSON.stringify(command)}`);
   }
 });
 

@@ -12,12 +12,13 @@ import {
   fetchPolicyInputs,
   poolScarcityState,
   recordAuthPoolFetch,
+  teamUserCosts,
   upsertAuthPoolEntry,
 } from "../../lib/db.js";
 import { refreshSerializedAuthPoolEntry } from "../../lib/auth-pool-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
 import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch-best.js";
-import { NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy } from "../../lib/premium-ratio.js";
+import { NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy, teamDemand } from "../../lib/premium-ratio.js";
 import { scarcityFromState } from "../../lib/pool-scarcity.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
 import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
@@ -146,14 +147,22 @@ export default async function handler(req, res) {
   // actually matters — the hub keeping one account's access token alive indefinitely — untouched.
   const policyWindowStart = new Date(Date.now() - PREMIUM_RATIO_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const requestClientVersion = body?.client_version ? String(body.client_version) : null;
-  const [policyInputs, scarcityState, requireContribution, enforcePolicy] = await Promise.all([
+  // A manual "refresh codex account" asks for this one fetch to skip the rationing wait. Codex only:
+  // that is the account the desktop shortcut exists to unstick, and a flag any client can send
+  // should not widen to a source the shortcut never touches.
+  const forced = body?.command === "force" && source === "codex";
+  const [policyInputs, userCosts, scarcityState, requireContribution, enforcePolicy] = await Promise.all([
     fetchPolicyInputs({ email: authContext.email, since: policyWindowStart }),
+    teamUserCosts({ since: policyWindowStart }),
     poolScarcityState(source),
     getFeatureFlag("require_contribution", false),
     getFeatureFlag("premium_ratio_enforcement", true),
   ]);
+  const demand = teamDemand(userCosts);
   const evaluatePolicy = ({ rationed }) => evaluateFetchPolicy({
     ...policyInputs,
+    ...demand,
+    forced,
     requestClientVersion,
     poolScarce: scarcityFromState(scarcityState).scarce,
     // Owner repair is never a draw on the shared pool. It bypasses both the live ratio gate and

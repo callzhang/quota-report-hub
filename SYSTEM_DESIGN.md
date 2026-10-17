@@ -132,7 +132,7 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
    directory, then extracted with Python's explicit `data` filter. The two checks cover both member
    paths and link/special-file semantics without relying on the extraction default that changes in
    Python 3.14 (`quota_guard.py:225-232`).
-2. **Desktop launcher self-heal** — macOS recreates `~/Desktop/刷新code账号.command`; Windows recreates `~/Desktop/刷新code账号.lnk` and its adjacent batch runner. The launchers invoke this same guard script, so a manual click uses the full normal cycle rather than a reduced account-switch path.
+2. **Desktop launcher self-heal** — macOS recreates `~/Desktop/刷新code账号.command`; Windows recreates `~/Desktop/刷新code账号.lnk` and its adjacent batch runner. The launchers invoke this same guard script with `--force`, so a manual click uses the full normal cycle rather than a reduced account-switch path; `--force` only asks the hub to skip its rationing wait for the Codex fetch that cycle makes ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs), "Forced fetch").
 3. **Scheduler self-heal** — re-register launchd/cron if missing (`ensure_scheduler_registration` `:511-564`).
 4. **Probe Codex** — `probe_codex(..., capture_refreshed_auth=True)`, persist any CLI-refreshed `auth.json` back atomically, then strip the sensitive `refreshed_auth_json` from the payload (`:1463-1468`).
 5. **Probe Claude** — `probe_claude` (or a synthetic error if a custom ANTHROPIC provider is active).
@@ -437,7 +437,7 @@ called with `CRON_SECRET`.
 
 Code: `api/auth/fetch-best.js`.
 Three branches, in order:
-1. **Policy gate** ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)): refusals for an outdated reporter, unreported consumption, an over-fair-share user during scarcity, or a non-contributor during scarcity. All are cooldowns or fixable states, never lockouts, and the `repair_auth` handback stays open through all of them.
+1. **Policy gate** ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)): refusals for an outdated reporter, unreported consumption, an above-P80 user during scarcity, or a non-contributor during scarcity. All are cooldowns or fixable states, never lockouts, and the `repair_auth` handback stays open through all of them.
 2. **`refresh_current` mode** (`:93-142`): when `refresh_current && current_account_id`, fetch the same account's pooled blob and only return it if its AT is genuinely fresh (`accessTokenMsUntilExpiry === null || > 5 min`); otherwise fall through to a normal replacement (so an owner can't dead-lock on its own stale copy).
 3. **Normal replacement**: `bestAuthPoolEntry(...)` → `pickBestAuthPoolCandidate` ([§10](#10-selection-algorithm)). `selection_key` mixes email/requester/IP for stable selection. On a hit, `recordAuthPoolFetch(reason:"served")`.
 4. **Empty pool**: selection found nothing. A caller who supplies the pool gets `no_better_auth_available`; one who does not gets their own invalidated auth back to re-login (`repair_returned`) or a `pool_empty` notice, logged as `no_uploaded_auth`. This branch refuses nobody — there was nothing to serve either way — so it carries no rule, only the explanation. Rationing non-contributors happens in branch 1, while there is still something to ration.
@@ -1079,7 +1079,7 @@ cheaper.
 **Refusal targets the real failure**, and needs both halves:
 
 1. the pool is projected to run dry (see scarcity, below), **and**
-2. this user's share of total team spend exceeds the average, `1 / active_users`
+2. this user's priced spend over the window is strictly above the **80th percentile** of active users' spend (`teamDemand`, `DEMAND_SHARE_PERCENTILE`)
 
 Either alone is not worth throttling anyone over: a shortage nobody is driving needs more accounts,
 not less work, and a heavy user during abundance is just somebody getting their job done. A share of
@@ -1090,14 +1090,24 @@ reason to warn an over-share user, so the rule stays silent until there is somet
 Demand share is computed from priced dollar spend (`MODEL_COST_SQL`), never raw token counts, so
 different models' token prices do not distort the standing.
 
-The line is simply the average: when quota has run out, everyone above average yields. A wider
-tolerance was tried and bought nothing -- spend is steep enough that 1.0 and 2.5 selected the same
-three people, so the wider line only moved the threshold into an empty stretch while being harder to
-explain. One guard remains: **at least two active users**, because fair share presupposes somebody
-to be fair to. A sole consumer holds nobody back, so throttling them frees capacity for no one.
+The line is the 80th percentile of active users' priced spend (nearest rank, `ceil(0.8 * N)`-th
+smallest; users with no spend are not "active" and do not count): when quota has run out, whoever is
+strictly above it -- the heaviest fifth -- yields. It replaced a plain average (`1 / active_users`)
+on 2026-10-16. On real data the two chose the same people (below); what the percentile adds is a
+ceiling on the blast radius, because a flat team no longer has about half of itself "over average"
+for being ordinary, and at most a fifth of the team is ever held however spend is distributed. Two
+consequences worth knowing: the cut is by rank, so it ignores how big the gap is (a team of ten
+near-equal spenders still holds its top two when scarce, though holding them frees little), and
+the line is a *strict* inequality, so identical spend at the cut is not over it (dollar spend never
+ties in production; test fixtures must vary it). With fewer than five active users the heaviest user
+is the 80th-percentile user, so nobody is above the line -- this subsumes the old "at least two
+active users" guard: a sole consumer holds nobody back, and a shortage one or two people drive alone
+calls for more accounts. The earlier finding still holds that widening a mean-based line selected the
+same three people, so there is no tolerance knob; the percentile is the only parameter.
 
-Measured on 2026-08-26 across 17 active users (line at 5.9%): it holds shawn.hou at 46.0%, derek at
-29.3%, and solutions at 14.7%; the next user down is at 3.3% and nobody else is close.
+Measured on 2026-08-26 across 17 active users (average line at 5.9%, P80 line at 3.3%, the 14th of 17
+smallest): both lines hold shawn.hou at 46.0%, derek at 29.3%, and solutions at 14.7%; the next user
+down is at 3.3% and sits exactly on the P80 line, so it is not over it.
 
 The cooldown throttles how often somebody may draw on the pool; it does not stop them working. Its
 upper bound is the codex id_token, which goes stale about an hour after issue -- past that a held
@@ -1182,6 +1192,27 @@ already started rather than queue for a fresh one. The version floor
 2026-10-02..16, 369 were on the requester's own account; the cooldown log cannot tell renewals from
 switches, so the 679 cooldown refusals on an account the requester uploaded (two users) bound the
 change from above.
+
+**Forced fetch — the desktop shortcut.** `~/Desktop/刷新code账号.command` (and the Windows
+launcher) runs the guard with `--force`; `fetch_best_auth` then sends `command: "force"` on the
+Codex fetch that cycle makes. The hub (`forced` in `api/auth/fetch-best.js`, honoured for
+`source == "codex"` only and for the exact string `force`) lifts the **cooldown** for that request:
+the demand-share and contribution waits are skipped, the notice becomes the ordinary warning rather
+than `取号已限速`, and the request is served like any other. Everything that is not rationing stays:
+the version floor and unreported-consumption gate (measurement preconditions) and
+`require_contribution` (an admin access decision). The flag opens no cooldown cycle and consumes
+none, so the next ordinary request is rationed as before; a *served* forced request completes a
+running cycle exactly as an unforced served one does. `--force` does not make the cycle fetch when it
+otherwise would not: a healthy, unexpiring account is still left alone, so the shortcut only helps
+someone whose guard is being held back. Only the shortcut passes it -- the scheduled guard never
+does.
+
+The limit of this design is that the flag is a client assertion: anyone holding a personal token can
+send `command: "force"` by hand and skip the wait for any request, so the cooldown is a nudge to
+the guard's own cadence rather than a hard cap on a determined caller. It is not recorded separately
+in the fetch log. Rationing was already client-cooperative in this sense (the guard chooses how often
+to ask); if forced calls turn out to be abused, the fix is to rate-limit the flag per user, not to
+trust it less.
 
 ### Schedule and kill switch
 
@@ -1289,8 +1320,9 @@ Both sources are held to the same thresholds, judged per window the report carri
   table also carries each member's **pool spend over the gate's own window**: `authUsersList` takes
   `spendSince` as an argument (never a clock of its own) and joins one `bucket_start` range scan over
   `token_usage_15m`, the same shape `fetchPolicyInputs` already runs on every fetch-best call, grouped
-  by user instead of filtered to one. The page derives the fair-share line the way the gate does —
-  `DEMAND_SHARE_TOLERANCE / active_spenders`, minimum two — so somebody who was sent a demand-share
+  by user instead of filtered to one. `api/users.js` returns the percentile line computed by the
+  gate's own `teamDemand` over those same per-user spends (`demand_share_line`, null when nobody can
+  be above it), and the page only compares each share to it, so somebody who was sent a demand-share
   notice can see the number that produced it instead of a near-miss of it. Being over the line is not
   a throttle on its own: the cooldown also needs the pool to be scarce (§9b).
 - **`auth_pool_death_events`** — append-only credential deaths and revivals ([§12.1](#121-auth_pool_death_events-why-a-death-log-and-not-a-state-table)).
