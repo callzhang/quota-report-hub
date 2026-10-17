@@ -1139,6 +1139,17 @@ lend -- not a dead login, not a Free plan; a *drained* account still counts, sin
 what a shared account is for -- including one that reports only `exhausted_until` with no windows at
 all) decides whether the same cooldown applies while the pool is scarce.
 
+"Free" is judged from the **credential** (`auth_pool_entries.plan_name`, the id_token claim), in all
+three SQL sites that ask — `HEALTHY_POOL_ENTRY_SQL`, the owner's invalidated-entry lookup, and the
+scarcity supply count — never from `auth_pool_quota_latest.plan_name`. That row is whoever reported
+last, and a borrower's report names no plan, so the NULL made `NOT (... OR plan_name = 'Free')`
+evaluate to NULL and the owner's healthy upload vanished from both the contribution check and the
+supply count the moment anyone borrowed it. Measured 2026-10-17: 10 of 19 pool entries had a NULL
+latest plan, 5 passed the predicate as written and 15 do once the plan comes from the credential;
+melody.xu's one healthy Codex upload (`yx4478@nyu.edu`, borrowed by another user) was counted as
+nothing, which is what put her in `contribution_cooldown`. Comparisons use `IS` / `IS NOT`, the
+null-safe forms.
+
 This is not payment for access, and the numbers are why it cannot be. Over 14 days to 2026-08-27,
 half the people who fetched had never supplied anything, but they accounted for 7.4% of priced spend
 -- refusing them outright would have recovered almost nothing while locking colleagues out of a
