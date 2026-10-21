@@ -205,3 +205,18 @@ test("a heartbeat stores whether the self-updater is working, and why it is not"
     cleanup();
   }
 });
+
+test("diagnostics_json is stored while a reporter fails and cleared by its next healthy run", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const diagnostics_json = JSON.stringify({ installed_fp: "ab12cd34" });
+    await mod.upsertReporterProbeHeartbeat(heartbeat({ source: "claude", status: "error", error: "claude auth email unavailable", diagnostics_json }));
+    const read = async () => (await client.execute("SELECT diagnostics_json FROM reporter_probe_heartbeats")).rows[0].diagnostics_json;
+    assert.equal(await read(), diagnostics_json);
+
+    await mod.upsertReporterProbeHeartbeat(heartbeat({ source: "claude", last_run_at: "2026-08-27T09:15:00.000Z" }));
+    assert.equal(await read(), null, "a recovered machine must not keep describing a fault it no longer has");
+  } finally {
+    cleanup();
+  }
+});

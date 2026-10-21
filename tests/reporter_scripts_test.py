@@ -1827,14 +1827,17 @@ Reading additional input from stdin...
     def test_discover_codex_executable_finds_the_cli_inside_the_renamed_desktop_app(self):
         # The Codex app updates itself into ChatGPT.app, which leaves the app-installed
         # /usr/local/bin/codex symlink dangling. Neither that link nor PATH may be load-bearing:
-        # the CLI inside the renamed bundle is the one that still exists.
+        # the CLI inside the renamed bundle is the one that still exists. The app ships it as
+        # Resources/codex-cli/bin/codex (a wrapper into CodexCLI.app); the bare Resources/codex of
+        # earlier builds is gone, which left xienxu's healthy ChatGPT.app reported as "codex
+        # command not found" (2026-10-17).
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             common_dir = root / "bin"
             common_dir.mkdir()
             applications = root / "Applications"
-            (common_dir / "codex").symlink_to(applications / "Codex.app" / "Contents" / "Resources" / "codex")
-            bundled = applications / "ChatGPT.app" / "Contents" / "Resources" / "codex"
+            (common_dir / "codex").symlink_to(applications / "Codex.app" / "Contents" / "Resources" / "codex-cli" / "bin" / "codex")
+            bundled = applications / "ChatGPT.app" / "Contents" / "Resources" / "codex-cli" / "bin" / "codex"
             bundled.parent.mkdir(parents=True)
             bundled.write_text("#!/bin/sh\n", encoding="utf-8")
             bundled.chmod(0o755)
@@ -2427,6 +2430,24 @@ Reading additional input from stdin...
         # it reports a reason the rotation rule understands instead of an opaque command failure
         self.assertEqual(payload["status"], "error")
         self.assertEqual(payload["error"], "claude auth email unavailable")
+        # ... and says why it cannot name the account, for the hub to read off the heartbeat
+        self.assertEqual(payload["diagnostics"]["executable"], "/usr/local/bin/claude")
+        self.assertEqual(payload["diagnostics"]["status_json"]["loggedIn"], True)
+
+    def test_probe_claude_attaches_no_diagnostics_when_it_knows_the_account(self):
+        auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
+        text = mock.Mock(returncode=0, stdout="Login method: Claude Max Account\nEmail: owner@example.com\n", stderr="")
+        with mock.patch("quota_reporters.discover_claude_executable", return_value="/usr/local/bin/claude"), \
+             mock.patch("quota_reporters.subprocess.run", side_effect=[auth_json, text]), \
+             mock.patch("quota_reporters.read_claude_oauth_credentials",
+                        return_value=({"claudeAiOauth": {"accessToken": "AT", "refreshToken": "R"}}, "token_cache_v2")), \
+             mock.patch("quota_reporters.read_claude_statusline_snapshot", return_value=None), \
+             mock.patch("quota_reporters.probe_claude_rate_limits", return_value={"available": False, "windows": {"5h": None, "1week": None}}), \
+             mock.patch("quota_reporters.read_claude_stats", return_value=None):
+            with tempfile.TemporaryDirectory() as d:
+                payload = probe_claude(Path("/tmp/claude-home"), usage_backoff_path=Path(d) / "b.json")
+        self.assertEqual(payload["email"], "owner@example.com")
+        self.assertNotIn("diagnostics", payload)
 
     def test_probe_claude_refuses_a_token_without_inference_scope_that_usage_accepts(self):
         """2026-09-17: the keychain held a profile-scoped token for claude-leizhang0121. The usage

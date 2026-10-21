@@ -898,6 +898,69 @@ test("getInvalidatedUploaderEntry returns the owner's invalidated auth, preferri
   }
 });
 
+// The latest quota row is whoever reported last, and a borrower's report names no plan: the hub
+// files it under the owner's account by token fingerprint, and the plan lives on the credential.
+// Judging the plan from that row made an owner's perfectly healthy upload read as "not a contributor"
+// the moment anyone borrowed it (melody.xu, 2026-10-17: 10 of 19 pool entries were in this state),
+// which cooled her fetches down and hid the account from the scarcity supply count.
+test("an upload stays healthy and counted as supply when the latest report names no plan", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({ accountId: "provider-1", email: "owner-plan@example.com", plan: "plus" }),
+      uploader_email: "alice@stardust.ai",
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "borrower-box",
+      reporter_name: "bob@borrower-box",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "owner-plan@example.com",
+      status: "ok",
+      windows: {
+        "5h": { remaining_percent: 80, reset_at: "2026-05-06T06:00:00Z" },
+        "1week": { remaining_percent: 80, reset_at: "2026-05-13T01:00:00Z" },
+      },
+    });
+
+    const since = "2026-05-01T00:00:00.000Z";
+    assert.equal((await mod.fetchPolicyInputs({ email: "alice@stardust.ai", since })).hasHealthyUpload, true);
+    const supply = await mod.recomputePoolScarcity({ now: new Date("2026-05-06T02:00:00Z") });
+    assert.ok(supply.some((row) => row.source === "codex"), "the account must count toward codex supply");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a Free credential is not a contribution even when a report names another plan", async () => {
+  const { mod, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertAuthPoolEntry({
+      source: "codex",
+      auth_json: fakeAuthJson({ accountId: "provider-2", email: "free-owner@example.com", plan: "free" }),
+      uploader_email: "alice@stardust.ai",
+    });
+    await mod.upsertAuthPoolQuota({
+      source: "codex",
+      hostname: "gpu4",
+      reporter_name: "alice@gpu4",
+      reported_at: "2026-05-06T01:00:00Z",
+      account_id: "free-owner@example.com",
+      status: "ok",
+      plan_name: "Team",
+      windows: {
+        "5h": { remaining_percent: 80, reset_at: "2026-05-06T06:00:00Z" },
+        "1week": { remaining_percent: 80, reset_at: "2026-05-13T01:00:00Z" },
+      },
+    });
+    const since = "2026-05-01T00:00:00.000Z";
+    assert.equal((await mod.fetchPolicyInputs({ email: "alice@stardust.ai", since })).hasHealthyUpload, false);
+  } finally {
+    cleanup();
+  }
+});
+
 test("fetchPolicyInputs counts a healthy upload from any source as supplying the pool", async () => {
   const { mod, cleanup } = await loadDbWithTempStore();
   try {
