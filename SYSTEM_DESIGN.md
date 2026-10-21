@@ -129,9 +129,12 @@ Code: `skills/quota-reporter/scripts/{quota_guard.py, quota_reporters.py, instal
 Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
 1. **Self-update** from GitHub `main` unless disabled (`:1645-1664`).
    The downloaded tarball is first checked so every member resolves under the temporary extraction
-   directory, then extracted with Python's explicit `data` filter. The two checks cover both member
-   paths and link/special-file semantics without relying on the extraction default that changes in
-   Python 3.14 (`quota_guard.py:225-232`).
+   directory and to be a plain file or directory (no symlinks, devices), then written out one member
+   at a time. `extractall(filter="data")` is deliberately not used: the keyword needs Python 3.9.17+,
+   and macOS's `/usr/bin/python3` is 3.9.6, where it raised `TypeError` and left that machine
+   permanently unable to self-update (melody, 2026-10-20). Because the updater is itself the
+   delivery channel for fixes, a client stuck this way can only be repaired by reinstalling by hand
+   (`quota_guard.py` `unpack_skill_from_tarball`).
 2. **Desktop launcher self-heal** — macOS recreates `~/Desktop/刷新code账号.command`; Windows recreates `~/Desktop/刷新code账号.lnk` and its adjacent batch runner. The launchers invoke this same guard script with `--force`, so a manual click uses the full normal cycle rather than a reduced account-switch path; `--force` only asks the hub to skip its rationing wait for the Codex fetch that cycle makes ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs), "Forced fetch").
 3. **Scheduler self-heal** — re-register launchd/cron if missing (`ensure_scheduler_registration` `:511-564`).
 4. **Probe Codex** — `probe_codex(..., capture_refreshed_auth=True)`, persist any CLI-refreshed `auth.json` back atomically, then strip the sensitive `refreshed_auth_json` from the payload (`:1463-1468`).

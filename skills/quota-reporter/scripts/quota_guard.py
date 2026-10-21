@@ -238,12 +238,27 @@ def download_github_tarball(repo: str, sha: str, destination: Path, timeout: int
 
 
 def unpack_skill_from_tarball(archive_path: Path, destination: Path) -> Path:
+    # Extracted by hand rather than with extractall(filter="data"): that keyword only exists from
+    # Python 3.9.17 / 3.12, and macOS ships /usr/bin/python3 as 3.9.6, where it raises TypeError and
+    # leaves the machine unable to ever self-update (melody, 2026-10-20). Only plain files and
+    # directories are accepted, which is the part of the "data" filter this archive needs.
+    root = destination.resolve()
     with tarfile.open(archive_path, "r:gz") as archive:
-        for member in archive.getmembers():
+        members = archive.getmembers()
+        for member in members:
             member_path = (destination / member.name).resolve()
-            if destination.resolve() not in [member_path, *member_path.parents]:
+            if root not in [member_path, *member_path.parents]:
                 raise RuntimeError(f"Unsafe path in downloaded archive: {member.name}")
-        archive.extractall(destination, filter="data")
+            if not (member.isfile() or member.isdir()):
+                raise RuntimeError(f"Unsupported entry in downloaded archive: {member.name}")
+        for member in members:
+            target = destination / member.name
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(archive.extractfile(member).read())
+            target.chmod(member.mode & 0o755 | 0o600)
     candidates = sorted(destination.glob("*/skills/quota-reporter"))
     if not candidates:
         raise RuntimeError("Downloaded repository did not contain skills/quota-reporter")

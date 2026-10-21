@@ -5919,6 +5919,45 @@ Reading additional input from stdin...
 
         self.assertEqual(skill_root.name, "quota-reporter")
 
+    def test_self_update_unpacks_on_a_python_without_the_extraction_filter_keyword(self):
+        # macOS's /usr/bin/python3 is 3.9.6, whose extractall() has no `filter` parameter.
+        def extractall_of_python_3_9_6(self, path=".", members=None, *, numeric_owner=False):
+            raise AssertionError("extractall is not used")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            archive_path = base / "archive.tar.gz"
+            destination = base / "unpacked"
+            destination.mkdir()
+            content = b"#!/usr/bin/env python3\n"
+            member = tarfile.TarInfo("quota-report-hub-sha/skills/quota-reporter/scripts/run.py")
+            member.size = len(content)
+            member.mode = 0o755
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(member, io.BytesIO(content))
+
+            with mock.patch.object(tarfile.TarFile, "extractall", extractall_of_python_3_9_6):
+                skill_root = quota_guard.unpack_skill_from_tarball(archive_path, destination)
+
+            script = skill_root / "scripts" / "run.py"
+            self.assertEqual(script.read_bytes(), content)
+            self.assertTrue(os.access(script, os.X_OK))
+
+    def test_self_update_refuses_archive_entries_that_are_not_plain_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            archive_path = base / "archive.tar.gz"
+            destination = base / "unpacked"
+            destination.mkdir()
+            link = tarfile.TarInfo("quota-report-hub-sha/skills/quota-reporter/escape")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "/etc/passwd"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(link)
+
+            with self.assertRaises(RuntimeError):
+                quota_guard.unpack_skill_from_tarball(archive_path, destination)
+
     def test_github_latest_sha_falls_back_to_atom_when_api_is_rate_limited(self):
         api_error = urllib.error.HTTPError(
             "https://api.github.com/repos/callzhang/quota-report-hub/commits/main",
