@@ -1999,6 +1999,55 @@ Reading additional input from stdin...
         self.assertTrue(ok)
         self.assertEqual(config["oauth:tokenCacheV2"], "encrypted-new")
 
+    def test_write_claude_token_cache_credentials_creates_the_entry_a_never_signed_in_app_lacks(self):
+        identity = {"account": "acc-uuid", "client": "client-uuid", "organization": "org-uuid"}
+        credentials = {
+            "claudeAiOauth": {
+                "accessToken": "POOL_AT",
+                "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN,
+                "expiresAt": 5,
+                "subscriptionType": "max",
+                "scopes": ["user:inference", "user:profile"],
+            }
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            claude_home = base / ".claude"
+            config_path = base / "Library" / "Application Support" / "Claude" / "config.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(json.dumps({"first_launch_at": 1}), encoding="utf-8")
+
+            with mock.patch("quota_reporters.sys.platform", "darwin"):
+                with mock.patch("quota_reporters.read_claude_safe_storage_secret", return_value="secret"):
+                    with mock.patch("quota_reporters.fetch_claude_oauth_identity", return_value=identity):
+                        ok = quota_reporters.write_claude_token_cache_credentials(credentials, claude_home, "token_cache_v2")
+                        read_back, source = quota_reporters.read_claude_token_cache_credentials(claude_home)
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertTrue(ok)
+        self.assertEqual(source, "token_cache_v2")
+        self.assertEqual(read_back["claudeAiOauth"]["accessToken"], "POOL_AT")
+        self.assertEqual(read_back["claudeAiOauth"]["scopes"], ["user:inference", "user:profile"])
+        self.assertEqual(config["lastKnownAccountUuid"], "acc-uuid")
+        self.assertEqual(config["first_launch_at"], 1)
+
+    def test_write_claude_token_cache_credentials_writes_nothing_when_the_token_cannot_be_named(self):
+        credentials = {"claudeAiOauth": {"accessToken": "POOL_AT", "refreshToken": "RT"}}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            config_path = base / "Library" / "Application Support" / "Claude" / "config.json"
+            config_path.parent.mkdir(parents=True)
+            config_path.write_text(json.dumps({"first_launch_at": 1}), encoding="utf-8")
+
+            with mock.patch("quota_reporters.sys.platform", "darwin"):
+                with mock.patch("quota_reporters.read_claude_safe_storage_secret", return_value="secret"):
+                    with mock.patch("quota_reporters.fetch_claude_oauth_identity", return_value=None):
+                        ok = quota_reporters.write_claude_token_cache_credentials(credentials, base / ".claude", "token_cache_v2")
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertFalse(ok)
+        self.assertEqual(config, {"first_launch_at": 1})
+
     def test_probe_claude_prefers_auth_status_text_account_details(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
         auth_text = mock.Mock(

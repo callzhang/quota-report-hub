@@ -1438,6 +1438,37 @@ def read_claude_token_cache_credentials(claude_home: Path = CLAUDE_HOME) -> tupl
     return None, "unavailable"
 
 
+def fetch_claude_oauth_identity(access_token: str) -> dict | None:
+    """The three ids the desktop app names a token-cache entry by, from the token itself."""
+    request = urllib.request.Request(
+        CLAUDE_DEFAULT_BASE_URL + "/api/oauth/profile",
+        headers={"Authorization": f"Bearer {access_token}", "anthropic-beta": "oauth-2025-04-20"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            profile = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    try:
+        return {
+            "account": profile["account"]["uuid"],
+            "client": profile["application"]["uuid"],
+            "organization": profile["organization"]["uuid"],
+        }
+    except (KeyError, TypeError):
+        return None
+
+
+def claude_token_cache_key(identity: dict, scopes: list[str] | None) -> str:
+    # Shape read off a signed-in desktop cache (2026-10-21): acct:<account>|<client>:<organization>:
+    # <base url>:<scopes>. The three ids are exactly what /api/oauth/profile returns for the token.
+    scope_value = " ".join(scopes) if scopes else "user:inference"
+    return (
+        f"acct:{identity['account']}|{identity['client']}:{identity['organization']}"
+        f":{CLAUDE_DEFAULT_BASE_URL}:{scope_value}"
+    )
+
+
 def write_claude_token_cache_credentials(credentials: dict, claude_home: Path, source: str) -> bool:
     if sys.platform != "darwin":
         return False
@@ -1446,17 +1477,35 @@ def write_claude_token_cache_credentials(credentials: dict, claude_home: Path, s
     if not config_path.exists():
         return False
     config = read_json(config_path)
-    if not isinstance(config, dict) or not isinstance(config.get(field), str):
+    if not isinstance(config, dict):
         return False
     secret = read_claude_safe_storage_secret()
     if not secret:
         return False
-    cache = decrypt_claude_safe_storage_json(config[field], secret)
-    if not isinstance(cache, dict):
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    if not oauth.get("accessToken"):
+        return False
+    if isinstance(config.get(field), str):
+        cache = decrypt_claude_safe_storage_json(config[field], secret)
+        if not isinstance(cache, dict):
+            return False
+    elif source == "token_cache_v2":
+        cache = {}
+    else:
         return False
     cache_key, entry = select_claude_token_cache_entry(cache)
-    oauth = (credentials or {}).get("claudeAiOauth") or {}
-    if not cache_key or not isinstance(entry, dict) or not oauth.get("accessToken"):
+    if not cache_key and source == "token_cache_v2":
+        # A desktop app that has never signed in has no entry to overwrite, and the app counts an
+        # account as signed in only when it finds one here -- the credentials the guard fetched for
+        # the CLI sat in the keychain while the app kept showing its login screen (melody,
+        # 2026-10-20). Create the entry the app itself would have written.
+        identity = fetch_claude_oauth_identity(oauth["accessToken"])
+        if identity is None:
+            return False
+        cache_key = claude_token_cache_key(identity, oauth.get("scopes"))
+        entry = {"identityChecked": True}
+        config["lastKnownAccountUuid"] = identity["account"]
+    if not cache_key or not isinstance(entry, dict):
         return False
     entry["token"] = oauth["accessToken"]
     if oauth.get("refreshToken") is not None:

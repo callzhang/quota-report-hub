@@ -119,6 +119,18 @@
   to cover **every grant that can do inference**, not every entry of one client id: a second grant
   re-mints just as effectively, and rotating it revokes the tokens the hub is serving. That is what
   `claude_cache_entry_can_mint_inference` decides. Grants without inference scope are left alone.
+- **Entry key shape** (read off a signed-in desktop cache, 2026-10-21):
+  `acct:<account uuid>|<client uuid>:<organization uuid>:https://api.anthropic.com:<scopes, space-separated>`,
+  with the three ids exactly what `GET /api/oauth/profile` returns for the token (`account.uuid`,
+  `application.uuid`, `organization.uuid`); an entry carries `token`, `refreshToken`, `expiresAt`,
+  `subscriptionType`, `rateLimitTier` and `identityChecked: true`, and `config.json` names the signed-in
+  account in `lastKnownAccountUuid`. An app that has never signed in has no entry at all, so an install
+  that only overwrites existing entries leaves it on its login screen while the keychain holds a working
+  credential (melody, 2026-10-20). `write_claude_token_cache_credentials` therefore creates the V2 entry
+  (and sets `lastKnownAccountUuid`) when none qualifies, naming it from the profile call; it creates
+  nothing if the profile cannot be fetched. It runs on every credential install, i.e. the next hub fetch
+  or access-token renewal, not on the guard's strip, which deliberately never copies one store's token
+  into another.
 - **Only an entry whose scope set includes `user:inference` is ever a credential.**
   `select_claude_token_cache_entry` skips every other entry for reading *and* for installing. A
   credential read from an entry takes the entry's scopes as its own; those become the uploaded blob's
