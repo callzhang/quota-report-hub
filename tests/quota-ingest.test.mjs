@@ -219,6 +219,37 @@ test("a heartbeat keeps the client's identity diagnostics as bounded JSON and dr
   assert.equal(oversized.heartbeat.diagnostics_json, null);
 });
 
+test("a heartbeat reply names the account behind the token so a machine that lost its binding can repair it", async () => {
+  const written = [];
+  const named = await ingestReporterHeartbeat({
+    source: "claude",
+    reporterEmail: "melody.xu@stardust.ai",
+    heartbeat: {
+      reporter_name: "xienxu@Mac",
+      hostname: "Mac",
+      status: "error",
+      error: "claude auth email unavailable",
+      account_id: "claude-email-missing",
+      access_token_fingerprint: "fp-of-pooled-token",
+    },
+    upsertImpl: async (row) => { written.push(row); },
+    tokenOwnerImpl: async () => ({ account_id: "claude-owner@example.com" }),
+    authPoolEntryImpl: async () => ({ email: "owner@example.com", name: "Owner" }),
+  });
+  assert.deepEqual(named.token_identity, { account_id: "claude-owner@example.com", email: "owner@example.com", name: "Owner" });
+  assert.equal(written[0].account_id, "claude-owner@example.com");
+
+  const unknown = await ingestReporterHeartbeat({
+    source: "claude",
+    reporterEmail: "melody.xu@stardust.ai",
+    heartbeat: { reporter_name: "r", hostname: "h", status: "ok", access_token_fingerprint: "fp-the-pool-never-held" },
+    upsertImpl: async () => {},
+    tokenOwnerImpl: async () => null,
+    authPoolEntryImpl: async () => { throw new Error("must not look up an entry without an owner"); },
+  });
+  assert.equal(unknown.token_identity, null, "the machine's own login is not the hub's to name");
+});
+
 test("ingestClientQuota resolves a codex report by token too, and gates the resolved payload", async () => {
   // Attribution was built source-agnostic but only claude ever sent a fingerprint, so for codex
   // the claim was always taken at face value. The codex acceptance gate must see the RESOLVED

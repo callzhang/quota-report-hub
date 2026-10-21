@@ -1750,6 +1750,40 @@ def resolve_claude_installed_identity(
     return {"email": state.get("email"), "name": state.get("name")}
 
 
+def adopt_hub_token_identity(
+    fingerprint: str | None,
+    identity: dict | None,
+    known_auth_path: Path = KNOWN_AUTH_PATH,
+) -> bool:
+    """Record the account the hub says this claude token belongs to, so the next probe can name it.
+
+    Claude's own identity record is not touched by installing a token, which leaves the binding in
+    known_auth (token fingerprint -> account) as the only way to say whose token is running. When
+    that binding is missing or stale the probe reports "claude auth email unavailable" and cannot
+    repair it from here, because every path that restates it needs the identity it lacks. The hub
+    issued the token and knows the answer; this is where it is written down. Returns whether the
+    entry changed.
+    """
+    email = (identity or {}).get("email")
+    if not fingerprint or not isinstance(email, str) or "@" not in email:
+        return False
+    state = read_known_auth_state(known_auth_path)
+    entry = dict(known_auth_state_for_source(state, "claude"))
+    bound = {
+        "account_id": identity.get("account_id") or entry.get("account_id"),
+        "email": email,
+        "name": identity.get("name"),
+        "access_token_fingerprint": fingerprint,
+    }
+    if all(entry.get(key) == value for key, value in bound.items()):
+        return False
+    state.setdefault("sources", {})["claude"] = {**entry, **bound, "observed_at": iso_now()}
+    known_auth_path.parent.mkdir(parents=True, exist_ok=True)
+    known_auth_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    known_auth_path.chmod(0o600)
+    return True
+
+
 def claude_oauth_token_expired(oauth: dict, now_ms: float | None = None) -> bool:
     expires_at = oauth.get("expiresAt")
     if not isinstance(expires_at, (int, float)):

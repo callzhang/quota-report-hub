@@ -47,6 +47,7 @@ from quota_reporters import (
     cli_auth_seed_state,
     complete_codex_refresh_handoff,
     access_token_fingerprint,
+    adopt_hub_token_identity,
     claude_auth_blob_metadata,
     detect_claude_custom_provider_env,
     discover_codex_executable,
@@ -634,6 +635,13 @@ def report_current_quota_to_auth_pool(
     )
     notify_hub_notices(result)
     enforce_hub_upgrade_demand(result)
+    if source == "claude":
+        # The hub names the account behind the token this run measured through; writing it down is
+        # how a machine that lost its token binding learns who it is again on the next probe.
+        adopt_hub_token_identity(
+            heartbeat.get("access_token_fingerprint"),
+            (result.get("heartbeat") or {}).get("token_identity"),
+        )
     if result.get("ok") is False:
         return {
             "ok": False,
