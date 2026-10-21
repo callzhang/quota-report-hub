@@ -3377,6 +3377,15 @@ def delete_auth_pool_entry(
         return read_auth_pool_http_error(error, auth_pool_url=auth_pool_url, auth_pool_user_token=auth_pool_user_token)
 
 
+def synced_credential_fingerprint(source: str, auth_json_text: str) -> str | None:
+    """The access-token fingerprint of the credential an auth blob carries.
+
+    Claude wraps its credentials in the upload blob; codex's auth.json is the credential itself.
+    """
+    blob = json.loads(auth_json_text)
+    return access_token_fingerprint(blob.get("credentials") if source == "claude" else blob, source)
+
+
 def sync_current_auth_pool_entry(
     *,
     source: str,
@@ -3389,6 +3398,12 @@ def sync_current_auth_pool_entry(
     defer_codex_refresh: bool = False,
 ) -> dict:
     known = known_auth_state_for_source(read_known_auth_state(known_auth_path), source)
+    # write_known_auth_state replaces the whole entry, so every write below must restate the token
+    # these metadata describe. Leaving it out erased the binding the hub-fetch install had just
+    # recorded: the next probe could no longer tell whose token it ran, reported "claude auth email
+    # unavailable", and skipped the sync that would have restored the binding -- so the machine
+    # alternated between knowing and not knowing who it was (xienxu, 2026-10-17).
+    fingerprint = synced_credential_fingerprint(source, auth_json_text)
     if is_excluded_free_plan(metadata.get("plan_name")):
         deleted = delete_auth_pool_entry(
             auth_pool_url,
@@ -3410,6 +3425,7 @@ def sync_current_auth_pool_entry(
             last_uploaded_digest=known.get("last_uploaded_digest"),
             last_uploaded_account_id=known.get("last_uploaded_account_id"),
             last_uploaded_auth_last_refresh=known.get("last_uploaded_auth_last_refresh"),
+            access_token_fingerprint=fingerprint,
             state_source="free_plan_excluded",
         )
         return {
@@ -3437,6 +3453,7 @@ def sync_current_auth_pool_entry(
                 last_uploaded_account_id=metadata["account_id"],
                 last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
                 last_reuploaded_at=known.get("last_reuploaded_at"),
+                access_token_fingerprint=fingerprint,
                 state_source="unchanged_local_auth",
             )
             return {
@@ -3475,6 +3492,7 @@ def sync_current_auth_pool_entry(
             last_uploaded_account_id=uploaded_metadata.get("account_id") or metadata["account_id"],
             last_uploaded_auth_last_refresh=uploaded_metadata.get("auth_last_refresh") or metadata["auth_last_refresh"],
             last_reuploaded_at=iso_now(),
+            access_token_fingerprint=fingerprint,
             state_source="server_kept_newer_auth" if server_kept_different_auth else "unchanged_local_auth",
         )
         return {
@@ -3514,6 +3532,7 @@ def sync_current_auth_pool_entry(
         last_uploaded_account_id=uploaded_metadata.get("account_id") or metadata["account_id"],
         last_uploaded_auth_last_refresh=uploaded_metadata.get("auth_last_refresh") or metadata["auth_last_refresh"],
         last_reuploaded_at=iso_now(),
+        access_token_fingerprint=fingerprint,
         state_source="server_kept_newer_auth" if server_kept_different_auth else "uploaded_to_auth_pool",
     )
     return {

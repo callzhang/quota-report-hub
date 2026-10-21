@@ -3272,6 +3272,40 @@ Reading additional input from stdin...
             quota_payload,
         )
 
+    def test_sync_keeps_the_token_binding_so_the_next_probe_can_still_name_the_account(self):
+        # A hub-fetch install records which account a token belongs to (the fingerprint), because
+        # the CLI's own identity record is not touched by an install. The sync that follows used to
+        # rewrite the whole entry without it, so the next probe saw an unknown token, reported "claude
+        # auth email unavailable", and never reached the sync that would have put the binding back.
+        credentials = {"claudeAiOauth": {"accessToken": "AT-served-by-hub", "refreshToken": "", "expiresAt": 1794390321620}}
+        fingerprint = quota_reporters.access_token_fingerprint(credentials, "claude")
+        metadata = {
+            "account_id": "claude-owner@example.com",
+            "email": "owner@example.com",
+            "name": None,
+            "auth_last_refresh": "1794390321620",
+            "auth_path": "keychain",
+            "digest": "digest-1",
+            "plan_name": "Max",
+        }
+        blob_text = json.dumps({"schema": "claude_credentials_v1", "credentials": credentials})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            known_auth_path = Path(temp_dir) / "known_auth.json"
+            quota_reporters.write_known_auth_state(
+                source="claude", metadata=metadata, known_auth_path=known_auth_path,
+                last_uploaded_digest="digest-1", last_uploaded_account_id=metadata["account_id"],
+                last_uploaded_auth_last_refresh=metadata["auth_last_refresh"],
+                access_token_fingerprint=fingerprint, state_source="fetched_from_auth_pool",
+            )
+            # Already uploaded and recently re-uploaded: the cheapest path, which still rewrites the entry.
+            with mock.patch.object(quota_reporters, "should_reupload_unchanged_auth", return_value=False):
+                quota_reporters.sync_current_auth_pool_entry(
+                    source="claude", auth_pool_url="https://hub", auth_pool_user_token="t",
+                    auth_json_text=blob_text, metadata=metadata, known_auth_path=known_auth_path,
+                )
+            identity = quota_reporters.resolve_claude_installed_identity(credentials, known_auth_path)
+        self.assertEqual(identity["email"], "owner@example.com")
+
     def test_report_current_quota_to_auth_pool_returns_error_when_post_fails(self):
         payload = {
             "source": "claude",
