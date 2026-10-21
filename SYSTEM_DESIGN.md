@@ -258,6 +258,12 @@ refuse it as quota, so it still never becomes zero windows.
   `shadowed_by_<store>` when the install did not take. Before this the guard wrote that cache in
   **zero** places and every fetched or replacement AT was discarded on arrival while the code
   reported success.
+- **A failed Claude install never advances the account binding.** Both pool replacement and owner
+  repair must honor `install_claude_credentials`'s read-back verdict before writing `known_auth` or
+  announcing success, including a same-account AT refresh and a cycle without usage tracking. The
+  account id alone cannot prove a new token landed. A shadowed write raises a guard-step error and
+  leaves the prior binding intact. A Claude success notice names the terminal Claude Code lane and
+  explicitly says that the Claude App login does not switch (AUTH_TOKENS.md §7).
 - **Restarting Claude.app when it is idle** (`restart_claude_app_if_idle`, opt-in via
   `restart_claude_app_when_idle`). A strip only rewrites the stores; the running app keeps its
   refresh token in memory and writes it back later — measured 2026-08-29, the stores stayed clean for
