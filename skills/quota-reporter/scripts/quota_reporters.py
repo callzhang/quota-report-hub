@@ -134,8 +134,34 @@ def app_bundled_cli_candidates(binary_name: str) -> list[Path]:
     return [app_dir / bundle / relative_path for bundle in bundles for app_dir in APP_BUNDLE_DIRS]
 
 
+# The Claude desktop app does not bundle its CLI in the .app; it downloads one per version into
+# Application Support, as <version>/<hash>/claude.app/Contents/MacOS/claude. A Mac that only has the
+# desktop app therefore has no claude on PATH or in any common dir, and the probe reported "claude
+# command not found" for a healthy install (melody, 2026-10-20: both apps installed, no standalone
+# CLI). Versions are tried newest first because the app leaves old ones behind after an update.
+CLAUDE_DESKTOP_CLI_ROOT = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code"
+
+
+def claude_desktop_cli_candidates() -> list[Path]:
+    if not CLAUDE_DESKTOP_CLI_ROOT.is_dir():
+        return []
+    versions = sorted(
+        CLAUDE_DESKTOP_CLI_ROOT.iterdir(),
+        key=lambda path: [int(part) for part in re.findall(r"\d+", path.name)],
+        reverse=True,
+    )
+    return [
+        binary
+        for version in versions
+        for binary in sorted(version.glob("*/claude.app/Contents/MacOS/claude"))
+    ]
+
+
 def common_cli_binary_candidates(binary_name: str) -> list[Path]:
-    return [directory / binary_name for directory in COMMON_CLI_DIRS] + app_bundled_cli_candidates(binary_name)
+    candidates = [directory / binary_name for directory in COMMON_CLI_DIRS] + app_bundled_cli_candidates(binary_name)
+    if binary_name == "claude":
+        candidates += claude_desktop_cli_candidates()
+    return candidates
 
 
 def discover_cli_executable(

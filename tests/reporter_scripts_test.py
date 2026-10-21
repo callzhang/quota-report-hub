@@ -737,6 +737,23 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertIsNone(payload["windows"]["5h"])
         self.assertIsNone(payload["windows"]["1week"])
 
+    def test_discover_claude_finds_the_cli_the_desktop_app_downloads_newest_version_first(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            root = base / "claude-code"
+            for version in ("2.1.99", "2.1.304"):
+                binary = root / version / "abc123" / "claude.app" / "Contents" / "MacOS" / "claude"
+                binary.parent.mkdir(parents=True)
+                binary.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            with mock.patch.object(quota_reporters, "COMMON_CLI_DIRS", (base / "empty",)):
+                with mock.patch.object(quota_reporters, "CLAUDE_DESKTOP_CLI_ROOT", root):
+                    with mock.patch("quota_reporters.shutil.which", return_value=None):
+                        found = quota_reporters.discover_claude_executable()
+
+        # 2.1.99 sorts after 2.1.304 as text; the version must be compared as numbers.
+        self.assertEqual(found, str(root / "2.1.304" / "abc123" / "claude.app" / "Contents" / "MacOS" / "claude"))
+
     def _codex_probe_auth(self, temp_dir: str) -> Path:
         auth_path = Path(temp_dir) / "auth.json"
         auth_path.write_text(
