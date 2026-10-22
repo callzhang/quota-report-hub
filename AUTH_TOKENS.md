@@ -1094,6 +1094,13 @@ permanently "just invalidated" — never archived, owner never mailed. Regressio
 
 ## 7. Claude Desktop vs the CLI
 
+**OAuth-only automatic Desktop login was tested on 2026-10-21, version 3.1623.1.** A valid CLI
+bearer returned 200 for profile/account and the native API-mode models probe, but the standard
+Desktop authorization endpoint returned 403: `This endpoint does not accept OAuth access tokens.`
+An installed V2 cache still left the App at its sign-in form. See the
+[investigation and limits of this conclusion](docs/claude-desktop-login-investigation.md), including
+the distinction between API-mode inference credentials and a standard claude.ai account login.
+
 Claude and Codex have separate CLI and desktop-app lanes. The quota guard manages both CLI/pool lanes
 while leaving desktop-app state and unmanaged process lifecycle alone.
 
