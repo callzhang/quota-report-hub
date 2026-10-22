@@ -2048,6 +2048,31 @@ Reading additional input from stdin...
         self.assertFalse(ok)
         self.assertEqual(config, {"first_launch_at": 1})
 
+    def test_seed_claude_desktop_copies_a_pool_credential_into_an_empty_desktop_cache(self):
+        pool = {"claudeAiOauth": {"accessToken": "POOL_AT", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}
+        with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=(pool, "keychain")):
+            with mock.patch("quota_reporters.write_claude_token_cache_credentials", return_value=True) as write:
+                result = quota_reporters.seed_claude_desktop_from_pool_credential(Path("/nonexistent"))
+
+        self.assertEqual(result, {"seeded": True, "reason": "seeded"})
+        write.assert_called_once_with(pool, Path("/nonexistent"), "token_cache_v2")
+
+    def test_seed_claude_desktop_never_copies_a_rotatable_refresh_token_or_overwrites_an_entry(self):
+        real = {"claudeAiOauth": {"accessToken": "AT", "refreshToken": "sk-ant-ort01-REAL"}}
+        pool = {"claudeAiOauth": {"accessToken": "POOL_AT", "refreshToken": quota_reporters.STRIPPED_CLAUDE_REFRESH_TOKEN}}
+        cases = [
+            ((real, "keychain"), "not_a_pool_credential"),
+            ((pool, "token_cache_v2"), "desktop_already_has_entry"),
+            ((None, "unavailable"), "not_a_pool_credential"),
+        ]
+        for read_result, reason in cases:
+            with self.subTest(reason=reason, store=read_result[1]):
+                with mock.patch("quota_reporters.read_claude_oauth_credentials", return_value=read_result):
+                    with mock.patch("quota_reporters.write_claude_token_cache_credentials") as write:
+                        result = quota_reporters.seed_claude_desktop_from_pool_credential(Path("/nonexistent"))
+                self.assertEqual(result, {"seeded": False, "reason": reason})
+                write.assert_not_called()
+
     def test_probe_claude_prefers_auth_status_text_account_details(self):
         auth_json = mock.Mock(returncode=0, stdout='{"loggedIn": true, "authMethod": "oauth_token", "apiProvider": "firstParty"}', stderr="")
         auth_text = mock.Mock(

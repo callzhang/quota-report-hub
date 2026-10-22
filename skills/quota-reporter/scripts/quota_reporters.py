@@ -1566,6 +1566,26 @@ def install_claude_credentials(credentials: dict, claude_home: Path = CLAUDE_HOM
     return result
 
 
+def seed_claude_desktop_from_pool_credential(claude_home: Path = CLAUDE_HOME) -> dict:
+    """Give the desktop app the hub-assigned account it was installed without.
+
+    install_claude_credentials only runs when the hub hands over a credential, which for a healthy
+    AT-only account is hours apart; a machine that received its account before the desktop entry
+    was created would wait for the next renewal with the app still on its login screen. Only fills an
+    empty place: it acts when no desktop-cache entry qualifies (the ranked read then lands on the
+    keychain or file) and the credential there is the hub's AT-only placeholder form. A real refresh
+    token is never copied, so this cannot make the desktop a second custodian of a rotatable one.
+    """
+    credentials, store = read_claude_oauth_credentials(claude_home)
+    oauth = (credentials or {}).get("claudeAiOauth") or {}
+    if oauth.get("refreshToken") != STRIPPED_CLAUDE_REFRESH_TOKEN or not oauth.get("accessToken"):
+        return {"seeded": False, "reason": "not_a_pool_credential"}
+    if store in ("token_cache_v2", "token_cache"):
+        return {"seeded": False, "reason": "desktop_already_has_entry"}
+    seeded = write_claude_token_cache_credentials(credentials, claude_home, "token_cache_v2")
+    return {"seeded": seeded, "reason": "seeded" if seeded else "desktop_entry_not_written"}
+
+
 def claude_cache_entry_can_mint_inference(cache_key: str) -> bool:
     """Whether this cache entry's grant can mint an inference-capable credential for the account.
 

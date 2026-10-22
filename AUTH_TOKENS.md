@@ -128,9 +128,11 @@
   that only overwrites existing entries leaves it on its login screen while the keychain holds a working
   credential (melody, 2026-10-20). `write_claude_token_cache_credentials` therefore creates the V2 entry
   (and sets `lastKnownAccountUuid`) when none qualifies, naming it from the profile call; it creates
-  nothing if the profile cannot be fetched. It runs on every credential install, i.e. the next hub fetch
-  or access-token renewal, not on the guard's strip, which deliberately never copies one store's token
-  into another.
+  nothing if the profile cannot be fetched. It runs on every credential install, and also every guard cycle through
+  `seed_claude_desktop_from_pool_credential`, which fills an empty desktop cache from a keychain/file
+  credential that is in the hub's AT-only placeholder form (a machine served its account before this
+  existed would otherwise wait hours for the next renewal). It never copies a real refresh token and
+  never overwrites an entry; the strip still never copies one store's token into another.
 - **Only an entry whose scope set includes `user:inference` is ever a credential.**
   `select_claude_token_cache_entry` skips every other entry for reading *and* for installing. A
   credential read from an entry takes the entry's scopes as its own; those become the uploaded blob's

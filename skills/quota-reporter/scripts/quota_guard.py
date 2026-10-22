@@ -62,6 +62,7 @@ from quota_reporters import (
     CLAUDE_AT_ONLY_TOKEN_REJECTED,
     fetched_auth_near_expiry,
     install_claude_credentials,
+    seed_claude_desktop_from_pool_credential,
     local_access_token_seconds_left,
     restart_claude_app_if_idle,
     iso_now,
@@ -3082,6 +3083,12 @@ def run_guard(args: argparse.Namespace) -> dict:
             ),
         ),
     )
+    claude_desktop_seed = run_guard_step(
+        "claude_desktop_seed_failed",
+        lambda: timed_guard_step(
+            timings, "claude_desktop_seed", lambda: seed_claude_desktop_from_pool_credential(args.claude_home)
+        ),
+    )
     codex_auth_changed = bool(
         (codex_payload or {}).get("local_auth_refresh", {}).get("written")
         or sync_result.get("codex", {}).get("refreshed_auth_installed", {}).get("installed")
@@ -3271,6 +3278,7 @@ def run_guard(args: argparse.Namespace) -> dict:
             "codex": codex_replacement,
             "claude": claude_replacement,
         },
+        "claude_desktop_seed": claude_desktop_seed,
         "codex_app_server": codex_app_server,
         "codex_refresh_handoff": codex_refresh_handoff,
         "token_usage": token_usage,
