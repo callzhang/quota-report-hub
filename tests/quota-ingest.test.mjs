@@ -195,6 +195,16 @@ test("a heartbeat keeps the quota bucket its probe read", async () => {
   assert.equal(oversized.heartbeat.meter_limit_id.length, 64);
 });
 
+test("a heartbeat keeps the installation id, bounded, and none from an older client", async () => {
+  const base = { reporter_name: "r", hostname: "h", status: "ok" };
+  const sent = normalizeReporterHeartbeat({ source: "codex", reporterEmail: "a@stardust.ai", heartbeat: { ...base, reporter_id: "abc-123" } });
+  assert.equal(sent.heartbeat.reporter_id, "abc-123");
+  const oversized = normalizeReporterHeartbeat({ source: "codex", reporterEmail: "a@stardust.ai", heartbeat: { ...base, reporter_id: "x".repeat(200) } });
+  assert.equal(oversized.heartbeat.reporter_id.length, 64);
+  const older = normalizeReporterHeartbeat({ source: "codex", reporterEmail: "a@stardust.ai", heartbeat: base });
+  assert.equal(older.heartbeat.reporter_id, null);
+});
+
 test("a heartbeat keeps the client's identity diagnostics as bounded JSON and drops what will not fit", async () => {
   const base = { reporter_name: "r", hostname: "h", status: "error" };
   const kept = normalizeReporterHeartbeat({

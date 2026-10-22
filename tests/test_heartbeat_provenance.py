@@ -171,5 +171,23 @@ class HubNamesTheToken(unittest.TestCase):
         adopt.assert_not_called()
 
 
+class InstallationId(unittest.TestCase):
+    def test_the_id_is_made_once_kept_beside_the_token_and_sent_on_the_heartbeat(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = Path(temp) / "quota-reporter.json"
+            config.write_text(json.dumps({"auth_pool_user_token": "qrp.keep.me"}))
+            first = quota_reporters.reporter_installation_id(config)
+            self.assertEqual(quota_reporters.reporter_installation_id(config), first)
+            saved = json.loads(config.read_text())
+            self.assertEqual(saved["auth_pool_user_token"], "qrp.keep.me")
+            self.assertEqual(saved["reporter_id"], first)
+            self.assertEqual(oct(config.stat().st_mode & 0o777), "0o600")
+
+    def test_heartbeat_names_the_installation_not_the_network(self):
+        with mock.patch("quota_guard.read_self_update_state", return_value={}):
+            heartbeat = quota_guard.build_probe_heartbeat("claude", {"status": "ok", "hostname": "10-21-40-95.dynapool"})
+        self.assertEqual(heartbeat["reporter_id"], "test-installation")
+
+
 if __name__ == "__main__":
     unittest.main()

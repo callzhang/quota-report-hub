@@ -48,6 +48,7 @@ from quota_reporters import (
     complete_codex_refresh_handoff,
     access_token_fingerprint,
     adopt_hub_token_identity,
+    reporter_installation_id,
     claude_auth_blob_metadata,
     detect_claude_custom_provider_env,
     discover_codex_executable,
@@ -570,6 +571,8 @@ def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
     return {
         "reporter_name": (payload or {}).get("reporter_name") or reporter_name(),
         "hostname": (payload or {}).get("hostname") or socket.gethostname(),
+        # What the hub files this machine under. The hostname above changes with the network.
+        "reporter_id": reporter_installation_id(),
         "status": "ok" if probe_ok else "error",
         "error": error,
         "account_id": (payload or {}).get("account_id"),

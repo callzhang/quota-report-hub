@@ -220,3 +220,41 @@ test("diagnostics_json is stored while a reporter fails and cleared by its next 
     cleanup();
   }
 });
+
+test("a laptop that changes hostname with its network stays one row when it sends its installation id", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const run = (hostname, at, status = "ok", error = null) => mod.upsertReporterProbeHeartbeat(heartbeat({
+      source: "claude", reporter_id: "install-1", hostname, reporter_name: `xienxu@${hostname}`,
+      last_run_at: at, status, error,
+    }));
+    await run("10-21-40-95.dynapool", "2026-10-08T01:00:00.000Z", "error", "claude auth email unavailable");
+    await run("10-21-63-40.dynapool", "2026-10-09T01:00:00.000Z");
+    const rows = (await client.execute("SELECT hostname, status, consecutive_failures FROM reporter_probe_heartbeats")).rows;
+    assert.equal(rows.length, 1, "one machine, however many networks it has seen");
+    assert.equal(rows[0].hostname, "10-21-63-40.dynapool");
+    assert.equal(rows[0].status, "ok");
+    assert.equal(Number(rows[0].consecutive_failures), 0, "the old hostname's failures must not follow it");
+
+    // The same id from another user is another machine: ids are scoped to the user who sent them.
+    await mod.upsertReporterProbeHeartbeat(heartbeat({
+      source: "claude", reporter_id: "install-1", hub_user_email: "someone-else@stardust.ai", last_run_at: "2026-10-09T02:00:00.000Z",
+    }));
+    assert.equal((await client.execute("SELECT COUNT(*) n FROM reporter_probe_heartbeats")).rows[0].n, 2);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a machine silent past the retention window is forgotten when the next heartbeat arrives", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    await mod.upsertReporterProbeHeartbeat(heartbeat({ hostname: "old-host", reporter_name: "u@old-host", last_run_at: "2026-09-01T00:00:00.000Z" }));
+    await mod.upsertReporterProbeHeartbeat(heartbeat({ hostname: "recent-host", reporter_name: "u@recent-host", last_run_at: "2026-10-01T00:00:00.000Z" }));
+    await mod.upsertReporterProbeHeartbeat(heartbeat({ hostname: "now-host", reporter_name: "u@now-host", last_run_at: "2026-10-10T00:00:00.000Z" }));
+    const hosts = (await client.execute("SELECT hostname FROM reporter_probe_heartbeats ORDER BY hostname")).rows.map((r) => r.hostname);
+    assert.deepEqual(hosts, ["now-host", "recent-host"], "14 days: the September row goes, the one nine days old stays");
+  } finally {
+    cleanup();
+  }
+});

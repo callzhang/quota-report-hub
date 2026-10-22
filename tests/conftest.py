@@ -9,6 +9,7 @@ someone notices. That happened once; this makes it impossible rather than a revi
 Reads are left alone: they cannot damage anything, and some tests exercise the read ordering.
 """
 import subprocess
+import sys
 
 import pytest
 
@@ -38,4 +39,15 @@ def _block_real_keychain_writes(monkeypatch, request):
         return _real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", guarded)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _keep_the_installation_id_off_the_real_config(monkeypatch):
+    """build_probe_heartbeat names this installation, and the first call writes the id into
+    ~/.agents/auth/quota-reporter.json. A suite that builds heartbeats must not mint one for the
+    developer's real install."""
+    guard = sys.modules.get("quota_guard")
+    if guard is not None:
+        monkeypatch.setattr(guard, "reporter_installation_id", lambda: "test-installation")
     yield

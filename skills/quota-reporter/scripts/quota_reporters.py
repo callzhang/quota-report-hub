@@ -19,6 +19,7 @@ import time
 import sys
 import tempfile
 import urllib.error
+import uuid
 import urllib.request
 
 from reporter_version import CLIENT_VERSION
@@ -3156,6 +3157,28 @@ def load_config(args: argparse.Namespace) -> dict:
     if getattr(args, "auth_pool_user_token", None):
         config["auth_pool_user_token"] = args.auth_pool_user_token
     return config
+
+
+def reporter_installation_id(config_path: Path = CONFIG_PATH) -> str:
+    """A name for this installation that does not change when the network does.
+
+    The hub used to tell machines apart by user@hostname. A laptop on a campus network takes a new
+    hostname from every address it is leased (10-21-40-95.dynapool.wireless.nyu.edu), so one MacBook
+    became ten "machines" on the dashboard, nine of them frozen at whatever their last run said --
+    one stuck at "codex command not found x41" for a fault fixed days earlier (melody.xu, 2026-10).
+    A random id kept beside the user token is stable across networks and cannot be derived from, or
+    collide with, anything about the hardware. Copying the config to a second machine copies the id
+    too; that makes two machines share a row, which is a harmless mix-up compared with the above.
+    """
+    config = read_json(config_path) if config_path.exists() else {}
+    existing = config.get("reporter_id")
+    if isinstance(existing, str) and existing:
+        return existing
+    config["reporter_id"] = str(uuid.uuid4())
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    config_path.chmod(0o600)
+    return config["reporter_id"]
 
 
 def persist_auth_pool_token_upgrade(payload: dict) -> dict:
