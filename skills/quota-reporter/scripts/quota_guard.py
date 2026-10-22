@@ -747,6 +747,11 @@ def replacement_toast_message(source: str, replacement: dict) -> str:
     plan_name = replacement.get("to_plan_name")
     account_label = f"{display_name} ({plan_name})" if plan_name else str(display_name)
     app_name = "Codex" if source == "codex" else "Claude Code" if source == "claude" else source
+    if source == "claude":
+        return (
+            f"Claude Code 已切换到 {account_label}，新建终端会话后生效。"
+            "Claude App 的登录账号不会同步切换。"
+        )
     return f"{app_name} 已切换到 {account_label}。请退出当前 {app_name} 会话并重新打开，新会话才会使用这个账号。"
 
 
@@ -2454,7 +2459,9 @@ def maybe_replace_claude_auth(
         # cache still holds: the write succeeds, nothing changes, and the guard reinstalls the same
         # credential every cycle. (The guard wrote the token cache nowhere before this.)
         def write_repair_credentials():
-            install_claude_credentials(repair_credentials, claude_home)
+            installed = install_claude_credentials(repair_credentials, claude_home)
+            if not installed.get("installed"):
+                raise RuntimeError(f"Claude Code credential installation failed: {installed.get('reason')}")
 
         repair_account_id = repair_auth.get("account_id")
         install_auth_with_usage_boundary(
@@ -2513,7 +2520,9 @@ def maybe_replace_claude_auth(
     # read_claude_oauth_credentials reads that FIRST, so a keychain+file install is shadowed by the
     # cache and the replacement never takes effect.
     def write_replacement_credentials():
-        install_claude_credentials(replacement_credentials, claude_home)
+        installed = install_claude_credentials(replacement_credentials, claude_home)
+        if not installed.get("installed"):
+            raise RuntimeError(f"Claude Code credential installation failed: {installed.get('reason')}")
 
     replacement_account_id = replacement.get("account_id")
     install_auth_with_usage_boundary(

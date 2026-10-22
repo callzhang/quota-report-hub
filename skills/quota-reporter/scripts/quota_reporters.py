@@ -1496,10 +1496,9 @@ def write_claude_token_cache_credentials(credentials: dict, claude_home: Path, s
         return False
     cache_key, entry = select_claude_token_cache_entry(cache)
     if not cache_key and source == "token_cache_v2":
-        # A desktop app that has never signed in has no entry to overwrite, and the app counts an
-        # account as signed in only when it finds one here -- the credentials the guard fetched for
-        # the CLI sat in the keychain while the app kept showing its login screen (melody,
-        # 2026-10-20). Create the entry the app itself would have written.
+        # An empty desktop OAuth store has no entry to overwrite. Seeding it makes the credential
+        # readable by the desktop's Code integration; the App web session is independent and this
+        # write does not establish it.
         identity = fetch_claude_oauth_identity(oauth["accessToken"])
         if identity is None:
             return False
@@ -1567,13 +1566,12 @@ def install_claude_credentials(credentials: dict, claude_home: Path = CLAUDE_HOM
 
 
 def seed_claude_desktop_from_pool_credential(claude_home: Path = CLAUDE_HOME) -> dict:
-    """Give the desktop app the hub-assigned account it was installed without.
+    """Seed an empty desktop OAuth cache from an already-installed pool credential.
 
     install_claude_credentials only runs when the hub hands over a credential, which for a healthy
-    AT-only account is hours apart; a machine that received its account before the desktop entry
-    was created would wait for the next renewal with the app still on its login screen. Only fills an
-    empty place: it acts when no desktop-cache entry qualifies (the ranked read then lands on the
-    keychain or file) and the credential there is the hub's AT-only placeholder form. A real refresh
+    AT-only account is hours apart. Cache installation does not establish the App's independent web
+    login. Only fills an empty place: a ranked keychain/file winner does not prove the desktop cache
+    is empty, so inspect that cache separately before writing. A real refresh
     token is never copied, so this cannot make the desktop a second custodian of a rotatable one.
     """
     credentials, store = read_claude_oauth_credentials(claude_home)
@@ -1581,6 +1579,9 @@ def seed_claude_desktop_from_pool_credential(claude_home: Path = CLAUDE_HOME) ->
     if oauth.get("refreshToken") != STRIPPED_CLAUDE_REFRESH_TOKEN or not oauth.get("accessToken"):
         return {"seeded": False, "reason": "not_a_pool_credential"}
     if store in ("token_cache_v2", "token_cache"):
+        return {"seeded": False, "reason": "desktop_already_has_entry"}
+    desktop_credentials, _ = read_claude_token_cache_credentials(claude_home)
+    if claude_credentials_have_oauth(desktop_credentials):
         return {"seeded": False, "reason": "desktop_already_has_entry"}
     seeded = write_claude_token_cache_credentials(credentials, claude_home, "token_cache_v2")
     return {"seeded": seeded, "reason": "seeded" if seeded else "desktop_entry_not_written"}

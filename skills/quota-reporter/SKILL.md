@@ -192,6 +192,11 @@ The guard then:
 
 Operational notes:
 
+- Claude rotation installs Claude Code OAuth credentials. It does not log Claude App into that
+  account or replace its independent web session; restarting the App does not create that login.
+- A Claude replacement or owner repair is successful only after the credential installer verifies
+  the active access token. Failed verification leaves the known-account binding unchanged and
+  reports a guard-step error instead of a successful switch.
 - replacing `~/.codex/auth.json` affects new Codex sessions; an already-open session may need to be reopened
 - the guard never launches `codex login`; it sends `SIGTERM` only to the exporter-identified unmanaged app-server listener PID after a fresh idle snapshot, and never signals an active, unknown, stale, ambiguous, or unverified process set
 - the local config file contains a personal token and should stay private
