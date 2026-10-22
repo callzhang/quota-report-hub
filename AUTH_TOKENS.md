@@ -124,15 +124,18 @@
   with the three ids exactly what `GET /api/oauth/profile` returns for the token (`account.uuid`,
   `application.uuid`, `organization.uuid`); an entry carries `token`, `refreshToken`, `expiresAt`,
   `subscriptionType`, `rateLimitTier` and `identityChecked: true`, and `config.json` names the signed-in
-  account in `lastKnownAccountUuid`. An app that has never signed in has no entry at all, so an install
-  that only overwrites existing entries leaves it on its login screen while the keychain holds a working
-  credential (melody, 2026-10-20). `write_claude_token_cache_credentials` therefore creates the V2 entry
+  account in `lastKnownAccountUuid`. `write_claude_token_cache_credentials` creates the V2 entry
   (and sets `lastKnownAccountUuid`) when none qualifies, naming it from the profile call; it creates
   nothing if the profile cannot be fetched. It runs on every credential install, and also every guard cycle through
   `seed_claude_desktop_from_pool_credential`, which fills an empty desktop cache from a keychain/file
   credential that is in the hub's AT-only placeholder form (a machine served its account before this
   existed would otherwise wait hours for the next renewal). It never copies a real refresh token and
-  never overwrites an entry; the strip still never copies one store's token into another.
+  never overwrites a qualifying entry: it reads desktop-cache occupancy separately because a ranked
+  keychain/file winner does not prove the cache is empty. The strip still never copies one store's
+  token into another. **This installs OAuth, not the independent Desktop web session.** A live check
+  on 2026-10-21 wrote the V2 entry successfully, restarted the idle App, and still reached the sign-in
+  form after Get started. Neither cache read-back nor `lastKnownAccountUuid` proves App login; see
+  [§7](#7-claude-desktop-vs-the-cli).
 - **Only an entry whose scope set includes `user:inference` is ever a credential.**
   `select_claude_token_cache_entry` skips every other entry for reading *and* for installing. A
   credential read from an entry takes the entry's scopes as its own; those become the uploaded blob's
