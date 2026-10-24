@@ -71,6 +71,9 @@ CLAUDE_TOKEN_REFRESH_SKEW_MS = 120_000
 # branches emit it -- exit-zero-with-loggedIn-false, and the nonzero exit the CLI uses for the same
 # state -- so the rotation rule has one value to match instead of two shapes of free text.
 CLAUDE_LOGGED_OUT_ERROR = "claude auth status reported loggedIn=false"
+# The plan lapsed under a credential that still claims the old one: codex answers `plan_type: free`
+# with only a window the hub cannot place. The guard matches this value to rotate off the account.
+CODEX_FREE_PLAN_ERROR = "codex account is on the Free plan"
 # Placeholder refresh tokens the hub serves in disabled_refresh_token mode (must match the hub's
 # lib/fetch-best.js). A local auth carrying one of these is access-token-only: never re-upload it
 # (the hub would reject it anyway, and it must not overwrite the real shared refresh token).
@@ -1135,8 +1138,16 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
         # bug above survived a night of investigation. The unplaceable-window case carries what the
         # response actually offered, because that is the only one whose answer is in data that would
         # otherwise be discarded.
+        live_plan_name = human_plan_name((rate_limits or {}).get("plan_type"))
         if not rate_limits:
             probe_error = "codex returned no rate limits"
+        elif is_excluded_free_plan(live_plan_name):
+            # A Free label alone never decides anything -- upstream has answered a lone "free" for a
+            # working Pro account (SYSTEM_DESIGN §6). It is trusted here only because the same
+            # response also offered nothing this hub can place: a Free seat's window is the 30-day
+            # one (43200 min), already used up, which is why the credential's Pro claim and the
+            # probe disagreed for 14 runs on shawn.hou@preseen.ai (2026-10-24).
+            probe_error = CODEX_FREE_PLAN_ERROR
         else:
             probe_error = "codex returned no quota window of a duration this hub models"
         payload = {
@@ -1146,6 +1157,8 @@ def probe_codex(auth_path: Path, *, capture_refreshed_auth: bool = False, codex_
             "windows": empty_windows(),
             "usage_summary": {"meter": meter, "observed_windows": codex_observed_window_shapes(rate_limits)},
         }
+        if probe_error == CODEX_FREE_PLAN_ERROR:
+            payload["plan_name"] = live_plan_name
         if refresh_capture is not None:
             payload["refresh_capture"] = refresh_capture
         return payload

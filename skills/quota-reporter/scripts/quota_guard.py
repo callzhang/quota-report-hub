@@ -34,6 +34,7 @@ from install_quota_guard import (
     write_plist,
 )
 from quota_reporters import (
+    CODEX_FREE_PLAN_ERROR,
     CLAUDE_HOME,
     CLAUDE_LOGGED_OUT_ERROR,
     CLIENT_VERSION,
@@ -441,6 +442,10 @@ def source_needs_replacement(payload: dict, threshold_percent: float, weekly_thr
     # while the measured 5h/week subscription windows remain healthy. That account is unavailable
     # and a replacement can restore service, but this must not masquerade as synthetic 0% quota.
     if payload.get("error") == "codex workspace out of credits":
+        return True
+    # A lapsed plan is unavailability too: the probe only emits this when the response held nothing
+    # but a window the hub cannot place, so it is not a lone upstream "free" label.
+    if payload.get("error") == CODEX_FREE_PLAN_ERROR:
         return True
     if payload.get("status") != "ok":
         return False

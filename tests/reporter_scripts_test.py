@@ -30,6 +30,7 @@ import quota_reporters  # noqa: E402
 import install_quota_guard  # noqa: E402
 import claude_statusline_probe  # noqa: E402
 from quota_reporters import (
+    CODEX_FREE_PLAN_ERROR,
     build_claude_auth_blob,
     codex_auth_refresh_delta,
     codex_probe_env,
@@ -1569,6 +1570,43 @@ class ReporterScriptsTest(unittest.TestCase):
         self.assertEqual(odd_window["usage_summary"]["observed_windows"],
                          [{"slot": "primary", "window_minutes": 1440, "used_percent": 12}])
         self.assertEqual(odd_window["usage_summary"]["meter"]["limit_id"], "codex")
+
+    def test_probe_codex_names_a_lapsed_plan_when_the_only_window_cannot_be_placed(self):
+        # shawn.hou@preseen.ai, measured 2026-10-24T18:21Z: the credential still claimed Pro, but
+        # codex answered `plan_type: free` with a single 43200-minute (30-day) window at 100% and no
+        # 5h/week pair. The probe reported the generic "no quota window" error with no plan, so the
+        # guard saw an unexplained failure, never rotated, and fourteen runs in a row toasted the
+        # owner. A Free reading alone is NOT enough (a lone upstream "free" has evicted a working
+        # Pro account before, SYSTEM_DESIGN §6), so it only counts when the reading is also unusable.
+        def probe_with(rate_limits):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                auth_path = Path(temp_dir) / "auth.json"
+                auth_path.write_text(json.dumps({
+                    "last_refresh": "2026-10-24T00:00:00Z",
+                    "tokens": {"account_id": "acct-1", "access_token": "a", "refresh_token": "r",
+                               "id_token": self._jwt({"email": "shawn@example.com", "name": "S",
+                                                      "https://api.openai.com/auth": {"chatgpt_plan_type": "pro"}})},
+                }), encoding="utf-8")
+                with mock.patch("quota_reporters.subprocess.run", return_value=mock.Mock(returncode=0, stdout="", stderr="")):
+                    with mock.patch("quota_reporters.latest_token_count_event",
+                                    return_value={"payload": {"info": None, "rate_limits": rate_limits}}):
+                        return probe_codex(auth_path)
+
+        lapsed = probe_with({"limit_id": "codex", "plan_type": "free",
+                             "primary": {"used_percent": 100.0, "window_minutes": 43200, "resets_at": 1795444552},
+                             "secondary": None})
+        self.assertEqual(lapsed["status"], "error")
+        self.assertEqual(lapsed["error"], CODEX_FREE_PLAN_ERROR)
+        self.assertEqual(lapsed["plan_name"], "Free")
+        self.assertEqual(lapsed["usage_summary"]["observed_windows"],
+                         [{"slot": "primary", "window_minutes": 43200, "used_percent": 100.0}])
+
+        # A Free label on a reading the hub CAN place is still just a quota reading.
+        placeable = probe_with({"limit_id": "codex", "plan_type": "free",
+                                "primary": {"used_percent": 3, "window_minutes": 10080, "resets_in_seconds": 3600},
+                                "secondary": None})
+        self.assertEqual(placeable["status"], "ok")
+        self.assertIsNone(placeable.get("error"))
 
     def test_probe_codex_reports_workspace_out_of_credits_without_fabricating_quota_windows(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3166,6 +3204,16 @@ Reading additional input from stdin...
         self.assertTrue(quota_guard.source_needs_replacement(payload, 20.0, 5.0))
         self.assertEqual(quota_guard.remaining_percent(payload, "5h"), -1.0)
         self.assertEqual(quota_guard.remaining_percent(payload, "1week"), -1.0)
+
+    def test_source_needs_replacement_treats_a_lapsed_free_plan_as_availability(self):
+        payload = {
+            "account_id": "acct-1",
+            "status": "error",
+            "error": CODEX_FREE_PLAN_ERROR,
+            "plan_name": "Free",
+            "windows": {"5h": None, "1week": None},
+        }
+        self.assertTrue(quota_guard.source_needs_replacement(payload, 20.0, 5.0))
 
     def test_source_needs_replacement_still_ignores_windowless_healthy_payloads(self):
         # Without exhausted_until, an all-None-windows payload stays the pre-existing "not
