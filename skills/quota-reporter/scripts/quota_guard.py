@@ -25,12 +25,15 @@ from typing import Callable
 
 from install_quota_guard import (
     CRON_MARKER,
+    ERROR_LOG_PATH,
+    LOG_PATH,
     LABEL as SCHEDULER_LABEL,
     PLIST_PATH as LAUNCH_AGENT_PLIST_PATH,
     WINDOWS_TASK_NAME,
     install_linux_crontab,
     install_windows_task_scheduler,
     load_launch_agent,
+    trim_guard_log,
     write_plist,
 )
 from quota_reporters import (
@@ -2916,6 +2919,10 @@ def run_guard(args: argparse.Namespace) -> dict:
         threshold_percent = args.threshold_percent
         weekly_threshold_percent = args.weekly_threshold_percent
         guard_errors["config_thresholds"] = guard_exception_result("load_config_thresholds_failed", error)
+    try:
+        timed_guard_step(timings, "trim_logs", lambda: [trim_guard_log(path) for path in (LOG_PATH, ERROR_LOG_PATH)])
+    except Exception as error:
+        guard_errors["trim_logs"] = guard_exception_result("trim_logs_failed", error)
 
     usage_state = None
     usage_state_path = args.known_auth_path.parent / "token-usage.sqlite3"

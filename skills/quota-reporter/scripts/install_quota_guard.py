@@ -54,6 +54,10 @@ PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 LOG_PATH = Path.home() / ".agents" / "auth" / "quota-guard.log"
 ERROR_LOG_PATH = Path.home() / ".agents" / "auth" / "quota-guard.error.log"
 CRON_MARKER = "# quota-guard-managed"
+# The scheduler appends every run to these files and nothing else ever shrinks them: one laptop's
+# stdout log had reached 35 MB (2026-11-02). Past the cap the guard keeps the newest half, so a
+# trim happens about once a month rather than every cycle, and the kept tail still covers weeks.
+GUARD_LOG_MAX_BYTES = 5 * 1024 * 1024
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 WINDOWS_RUNNER_PATH = Path.home() / ".agents" / "auth" / "quota-guard-run.ps1"
 WINDOWS_TASK_NAME = LABEL
@@ -158,6 +162,29 @@ def verify_linux_crontab_registered() -> dict:
     if len(managed_lines) < 2:
         raise RuntimeError("quota guard crontab entries were not registered")
     return {"ok": True, "scheduler": "cron", "entries": managed_lines}
+
+
+def trim_guard_log(path: Path, max_bytes: int = GUARD_LOG_MAX_BYTES) -> bool:
+    """Cut the log down to its newest half when it has grown past max_bytes.
+
+    Rewritten in place rather than replaced: launchd and cron hold the file open in append mode for
+    the running guard, and a rename would leave them writing to an unlinked inode.
+    """
+    try:
+        size = path.stat().st_size
+    except FileNotFoundError:
+        return False
+    if size <= max_bytes:
+        return False
+    with path.open("r+b") as handle:
+        handle.seek(size - max_bytes // 2)
+        tail = handle.read()
+        # Start on a whole line so the first entry kept is not a fragment.
+        tail = tail[tail.find(b"\n") + 1:]
+        handle.seek(0)
+        handle.write(tail)
+        handle.truncate()
+    return True
 
 
 def ps_single_quote(value: str | Path) -> str:
