@@ -99,6 +99,8 @@ class TokenUsageState:
               status TEXT NOT NULL,
               finalized_at TEXT
             );
+            CREATE INDEX IF NOT EXISTS file_cursors_path_idx
+              ON file_cursors (path, updated_at);
             CREATE INDEX IF NOT EXISTS seen_usage_records_event_idx
               ON seen_usage_records (event_at);
             CREATE INDEX IF NOT EXISTS account_switches_provider_prepared_idx

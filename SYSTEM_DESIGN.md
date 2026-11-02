@@ -1500,6 +1500,15 @@ transcripts does not upload its history. Subsequent runs:
    after a reboot or a remount — so a key including it made every session log look like a new file
    on the next boot and replayed it from byte zero. Measured on one machine: 1,363 of 15,029 tracked
    paths carried more than one cursor row, one per device number.
+
+   Each file's cursor is looked up by path, so `file_cursors` carries an index on
+   `(path, updated_at)`. The 10-second budget below starts before discovery, and discovery is not
+   bounded by it. Without the index every lookup scanned the whole table. On derek's laptop
+   (38,369 cursors, ~8,400 session logs) one discovery took 103 s. Every cycle then spent its
+   budget before opening a file: it read 0 bytes, reported `ok`, and sent nothing from
+   2026-10-22T19:14Z until the hub's reporting-debt gate ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs))
+   refused this user's fetches on 10-31. With the index, discovery takes 1.3 s and one cycle reads
+   ~390 MB. `CREATE INDEX IF NOT EXISTS` adds it to existing state on the next open.
 2. Parse forward from that offset (`token_usage_parsers.py`):
    - **Codex** reads the structural `session_meta` / `turn_context` / cumulative `token_count`
      fields. Canonical numeric fingerprints drop copied parent history, and `codex_counter_delta`

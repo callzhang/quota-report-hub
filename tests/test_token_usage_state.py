@@ -38,6 +38,29 @@ class TokenUsageStateTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(reopened.path.stat().st_mode), 0o600)
             reopened.close()
 
+    def test_cursor_lookup_by_path_is_indexed_in_new_and_existing_state(self):
+        # Discovery looks every session log up by path; unindexed, one cycle on a machine with 38k
+        # cursors spent 100s scanning and the 10s budget was gone before the first byte was read.
+        query = (
+            "EXPLAIN QUERY PLAN SELECT file_key FROM file_cursors WHERE path = ? "
+            "ORDER BY updated_at DESC, rowid DESC LIMIT 1"
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "token-usage.sqlite3"
+            legacy = sqlite3.connect(path)
+            legacy.execute(
+                "CREATE TABLE file_cursors (file_key TEXT PRIMARY KEY, path TEXT NOT NULL, offset INTEGER NOT NULL, "
+                "size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, updated_at TEXT NOT NULL)"
+            )
+            legacy.commit()
+            legacy.close()
+
+            state = self.open_state(temp_dir)
+            plan = " ".join(row[-1] for row in state._connection.execute(query, ("x",)))
+            state.close()
+            self.assertIn("USING INDEX", plan)
+            self.assertNotIn("TEMP B-TREE", plan)
+
     def test_pending_batch_does_not_advance_acknowledged_state_until_ack(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state = self.open_state(temp_dir)
