@@ -531,7 +531,7 @@ test("usage-by-user bars rank and size by spend, with the selected token counter
   // bar length is relative to the biggest spender, share is relative to the filtered spend
   assert.match(markup, /width: 100\.00%/);
   assert.match(markup, /width: 33\.33%/);
-  assert.match(markup, /the same share the fetch gate rations on/);
+  assert.match(markup, /the fetch gate rations by the fair-share cap on the Users page/);
 
   // The Metric filter changes the token figure shown beside the spend, never the ranking.
   harness.element("metric").value = "input";
@@ -542,7 +542,7 @@ test("usage-by-user bars rank and size by spend, with the selected token counter
   assert.match(harness.evaluate("renderUserBars([])"), /No usage in this range/);
 });
 
-test("spend renders as money everywhere, and the spend share is the one the gate rations on", async () => {
+test("spend renders as money everywhere, and the caption points at the cap the gate actually uses", async () => {
   // The token ranking and the money ranking disagree, which is the case the column exists for: the
   // bigger row is somebody's own MiniMax, which the pool never paid for.
   const rows = [
@@ -570,7 +570,7 @@ test("spend renders as money everywhere, and the spend share is the one the gate
   assert.ok(bars.indexOf("bob@stardust.ai") < bars.indexOf("alice@stardust.ai"), "money ranks the bars, not tokens");
   assert.match(bars, /\$12\.50<span class="meta"> · 100\.0% · 100 total tokens<\/span>/);
   assert.match(bars, /\$0\.00<span class="meta"> · 0\.0% · 900 total tokens<\/span>/);
-  assert.match(bars, /the same share the fetch gate rations on/);
+  assert.match(bars, /the fetch gate rations by the fair-share cap on the Users page/);
   // Spend is not a token count and must never be scaled into 万/亿.
   assert.doesNotMatch(bars, /亿/);
 });

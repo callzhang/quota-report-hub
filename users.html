@@ -390,13 +390,13 @@
       let currentToken = "";
       let viewerEmail = "";
       let viewerAdminRole = null;
-      // Filled from the payload: the window the hub prices demand over and the percentile line,
-      // read from the server rather than computed here so the column can never describe a
+      // Filled from the payload: the spend window and, per source, the fair-share cap and who is
+      // over it -- read from the server rather than computed here so the page can never describe a
       // different rule than the one the gate applies.
       let spendWindowDays = 7;
-      let demandSharePercentile = 80;
+      let fairShareWindowDays = 3;
       let teamSpend = 0;
-      let demandLine = Infinity;
+      let fairShare = [];
 
       // Rows arrive newest-first from the API (users by last_token_issued_at DESC, fetch log by
       // fetched_at DESC); the pager only slices, so page 1 is always the most recent activity.
@@ -492,16 +492,31 @@
         return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
       }
 
-      // What this user cost the shared pool over the gate's window, and where that sits against the
-      // percentile line. Over the line is not a violation on its own -- the cooldown also needs the
-      // pool to be running dry -- so the mark says "over the line", not "throttled".
+      // What this user cost the shared pool, and which source's fair-share cap they are over. A cap
+      // exists only while that source is scarce, and over it means the gate stops handing them new
+      // capacity there (once the phase is live) -- so the mark names the source and the window.
       function spendCell(u) {
         const spend = Number(u.spend_usd || 0);
+        const overSources = fairShare
+          .filter((entry) => (entry.over || []).some((row) => row.email === u.email))
+          .map((entry) => entry.source);
+        const overMark = overSources.length
+          ? ` · over the ${overSources.map(escapeHtml).join(" / ")} fair cap (${fairShareWindowDays}d)`
+          : "";
+        // No spend in seven days means none in the cap's shorter window either, so no mark to show.
         if (!teamSpend) return '<div class="wrap">$0.00</div>';
         const share = spend / teamSpend;
-        const over = Number.isFinite(demandLine) && share > demandLine;
         return `<div class="wrap" title="${escapeHtml(`$${spend.toFixed(2)} of $${teamSpend.toFixed(2)} team spend in the last ${spendWindowDays} days`)}">${formatUsd(spend)}</div>` +
-          `<div class="meta wrap">${(share * 100).toFixed(1)}% of team${over ? ` · over the P${demandSharePercentile} line` : ""}</div>`;
+          `<div class="meta wrap">${(share * 100).toFixed(1)}% of team${overMark}</div>`;
+      }
+
+      function fairShareSummary() {
+        if (!fairShare.length) return "No scarcity data";
+        return fairShare.map((entry) => {
+          const label = escapeHtml(entry.source);
+          if (entry.cap_usd === null || entry.cap_usd === undefined) return `${label}: no cap (pool covers demand)`;
+          return `${label}: cap ${formatUsd(entry.cap_usd)} / ${fairShareWindowDays}d · ${(entry.over || []).length} over`;
+        }).join(" · ");
       }
 
       function formatDate(value) {
@@ -536,6 +551,8 @@
           // Logged when selection came back empty AND the requester supplies nothing, so the
           // audit trail can tell the two empty-pool populations apart. Nobody was refused here.
           normalized === "no_uploaded_auth" ? "no match · no upload" :
+          normalized === "fair_share_cap" ? "paused · over fair cap" :
+          // Historical rows from the 80th-percentile rule the fair-share cap replaced (2026-11-04).
           normalized === "demand_share_cooldown" ? "cooled down · share" :
           normalized === "contribution_cooldown" ? "cooled down · no upload" :
           normalized;
@@ -620,11 +637,9 @@
         const totalFetches = users.reduce((acc, u) => acc + (u.fetch_count || 0), 0);
         const activeTokens = users.filter((u) => u.has_active_token && !u.disabled_at).length;
         spendWindowDays = Number(payload.spend_window_days || 7);
-        demandSharePercentile = Number(payload.demand_share_percentile || 80);
+        fairShareWindowDays = Number(payload.fair_share_window_days || 3);
+        fairShare = Array.isArray(payload.fair_share) ? payload.fair_share : [];
         teamSpend = users.reduce((acc, u) => acc + Number(u.spend_usd || 0), 0);
-        demandLine = payload.demand_share_line === null || payload.demand_share_line === undefined
-          ? Infinity
-          : Number(payload.demand_share_line);
         document.getElementById("users-spend-header").textContent = `Pool Spend (${spendWindowDays}d)`;
 
         summary.textContent = `Generated ${formatDate(payload.generated_at)} · ${users.length} users · ${activeTokens} active tokens · ${totalFetches} total fetches recorded`;
@@ -632,7 +647,7 @@
           `<article class="card"><div class="meta">Token holders</div><strong>${users.length}</strong><div class="meta">Email-issued personal tokens</div></article>`,
           `<article class="card"><div class="meta">Active tokens</div><strong>${activeTokens}</strong><div class="meta">Latest token still valid</div></article>`,
           `<article class="card"><div class="meta">Total fetches</div><strong>${totalFetches}</strong><div class="meta">Lifetime auth pool fetches</div></article>`,
-          `<article class="card"><div class="meta">Pool spend · last ${spendWindowDays}d</div><strong>${formatUsd(teamSpend)}</strong><div class="meta wrap">${Number.isFinite(demandLine) ? `P${demandSharePercentile} line ${(demandLine * 100).toFixed(1)}% of team` : "Too few active users to draw a line"}</div></article>`,
+          `<article class="card"><div class="meta">Pool spend · last ${spendWindowDays}d</div><strong>${formatUsd(teamSpend)}</strong><div class="meta wrap">${fairShareSummary()}</div></article>`,
           `<article class="card"><div class="meta">Most recent fetch</div><strong>${formatRelative(log[0]?.fetched_at)}</strong><div class="meta wrap">${escapeHtml(log[0]?.requester_email || "—")}</div></article>`,
         ].join("");
 

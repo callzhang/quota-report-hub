@@ -150,34 +150,38 @@ test("a refresh that shrinks the data clamps the open page instead of stranding 
   assert.equal(rowCount(harness.element("log-rows")), 5);
 });
 
-test("each token holder carries its pool spend, share, and where that sits against the line", async () => {
+test("each token holder carries its pool spend, share, and which fair-share cap it is over", async () => {
   const harness = await usersHarness({
     viewer_email: "derek@stardust.ai",
     generated_at: "2026-09-17T12:00:00Z",
     spend_window_days: 7,
-    demand_share_percentile: 80,
-    demand_share_line: 0.5,
+    fair_share_window_days: 3,
+    fair_share: [
+      { source: "codex", scarce: true, cap_usd: 25, over: [{ email: "derek@stardust.ai", spend_usd: 40 }] },
+      { source: "claude", scarce: false, cap_usd: null, over: [] },
+    ],
     users: [
       { email: "derek@stardust.ai", created_at: "2026-01-01T00:00:00Z", last_token_issued_at: "2026-09-01T00:00:00Z", has_active_token: true, token_last_used_at: null, fetch_count: 3, last_fetched_at: null, spend_usd: 60 },
       { email: "shawn@stardust.ai", created_at: "2026-01-01T00:00:00Z", last_token_issued_at: "2026-08-01T00:00:00Z", has_active_token: true, token_last_used_at: null, fetch_count: 2, last_fetched_at: null, spend_usd: 30 },
       { email: "quiet@stardust.ai", created_at: "2026-01-01T00:00:00Z", last_token_issued_at: "2026-07-01T00:00:00Z", has_active_token: true, token_last_used_at: null, fetch_count: 1, last_fetched_at: null, spend_usd: 10 },
     ],
-    fetch_log: [],
+    fetch_log: [{ fetched_at: "2026-09-17T11:00:00Z", requester_email: "derek@stardust.ai", source: "codex", reason: "fair_share_cap" }],
   });
 
   const rows = harness.element("users-rows").innerHTML;
   assert.match(rows, /\$60\.00/);
-  assert.match(rows, /60\.0% of team · over the P80 line/);
-  // The hub draws the line (here at half the team); the page only compares each share to it.
+  // The hub decides who is over; the page only marks them, naming the source and the window.
+  assert.match(rows, /60\.0% of team · over the codex fair cap \(3d\)/);
   assert.match(rows, /30\.0% of team<\/div>/);
   assert.match(rows, /10\.0% of team<\/div>/);
 
-  // The window and the line come from the hub, so the column can never describe a different rule
-  // than the gate applies.
   assert.equal(harness.element("users-spend-header").textContent, "Pool Spend (7d)");
-  assert.match(harness.element("cards").innerHTML, /Pool spend · last 7d/);
-  assert.match(harness.element("cards").innerHTML, /\$100\.00/);
-  assert.match(harness.element("cards").innerHTML, /P80 line 50\.0% of team/);
+  const cards = harness.element("cards").innerHTML;
+  assert.match(cards, /Pool spend · last 7d/);
+  assert.match(cards, /\$100\.00/);
+  assert.match(cards, /codex: cap \$25\.00 \/ 3d · 1 over/);
+  assert.match(cards, /claude: no cap \(pool covers demand\)/);
+  assert.match(harness.element("log-rows").innerHTML, /paused · over fair cap/);
 });
 
 test("disable controls render for admin viewers on non-admin rows only", async () => {

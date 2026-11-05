@@ -12,14 +12,14 @@ import {
   fetchPolicyInputs,
   poolScarcityState,
   recordAuthPoolFetch,
-  teamUserCosts,
+  poolUserCosts,
   upsertAuthPoolEntry,
 } from "../../lib/db.js";
 import { refreshSerializedAuthPoolEntry } from "../../lib/auth-pool-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
 import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch-best.js";
-import { NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy, teamDemand } from "../../lib/premium-ratio.js";
-import { scarcityFromState } from "../../lib/pool-scarcity.js";
+import { NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy } from "../../lib/premium-ratio.js";
+import { SCARCITY_BURN_WINDOW_DAYS, fairShareFromState } from "../../lib/pool-scarcity.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
 import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
 import { isRefreshHandoffPending } from "../../lib/refresh-handoff.js";
@@ -136,35 +136,41 @@ export default async function handler(req, res) {
   // the hub is only keeping the caller's own contribution alive. Rationing it cuts the owner off
   // from their own credential -- an AT-only owner whose token expires inside a cooldown has no way
   // to mint another and is simply logged out (derek@, claude, 2026-10-15: 32 consecutive
-  // demand_share_cooldown refusals, then a logged-out CLI that the pool's only claude account was
+  // demand-share cooldown refusals, then a logged-out CLI that the pool's only claude account was
   // sitting behind). Same footing as owner repair below, but narrower: it covers the renewal alone,
   // and a request that falls through to switching accounts is rationed again.
   const ownEntry = body?.refresh_current && currentAccountId ? await authPoolEntry(source, currentAccountId) : null;
   const ownRefresh = Boolean(ownEntry) && normalizeEmail(ownEntry.uploader_email) === normalizeEmail(authContext.email);
 
-  // Premium-share gate. It runs before both fetch paths on purpose: 82% of pool traffic is
-  // refresh_current, so a gate that only covered account switches would leave the subsidy that
-  // actually matters — the hub keeping one account's access token alive indefinitely — untouched.
+  // Fetch gate. It runs before both fetch paths on purpose: 82% of pool traffic is refresh_current,
+  // so a gate that only covered account switches would leave the subsidy that actually matters —
+  // the hub keeping one account's access token alive indefinitely — untouched.
   const policyWindowStart = new Date(Date.now() - PREMIUM_RATIO_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  // The fair-share cap is cut over the scarcity verdict's own burn window, so the supply ratio and
+  // the spend it divides describe the same days.
+  const fairShareWindowStart = new Date(Date.now() - SCARCITY_BURN_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
   const requestClientVersion = body?.client_version ? String(body.client_version) : null;
   // A manual "refresh codex account" asks for this one fetch to skip the rationing wait. Codex only:
   // that is the account the desktop shortcut exists to unstick, and a flag any client can send
   // should not widen to a source the shortcut never touches.
   const forced = body?.command === "force" && source === "codex";
-  const [policyInputs, userCosts, scarcityState, requireContribution, enforcePolicy] = await Promise.all([
+  const [policyInputs, poolCosts, scarcityState, requireContribution, enforcePolicy] = await Promise.all([
     fetchPolicyInputs({ email: authContext.email, since: policyWindowStart }),
-    teamUserCosts({ since: policyWindowStart }),
+    poolUserCosts({ source, since: fairShareWindowStart }),
     poolScarcityState(source),
     getFeatureFlag("require_contribution", false),
     getFeatureFlag("premium_ratio_enforcement", true),
   ]);
-  const demand = teamDemand(userCosts);
+  const fairShare = fairShareFromState(scarcityState, poolCosts.map((row) => row.cost));
+  const requesterEmail = normalizeEmail(authContext.email);
   const evaluatePolicy = ({ rationed }) => evaluateFetchPolicy({
     ...policyInputs,
-    ...demand,
+    source,
+    fairShareSpendUsd: poolCosts.find((row) => row.email === requesterEmail)?.cost || 0,
+    fairShareCapUsd: fairShare.capUsd,
     forced,
     requestClientVersion,
-    poolScarce: scarcityFromState(scarcityState).scarce,
+    poolScarce: fairShare.scarce,
     // Owner repair is never a draw on the shared pool. It bypasses both the live ratio gate and
     // the admin contribution requirement, so its notices must describe advice rather than a fetch
     // that was blocked. The returned invalid auth is how its owner becomes a contributor again.
@@ -238,7 +244,7 @@ export default async function handler(req, res) {
       reason: refused.reason,
       retry_after_seconds: refused.retry_after_seconds,
       premium_share: refused.premium_share,
-      demand_share: refused.demand_share,
+      fair_share_cap_usd: refused.fair_share_cap_usd,
       notices: refused.notices,
       message: refused.notices[0]?.message || null,
     }, authContext)));
@@ -294,7 +300,7 @@ export default async function handler(req, res) {
           disabled_refresh_token: disabledRefreshToken,
           notices: policy.notices,
           premium_share: policy.premium_share,
-          demand_share: policy.demand_share,
+          fair_share_cap_usd: policy.fair_share_cap_usd,
           refreshed_current: true,
           replacement: {
             source: sameEntry.source,
@@ -443,7 +449,7 @@ export default async function handler(req, res) {
     disabled_refresh_token: atOnlyMode,
     notices: policy.notices,
     premium_share: policy.premium_share,
-    demand_share: policy.demand_share,
+    fair_share_cap_usd: policy.fair_share_cap_usd,
     replacement: {
       source: entry.source,
       account_id: entry.account_id,

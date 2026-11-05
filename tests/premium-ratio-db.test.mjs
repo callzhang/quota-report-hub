@@ -118,9 +118,19 @@ test("the first refusal starts one cooldown and a successful serve clears it", a
   const { mod, cleanup } = await loadDb();
   try {
     const entry = { source: "codex", account_id: "pool@example.com", email: "pool@example.com" };
+    // A fair-share refusal is not a wait: it must neither open a cycle nor disturb one.
     await mod.recordAuthPoolFetch({
       requesterEmail: "heavy@example.com", source: "codex",
-      servedEntry: null, reason: "demand_share_cooldown",
+      servedEntry: null, reason: "fair_share_cap",
+    });
+    const afterCapRefusal = await mod.fetchPolicyInputs({
+      email: "heavy@example.com", since: "2026-09-14T00:00:00.000Z",
+    });
+    assert.equal(afterCapRefusal.cooldownStartedAt, null, "the cap has no clock to start");
+
+    await mod.recordAuthPoolFetch({
+      requesterEmail: "heavy@example.com", source: "codex",
+      servedEntry: null, reason: "contribution_cooldown",
     });
     const afterFirstRefusal = await mod.fetchPolicyInputs({
       email: "heavy@example.com", since: "2026-09-14T00:00:00.000Z",
@@ -130,7 +140,7 @@ test("the first refusal starts one cooldown and a successful serve clears it", a
     await new Promise((resolve) => setTimeout(resolve, 5));
     await mod.recordAuthPoolFetch({
       requesterEmail: "heavy@example.com", source: "codex",
-      servedEntry: null, reason: "demand_share_cooldown",
+      servedEntry: null, reason: "contribution_cooldown",
     });
     const afterRetry = await mod.fetchPolicyInputs({
       email: "heavy@example.com", since: "2026-09-14T00:00:00.000Z",
@@ -170,6 +180,48 @@ test("the version a fetch request carried is recorded, reported or not", async (
     });
     assert.equal(inputs.fetchClientVersion, MIN_REPORTER_CLIENT_VERSION);
     assert.equal(inputs.lastReportAt, null, "no usage was ever reported for this user");
+  } finally {
+    cleanup();
+  }
+});
+
+test("poolUserCosts counts spend on this source's pooled accounts only, own uploads included", async () => {
+  const { mod, cleanup } = await loadDb();
+  try {
+    const authJson = (accountId) => JSON.stringify({
+      last_refresh: "2026-09-21T00:00:00.000Z",
+      tokens: {
+        account_id: `provider-${accountId}`,
+        id_token: `x.${Buffer.from(JSON.stringify({ email: accountId })).toString("base64url")}.y`,
+        access_token: `access-${accountId.replace(/\W/g, "-")}`,
+        refresh_token: `rt.1.REAL-${accountId.replace(/\W/g, "-")}`,
+      },
+    });
+    await mod.upsertAuthPoolEntry({ source: "codex", auth_json: authJson("pool@example.com"), uploader_email: "lender@example.com", reporter_name: "r", hostname: "h" });
+    await mod.upsertAuthPoolEntry({ source: "codex", auth_json: authJson("own@example.com"), uploader_email: "heavy@example.com", reporter_name: "r", hostname: "h" });
+    await mod.ingestTokenUsageBatch({
+      hubUserEmail: "Heavy@Example.com",
+      installationId: "install-1",
+      batchId: "batch-pooled",
+      clientVersion: MIN_REPORTER_CLIENT_VERSION,
+      rows: [
+        row(),
+        // Their own upload is in the supply everybody draws on, so it counts.
+        row({ model_account_id: "own@example.com", bucket_start: "2026-09-21T00:15:00.000Z" }),
+        // A personal account the pool never held is not a claim on it.
+        row({ model_account_id: "personal@example.com", bucket_start: "2026-09-21T00:30:00.000Z" }),
+        // Same account id under another provider is another pool.
+        row({ provider: "claude", model_id: "claude-opus-5", bucket_start: "2026-09-21T00:45:00.000Z" }),
+        // Outside the window.
+        row({ bucket_start: "2026-09-10T00:00:00.000Z" }),
+      ],
+      receivedAt: "2026-09-21T01:00:00.000Z",
+    });
+    const costs = await mod.poolUserCosts({ source: "codex", since: "2026-09-18T00:00:00.000Z" });
+    const one = modelCost("gpt-5.6-sol", row());
+    assert.equal(costs.length, 1);
+    assert.equal(costs[0].email, "heavy@example.com", "emails come back normalized for matching the caller");
+    assert.ok(Math.abs(costs[0].cost - 2 * one) < 1e-9, `expected two pooled rows, got ${costs[0].cost / one}`);
   } finally {
     cleanup();
   }

@@ -458,8 +458,9 @@
       // Spend ranks and sizes the bars whatever metric is selected: "who costs the pool the most" is
       // the question this panel answers, and a token ranking puts somebody's self-hosted Qwen above an
       // Opus user the pool actually paid for. The selected counter rides alongside as the second
-      // figure (Total when the metric is Spend itself), and the % is the share of filtered spend --
-      // the same share the fetch gate rations on.
+      // figure (Total when the metric is Spend itself), and the % is the share of filtered spend.
+      // The fetch gate does not ration on this share: its fair-share cap is per source, over pooled
+      // accounts only, across the scarcity window, and the Users page shows it.
       function renderUserBars(rows) {
         const tokenCounter = selectedMetricCounter() === COST_KEY ? "total_tokens" : selectedMetricCounter();
         const tokenLabel = COUNTERS.find(([, counter]) => counter === tokenCounter)[0].toLowerCase();
@@ -476,7 +477,7 @@
         if (!entries.length) return '<div class="empty">No usage in this range.</div>';
         const totalSpend = entries.reduce((sum, [, entry]) => sum + entry.spend, 0);
         const maxSpend = entries[0][1].spend;
-        const caption = "Pool spend per Hub user under the current filters, highest first · % is the share of the filtered spend, the same share the fetch gate rations on";
+        const caption = "Pool spend per Hub user under the current filters, highest first · % is the share of the filtered spend · the fetch gate rations by the fair-share cap on the Users page";
         return `<div class="meta">${escapeHtml(caption)} (${formatUsd(totalSpend)})</div>` +
           entries.map(([email, { spend, tokens }]) => {
             const share = totalSpend ? (spend / totalSpend) * 100 : 0;

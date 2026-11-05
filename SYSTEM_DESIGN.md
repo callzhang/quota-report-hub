@@ -25,7 +25,7 @@
 | [7](#7-component-worker) | Worker — probe/refresh loop |
 | [8](#8-ops-scripts) | Ops scripts |
 | [9](#9-the-disabled_refresh_token-mechanism) | The `disabled_refresh_token` mechanism |
-| [9b](#9b-the-premium-share-gate-libpremium-ratiojs) | Fetch policy: reporting, demand share, supply, scarcity, phases |
+| [9b](#9b-the-premium-share-gate-libpremium-ratiojs) | Fetch policy: reporting, fair-share cap, supply, scarcity, phases |
 | [10](#10-selection-algorithm) | Selection algorithm |
 | [11](#11-token-refresh-architecture) | Token-refresh architecture |
 | [12](#12-observability) | Observability |
@@ -461,7 +461,7 @@ called with `CRON_SECRET`.
 
 Code: `api/auth/fetch-best.js`.
 Three branches, in order:
-1. **Policy gate** ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)): refusals for an outdated reporter, unreported consumption, an above-P80 user during scarcity, or a non-contributor during scarcity. All are cooldowns or fixable states, never lockouts, and the `repair_auth` handback stays open through all of them.
+1. **Policy gate** ([§9b](#9b-the-premium-share-gate-libpremium-ratiojs)): refusals for an outdated reporter, unreported consumption, a user over the fair-share cap during scarcity, or a non-contributor during scarcity. All are cooldowns or states that lift by themselves or with a fix, never lockouts, and the `repair_auth` handback stays open through all of them.
 2. **`refresh_current` mode** (`:93-142`): when `refresh_current && current_account_id`, fetch the same account's pooled blob and only return it if its AT is genuinely fresh (`accessTokenMsUntilExpiry === null || > 5 min`); otherwise fall through to a normal replacement (so an owner can't dead-lock on its own stale copy).
 3. **Normal replacement**: `bestAuthPoolEntry(...)` → `pickBestAuthPoolCandidate` ([§10](#10-selection-algorithm)). `selection_key` mixes email/requester/IP for stable selection. On a hit, `recordAuthPoolFetch(reason:"served")`.
 4. **Empty pool**: selection found nothing. A caller who supplies the pool gets `no_better_auth_available`; one who does not gets their own invalidated auth back to re-login (`repair_returned`) or a `pool_empty` notice, logged as `no_uploaded_auth`. This branch refuses nobody — there was nothing to serve either way — so it carries no rule, only the explanation. Rationing non-contributors happens in branch 1, while there is still something to ration.
@@ -1027,22 +1027,23 @@ so they can re-login, borrows nothing from the pool, and locking someone out of 
 credentials would make the gate inescapable. Because the handback is actually served, its policy
 notices are advisory too; it must never arrive with a blocking `取号已限速` notice.
 
-### Cooldown, not a block
+### Cooldown, not a block (non-contributors)
 
-Over the threshold, a user's first fetch request starts a
-`PREMIUM_RATIO_COOLDOWN_MINUTES` wait and is refused; the first request after that full interval may
-be served. One flat duration, no per-path or per-severity multipliers: severity is already encoded
-in how long a user stays above the line, and a second dial would only make the rule harder to reason
-about. `cooldown_started_at` is written only when the cycle is empty, so retrying a refused request
+The supply rule below rations by waiting. A non-contributor's first fetch request while the pool is
+short starts a `PREMIUM_RATIO_COOLDOWN_MINUTES` wait and is refused; the first request after that full
+interval may be served. One flat duration, no per-path or per-severity multipliers: a second dial
+would only make the rule harder to reason about. The fair-share cap is deliberately *not* a
+cooldown (below): it opens no cycle and does not end on a timer. `cooldown_started_at` is written only when the cycle is empty, so retrying a refused request
 does not restart the clock. A successful `served` / `refreshed_current` clears the completed cycle;
 the next request, if the scarcity condition still holds, starts a new wait. The ordinary selection
 path clears only after the auth and response are fully prepared, and an unsuccessful candidate
 search never clears it, so a preparation failure cannot charge a second wait before another handoff
 attempt.
 
-Measured re-fetch intervals make this bite where it should: the heaviest users return every 5–15
-minutes (they hold AT-only credentials under `disabled_refresh_token` and must keep coming back),
-while light users rarely notice.
+Measured re-fetch intervals: the heaviest users return every 5–15 minutes (they hold AT-only
+credentials under `disabled_refresh_token` and must keep coming back), so a cooldown slows them to
+one fetch per interval but never stops them. That is right for somebody who only lacks an upload,
+and it is why overdrawing a short pool gets a cap instead.
 
 ### Reporter gate: version travels with the request
 
@@ -1065,7 +1066,7 @@ Usage is priced from the vendors' public rate cards (`lib/model-tiers.js`), not 
 weighting. Only the RATIOS matter: the pool runs on subscriptions, but OpenAI's own price-cut notice
 says the Terra/Luna reductions "are also reflected in how usage is counted against paid
 subscriptions when using Codex and ChatGPT Work" -- subscription credit burn tracks API pricing.
-Current rates, promotions included (Derek, 2026-09-24): the spend column and the demand shares read
+Current rates, promotions included (Derek, 2026-09-24): the spend column and the fair-share cap read
 what the pool is burning today. This reverses an earlier "standard rates only" rule. The cost is
 maintenance: GPT-5.6 Sol's $4/$20 is promotional through at least 2026-11-21, and when it ends its
 row in `lib/model-tiers.js` has to move back to the $5/$30 list rate by hand.
@@ -1103,53 +1104,61 @@ volume costs the pool nothing. The list is now a blacklist: missing from it cost
 refusal. What the share is still good for is naming the one concrete action that makes somebody
 cheaper.
 
-**Refusal targets the real failure**, and needs both halves:
+**Refusal targets the real failure: a short pool, overdrawn.** While the pool is scarce (below),
+each user may spend up to a **fair-share cap** over the scarcity window, and whoever is over it
+stops being handed capacity -- no new account, no renewal of a borrowed one -- until they are back
+under it (`fairShareCap`, `fairShareFromState` in `lib/pool-scarcity.js`). There is no cap at all
+while supply covers demand: a heavy user during abundance is just somebody getting their job done.
 
-1. the pool is projected to run dry (see scarcity, below), **and**
-2. this user's priced spend over the window is strictly above the **80th percentile** of active users' spend (`teamDemand`, `DEMAND_SHARE_PERCENTILE`)
+The cap is **max-min fair** (water-filling). With `r = available_points / demand_points` from the
+stored scarcity verdict, it is the largest `c` with `Σ min(spend_i, c) ≤ r · Σ spend_i`: light users
+are covered in full and the whole shortfall comes from the people above `c`. `r` is a ratio of quota
+points to quota points, so it applies to dollars unchanged -- no points-to-dollars conversion has to
+be invented. It assumes the next week looks like the last few days, which is the assumption the
+scarcity verdict already makes. Spend is priced dollars (`MODEL_COST_SQL`), never raw tokens.
 
-Either alone is not worth throttling anyone over: a shortage nobody is driving needs more accounts,
-not less work, and a heavy user during abundance is just somebody getting their job done. A share of
-team demand needs no threshold in dollars and rescales itself as the team and pool change size.
+What counts as spend is `poolUserCosts`: the requesting source only (scarcity is per source), the
+same 3-day window as the burn, and **only accounts in the pool** -- the verdict measures the pool's
+accounts and nothing else, so a personal account it never held is no claim on what it rations. A
+user's **own uploads count**: their quota is part of the supply everyone else draws on. Renewing an
+own upload stays exempt (below), so an over-cap owner keeps their own account and loses only the
+ability to borrow. The cap is computed on every fetch from one query, so the user's standing and the
+cap they are judged against can never come from different arithmetic; `api/users.js` runs the same
+functions per source for the Users page.
 
-The demand-share warning and cooldown both require the pool to be scarce. A healthy pool has no
-reason to warn an over-share user, so the rule stays silent until there is something to protect.
-Demand share is computed from priced dollar spend (`MODEL_COST_SQL`), never raw token counts, so
-different models' token prices do not distort the standing.
+The cap is not a wait. A refusal (`fair_share_cap`, notice title `取号已暂停`) opens no cooldown
+cycle and carries no `retry_after_seconds`: it lasts exactly as long as the user is over, and lifts by
+itself as old usage leaves the window or quota arrives and the cap widens. `forced` does not lift it
+-- the shortcut skips a wait and this is not one; a flag any client can send would otherwise make
+the cap optional for exactly the people it exists for.
 
-The line is the 80th percentile of active users' priced spend (nearest rank, `ceil(0.8 * N)`-th
-smallest; users with no spend are not "active" and do not count): when quota has run out, whoever is
-strictly above it -- the heaviest fifth -- yields. It replaced a plain average (`1 / active_users`)
-on 2026-10-16. On real data the two chose the same people (below); what the percentile adds is a
-ceiling on the blast radius, because a flat team no longer has about half of itself "over average"
-for being ordinary, and at most a fifth of the team is ever held however spend is distributed. Two
-consequences worth knowing: the cut is by rank, so it ignores how big the gap is (a team of ten
-near-equal spenders still holds its top two when scarce, though holding them frees little), and
-the line is a *strict* inequality, so identical spend at the cut is not over it (dollar spend never
-ties in production; test fixtures must vary it). With fewer than five active users the heaviest user
-is the 80th-percentile user, so nobody is above the line -- this subsumes the old "at least two
-active users" guard: a sole consumer holds nobody back, and a shortage one or two people drive alone
-calls for more accounts. The earlier finding still holds that widening a mean-based line selected the
-same three people, so there is no tolerance knob; the percentile is the only parameter.
+It replaced the 80th-percentile demand-share cooldown on 2026-11-04. That rule had two gaps the
+2026-11-03/04 shortage showed. It was a rank, not a level, so it ignored how big the gap was. And it
+was a 30-minute cooldown: whoever was over the line was still served once every half hour. One serve
+of a codex access token lasts about 10 days (§11), so the heaviest user kept drawing. shawn.hou was
+refused 12 times by `demand_share_cooldown` on those two days and was still served
+`starbench@stardust.ai` at 11-04 09:15Z. He then spent 46 亿 tokens on it over the next 20 hours.
+Replayed over 2026-10-20..11-05 with a 3-day window, the cap ranged $2.6k-$7.3k per 3 days.
+shawn.hou was over it at every scarce point, derek at two of six, and nobody else at any. That
+replay rebuilt supply from `auth_pool_quota_events` and only approximates the stored verdicts.
 
-Measured on 2026-08-26 across 17 active users (average line at 5.9%, P80 line at 3.3%, the 14th of 17
-smallest): both lines hold shawn.hou at 46.0%, derek at 29.3%, and solutions at 14.7%; the next user
-down is at 3.3% and sits exactly on the P80 line, so it is not over it.
+What the cap cannot do is take back an account already handed over: a refused user keeps the token in
+hand until it is drained or expires. Rotating the grant would revoke it (§11), but also every other
+borrower's copy, so it is not done.
 
-The cooldown throttles how often somebody may draw on the pool; it does not stop them working. Its
-upper bound is the codex id_token, which goes stale about an hour after issue -- past that a held
-user cannot refresh at all and stops outright, turning a rate limit into an outage. Thirty minutes
-leaves a full margin under that, while cutting the heaviest users from a fetch every five minutes to
-one every thirty.
-
-### Scarcity: the cooldown only bites when there is something to ration
+### Scarcity: rationing only bites when there is something to ration
 
 Throttling during abundance is pure friction -- nobody gains from slowing a heavy user while there is
 quota to spare. `lib/pool-scarcity.js` decides whether the pool is on track to run dry, and the
-premium-share cooldown is inert unless it is.
+fair-share cap and contribution cooldown are inert unless it is.
 
 Supply is only ever observable as "how much of each account's week is left", so demand is measured in
-the same unit: the summed **decline** in `one_week_remaining_percent` across the pool over 24h. Only
+the same unit: the summed **decline** in `one_week_remaining_percent` across the pool over the last
+**3 days** (`SCARCITY_BURN_WINDOW_DAYS`), averaged per day. It was 24h until 2026-11-04. The burn is the
+denominator of the cap's supply ratio, and one day of it is mostly noise. Replayed over 2026-10-20..11-05,
+a 24h burn moved the codex cap between $2.4k and $26k inside a week, while the 3-day mean kept it
+within $2.6k-$7.3k. Users' spend is measured over the same 3 days, so both sides of the ratio
+describe the same stretch of time. Only
 declines count -- a window reset sends the number back up, and that is supply arriving, not
 consumption. The horizon is 7 days because these are weekly windows; anything shorter would call
 every Monday a crisis. An account whose window renews inside the horizon contributes a full 100
@@ -1163,7 +1172,7 @@ Missing or stale state (`SCARCITY_STATE_MAX_AGE_HOURS`) reads as **not scarce**.
 fail open: throttling people on the strength of missing data is worse than letting a busy week
 through, and a stale verdict is missing data wearing a timestamp.
 
-The recompute runs in the probe worker right after fresh quota snapshots land -- the 24h window
+The recompute runs in the probe worker right after fresh quota snapshots land -- the 3-day window
 function over `auth_pool_quota_events` is far too heavy for the fetch path, which reads one stored
 row instead.
 
@@ -1216,10 +1225,10 @@ and that renewal of the account currently in hand will also require contributing
 token expires.
 
 **Owner renewal is not rationed.** A `refresh_current` request for an account the caller uploaded
-(`uploader_email` equals the token's email) bypasses the demand-share, contribution and
+(`uploader_email` equals the token's email) bypasses the fair-share, contribution and
 `require_contribution` gates, as owner repair does. The hub is only keeping the caller's own
 contribution alive, and an AT-only owner has no other way to mint a token: derek@'s claude access
-token lapsed during a demand-share cooldown on 2026-10-15, the hub refused 411 renewals of his own
+token lapsed during a (since replaced) demand-share cooldown on 2026-10-15, the hub refused 411 renewals of his own
 account over 14 days, and the CLI stayed logged out. The exemption covers the renewal only — if the
 pooled copy cannot be served in place and the request falls through to choosing another account, it
 is evaluated again as a switch and rationed like any other. A served owner renewal is logged as
@@ -1235,10 +1244,10 @@ change from above.
 launcher) runs the guard with `--force`; `fetch_best_auth` then sends `command: "force"` on the
 Codex fetch that cycle makes. The hub (`forced` in `api/auth/fetch-best.js`, honoured for
 `source == "codex"` only and for the exact string `force`) lifts the **cooldown** for that request:
-the demand-share and contribution waits are skipped, the notice becomes the ordinary warning rather
-than `取号已限速`, and the request is served like any other. Everything that is not rationing stays:
-the version floor and unreported-consumption gate (measurement preconditions) and
-`require_contribution` (an admin access decision). The flag opens no cooldown cycle and consumes
+the contribution wait is skipped, the notice becomes the ordinary warning rather than `取号已限速`,
+and the request is served like any other. Everything that is not a wait stays: the version floor
+and unreported-consumption gate (measurement preconditions), `require_contribution` (an admin
+access decision), and the fair-share cap, which is a level rather than a wait. The flag opens no cooldown cycle and consumes
 none, so the next ordinary request is rationed as before; a *served* forced request completes a
 running cycle exactly as an unforced served one does. `--force` does not make the cycle fetch when it
 otherwise would not: a healthy, unexpiring account is still left alone, so the shortcut only helps
@@ -1247,7 +1256,8 @@ does.
 
 The limit of this design is that the flag is a client assertion: anyone holding a personal token can
 send `command: "force"` by hand and skip the wait for any request, so the cooldown is a nudge to
-the guard's own cadence rather than a hard cap on a determined caller. It is not recorded separately
+the guard's own cadence rather than a hard cap on a determined caller. That is why the fair-share
+cap ignores the flag. It is not recorded separately
 in the fetch log. Rationing was already client-cooperative in this sense (the guard chooses how often
 to ask); if forced calls turn out to be abused, the fix is to rate-limit the flag per user, not to
 trust it less.
@@ -1260,16 +1270,17 @@ Phase dates are hardcoded in `lib/premium-ratio.js` and cumulative:
 |---|---|---|
 | notice | always | Notices ride on every response; nothing is refused |
 | reporter_gate | `PHASE_REPORTER_GATE_AT` | Outdated clients refused |
-| cooldown | `PHASE_COOLDOWN_AT` | Over-share users and non-contributors cooled down |
+| cooldown | `PHASE_COOLDOWN_AT` | Non-contributors cooled down while scarce |
+| fair_share | `PHASE_FAIR_SHARE_AT` (2026-11-09) | Over-cap users refused while scarce; before it they get `fair_share_warning` |
 
-`PREMIUM_RATIO_REPORTER_GATE_AT` / `POOL_COOLDOWN_AT` override the dates (for a canary, an
+`PREMIUM_RATIO_REPORTER_GATE_AT` / `POOL_COOLDOWN_AT` / `POOL_FAIR_SHARE_AT` override the dates (for a canary, an
 emergency rollback, or reaching a phase from a test). The `premium_ratio_enforcement` feature flag
 is a separate live kill switch: it stops refusals within one request while advisory notices keep
 flowing. Notice wording follows the actual response, not merely the fact that scarcity exists: only
-a request refused inside its cooldown carries `demand_share_cooldown` /
-`contribution_cooldown` and the title `取号已限速`; the first allowed request, a request after the
-interval, a kill-switch bypass, and an owner-repair handback carry the corresponding warning
-instead. Turning enforcement off must never turn the warning off or claim a served request was
+a request refused inside its cooldown carries `contribution_cooldown` and the title `取号已限速`, and
+only a request refused by the cap carries `fair_share_cap` and `取号已暂停`; the first allowed request,
+a request after the interval, a kill-switch bypass, an owner renewal and an owner-repair handback
+carry the corresponding warning instead. Turning enforcement off must never turn the warning off or claim a served request was
 refused.
 
 Clients surface notices through `notify_hub_notices()` (`quota_guard.py`), once per notice code per
@@ -1277,8 +1288,8 @@ Clients surface notices through `notify_hub_notices()` (`quota_guard.py`), once 
 client release. Each notice picks one of two cadences (`lib/premium-ratio.js`): a notice about
 something holding the user back right now (an outdated client, reporting debt, a live cooldown, a
 refused fetch, an empty pool) repeats every 6 h, because acting on it changes their situation within
-the hour; an advisory that refuses nothing and reports a seven-day rolling share (`premium_ratio_warning`,
-scarce-pool `demand_share_warning`, `contribution_warning`) repeats once per 24 h, because the number it reports
+the hour; an advisory that refuses nothing and reports a rolling figure (`premium_ratio_warning`,
+`fair_share_warning`, `contribution_warning`) repeats once per 24 h, because the number it reports
 cannot move faster than the window it is measured over. The guard runs every 15 minutes; a toast on
 every run would train people to dismiss it without reading, which is the opposite of what a warning
 is for -- and so would the same seven-day percentage four times a day (2026-09-09: two advisories,
@@ -1358,11 +1369,10 @@ Both sources are held to the same thresholds, judged per window the report carri
   table also carries each member's **pool spend over the gate's own window**: `authUsersList` takes
   `spendSince` as an argument (never a clock of its own) and joins one `bucket_start` range scan over
   `token_usage_15m`, the same shape `fetchPolicyInputs` already runs on every fetch-best call, grouped
-  by user instead of filtered to one. `api/users.js` returns the percentile line computed by the
-  gate's own `teamDemand` over those same per-user spends (`demand_share_line`, null when nobody can
-  be above it), and the page only compares each share to it, so somebody who was sent a demand-share
-  notice can see the number that produced it instead of a near-miss of it. Being over the line is not
-  a throttle on its own: the cooldown also needs the pool to be scarce (§9b).
+  by user instead of filtered to one. `api/users.js` also returns, per source, the fair-share cap and
+  who is over it (`fair_share`), computed by the gate's own `poolUserCosts` + `fairShareFromState`
+  over the gate's 3-day window, so somebody who was sent a `fair_share_*` notice can see the number
+  that produced it. The page only marks those users; it computes no rule of its own (§9b).
 - **`auth_pool_death_events`** — append-only credential deaths and revivals ([§12.1](#121-auth_pool_death_events-why-a-death-log-and-not-a-state-table)).
 
 ### 12.1 `auth_pool_death_events` — why a death log and not a state table
@@ -1726,7 +1736,9 @@ only one that is comparable across providers and models.
 The page (`token-usage.html`) defaults to 7 days / hour / Hub user / Total and makes one lazy
 authenticated query. Spend leads the summary cards, is its own Breakdown column whatever metric is
 selected, and always ranks and sizes the per-user bars: that panel answers "who costs the pool the
-most", and its percentages are exactly the demand share the fetch gate rations on. The selected
+most", and its percentages are shares of the filtered spend. They are not what the fetch gate
+rations on: the fair-share cap is per source, over pooled accounts only, across 3 days, and the Users
+page shows it (§9b). The selected
 token counter (Total when the metric is Spend) rides alongside each bar as the second figure, so a
 user with a large own-key workload still shows up, at $0. The Breakdown ranks by spend only when
 Spend is the selected metric. Results are cached five minutes keyed by exact query **plus auth generation**,

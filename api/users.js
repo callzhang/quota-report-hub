@@ -6,10 +6,31 @@ import {
   authUsersList,
   dbConfigured,
   listAdmins,
+  poolScarcityState,
+  poolUserCosts,
   setAuthUserDisabled,
 } from "../lib/db.js";
 import { readJsonBody } from "../lib/http.js";
-import { DEMAND_SHARE_PERCENTILE, PREMIUM_RATIO_WINDOW_DAYS, teamDemand } from "../lib/premium-ratio.js";
+import { PREMIUM_RATIO_WINDOW_DAYS } from "../lib/premium-ratio.js";
+import { SCARCITY_BURN_WINDOW_DAYS, fairShareFromState } from "../lib/pool-scarcity.js";
+
+const POOL_SOURCES = ["codex", "claude"];
+
+// The fetch gate's own computation, per source, so the page cannot describe a different rule than
+// the one that rations: the same spend query, the same stored verdict, the same cap function.
+async function fairShareBySource() {
+  const since = new Date(Date.now() - SCARCITY_BURN_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  return Promise.all(POOL_SOURCES.map(async (source) => {
+    const [costs, state] = await Promise.all([poolUserCosts({ source, since }), poolScarcityState(source)]);
+    const { scarce, capUsd } = fairShareFromState(state, costs.map((row) => row.cost));
+    return {
+      source,
+      scarce,
+      cap_usd: capUsd,
+      over: capUsd === null ? [] : costs.filter((row) => row.cost > capUsd).map((row) => ({ email: row.email, spend_usd: row.cost })),
+    };
+  }));
+}
 
 function json(res, statusCode, payload) {
   res.statusCode = statusCode;
@@ -63,8 +84,8 @@ export default async function handler(req, res) {
         viewer_email: authContext.email,
         generated_at: new Date().toISOString(),
         spend_window_days: PREMIUM_RATIO_WINDOW_DAYS,
-        demand_share_percentile: DEMAND_SHARE_PERCENTILE,
-        demand_share_line: null,
+        fair_share_window_days: SCARCITY_BURN_WINDOW_DAYS,
+        fair_share: [],
         users: [],
         fetch_log: [],
       }, authContext))
@@ -81,14 +102,15 @@ export default async function handler(req, res) {
   const limitParam = Number(new URL(req.url, "http://placeholder").searchParams.get("limit"));
   const limit = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 1000) : 200;
 
-  // The same window the fetch gate prices demand over, so a reader comparing their row against the
-  // notice they were sent is looking at the one number that produced it, not a near-miss of it.
+  // The premium-share notice's window. The fair-share cap uses its own, shorter one and travels
+  // separately (`fair_share`), with each over-cap user's spend in that window.
   const spendSince = new Date(Date.now() - PREMIUM_RATIO_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
-  const [users, fetchLog, admins] = await Promise.all([
+  const [users, fetchLog, admins, fairShare] = await Promise.all([
     authUsersList({ spendSince }),
     authPoolFetchLog({ limit, dedupe: false }),
     viewerRole !== null ? listAdmins() : [],
+    fairShareBySource(),
   ]);
   // Who administers is not a member-facing fact (§6.7), so only an admin viewer gets per-row roles —
   // which is also what the page needs to know which rows can carry a Disable control.
@@ -96,11 +118,6 @@ export default async function handler(req, res) {
     const roles = new Map(admins.map((admin) => [admin.email, admin.role]));
     for (const user of users) user.admin_role = roles.get(user.email) || null;
   }
-
-  // The line comes from the same function the gate uses, over the same window, so the page cannot
-  // describe a different rule than the one that rations. null = nobody is above it (too few
-  // spenders); JSON would turn Infinity into null anyway, this just says so.
-  const { teamCost, demandCostLine } = teamDemand(users.map((user) => user.spend_usd));
 
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -110,8 +127,8 @@ export default async function handler(req, res) {
       viewer_admin_role: viewerRole,
       generated_at: new Date().toISOString(),
       spend_window_days: PREMIUM_RATIO_WINDOW_DAYS,
-      demand_share_percentile: DEMAND_SHARE_PERCENTILE,
-      demand_share_line: teamCost > 0 && Number.isFinite(demandCostLine) ? demandCostLine / teamCost : null,
+      fair_share_window_days: SCARCITY_BURN_WINDOW_DAYS,
+      fair_share: fairShare,
       users,
       fetch_log: fetchLog,
     }, authContext))

@@ -13,10 +13,11 @@ process.env.TURSO_DATABASE_URL = `file:${join(tempDir, "gate.db")}`;
 process.env.TURSO_AUTH_TOKEN = "test-token";
 process.env.AUTH_POOL_ENCRYPTION_KEY = "0".repeat(64);
 process.env.TOKEN_ISSUE_KEY = "test-token-issue-key-32-bytes!!!";
-// Both enforcing phases are pulled into the past; the pre-enforcement phases are covered by the
+// Every enforcing phase is pulled into the past; the pre-enforcement phases are covered by the
 // pure policy tests in premium-ratio.test.mjs, which need no database at all.
 process.env.PREMIUM_RATIO_REPORTER_GATE_AT = "2000-01-01T00:00:00.000Z";
 process.env.POOL_COOLDOWN_AT = "2000-01-01T00:00:00.000Z";
+process.env.POOL_FAIR_SHARE_AT = "2000-01-01T00:00:00.000Z";
 
 // Dynamic like the modules above it: a static import would be hoisted above the phase-date env
 // overrides and freeze the gate/cooldown dates before the tests could move them.
@@ -79,10 +80,8 @@ function quarterHoursAgo(count) {
   return new Date(Math.floor(ms / (15 * 60 * 1000)) * 15 * 60 * 1000).toISOString();
 }
 
-// The line is the 80th percentile of spend and a user must be strictly above it, so a tie at the top
-// is not "over". Real dollar spend never ties; identical fixtures would, once enough heavy users
-// exist to fill the top fifth. Each heavy user is therefore one row heavier than the last, which
-// makes the newest always the largest spender -- the one the test about to run is exercising.
+// Each heavy user is one row heavier than the last, so the newest is always the largest spender --
+// the one the test about to run is exercising -- and always over the cap the scarce pool sets.
 let heavyRowsSeeded = 0;
 
 async function seedUsage(email, modelId, batchId, { heavy = false } = {}) {
@@ -96,17 +95,19 @@ async function seedUsage(email, modelId, batchId, { heavy = false } = {}) {
   });
 }
 
-// The cooldown is a rationing rule, so it only bites while there is something to ration. These
-// tests have to put the pool in that state deliberately.
+// Rationing only bites while there is something to ration, so these tests put the pool in that state
+// deliberately. Scarce is supply covering half of projected demand: the cap then sits well above the
+// one-row consumers and well below every heavy user, so each test exercises exactly one rule.
 async function seedScarcePool(scarce) {
   await scarcityClient.execute({
     sql: `INSERT INTO pool_scarcity_state (
             source, computed_at, burn_points_per_day, available_points,
             demand_points, runway_days, horizon_days, scarce
-          ) VALUES ('codex', ?, 400, 100, 2800, 0.25, 7, ?)
+          ) VALUES ('codex', ?, 400, ?, 2800, ?, 7, ?)
           ON CONFLICT(source) DO UPDATE SET
-            computed_at = excluded.computed_at, scarce = excluded.scarce`,
-    args: [new Date().toISOString(), scarce ? 1 : 0],
+            computed_at = excluded.computed_at, available_points = excluded.available_points,
+            runway_days = excluded.runway_days, scarce = excluded.scarce`,
+    args: [new Date().toISOString(), scarce ? 1400 : 5600, scarce ? 3.5 : 14, scarce ? 1 : 0],
   });
 }
 
@@ -154,10 +155,26 @@ async function seedServe(email) {
   });
 }
 
-// The line is a percentile of the team's spend, so it needs a team: with fewer than five active
-// users the heaviest spender is the 80th-percentile spender and nobody is above the line. These
-// tests seed a realistic set of small consumers once, up front.
+// The cap is cut from the team's spend on pooled accounts, so the account every usage fixture names
+// is in the pool -- as an entry with no quota report, which selection never lends, so it cannot
+// change which account any test is served. And it needs a team: a realistic set of small
+// consumers, seeded once, up front.
 test("seed a team of ordinary consumers", async () => {
+  await db.upsertAuthPoolEntry({
+    source: "codex",
+    auth_json: JSON.stringify({
+      last_refresh: new Date().toISOString(),
+      tokens: {
+        account_id: "provider-pool",
+        id_token: `x.${Buffer.from(JSON.stringify({ email: "pool@example.com" })).toString("base64url")}.y`,
+        access_token: "access-pool",
+        refresh_token: "rt.1.REAL-pool",
+      },
+    }),
+    uploader_email: "pool-owner@stardust.ai",
+    reporter_name: "pool-owner@mac",
+    hostname: "mac",
+  });
   for (let index = 0; index < 6; index += 1) {
     await seedUsage(`colleague${index}@stardust.ai`, "gpt-5.5", `batch-colleague-${index}`);
   }
@@ -202,34 +219,47 @@ test("a reporting client that is inside its share and supplies the pool is told 
   await seedContribution(email, "light-pool@example.com");
   const payload = await call(token);
   assert.notEqual(payload.reason, "reporter_upgrade_required");
-  assert.notEqual(payload.reason, "demand_share_cooldown");
+  assert.notEqual(payload.reason, "fair_share_cap");
   assert.deepEqual(payload.notices, []);
 });
 
-test("cooldown holds a user driving a shortage, and a refused attempt does not extend the wait", async () => {
+test("the fair-share cap stops a user overdrawing a short pool, with no wait to sit out", async () => {
   const email = "heavy@stardust.ai";
   const { token } = await db.issueApiToken(email);
   await seedUsage(email, "gpt-5.6-sol", "batch-heavy", { heavy: true });
   await seedScarcePool(true);
 
   const first = await call(token);
-  assert.equal(first.reason, "demand_share_cooldown");
+  assert.equal(first.reason, "fair_share_cap");
   assert.equal(first.replacement, null);
-  assert.equal(first.retry_after_seconds, PREMIUM_RATIO_COOLDOWN_MINUTES * 60,
-    "the first request must start the full wait rather than receive an account");
-  assert.ok(first.demand_share > 0.25, "this user is the entire team's spend");
+  assert.equal(first.retry_after_seconds, null, "it lifts when the spend falls under the cap, not on a timer");
+  assert.ok(first.fair_share_cap_usd > 0);
+  assert.ok(first.notices.some((notice) => notice.code === "fair_share_cap"));
 
-  const second = await call(token);
-  assert.ok(
-    second.retry_after_seconds <= first.retry_after_seconds,
-    "being refused must not push the next allowed attempt further away",
-  );
+  // The old rule served every 30 minutes whatever the spend; the cap does not run out.
+  const elapsedStart = new Date(Date.now() - (PREMIUM_RATIO_COOLDOWN_MINUTES + 1) * 60 * 1000).toISOString();
+  await scarcityClient.execute({
+    sql: "UPDATE auth_pool_user_fetch_stats SET cooldown_started_at = ? WHERE requester_email = ?",
+    args: [elapsedStart, email],
+  });
+  assert.equal((await call(token)).reason, "fair_share_cap");
+});
+
+test("everyone under the cap is untouched while the pool is short", async () => {
+  // The one-row colleagues are far under the cap the heavy users set. A short pool takes its
+  // shortfall from the top, not from everybody.
+  const { token } = await db.issueApiToken("colleague0@stardust.ai");
+  await seedContribution("colleague0@stardust.ai", "colleague0-pool@example.com");
+  await seedScarcePool(true);
+  const payload = await call(token);
+  assert.notEqual(payload.reason, "fair_share_cap");
+  assert.ok(!payload.notices.some((notice) => notice.code.startsWith("fair_share")));
 });
 
 test("a failed auth handoff does not complete an elapsed cooldown cycle", async () => {
   const email = "handoff-failure@stardust.ai";
   const { token } = await db.issueApiToken(email);
-  await seedUsage(email, "gpt-5.6-sol", "batch-handoff-failure", { heavy: true });
+  await seedUsage(email, "gpt-5.5", "batch-handoff-failure");
   await seedContribution("handoff-supplier@stardust.ai", "handoff-pool@example.com");
   await seedScarcePool(true);
 
@@ -300,48 +330,60 @@ test("the kill switch stops refusals without silencing the warning", async () =>
   await db.setFeatureFlag("premium_ratio_enforcement", false, "test");
   try {
     const payload = await call(token);
-    assert.notEqual(payload.reason, "demand_share_cooldown");
+    assert.notEqual(payload.reason, "fair_share_cap");
     assert.ok(
-      payload.notices.some((notice) => notice.code === "demand_share_warning"),
+      payload.notices.some((notice) => notice.code === "fair_share_warning"),
       "disabling enforcement must preserve an advisory without claiming this fetch was refused",
     );
-    assert.ok(!payload.notices.some((notice) => notice.code === "demand_share_cooldown"));
+    assert.ok(!payload.notices.some((notice) => notice.code === "fair_share_cap"));
   } finally {
     await db.setFeatureFlag("premium_ratio_enforcement", true, "test");
   }
 });
 
-test("a forced codex fetch skips the wait without starting or consuming a cooldown cycle", async () => {
-  const email = "heavy-forced@stardust.ai";
+test("a forced codex fetch skips the contribution wait without starting or consuming a cooldown cycle", async () => {
+  const email = "forced-borrower@stardust.ai";
   const { token } = await db.issueApiToken(email);
-  await seedUsage(email, "gpt-5.6-sol", "batch-heavy-forced", { heavy: true });
+  await seedUsage(email, "gpt-5.5", "batch-forced-borrower");
   await seedScarcePool(true);
 
   const forced = await call(token, { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION, command: "force" });
-  assert.notEqual(forced.reason, "demand_share_cooldown", "the shortcut's fetch must not be told to wait");
-  assert.ok(!forced.notices.some((notice) => notice.code === "demand_share_cooldown"),
+  assert.notEqual(forced.reason, "contribution_cooldown", "the shortcut's fetch must not be told to wait");
+  assert.ok(!forced.notices.some((notice) => notice.code === "contribution_cooldown"),
     "a request that was not refused must not carry the 取号已限速 notice");
 
   // Forcing is for this request only: it neither opened a wait nor lifted the rule for the guard's
   // next ordinary request, which is still rationed and is the one that starts the clock.
   const ordinary = await call(token);
-  assert.equal(ordinary.reason, "demand_share_cooldown");
+  assert.equal(ordinary.reason, "contribution_cooldown");
   assert.equal(ordinary.retry_after_seconds, PREMIUM_RATIO_COOLDOWN_MINUTES * 60);
 });
 
-test("only the exact command force lifts the wait", async () => {
-  const email = "heavy-not-forced@stardust.ai";
+test("a forced fetch does not lift the fair-share cap", async () => {
+  // Any client can send command=force. Letting it through the cap would make the cap optional for
+  // exactly the people it exists for.
+  const email = "heavy-forced@stardust.ai";
   const { token } = await db.issueApiToken(email);
-  await seedUsage(email, "gpt-5.6-sol", "batch-heavy-not-forced", { heavy: true });
+  await seedUsage(email, "gpt-5.6-sol", "batch-heavy-forced", { heavy: true });
+  await seedScarcePool(true);
+  const forced = await call(token, { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION, command: "force" });
+  assert.equal(forced.reason, "fair_share_cap");
+  assert.equal(forced.replacement, null);
+});
+
+test("only the exact command force lifts the wait", async () => {
+  const email = "not-forced-borrower@stardust.ai";
+  const { token } = await db.issueApiToken(email);
+  await seedUsage(email, "gpt-5.5", "batch-not-forced-borrower");
   await seedScarcePool(true);
 
   for (const command of ["Force", "refresh", true, "force "]) {
     const payload = await call(token, { source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION, command });
-    assert.equal(payload.reason, "demand_share_cooldown", `command=${JSON.stringify(command)}`);
+    assert.equal(payload.reason, "contribution_cooldown", `command=${JSON.stringify(command)}`);
   }
 });
 
-test("an over-share user is only warned while the pool has room to spare", async () => {
+test("a heavy user is neither held nor warned while the pool has room to spare", async () => {
   const email = "heavy3@stardust.ai";
   const { token } = await db.issueApiToken(email);
   await seedUsage(email, "gpt-5.6-sol", "batch-heavy3", { heavy: true });
@@ -349,8 +391,8 @@ test("an over-share user is only warned while the pool has room to spare", async
   await seedScarcePool(false);
 
   const payload = await call(token);
-  assert.notEqual(payload.reason, "demand_share_cooldown", "abundance must not throttle anyone");
-  assert.ok(!payload.notices.some((notice) => notice.code === "demand_share_warning"));
+  assert.notEqual(payload.reason, "fair_share_cap", "abundance must not throttle anyone");
+  assert.ok(!payload.notices.some((notice) => notice.code.startsWith("fair_share")));
 });
 
 test("a non-contributor is warned while the pool is healthy, and still served", async () => {
@@ -379,7 +421,8 @@ test("a scarce pool rate-limits a non-contributor, and supplying it lifts that",
   assert.equal(held.replacement, null);
   assert.ok(held.retry_after_seconds > 0);
   // Inside their fair share: only the supply rule can be holding them.
-  assert.ok(held.demand_share < 0.2, "this must not be the demand-share rule wearing another name");
+  assert.ok(!held.notices.some((notice) => notice.code.startsWith("fair_share")),
+    "this must not be the fair-share cap wearing another name");
 
   await seedContribution(email, "borrower2-pool@example.com");
   const after = await call(token);
@@ -434,8 +477,8 @@ test("owner repair bypasses a live cooldown without claiming the repair handback
   assert.equal(payload.reason, "uploaded_auth_requires_reauth");
   assert.equal(payload.replacement, null);
   assert.equal(payload.repair_auth.account_id, accountId);
-  assert.ok(payload.notices.some((notice) => notice.code === "demand_share_warning"));
-  assert.ok(!payload.notices.some((notice) => notice.code === "demand_share_cooldown"));
+  assert.ok(payload.notices.some((notice) => notice.code === "fair_share_warning"));
+  assert.ok(!payload.notices.some((notice) => notice.code === "fair_share_cap"));
 });
 
 test("require_contribution refuses a non-contributor even while the pool is healthy", async () => {
@@ -477,8 +520,8 @@ test("the ratio-gate kill switch does not disarm require_contribution", async ()
   }
 });
 
-// derek@, claude, 2026-10-15: an AT-only owner's access token expired while the demand-share
-// cooldown was running, the hub refused every renewal of his OWN account (32 in a row), and the
+// derek@, claude, 2026-10-15: an AT-only owner's access token expired while the (since replaced)
+// demand-share cooldown was running, the hub refused every renewal of his OWN account (32 in a row), and the
 // pool's only claude account sat behind a logged-out CLI. Renewing what you uploaded is not a draw.
 test("an owner's renewal of their own uploaded account is not rationed", async () => {
   const email = "owner-refresh@stardust.ai";
@@ -489,7 +532,7 @@ test("an owner's renewal of their own uploaded account is not rationed", async (
   await seedScarcePool(true);
 
   const switching = await call(token);
-  assert.equal(switching.reason, "demand_share_cooldown", "the same user is rationed when switching");
+  assert.equal(switching.reason, "fair_share_cap", "the same user is rationed when switching");
 
   const renewal = await call(token, {
     source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION,
@@ -497,15 +540,10 @@ test("an owner's renewal of their own uploaded account is not rationed", async (
   });
   assert.equal(renewal.refreshed_current, true);
   assert.equal(renewal.replacement.account_id, accountId);
-  assert.ok(!renewal.notices.some((notice) => notice.code === "demand_share_cooldown"),
-    "a served renewal must not carry the blocking cooldown notice");
-
-  // The cycle the switch refusal started keeps running: a renewal is not a hand-over, so it must
-  // not complete (clear) it and make the next real switch queue for a fresh full wait.
-  const after = await db.fetchPolicyInputs({
-    email, since: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-  });
-  assert.ok(after.cooldownStartedAt, "the owner's running cooldown survives the renewal");
+  assert.ok(!renewal.notices.some((notice) => notice.code === "fair_share_cap"),
+    "a served renewal must not carry the blocking notice");
+  assert.ok(renewal.notices.some((notice) => notice.code === "fair_share_warning"),
+    "the owner still hears where they stand, since their next switch will be refused");
   const log = await db.authPoolFetchLog({ limit: 20 });
   assert.ok(log.some((row) => row.requester_email === email && row.reason === "owner_refreshed_current"));
 });
@@ -522,7 +560,7 @@ test("renewing an account somebody else uploaded is still rationed", async () =>
     source: "codex", client_version: MIN_REPORTER_CLIENT_VERSION,
     current_account_id: accountId, refresh_current: true,
   });
-  assert.equal(renewal.reason, "demand_share_cooldown");
+  assert.equal(renewal.reason, "fair_share_cap");
   assert.equal(renewal.replacement, null);
 });
 
@@ -552,6 +590,6 @@ test("an owner renewal that cannot be served in place is rationed as the switch 
   });
   assert.equal(accessTokenMsUntilExpiry(await decryptAuthJson(await db.authPoolEntry("codex", accountId)), "codex") < 0, true,
     "the fixture must really hold a dead access token");
-  assert.equal(renewal.reason, "demand_share_cooldown");
+  assert.equal(renewal.reason, "fair_share_cap");
   assert.equal(renewal.replacement, null);
 });
