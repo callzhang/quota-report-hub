@@ -179,3 +179,23 @@ test("each token holder carries its pool spend, share, and where that sits again
   assert.match(harness.element("cards").innerHTML, /\$100\.00/);
   assert.match(harness.element("cards").innerHTML, /P80 line 50\.0% of team/);
 });
+
+test("disable controls render for admin viewers on non-admin rows only", async () => {
+  const users = [
+    { email: "owner@example.com", admin_role: "owner", last_token_issued_at: "2026-09-03T00:03:00Z" },
+    { email: "active@example.com", admin_role: null, last_token_issued_at: "2026-09-03T00:02:00Z" },
+    { email: "gone@example.com", admin_role: null, disabled_at: "2026-09-02T00:00:00Z", disabled_by: "owner@example.com", last_token_issued_at: "2026-09-03T00:01:00Z" },
+  ];
+  const harness = await usersHarness({ ...samplePayload({ userCount: 0, logCount: 0 }), viewer_admin_role: "admin", users });
+  const html = harness.element("users-rows").innerHTML;
+  assert.equal((html.match(/data-set-disabled="true"/g) || []).length, 1);
+  assert.match(html, /data-set-disabled="true" data-email="active@example.com"/);
+  assert.match(html, /data-set-disabled="false" data-email="gone@example.com"/);
+  assert.match(html, /disabled-mark/);
+
+  harness.setPayload({ ...samplePayload({ userCount: 0, logCount: 0 }), viewer_admin_role: null, users: users.map(({ admin_role, ...user }) => user) });
+  await harness.reload();
+  const memberHtml = harness.element("users-rows").innerHTML;
+  assert.doesNotMatch(memberHtml, /data-set-disabled/);
+  assert.match(memberHtml, /disabled-mark/);
+});

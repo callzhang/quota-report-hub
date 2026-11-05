@@ -1,5 +1,5 @@
 import { authMailConfigured, authPoolConfigured, companyEmailAllowed, normalizeEmail, sendAccessTokenEmail } from "../../lib/company-auth.js";
-import { dbConfigured, issueApiToken } from "../../lib/db.js";
+import { authUserDisabled, dbConfigured, issueApiToken } from "../../lib/db.js";
 import { readJsonBody } from "../../lib/http.js";
 
 export default async function handler(req, res) {
@@ -30,6 +30,15 @@ export default async function handler(req, res) {
     res.statusCode = 403;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.end(JSON.stringify({ error: "Only company email addresses are allowed" }));
+    return;
+  }
+
+  // A disabled person's existing tokens already fail authentication; without this a fresh token by
+  // email would be a self-service way back in. The guard requests exactly that on a 401 (§19).
+  if (await authUserDisabled(email)) {
+    res.statusCode = 403;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(JSON.stringify({ error: "This account has been disabled by an admin" }));
     return;
   }
 

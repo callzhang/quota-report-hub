@@ -36,6 +36,7 @@
 | [16](#16-token-usage-pipeline) | Token usage pipeline (collector → ingest → query → retention) |
 | [17](#17-repo-layout-tests-and-deploy) | Repo layout, tests, deploy |
 | [18](#18-upload-exclusions-accounts-that-never-leave-the-machine) | Upload exclusions — accounts that never leave the machine |
+| [19](#19-disabled-users) | Disabled users — off-boarding a member |
 
 ---
 
@@ -358,7 +359,7 @@ still fail the caller; there is no automatic database retry.
 | `auth_pool_entries` | PK `(source, account_id, session_id)` | The encrypted credential pool. One row per account in practice (see collapse, [§5.2](#52-single-entry-per-account)). Holds metadata + either inline ciphertext **or** an `auth_blob_key` pointer. (`:331-353`) |
 | `auth_pool_quota_latest` | PK `(source, account_id)` | Newest merged quota report per account (dashboard + selection). (`:363-387`) |
 | `auth_pool_quota_events` | PK `id` (uuid) | Append-only quota history; used for audit and continuous-invalidation windows. Not on the normal selection hot path. (`:388-420`) |
-| `auth_users` | PK `email` | Known members. (`:421-427`) |
+| `auth_users` | PK `email` | Known members; `disabled_at`/`disabled_by` mark off-boarded ones ([§19](#19-disabled-users)). |
 | `auth_api_tokens` | PK `token_hash` | Issued tokens, **hash only**, one active per email. (`:428-435`) |
 | `auth_pool_fetch_log` | PK autoinc | Audit of every pool fetch (served / repair / no-match) + requester quota. (`:436-456`) |
 | `auth_pool_requester_assignments` | PK `(source, requester_key)` | Latest fetch/current-account state per requester. Used for active assignment counts and the dashboard's complete `Fetched By` read model without scanning `auth_pool_fetch_log`. |
@@ -434,7 +435,7 @@ All handlers are Vercel functions; most require a Bearer token via `authenticate
 | `/api/auth/upload` | POST | Bearer | Upload local auth to the pool; echoes `disabled_refresh_token` |
 | `/api/auth/quota` | POST | Bearer | Publish a local quota snapshot (`report_origin:"client"`) |
 | `/api/auth/delete` | POST | Bearer | Remove a pool entry (cascade) |
-| `/api/auth/issue-token` | POST | **none** (company-email gate) | Email a one-time access token |
+| `/api/auth/issue-token` | POST | **none** (company-email gate) | Email a one-time access token; 403 for a disabled user ([§19](#19-disabled-users)) |
 | `/api/admin/flags` | GET/POST | Bearer (POST: admin) | Read flags / flip `disabled_refresh_token` |
 | `/api/cron/invalidated-auth-notifications` | GET/POST | **`CRON_SECRET`** | Daily email to latest uploaders of 24h-dead auths |
 | `/api/cron/probe-auth-pool` | GET/POST | **`CRON_SECRET`** | Lightweight manual/external trigger that dispatches the GitHub probe workflow when health snapshots are stale |
@@ -444,7 +445,7 @@ All handlers are Vercel functions; most require a Bearer token via `authenticate
 | `/api/token-usage` | POST | Bearer | Ingest one receipt-gated usage batch ([§16](#16-token-usage-pipeline)) |
 | `/api/token-usage-query` | GET | Bearer | Bounded usage read model: totals, trend, breakdown, reporter freshness |
 | `/api/cron/token-usage-retention` | GET/POST | **`CRON_SECRET`** | Daily compaction of 15-minute detail into `token_usage_daily` |
-| `/api/users` | any | Bearer | Users + fetch-log audit |
+| `/api/users` | GET/POST | Bearer (POST: admin) | Users + fetch-log audit; POST disables/enables a user ([§19](#19-disabled-users)) |
 
 The last four are not separate functions: they are `vercel.json` rewrites onto `/api/data?route=…`
 ([§6.5](#65-the-data-router-apidatajs)).
@@ -691,6 +692,8 @@ over the admin list itself.
   becomes owner. After seeding the env var is dead weight and can be deleted.
 - Admin-list changes bump the dashboard revision like any other dashboard-visible write, so open
   Settings tabs converge within a revision poll.
+- Every admin (not only the owner) may disable a member; admins themselves cannot be disabled
+  ([§19](#19-disabled-users)).
 
 ### 6.8 What makes a claude credential usable
 
@@ -1833,3 +1836,43 @@ account is not reported, so the premium-share split does not see it.
   the account to the hub.
 - Adding a row does not remove what the hub already holds: the pool entry, its blob and the
   `auth_pool_quota_*` history rows for that account stay until deleted separately.
+
+---
+
+## 19. Disabled users
+
+Off-boarding: an admin cuts a member's access to the hub without deleting anything.
+
+**Data.** `auth_users.disabled_at` / `disabled_by`, added by the migration. Disabled is a standing,
+not a deletion — the person's rows in `auth_api_tokens` stay, so re-enabling a colleague disabled by
+mistake brings every one of their clients back with no reissue round-trip. Re-disabling keeps the
+original `disabled_at`: it records when access ended.
+
+**Where access is cut.** In `authenticateApiToken`, the one function every Bearer request passes
+through ([§6](#6-component-serverless-api)). The lookup joins `auth_users` and matches no row for a
+disabled person, so every endpoint answers 401 `token_invalidated` with no per-handler check. The
+`last_used_at` touch in the same batch is skipped for them too: the users page must not show
+activity from someone who no longer has access. The function still runs no migration and stays one
+round trip (`tests/db-read-budget-static.test.mjs`), which is why the columns must exist in
+production *before* code that reads them is deployed — apply the two `ALTER TABLE auth_users ADD
+COLUMN` statements first; they are additive and the migration's own copy is a no-op afterwards.
+
+**Why issuance is blocked too.** On a 401 `token_invalidated` the guard emails itself a fresh token
+(`request_auth_pool_token_email_once`). Without a check in `/api/auth/issue-token` that would be a
+self-service way back in, so a disabled email gets 403 and no mail is sent.
+
+**Who.** Any admin, through `POST /api/users {email, disabled}` — off-boarding should not wait for
+the owner. Admins cannot be disabled (400): otherwise one admin could lock out another, or the owner;
+the owner removes admin standing first ([§6.7](#67-admins--owner)). An unknown email is a 404, not a
+silent success. `GET /api/users` returns `disabled_at`/`disabled_by` to everyone (it explains why a
+colleague has no access) but `viewer_admin_role` and per-row `admin_role` to admins only, matching
+§6.7's rule that who administers is not member-facing. The Users page renders Disable/Enable only for
+admin viewers and only on non-admin rows.
+
+**What it does not do.**
+- Pool entries the person uploaded stay in the pool: they are company seats, and removing one is
+  the separate `/api/auth/delete`.
+- A `qrr.` revision ticket already issued keeps reading the revision number until its 12-hour expiry
+  ([§6.3](#63-identity--email)); it exposes nothing else.
+- No notice reaches the disabled client — the person has left and the guard just sees a dead token.
+

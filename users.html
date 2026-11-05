@@ -255,6 +255,17 @@
       .reason-tag.no_better_auth_available { color: var(--muted); }
 
       .self-row { background: rgba(206, 96, 48, 0.05); }
+      .disabled-row { opacity: 0.6; }
+      .disabled-mark {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        font-size: 10px;
+        border-radius: 6px;
+        background: rgba(29, 25, 21, 0.1);
+        color: var(--muted);
+      }
+      .row-action { margin-top: 6px; padding: 4px 10px; font-size: 12px; }
       .self-mark {
         display: inline-block;
         margin-left: 6px;
@@ -317,6 +328,7 @@
           </table>
         </div>
         <div id="users-empty" class="empty" hidden>No users yet.</div>
+        <div class="meta wrap" id="users-message"></div>
         <div class="pagination" id="users-pagination" aria-label="Token holders pagination" hidden>
           <span class="meta" data-range></span>
           <div class="pager-actions">
@@ -361,6 +373,7 @@
       const cards = document.getElementById("cards");
       const usersRows = document.getElementById("users-rows");
       const usersEmpty = document.getElementById("users-empty");
+      const usersMessage = document.getElementById("users-message");
       const logRows = document.getElementById("log-rows");
       const logEmpty = document.getElementById("log-empty");
       const fetchLogMeta = document.getElementById("fetch-log-meta");
@@ -376,6 +389,7 @@
       const PAGE_SIZE = 20;
       let currentToken = "";
       let viewerEmail = "";
+      let viewerAdminRole = null;
       // Filled from the payload: the window the hub prices demand over and the percentile line,
       // read from the server rather than computed here so the column can never describe a
       // different rule than the one the gate applies.
@@ -598,12 +612,13 @@
         const payload = await response.json();
         applyTokenUpgrade(payload);
         setAuthenticatedView(payload.viewer_email);
+        viewerAdminRole = payload.viewer_admin_role || null;
 
         const users = payload.users || [];
         const log = payload.fetch_log || [];
 
         const totalFetches = users.reduce((acc, u) => acc + (u.fetch_count || 0), 0);
-        const activeTokens = users.filter((u) => u.has_active_token).length;
+        const activeTokens = users.filter((u) => u.has_active_token && !u.disabled_at).length;
         spendWindowDays = Number(payload.spend_window_days || 7);
         demandSharePercentile = Number(payload.demand_share_percentile || 80);
         teamSpend = users.reduce((acc, u) => acc + Number(u.spend_usd || 0), 0);
@@ -626,12 +641,24 @@
         logPager.setRows(log);
       }
 
+      // Admins cannot be disabled (the API refuses), so their rows carry no control at all rather
+      // than a button that can only fail.
+      function disableControl(u) {
+        if (viewerAdminRole === null || u.admin_role) return "";
+        return u.disabled_at
+          ? `<button type="button" class="button row-action" data-set-disabled="false" data-email="${escapeHtml(u.email)}">Enable</button>`
+          : `<button type="button" class="button row-action" data-set-disabled="true" data-email="${escapeHtml(u.email)}">Disable</button>`;
+      }
+
       function userRow(u) {
         const isSelf = u.email && u.email === viewerEmail;
+        const rowClass = [isSelf ? "self-row" : "", u.disabled_at ? "disabled-row" : ""].filter(Boolean).join(" ");
         return `
-          <tr class="${isSelf ? "self-row" : ""}">
+          <tr class="${rowClass}">
             <td>
-              <div class="wrap">${escapeHtml(u.email || "-")}${isSelf ? '<span class="self-mark">you</span>' : ""}</div>
+              <div class="wrap">${escapeHtml(u.email || "-")}${isSelf ? '<span class="self-mark">you</span>' : ""}${u.disabled_at ? '<span class="disabled-mark">disabled</span>' : ""}</div>
+              ${u.disabled_at ? `<div class="meta wrap">Disabled ${formatDate(u.disabled_at)}${u.disabled_by ? ` by ${escapeHtml(u.disabled_by)}` : ""}</div>` : ""}
+              ${disableControl(u)}
             </td>
             <td><div class="wrap">${formatDate(u.created_at)}</div></td>
             <td>
@@ -676,6 +703,30 @@
           </tr>
         `;
       }
+
+      usersRows.addEventListener("click", async (event) => {
+        const target = event.target.closest("[data-set-disabled]");
+        if (!target) return;
+        const email = target.dataset.email;
+        const disabled = target.dataset.setDisabled === "true";
+        if (disabled && !confirm(`Disable ${email}? Their tokens stop working at once and they cannot request a new one until re-enabled.`)) return;
+        target.disabled = true;
+        usersMessage.textContent = "Saving…";
+        try {
+          const response = await fetch("/api/users", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${currentToken || getStoredToken()}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ email, disabled }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+          usersMessage.textContent = `${disabled ? "Disabled" : "Enabled"} ${email}`;
+          await load();
+        } catch (error) {
+          usersMessage.textContent = `Failed: ${error.message}`;
+          target.disabled = false;
+        }
+      });
 
       const usersPager = createPager({ barId: "users-pagination", tbody: usersRows, emptyEl: usersEmpty, renderRow: userRow });
       const logPager = createPager({ barId: "log-pagination", tbody: logRows, emptyEl: logEmpty, renderRow: logRow });
