@@ -6,9 +6,11 @@ import {
   adminEmails,
   normalizeEmail,
   signDashboardRevisionToken,
+  signTokenPayload,
   sendAccessTokenEmail,
   sendAuthInvalidatedEmail,
   verifyDashboardRevisionToken,
+  verifyTokenPayload,
 } from "../lib/company-auth.js";
 
 test("adminEmails reads ADMIN_EMAIL (comma-separated, normalized) for the one-time seed", () => {
@@ -78,6 +80,23 @@ test("dashboard revision tokens are signed, scoped, and expire", () => {
   } finally {
     if (previousKey === undefined) delete process.env.TOKEN_ISSUE_KEY;
     else process.env.TOKEN_ISSUE_KEY = previousKey;
+  }
+});
+
+test("a signature of the wrong length is rejected as an invalid token, not thrown", () => {
+  const previous = process.env.TOKEN_ISSUE_KEY;
+  process.env.TOKEN_ISSUE_KEY = "test-token-issue-key-32-bytes!!!";
+  try {
+    const { token } = signTokenPayload("member@stardust.ai");
+    assert.equal(verifyTokenPayload(token)?.email, "member@stardust.ai");
+    const [prefix, payload] = token.split(".");
+    // timingSafeEqual throws on unequal lengths; uncaught, that surfaced as a 503 "hub unavailable"
+    // for what is simply a bad token, so a client was told to wait instead of to sign in again.
+    assert.equal(verifyTokenPayload(`${prefix}.${payload}.short`), null);
+    assert.equal(verifyTokenPayload("qrp.x.y"), null);
+  } finally {
+    if (previous === undefined) delete process.env.TOKEN_ISSUE_KEY;
+    else process.env.TOKEN_ISSUE_KEY = previous;
   }
 });
 
