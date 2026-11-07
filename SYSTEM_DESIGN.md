@@ -165,6 +165,13 @@ Each step is wrapped so one failure doesn't abort the cycle (`:305-318`). Order:
   its RT. It used to write the picked store's credential into every store, which is the mechanism
   that carried the app's refused token into the keychain in that same 06:55 cycle. The cache strip
   was already per-entry and in place.
+- **`known_auth.json` is replaced, never rewritten in place.** It is the guard's only record of
+  which local credential is bound to which pooled account (fingerprints, `state_source` pins, the
+  codex refresh handoff), and every cycle reads it before doing anything else. Every write goes
+  through `persist_known_auth_state`: a 0600 temp file in the same directory, fsync, `os.replace`.
+  Writers used to truncate and rewrite it in place, and on 2026-11-06 stardust-GPU4 was left with a
+  zero-byte file that crashed every later run at `known_codex_refresh_handoff`. A file an older
+  client left torn reads as no known auth (the fresh-install state); the next write replaces it.
 - **Claude inference check**: a local claude token is reported usable only when the provider lets it
   run inference. `probe_claude_inference_access` asks `POST /v1/messages/count_tokens` — the same
   scope gate as a real call, unmetered — after the usage probe, whose refresh path would otherwise

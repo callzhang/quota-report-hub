@@ -359,12 +359,36 @@ def known_auth_state_for_source(state: dict | None, source: str) -> dict:
 def read_known_auth_state(path: Path = KNOWN_AUTH_PATH) -> dict:
     if not path.exists():
         return {"sources": {}}
-    payload = read_json(path)
+    try:
+        payload = read_json(path)
+    except ValueError:
+        # Clients before the atomic write truncated this file in place, so a write cut short (a full
+        # disk, a killed run) left it empty and every later run crashed before it could rewrite it
+        # (stardust-GPU4, 2026-11-06). A torn file holds nothing recoverable; reading it as absent
+        # is the fresh-install state, and the next write replaces it whole.
+        return {"sources": {}}
     if not isinstance(payload, dict):
         return {"sources": {}}
     if not isinstance(payload.get("sources"), dict):
         payload["sources"] = {}
     return payload
+
+
+def persist_known_auth_state(path: Path, state: dict) -> None:
+    """Replace known_auth in one rename so no reader, and no interrupted write, sees a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # mkstemp creates the file 0600, so the credential fingerprints are never briefly world-readable.
+    fd, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as temp_file:
+            temp_file.write(json.dumps(state, indent=2) + "\n")
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, path)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 def pending_codex_owner_repair(
@@ -542,9 +566,7 @@ def write_known_auth_state(
         "state_source": state_source,
     }
     payload["sources"][source] = source_payload
-    known_auth_path.parent.mkdir(parents=True, exist_ok=True)
-    known_auth_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    known_auth_path.chmod(0o600)
+    persist_known_auth_state(known_auth_path, payload)
     return payload["sources"][source]
 
 
@@ -1862,9 +1884,7 @@ def adopt_hub_token_identity(
     if all(entry.get(key) == value for key, value in bound.items()):
         return False
     state.setdefault("sources", {})["claude"] = {**entry, **bound, "observed_at": iso_now()}
-    known_auth_path.parent.mkdir(parents=True, exist_ok=True)
-    known_auth_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    known_auth_path.chmod(0o600)
+    persist_known_auth_state(known_auth_path, state)
     return True
 
 
@@ -3924,9 +3944,7 @@ def set_known_auth_state_source(source: str, known_auth_path: Path, state_source
         return False
     source_state["state_source"] = state_source
     state["sources"][source] = source_state
-    known_auth_path.parent.mkdir(parents=True, exist_ok=True)
-    known_auth_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    known_auth_path.chmod(0o600)
+    persist_known_auth_state(known_auth_path, state)
     return True
 
 
@@ -3945,9 +3963,7 @@ def set_known_codex_refresh_handoff(
     else:
         source_state.pop("refresh_handoff_account_id", None)
     state["sources"]["codex"] = source_state
-    known_auth_path.parent.mkdir(parents=True, exist_ok=True)
-    known_auth_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-    known_auth_path.chmod(0o600)
+    persist_known_auth_state(known_auth_path, state)
     return True
 
 
