@@ -64,7 +64,7 @@
 
 ### Storage — CLI lane vs desktop-app lane (two lanes, like Claude — see [§7](#7-claude-desktop-vs-the-cli))
 - **CLI/pool lane:** `~/.codex/auth.json`. Shape: `{ "tokens": { access_token, refresh_token, id_token, account_id }, "last_refresh": <iso> }`. The Codex CLI can self-refresh during use; the quota guard also probes, uploads, and replaces this file when weekly quota is low or the auth is invalid.
-- **Desktop-app lane (`Codex.app`):** the standalone Codex desktop app manages its own local state and can hold the current RT/AT generation in memory. A local account or RT/AT generation change is treated as proof that the app-server moved to the new generation, so the previous Hub handoff can be completed without stopping it. If the generation did not change, the guard requires a fresh explicit idle snapshot before a managed restart or exact unmanaged-listener retirement; it never launches `codex login`.
+- **Desktop-app lane (`Codex.app`):** the standalone Codex desktop app manages its own local state and can hold the current RT/AT generation in memory. The hub never refreshes a pooled Codex RT before its AT expires ([§3 refresh timing](#superseded-2026-11-07)), so the app's own rotation is not raced by the hub. The client guard's restart logic is unchanged until the separate client plan ships; it never launches `codex login`.
 
 ### The two JWTs (critical, easy to get wrong)
 - **`access_token`** — a JWT with `exp` **~10 days**. This is the *real* access-token lifetime and what the API uses.
@@ -670,15 +670,20 @@ exchanged for anything — but that it still *exists* somewhere that will presen
 (one canonical entry per account, serialized worker runs) rather than trying to out-race the other
 holder.
 
-> **Superseded 2026-09-15 — the upload no longer rotates at all.** A full-RT codex upload is now a
-> **custody transfer, not permission to spend the grant**: the hub stores it with
-> `refresh_handoff_state:"pending"`, returns `local_auth_untouched:true`, and the guard strips its
-> disk RT without a refresh ever happening. The rotation is deferred until the app-server is known to
-> have moved on — a fresh `idle` snapshot, or a changed local RT/AT generation, which is itself proof
-> the app-server adopted the new generation and lets the *previous* account's handoff complete without
-> stopping it (`c18c626`, `367a0a8`, `2a04844`; [§1](#1-codex-auth) storage lanes,
-> [SYSTEM_DESIGN §9](SYSTEM_DESIGN.md)).
+<a id="superseded-2026-11-07"></a>
+> **Superseded 2026-11-07 — the hub refreshes Codex only after the AT expired.** The 2026-09-15
+> `refresh_handoff_state:"pending"` mechanism is removed. A full-RT Codex upload is stored without any
+> hub refresh and returns `local_auth_untouched:true`; the hub spends a pooled Codex RT only after the
+> pooled AT has expired (`hubRefreshDue`, `lib/refresh-timing.js`). The worker probes Codex with the RT
+> stripped, `refresh_current` and the worker refresh only expired entries, and the id_token
+> precautionary refresh no longer exists. A live holder renews hourly and re-uploads every 15 minutes,
+> so the pooled blob is replaced long before expiry; an expired AT means the holder is gone. Residual
+> risk: a live holder whose guard stopped uploading leaves a stale pooled RT, and the first hub refresh
+> then revokes the family (the owner re-logs in). The hub ignores `defer_codex_refresh`, which the
+> Python client still sends until the separate client plan ships ([SYSTEM_DESIGN §3.5](SYSTEM_DESIGN.md)).
 >
+> The paragraphs below describe the removed 2026-09-15 handoff and its measurements; they are kept as history.
+
 > This attacks point 2 above at its root: with no rotation on upload, there is no superseded `RT_n`
 > for a second custodian to be orphaned on. Points 1 and 3 are untouched — a machine without the guard
 > still holds whatever it holds, and a fresh `codex login` still mints a different grant.
@@ -858,8 +863,7 @@ was ended. Read it carefully:
 The script selects tokens with care because "the latest report says refused" is not "the stored token
 was refused": `mergeLatestReport` keeps a rejection sticky, so it outlives the token it described.
 `hr@` and `projects@` were re-logged-in, uploaded and `pending` beside a report still saying refused;
-presenting either would have rotated a live token and discarded the new one. It requires the entry not
-to be pending and the refusal to postdate the stored blob. (Its first run also used a
+presenting either would have rotated a live token and discarded the new one. It requires the refusal to postdate the stored blob. (Its first run also used a
 `startsWith("rt.1.")` test for the AT-only placeholder — but a real refresh token begins `rt.1.` too, so
 it skipped all five and tested nothing; it now uses `isStrippedRefreshToken`.)
 
@@ -1015,7 +1019,7 @@ mark every pre-2.4.0 machine as broken and bury the ones that are.
 | **Deferred into an outage** | `refresh_current` declines a *different* account so a healthy machine is never swapped onto a borrowed credential — its comment justifies this with "its AT still has life". Routing a rejected AT-only token into `refresh_current` made that premise false: the hub could not refresh the dead entry in place, the guard declined the borrowed one, and every cycle deferred identically. Measured 2026-08-29: near-expiry fired correctly at T-20 min, nothing refreshed, the token died at 00:19 and the machine sat on a **401 for 80 minutes** before anything escalated — then briefly installed a pool credential that had itself expired 733 h earlier | `current_auth_cannot_wait` breaks the deferral when the token was refused or has under one guard cycle (15 min) of life left. A borrowed credential beats going dark; the churn guard still holds while the token is merely near expiry |
 | **A second grant kept re-minting** | The strip filtered on the hub's `client_id`, but the same account carried another OAuth grant (`a473d7bb`, scopes `user:inference user:profile user:sessions:claude_code`) whose refresh token was never touched. Claude.app used it to re-mint a full 30-day credential within minutes of every strip — 9-10 rotations in two hours — and each rotation revoked the access token the hub was serving to borrowers. Restarting the app only cleared the in-memory copy; the other grant on disk brought it straight back | Membership is now the **capability**, not the id: `claude_cache_entry_can_mint_inference` selects the hub's client plus any grant carrying `user:inference`. Measured after the change: **0 re-mints and 0 rotations across 60 samples** spanning a full guard cycle. Grants with no inference scope belong to other desktop features and are deliberately spared |
 | **A slow CLI call lost the whole run** | `claude auth status` is slow cold and fast warm — 10.66s then 1.43s then 0.57s, measured back to back — and occasionally exceeds any fixed ceiling; raising the timeout 10s → 30s still lost. `--text` had no timeout handling at all, so it raised out of `probe_claude` as an opaque `claude probe failed`, discarding the answer the first call had already given. Either way the guard reports `probe_unavailable`, makes no rotation decision, and the account's quota shows **stale** on the dashboard | `run_claude_auth_status_command` retries once — the warm path has never been slow — and a `--text` timeout now degrades to the existing `claude auth email unavailable` route instead of exploding |
-| **Verifying an upload started the loop it was meant to guard against** | `/api/auth/upload` proved every uploaded credential by refreshing it. That revokes the access tokens already issued for the grant, so each upload killed the uploader's own token; the desktop app re-minted from its session key, the guard uploaded that, and the new refresh token needed verifying — ten rotations a day, each one revoking the pooled token borrowers were holding | Claude uploads are verified by **probing** the access token (`probeClaudeAccessToken`), which consumes nothing. Codex full-RT uploads now set `defer_codex_refresh:true`: the Hub stores the RT as a pending handoff and returns `local_auth_untouched`, so the local guard strips its disk RT without spending the grant. When a local RT/AT generation changes, the previous account's pending handoff is completed without restarting the app-server; the new generation remains pending until its own safe handoff. |
+| **Verifying an upload started the loop it was meant to guard against** | `/api/auth/upload` proved every uploaded credential by refreshing it. That revokes the access tokens already issued for the grant, so each upload killed the uploader's own token; the desktop app re-minted from its session key, the guard uploaded that, and the new refresh token needed verifying — ten rotations a day, each one revoking the pooled token borrowers were holding | Claude uploads are verified by **probing** the access token (`probeClaudeAccessToken`), which consumes nothing. Codex full-RT uploads are stored without any hub refresh and return `local_auth_untouched`, so the local guard strips its disk RT without spending the grant; the hub refreshes a pooled Codex RT only after the AT expired (2026-11-07; the interim `defer_codex_refresh` handoff is removed and the flag is ignored) |
 | **A month-dead credential came back as `ok`** | The sticky-rejection rule lived inside one merge branch and read the marker off the PREVIOUS report, so it only held while consecutive reports carried it. One report that neither rejects nor clears — a skipped worker probe, say — erased the evidence, and the next client `ok` sailed past. `claude-qpt0311@uw.edu` returned to `status: ok` on 2026-08-31 with a pooled access token **782 hours expired**, re-entering rotation and resetting its owner's invalidation clock | The verdict is carried at the **outer edge** of `mergeLatestReport`, after whichever branch ran, and the evidence is re-attached each time so the next merge can still see it. Neutral reports can no longer break the chain; only a verified upload or a successful central refresh lifts it |
 | **Strip only cosmetic** | The strip rewrote the single highest-scored token-cache entry; sibling entries for the same client id kept real RTs, and a write returning `True` was taken as proof | `strip_claude_token_cache_refresh_tokens` strips **every** hub-client entry; `claude_stores_with_real_refresh_token` read-back gates the `fetched_from_auth_pool` claim and reports `strip_not_sticking` |
 | **Healthy account swapped to a borrowed one** | In `refresh_current` mode (healthy, just needs an AT) the hub fell through to a *different* account when it couldn't refresh in place; the guard installed it → churn + "switched to X" toasts | Guard **declines a different-account replacement in `refresh_current` mode** (`kept_current_refresh_deferred`) — only same-account refreshes are accepted; genuinely quota-low/dead accounts still fail over via the `source_needs_replacement` path |
@@ -1104,11 +1108,10 @@ while leaving desktop-app state and unmanaged process lifecycle alone.
 | **Codex CLI / pool** | `~/.codex/auth.json` | **OAuth** (access_token + rotating refresh_token) | Codex CLI **and the quota guard** |
 | **Codex.app** | `~/Library/Application Support/Codex/{Cookies, Local/Session Storage}`, encrypted by keychain `Codex Safe Storage` | app web session — separate from `auth.json` | `Codex.app` only |
 
-A running desktop app owns its own state. A changed local Codex account or RT/AT generation is treated
-as proof that the app-server moved to the new generation, so the guard completes the previous account's
-pending Hub handoff without stopping it. When the generation does not change, the guard requires a
-fresh explicit idle snapshot before a managed restart or exact unmanaged-listener retirement; active,
-unknown, stale, or missing activity evidence never authorizes a stop.
+A running desktop app owns its own state. The hub no longer keeps a pending handoff for it: the hub
+touches a pooled Codex RT only after its AT expired. The client guard's restart logic (fresh explicit
+idle snapshot before a managed restart or exact unmanaged-listener retirement) stays until the separate
+client plan ships; active, unknown, stale, or missing activity evidence never authorizes a stop.
 
 **The Desktop *UI cookie* is independent of the CLI OAuth** (verified):
 - Moving Desktop's `Local Storage`/leveldb aside and relaunching did **not** log Desktop out → the
@@ -1165,8 +1168,7 @@ PID 20350  /Applications/Claude.app/Contents/MacOS/Claude       (observed up 1d3
 So Claude.app is the claude-side counterpart of codex's app-server daemon. Codex exposes
 `codex app-server daemon restart`, but Desktop-owned app-servers are not necessarily registered with
 that daemon. The quota guard therefore treats a changed local Codex RT/AT generation as proof that
-the app-server has moved to the new account and completes the previous Hub handoff without stopping
-it. If the generation did not change, it requires a fresh explicit idle snapshot, then uses the
+the app-server has moved to the new account (client-side only; the hub keeps no handoff state). If the generation did not change, it requires a fresh explicit idle snapshot, then uses the
 managed restart or retires only exact unmanaged listener PIDs. Claude still has no equivalent daemon
 restart, so its separate idle restart policy remains unchanged.
 
