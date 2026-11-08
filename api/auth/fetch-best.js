@@ -21,8 +21,8 @@ import { invalidatedEntryToRepairAuth, stripRefreshToken } from "../../lib/fetch
 import { NOTICE_REPEAT_SECONDS, PREMIUM_RATIO_WINDOW_DAYS, evaluateFetchPolicy } from "../../lib/premium-ratio.js";
 import { SCARCITY_BURN_WINDOW_DAYS, fairShareFromState } from "../../lib/pool-scarcity.js";
 import { decryptAuthJson } from "../../lib/auth-pool.js";
-import { accessTokenMsUntilExpiry, codexIdTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
-import { isRefreshHandoffPending } from "../../lib/refresh-handoff.js";
+import { accessTokenMsUntilExpiry, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
+import { hubRefreshDue } from "../../lib/refresh-timing.js";
 
 // The client trips refresh_current at T-20min. Anything at or below this is not worth serving back
 // to it — by the time it installs the copy, the copy is expiring too. Sized above the client's
@@ -73,26 +73,6 @@ async function refreshCanonicalPoolAuth(authJson, entryMeta, source) {
       });
     },
   });
-}
-
-async function ensureCodexIdTokenFresh(authJson, entryMeta) {
-  if (isRefreshHandoffPending(entryMeta)) {
-    // The pooled RT is intentionally dormant until the uploader proves every local holder has
-    // stopped. A stale id_token is less harmful than revoking an active local task's AT.
-    return { authJson, deadRefreshToken: false };
-  }
-  const idMsLeft = codexIdTokenMsUntilExpiry(authJson);
-  const atMsLeft = accessTokenMsUntilExpiry(authJson, "codex");
-  const idStale = idMsLeft !== null && idMsLeft <= 5 * 60 * 1000;
-  const atFresh = atMsLeft !== null && atMsLeft > 5 * 60 * 1000;
-  if (!idStale || !atFresh) {
-    return { authJson, deadRefreshToken: false };
-  }
-  const refreshed = await refreshCanonicalPoolAuth(authJson, entryMeta, "codex");
-  if (refreshed.ok) {
-    return { authJson: refreshed.auth_json, deadRefreshToken: false };
-  }
-  return { authJson, deadRefreshToken: Boolean(refreshed.auth_rejected) };
 }
 
 export default async function handler(req, res) {
@@ -265,12 +245,6 @@ export default async function handler(req, res) {
     if (sameEntry) {
       let sameAuthJson = await decryptAuthJson(sameEntry);
       let idTokenRefreshDead = false;
-      const refreshBlocked = isRefreshHandoffPending(sameEntry);
-      if (source === "codex") {
-        const ensured = await ensureCodexIdTokenFresh(sameAuthJson, sameEntry);
-        sameAuthJson = ensured.authJson;
-        idTokenRefreshDead = ensured.deadRefreshToken;
-      }
       // The client only asks for refresh_current when its OWN access token is nearly gone, so
       // serving the pooled copy as-is is only useful if that copy is meaningfully fresher. It
       // usually is not: both sides hold the same token until the worker happens to rotate it. This
@@ -281,7 +255,7 @@ export default async function handler(req, res) {
       // So refresh HERE when the pooled copy cannot outlive the client's need. The hub holds the
       // real refresh token; this is precisely the moment it exists for.
       let msLeft = accessTokenMsUntilExpiry(sameAuthJson, source);
-      if (!refreshBlocked && !idTokenRefreshDead && msLeft !== null && msLeft <= REFRESH_CURRENT_MIN_LIFETIME_MS) {
+      if (!idTokenRefreshDead && msLeft !== null && hubRefreshDue(source, msLeft, REFRESH_CURRENT_MIN_LIFETIME_MS)) {
         const refreshed = await refreshCanonicalPoolAuth(sameAuthJson, sameEntry, source);
         if (refreshed.ok) {
           sameAuthJson = refreshed.auth_json;
@@ -429,14 +403,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  // A freshly-selected entry can just as easily have a stale id_token as the one being refreshed
-  // above — nothing serves this account until now, so nothing has kept its id_token fresh either.
-  // Best-effort: still serve what we have if the real RT turns out to be dead here (a borrowed,
-  // near-expiry-id_token credential beats leaving the caller with nothing).
-  let entryAuthJson = entry.auth_json;
-  if (entry.source === "codex") {
-    entryAuthJson = (await ensureCodexIdTokenFresh(entryAuthJson, entry)).authJson;
-  }
+  const entryAuthJson = entry.auth_json;
 
   // When disabled_refresh_token is on, strip the refresh token so the borrower can use the access
   // token but cannot rotate the shared refresh token (the hub refreshes centrally).

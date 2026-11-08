@@ -23,7 +23,7 @@ process.env.POOL_FAIR_SHARE_AT = "2000-01-01T00:00:00.000Z";
 // overrides and freeze the gate/cooldown dates before the tests could move them.
 const { MIN_REPORTER_CLIENT_VERSION, PREMIUM_RATIO_COOLDOWN_MINUTES } = await import("../lib/premium-ratio.js");
 const db = await import("../lib/db.js");
-const { decryptAuthJson } = await import("../lib/auth-pool.js");
+const { decryptAuthJson, encryptAuthJson } = await import("../lib/auth-pool.js");
 const { accessTokenMsUntilExpiry } = await import("../lib/token-refresh.js");
 const { default: handler } = await import("../api/auth/fetch-best.js");
 const { createClient } = await import("@libsql/client");
@@ -570,8 +570,8 @@ test("an owner renewal that cannot be served in place is rationed as the switch 
   const { token } = await db.issueApiToken(email);
   await seedUsage(email, "gpt-5.6-sol", "batch-owner-fallthrough", { heavy: true });
   await seedContribution(email, accountId);
-  // An access token that is already dead, on a grant the hub may not refresh yet (custody
-  // handoff pending): the pooled copy cannot be served, so selection would hand out somebody else's.
+  // An access token that is already dead on a grant whose refresh token is the AT-only placeholder:
+  // the hub cannot renew it, so the pooled copy cannot be served
   const expired = `h.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) - 3600 })).toString("base64url")}.s`;
   const entry = await db.authPoolEntry("codex", accountId);
   const authJson = JSON.parse(await decryptAuthJson(entry));
@@ -580,7 +580,15 @@ test("an owner renewal that cannot be served in place is rationed as the switch 
   authJson.last_refresh = new Date(Date.now() + 60_000).toISOString();
   await db.upsertAuthPoolEntry({
     source: "codex", auth_json: JSON.stringify(authJson), uploader_email: email,
-    reporter_name: `${email}@mac`, hostname: "mac", refresh_handoff_state: "pending",
+    reporter_name: `${email}@mac`, hostname: "mac",
+  });
+  // The upload path refuses to replace a real refresh token with the placeholder, so write the
+  // placeholder straight into the stored blob.
+  authJson.tokens.refresh_token = "rt.1." + "A".repeat(32);
+  const sealed = encryptAuthJson(JSON.stringify(authJson));
+  await scarcityClient.execute({
+    sql: `UPDATE auth_pool_entries SET encrypted_auth_json = ?, iv = ?, auth_tag = ? WHERE source = 'codex' AND account_id = ?`,
+    args: [sealed.encrypted_auth_json, sealed.iv, sealed.auth_tag, accountId],
   });
   await seedScarcePool(true);
 

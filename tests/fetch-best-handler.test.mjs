@@ -315,10 +315,8 @@ test("fetch-best serves a replacement but prioritizes the requester's own failed
     // in lib/auth-pool.js), not the raw tokens.account_id field — keep them matching here.
     const accountId = "borrowed@stardust.ai";
 
-    // access_token has a real ~10-day exp (far in the future); id_token — what the codex CLI/app
-    // actually key their own self-refresh trigger off — already expired 5 minutes ago. This is
-    // exactly what quota_guard observed: "quota reported | replacement best_auth_already_installed"
-    // while the local CLI/app kept hitting "400 Bad Request: Invalid refresh token" every ~40-60min.
+    // The pooled access_token expired 5 minutes ago: the holder is gone, so the hub may spend the
+    // pooled refresh token (lib/refresh-timing.js). An id_token that is merely stale does not.
     await db.upsertAuthPoolEntry({
       source: "codex",
       auth_json: JSON.stringify({
@@ -326,7 +324,7 @@ test("fetch-best serves a replacement but prioritizes the requester's own failed
         tokens: {
           account_id: "borrowed-provider",
           id_token: jwt({ email: accountId, exp: Math.floor((now - 5 * 60 * 1000) / 1000) }),
-          access_token: jwt({ exp: Math.floor((now + 10 * 24 * 60 * 60 * 1000) / 1000) }),
+          access_token: jwt({ exp: Math.floor((now - 5 * 60 * 1000) / 1000) }),
           refresh_token: "rt.1.REAL-" + accountId,
         },
       }),
@@ -365,7 +363,7 @@ test("fetch-best serves a replacement but prioritizes the requester's own failed
       await handler(req, res);
       const payload = JSON.parse(res.body);
 
-      assert.equal(refreshCalled, true, "must call OpenAI's refresh endpoint when id_token is stale, even though access_token is fresh");
+      assert.equal(refreshCalled, true, "must call OpenAI's refresh endpoint once the pooled access_token has expired");
       assert.equal(res.statusCode, 200);
       assert.equal(payload.refreshed_current, true);
       assert.equal(payload.replacement.account_id, accountId, "must refresh the SAME account, not switch to a different one");
@@ -382,7 +380,8 @@ test("fetch-best serves a replacement but prioritizes the requester's own failed
       globalThis.fetch = originalFetch;
     }
 
-    // Phase 4: a caller freshly switched onto a pool account (never held it before, so
+    // Phase 4 (the hub no longer refreshes a stale id_token on a live access_token; this pins that
+    // it neither refreshes nor rotates): a caller freshly switched onto a pool account (never held it before, so
     // refresh_current is not in play) can be handed an entry whose id_token went stale long ago
     // simply because nothing had asked for it since — the account's access_token can still look
     // fine for days. Reproduces the case measured live: quota_guard switched from a
@@ -457,16 +456,16 @@ test("fetch-best serves a replacement but prioritizes the requester's own failed
         await handler(switchedReq, switchedRes);
         const switchedPayload = JSON.parse(switchedRes.body);
 
-        assert.equal(refreshCalled2, true, "must refresh id_token even on a freshly-switched-to account");
+        assert.equal(refreshCalled2, false, "a stale id_token on a live access_token must not spend the pooled refresh token");
         assert.equal(switchedRes.statusCode, 200);
         assert.equal(switchedPayload.replacement.account_id, switchedAccountId);
 
         const switchedServed = JSON.parse(switchedPayload.replacement.auth_json);
-        assert.ok(jwtExp(switchedServed.tokens.id_token) * 1000 > now, "served id_token must be freshly minted, not the stale original");
+        assert.ok(jwtExp(switchedServed.tokens.id_token) * 1000 < now, "the stale id_token is served as-is");
 
         const switchedPersistedEntry = await db.authPoolEntry("codex", switchedAccountId);
         const switchedPersisted = JSON.parse(await decryptAuthJson(switchedPersistedEntry));
-        assert.ok(jwtExp(switchedPersisted.tokens.id_token) * 1000 > now, "the pool entry itself must be persisted with the refreshed id_token");
+        assert.equal(switchedPersisted.tokens.refresh_token, "rt.1.REAL-" + switchedAccountId, "the pooled refresh token is not rotated");
       } finally {
         globalThis.fetch = originalFetch2;
       }
