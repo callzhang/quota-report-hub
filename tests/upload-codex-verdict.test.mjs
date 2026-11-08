@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 // api/auth/upload.js binds lib/db.js once per process, so every test in this file shares one
 // database and keeps to its own account.
-const tempDir = mkdtempSync(join(tmpdir(), "qrh-upload-codex-handoff-verdict-"));
+const tempDir = mkdtempSync(join(tmpdir(), "qrh-upload-codex-verdict-"));
 process.env.TURSO_DATABASE_URL = `file:${join(tempDir, "upload.db")}`;
 process.env.TURSO_AUTH_TOKEN = "test-token";
 process.env.AUTH_POOL_ENCRYPTION_KEY = "0".repeat(64);
@@ -103,7 +103,6 @@ function deferredUpload({ accountId, accessToken, refreshToken, probedAccessToke
   return {
     source: "codex",
     auth_json: codexAuthJson({ accountId, email: accountId, accessToken, refreshToken }),
-    defer_codex_refresh: true,
     reporter_name: "derek@mac",
     hostname: "mac",
     quota_payload: {
@@ -127,7 +126,7 @@ test("a deferred codex upload of a new refresh token ends the replaced token's v
   }));
 
   assert.equal(res.statusCode, 200, res.body);
-  assert.equal(JSON.parse(res.body).refresh_handoff_state, "pending", "custody stays deferred");
+  assert.equal(JSON.parse(res.body).local_auth_untouched, true, "a Codex upload is never refreshed by the hub");
   const latest = await db.authPoolQuotaLatestForEntry({ source: "codex", accountId });
   assert.equal(refreshValidityFromReport(latest), "unverified", "nobody refreshed the new token; the report does not claim it");
   assert.equal(await openVerdict(accountId), false, "the owner is no longer told to re-login");

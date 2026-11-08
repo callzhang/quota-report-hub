@@ -1,25 +1,19 @@
 import { authPoolConfigured } from "../../lib/company-auth.js";
 import { authenticateApiRequest, sendUnauthorized, withTokenUpgrade } from "../../lib/api-auth.js";
 import {
-  claimAuthPoolRefreshLease,
   authPoolEntry,
   dbConfigured,
   getFeatureFlag,
-  recordAuthPoolRefreshAttempt,
-  releaseAuthPoolRefreshLease,
-  setAuthPoolRefreshHandoff,
   uploadExcludedAccountIds,
   upsertAuthPoolEntry,
   upsertAuthPoolQuota,
 } from "../../lib/db.js";
 import { decryptAuthJson, deriveAuthPoolEntry } from "../../lib/auth-pool.js";
 import { bundledProbeWitnessesAccessToken, uploadSupersedesRefreshVerdict } from "../../lib/auth-status.js";
-import { refreshSerializedAuthPoolEntry } from "../../lib/auth-pool-refresh.js";
 import { codexClientPayloadAccepted, ingestClientQuota } from "../../lib/quota-ingest.js";
-import { accessTokenFingerprint, isStrippedRefreshToken, stripRefreshToken } from "../../lib/fetch-best.js";
-import { probeClaudeAccessToken, refreshTokenFingerprint, refreshTokenFromAuthBlob, verifyAndRefreshAuthBlob } from "../../lib/token-refresh.js";
+import { accessTokenFingerprint, isStrippedRefreshToken } from "../../lib/fetch-best.js";
+import { probeClaudeAccessToken, refreshTokenFingerprint, refreshTokenFromAuthBlob } from "../../lib/token-refresh.js";
 import { readJsonBody } from "../../lib/http.js";
-import { isRefreshHandoffPending, requestedRefreshHandoffState } from "../../lib/refresh-handoff.js";
 
 // This write restates the SAME client observation that was just ingested (plus the refresh
 // bookkeeping). Omitting exhausted_until here would clear the just-stored deadline under the
@@ -94,34 +88,6 @@ export default async function handler(req, res) {
 
   const source = body?.source ? String(body.source) : null;
 
-  // Completion is deliberately a separate, auth-blob-free acknowledgement. At this point the
-  // guard has stripped disk state and retired the old local app-server, so it cannot upload the
-  // real RT again. The uploader identity is the authority boundary: another Hub member cannot
-  // unfreeze an account whose old RT may still live on this machine.
-  if (body?.complete_codex_refresh_handoff === true) {
-    const accountId = body?.account_id ? String(body.account_id) : null;
-    if (source !== "codex" || !accountId) {
-      res.statusCode = 400;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.end(JSON.stringify({ ok: false, error: "codex account_id is required to complete a refresh handoff" }));
-      return;
-    }
-    const completed = await setAuthPoolRefreshHandoff({
-      source,
-      accountId,
-      uploaderEmail: authContext.email,
-      state: null,
-    });
-    res.statusCode = completed.updated ? 200 : 403;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify(withTokenUpgrade({
-      ok: completed.updated,
-      refresh_handoff_state: completed.updated ? null : "pending",
-      error: completed.updated ? undefined : "refresh_handoff_not_owned",
-    }, authContext)));
-    return;
-  }
-
   if (!body?.auth_json) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -145,14 +111,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const requestedHandoffState = requestedRefreshHandoffState({
-    source,
-    deferCodexRefresh: body?.defer_codex_refresh === true,
-  });
-  const existingEntry = source === "codex" && !requestedHandoffState
-    ? await authPoolEntry(source, deriveAuthPoolEntry(source, body.auth_json, body).account_id)
-    : null;
-  const refreshHandoffPending = requestedHandoffState === "pending" || isRefreshHandoffPending(existingEntry);
+  // A Codex upload is stored, never refreshed: the hub spends a pooled Codex RT only after its AT
+  // has expired (lib/refresh-timing.js). Rotating here would orphan the RT other holders still present.
+  const codexUpload = source === "codex";
 
   // Claude uploads are verified by PROBING the access token, not by spending the refresh token.
   //
@@ -186,7 +147,7 @@ export default async function handler(req, res) {
   // token: claude by the probe above, a deferred codex upload by the probe the guard bundled with it.
   const accessTokenLive = probeClaude
     ? Boolean(accessProbe?.ok)
-    : refreshHandoffPending && bundledProbeWitnessesAccessToken({
+    : codexUpload && bundledProbeWitnessesAccessToken({
       quotaPayload: body.quota_payload,
       uploadedAccessTokenFingerprint: accessTokenFingerprint(body.auth_json, source),
     });
@@ -203,67 +164,19 @@ export default async function handler(req, res) {
     }
   }
   let entry = null;
-  const refreshVerification = !refreshHandoffPending && !probeClaude && source === "codex"
-    ? await refreshSerializedAuthPoolEntry({
-        source,
-        accountId: deriveAuthPoolEntry(source, body.auth_json, body).account_id,
-        authJson: body.auth_json,
-        claimLease: claimAuthPoolRefreshLease,
-        releaseLease: releaseAuthPoolRefreshLease,
-        refreshAuthBlob: verifyAndRefreshAuthBlob,
-        recordAttempt: recordAuthPoolRefreshAttempt,
-        path: "upload",
-        // Keep the lease until the rotated RT has become canonical. Releasing before this write
-        // would admit a second request holding the old generation into the provider endpoint.
-        persistRefreshedAuth: async (refreshedAuthJson) => {
-          entry = await upsertAuthPoolEntry({
-            ...body,
-            source,
-            auth_json: refreshedAuthJson,
-            uploader_email: authContext.email,
-          });
-        },
-      })
-    : { ok: false, attempted: false, reason: refreshHandoffPending ? "local_refresh_handoff_pending" : probeClaude ? "claude_probed_not_refreshed" : "unsupported_source" };
+  const refreshVerification = {
+    ok: false,
+    attempted: false,
+    reason: codexUpload ? "codex_upload_not_refreshed" : probeClaude ? "claude_probed_not_refreshed" : "unsupported_source",
+  };
 
-  if (source === "codex" && !refreshVerification.ok && !refreshHandoffPending) {
-    const busyOrSuperseded = ["refresh_in_progress", "refresh_superseded"].includes(refreshVerification.reason);
-    res.statusCode = busyOrSuperseded ? 409 : refreshVerification.auth_rejected ? 422 : 503;
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.end(JSON.stringify({
-      ok: false,
-      error: busyOrSuperseded ? "refresh_generation_changed" : refreshVerification.auth_rejected ? "refresh_token_rejected" : "refresh_verification_failed",
-      reason: refreshVerification.error || refreshVerification.reason,
-      status: refreshVerification.status ?? null,
-    }));
-    return;
-  }
-
-  const authJson = refreshVerification.ok ? refreshVerification.auth_json : body.auth_json;
   if (!entry) {
     entry = await upsertAuthPoolEntry({
       ...body,
       source,
-      auth_json: authJson,
-      refresh_handoff_state: requestedHandoffState,
+      auth_json: body.auth_json,
       uploader_email: authContext.email,
     });
-  }
-
-  if (refreshHandoffPending) {
-    const handoff = await setAuthPoolRefreshHandoff({
-      source,
-      accountId: entry.account_id,
-      uploaderEmail: authContext.email,
-      state: "pending",
-    });
-    if (!handoff.updated) {
-      res.statusCode = 403;
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.end(JSON.stringify({ ok: false, error: "refresh_handoff_not_owned" }));
-      return;
-    }
-    entry = { ...entry, refresh_handoff_state: "pending" };
   }
 
   // If the client bundled its freshly-probed quota with the upload, ingest it in the same request
@@ -281,16 +194,7 @@ export default async function handler(req, res) {
     }
   }
 
-  if (refreshVerification.ok) {
-    await upsertAuthPoolQuota(
-      refreshVerificationQuotaReport({
-        source,
-        entry,
-        quotaPayload: body.quota_payload,
-        reporterEmail: authContext.email,
-      })
-    );
-  } else if (uploadSupersedesRefreshVerdict({
+  if (uploadSupersedesRefreshVerdict({
     accessTokenLive,
     deduplicated: Boolean(entry?.deduplicated),
     incomingHasRealRefreshToken: !isStrippedRefreshToken(body.auth_json, source),
@@ -314,24 +218,6 @@ export default async function handler(req, res) {
   // (Phase 4): strip its own refresh token once the hub holds it.
   const disabledRefreshToken = await getFeatureFlag("disabled_refresh_token", false);
 
-  // Hand the refreshed access token back to the uploader.
-  //
-  // Refreshing here rotates the grant, and this provider REVOKES every access token it previously
-  // issued for that grant (measured: a live AT went 200 -> 401 "OAuth access token has been
-  // revoked" within one guard cycle of an upload). So the moment we refresh, the uploader's own
-  // access token is dead. Before this, the response carried metadata only: the client then stripped
-  // its refresh token and was left holding a revoked AT plus a placeholder RT — unable to work and
-  // unable to recover. Returning the AT-only blob lets it install a working token in the same cycle
-  // as the strip. The refresh token is stripped out: the hub stays the sole refresher.
-  let refreshedAuthJson = null;
-  if (refreshVerification.ok && disabledRefreshToken) {
-    try {
-      refreshedAuthJson = stripRefreshToken(authJson, source);
-    } catch (error) {
-      console.error("upload: could not build AT-only blob for uploader:", error?.message || error);
-    }
-  }
-
   res.statusCode = 200;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(withTokenUpgrade({
@@ -339,14 +225,12 @@ export default async function handler(req, res) {
     entry,
     disabled_refresh_token: disabledRefreshToken,
     quota_ingested: quotaIngested,
-    refresh_validity: refreshHandoffPending ? "handoff_pending" : refreshVerification.ok ? "confirmed" : accessProbe?.ok ? "access_token_live" : "unverified",
-    refreshed_auth_json: refreshedAuthJson,
+    refresh_validity: accessProbe?.ok ? "access_token_live" : "unverified",
     // "Your credential is untouched and still works, so you may go AT-only without waiting for a
     // replacement." The client's interlock refuses to strip unless it has a working token in hand;
     // when we refresh we owe it one, but when we only probe, the token it already holds IS the
     // working one. Without this the interlock would (correctly, on its old premise) keep the real
     // refresh token forever and AT-only mode would never engage.
-    local_auth_untouched: Boolean(refreshHandoffPending || (probeClaude && accessProbe?.ok)),
-    refresh_handoff_state: refreshHandoffPending ? "pending" : null,
+    local_auth_untouched: Boolean(codexUpload || (probeClaude && accessProbe?.ok)),
   }, authContext)));
 }
