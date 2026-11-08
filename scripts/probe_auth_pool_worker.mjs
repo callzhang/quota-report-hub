@@ -539,7 +539,7 @@ export async function processAuthPoolEntry(
       try {
         report =
           entry.source === "codex"
-            ? probeCodexAuthJsonImpl(authJsonText)
+            ? probeCodexAuthJsonImpl(stripRefreshToken(authJsonText, "codex"))
             : await probeClaudeAuthJsonImpl(authJsonText);
         report = {
           ...report,
