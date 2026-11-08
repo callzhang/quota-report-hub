@@ -27,15 +27,14 @@ import { refreshTokenAgeSeconds } from "../lib/auth-pool-refresh.js";
 // central_refresh verdict alone is not enough: mergeLatestReport keeps a rejection sticky, so it
 // outlives the token it was about. An owner who re-logs in and uploads leaves a fresh, live refresh
 // token beside a report that still says "refused" — hr@stardust.ai and projects@stardust.ai were
-// exactly that when this was written, both `pending`. Presenting such a token would rotate it and
-// lose the new one, destroying a working credential to answer a diagnostic question. So:
-//   - a `pending` entry is never selected (its RT has not been presented since the upload), and
-//   - the refusal must have been reported AFTER the current blob was stored.
+// exactly that when this was written. Presenting such a token would rotate it and
+// lose the new one, destroying a working credential to answer a diagnostic question. So
+// the refusal must have been reported AFTER the current blob was stored.
 export function isKnownRefused(report, entry) {
   if (report?.source !== "codex" || report?.usage_summary?.central_refresh?.auth_rejected !== true) {
     return false;
   }
-  if (!entry || entry.refresh_handoff_state === "pending") {
+  if (!entry) {
     return false;
   }
   const refusedAt = Date.parse(report.reported_at || "");
@@ -70,7 +69,7 @@ async function main() {
     const accountId = report.account_id;
     const entry = await authPoolEntry("codex", accountId);
     if (!isKnownRefused(report, entry)) {
-      const why = !entry ? "no pooled credential" : entry.refresh_handoff_state === "pending" ? "pending (its RT has not been presented since upload; the refusal on record is older)" : "refusal not newer than the stored blob";
+      const why = !entry ? "no pooled credential" : "refusal not newer than the stored blob";
       console.log(`  ${accountId}: skipped, ${why}`);
       continue;
     }

@@ -1564,7 +1564,7 @@
           return `
             <div class="health-row">
               <div>${sourceTag(source)}</div>
-              <div class="wrap"><strong>${latest.ok_count}/${latest.total}</strong> healthy${latest.skipped_count ? ` <span class="meta">· ${latest.skipped_count} not probed (refresh handoff pending)</span>` : ""}</div>
+              <div class="wrap"><strong>${latest.ok_count}/${latest.total}</strong> healthy${latest.skipped_count ? ` <span class="meta">· ${latest.skipped_count} not probed (skipped this cycle)</span>` : ""}</div>
               <div class="wrap">${latest.hard_dead_count} hard-dead · <span class="trend ${trendClass}">${trendLabel}</span> <span class="meta">/ ${series.length} runs</span></div>
               <div>${sparkline(deadSeries, trendClass === "good" ? "var(--green, #1a7f37)" : "var(--bad)")}</div>
               <div class="meta wrap">central refresh: ${crOk} ok · ${crRej} dead-RT</div>
