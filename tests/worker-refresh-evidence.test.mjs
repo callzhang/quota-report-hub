@@ -18,7 +18,7 @@ function blob({ lastRefresh = "2026-09-21T14:17:03.000Z" } = {}) {
   return JSON.stringify({
     tokens: {
       account_id: "acct",
-      access_token: jwt({ exp: Math.floor(NOW.getTime() / 1000) + 600 }),
+      access_token: jwt({ exp: Math.floor(NOW.getTime() / 1000) - 600 }),
       refresh_token: "rt-real-value",
       id_token: jwt({ email: "derek@stardust.ai" }),
     },

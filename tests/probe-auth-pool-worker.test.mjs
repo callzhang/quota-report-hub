@@ -23,37 +23,6 @@ async function loadWorkerModule() {
   }
 }
 
-test("processAuthPoolEntry does not decrypt, probe, or refresh a pending Codex handoff", async () => {
-  const { processAuthPoolEntry } = await loadWorkerModule();
-  const forbidden = () => {
-    throw new Error("pending handoff must not touch the credential");
-  };
-
-  const result = await processAuthPoolEntry(
-    {
-      source: "codex",
-      account_id: "acct-pending",
-      refresh_handoff_state: "pending",
-    },
-    {
-      decryptAuthJsonImpl: forbidden,
-      probeCodexAuthJsonImpl: forbidden,
-      refreshCodexTokenImpl: forbidden,
-      authPoolQuotaLatestForEntryImpl: forbidden,
-    },
-  );
-
-  assert.deepEqual(result, {
-    source: "codex",
-    account_id: "acct-pending",
-    status: "skipped",
-    error: null,
-    refreshed_auth_written: false,
-    refreshed_auth_result: null,
-    central_refresh: { attempted: false, reason: "local_refresh_handoff_pending" },
-  });
-});
-
 test("processAuthPoolEntry writes refreshed codex auth back to the pool", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const quotaReports = [];
@@ -544,12 +513,12 @@ test("processAuthPoolEntry probes when fresh client quota belongs to older auth 
   assert.equal(result.status, "ok");
 });
 
-test("processAuthPoolEntry centrally refreshes a near-expiry codex auth in disabled_refresh_token", async () => {
+test("processAuthPoolEntry centrally refreshes an expired codex auth in disabled_refresh_token", async () => {
   const { processAuthPoolEntry } = await loadWorkerModule();
   const authWrites = [];
   const now = new Date("2026-06-12T00:00:00Z");
-  // access_token JWT exp 30 min out -> inside the 1-hour refresh window.
-  const expSeconds = Math.floor(now.getTime() / 1000) + 30 * 60;
+  // access_token JWT exp 30 min ago -> Codex is refreshed by the hub only once the AT has expired.
+  const expSeconds = Math.floor(now.getTime() / 1000) - 30 * 60;
   const atPayload = Buffer.from(JSON.stringify({ exp: expSeconds })).toString("base64url");
   const expiringBlob = JSON.stringify({
     tokens: { access_token: `h.${atPayload}.s`, refresh_token: "REAL_RT", id_token: "OLD_ID", account_id: "acct-codex" },
@@ -1132,4 +1101,83 @@ test("processAuthPoolEntry records the decrypted token against its account every
     }
   );
   assert.deepEqual(recorded, [["claude", blob, "acct-claude"]]);
+});
+
+function fakeJwt(expSeconds) {
+  return `h.${Buffer.from(JSON.stringify({ exp: expSeconds })).toString("base64url")}.s`;
+}
+
+function codexBlob(expSeconds) {
+  return JSON.stringify({
+    tokens: { access_token: fakeJwt(expSeconds), refresh_token: "rt.1.REAL", id_token: fakeJwt(expSeconds), account_id: "acct" },
+    last_refresh: "2026-11-01T00:00:00Z",
+  });
+}
+
+test("the worker does not refresh a Codex entry whose access token has not expired", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const nowMs = Date.parse("2026-11-07T00:00:00Z");
+  let refreshed = false;
+  await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-fresh" },
+    {
+      nowImpl: () => new Date(nowMs),
+      authPoolQuotaLatestForEntryImpl: async () => null,
+      decryptAuthJsonImpl: async () => codexBlob(nowMs / 1000 + 5 * 60),
+      refreshCodexTokenImpl: async () => {
+        refreshed = true;
+        return { ok: false };
+      },
+      probeCodexAuthJsonImpl: () => ({ status: "ok", windows: {} }),
+      recordTokenFingerprintImpl: async () => {},
+      upsertAuthPoolQuotaImpl: async () => {},
+      atOnlyMode: true,
+    },
+  );
+  assert.equal(refreshed, false, "5 minutes of life left is not expiry");
+});
+
+test("the worker refreshes a Codex entry whose access token has expired", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const nowMs = Date.parse("2026-11-07T00:00:00Z");
+  let refreshed = false;
+  await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-expired" },
+    {
+      nowImpl: () => new Date(nowMs),
+      authPoolQuotaLatestForEntryImpl: async () => null,
+      decryptAuthJsonImpl: async () => codexBlob(nowMs / 1000 - 3600),
+      refreshCodexTokenImpl: async () => {
+        refreshed = true;
+        return { ok: false, auth_rejected: true };
+      },
+      probeCodexAuthJsonImpl: () => ({ status: "error", error: "x", windows: {} }),
+      recordTokenFingerprintImpl: async () => {},
+      upsertAuthPoolQuotaImpl: async () => {},
+      atOnlyMode: true,
+    },
+  );
+  assert.equal(refreshed, true);
+});
+
+test("the worker probes Codex with the refresh token stripped", async () => {
+  const { processAuthPoolEntry } = await loadWorkerModule();
+  const nowMs = Date.parse("2026-11-07T00:00:00Z");
+  let probedBlob = null;
+  await processAuthPoolEntry(
+    { source: "codex", account_id: "acct-probe" },
+    {
+      nowImpl: () => new Date(nowMs),
+      authPoolQuotaLatestForEntryImpl: async () => null,
+      decryptAuthJsonImpl: async () => codexBlob(nowMs / 1000 + 3 * 24 * 3600),
+      probeCodexAuthJsonImpl: (blob) => {
+        probedBlob = blob;
+        return { status: "ok", windows: {} };
+      },
+      recordTokenFingerprintImpl: async () => {},
+      upsertAuthPoolQuotaImpl: async () => {},
+    },
+  );
+  assert.ok(probedBlob, "the entry must be probed");
+  assert.notEqual(JSON.parse(probedBlob).tokens.refresh_token, "rt.1.REAL", "the probe must not hold the real RT");
 });

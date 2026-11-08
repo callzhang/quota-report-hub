@@ -25,7 +25,8 @@ import { probeAuthJson } from "../lib/auth-pool-probe.js";
 import { refreshClaudeToken, refreshCodexToken, applyRefreshToBlob, accessTokenMsUntilExpiry, claudeScopesFromAuthBlob, probeClaudeAccessToken } from "../lib/token-refresh.js";
 import { CLAUDE_INFERENCE_SCOPE_MISSING_ERROR, isHardAuthError, refreshValidityFromReport } from "../lib/auth-status.js";
 import { probeClaudeUsage } from "../lib/claude-usage.js";
-import { isRefreshHandoffPending } from "../lib/refresh-handoff.js";
+import { hubRefreshDue } from "../lib/refresh-timing.js";
+import { stripRefreshToken } from "../lib/fetch-best.js";
 
 // Proactively refresh an access token (claude OR codex) once it is within this window of expiry.
 // The cron nominally fires every ~15 min, but GitHub Actions can delay it; a 1-hour window keeps the
@@ -72,7 +73,7 @@ async function refreshEntryIfNeeded(
 ) {
   const now = nowImpl().getTime();
   const msLeft = accessTokenMsUntilExpiry(authJsonText, source, now);
-  if (!force && msLeft !== null && msLeft > REFRESH_THRESHOLD_MS) {
+  if (!force && !hubRefreshDue(source, msLeft, REFRESH_THRESHOLD_MS)) {
     return { authJsonText, result: { attempted: false } };
   }
   const refreshToken = refreshTokenFromBlob(authJsonText, source);
@@ -459,19 +460,6 @@ export async function processAuthPoolEntry(
     nowImpl = () => new Date(),
   } = {}
 ) {
-  if (isRefreshHandoffPending(entry)) {
-    // `codex exec` can self-refresh as part of a probe. While a local app-server may still own
-    // this RT generation, even probing would race the handoff and revoke live local ATs.
-    return {
-      source: entry.source,
-      account_id: entry.account_id,
-      status: "skipped",
-      error: null,
-      refreshed_auth_written: false,
-      refreshed_auth_result: null,
-      central_refresh: { attempted: false, reason: "local_refresh_handoff_pending" },
-    };
-  }
   const now = nowImpl();
   const previousReport = await authPoolQuotaLatestForEntryImpl({ source: entry.source, accountId: entry.account_id });
   const skipReason = probeSkipReason(entry, previousReport, now);
@@ -519,7 +507,7 @@ export async function processAuthPoolEntry(
     }
     report =
       entry.source === "codex"
-        ? probeCodexAuthJsonImpl(authJsonText)
+        ? probeCodexAuthJsonImpl(stripRefreshToken(authJsonText, "codex"))
         : entry.source === "claude"
           ? await probeClaudeAuthJsonImpl(authJsonText)
           : await probeAuthJsonImpl(entry.source, authJsonText);
@@ -616,7 +604,7 @@ export async function processAuthPoolEntry(
 // Aggregate a worker run's per-entry results into one health row per source: how many auths are
 // ok vs hard-dead (RT gone, needs owner re-login) vs other errors, plus central-refresh outcomes.
 // Deleted entries are excluded (they're no longer in the pool). An entry the worker deliberately did
-// not probe (refresh handoff pending) is its own bucket: it says nothing about the account's health,
+// not probe (skipped this cycle) is its own bucket: it says nothing about the account's health,
 // and counting it as an error made a pool of mostly-healthy accounts read as 2/19 healthy.
 export function summarizePoolHealth(items) {
   const bySource = {};
