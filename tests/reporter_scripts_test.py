@@ -1831,6 +1831,15 @@ Reading additional input from stdin...
 
         self.assertEqual(summary, "auth invalidated (token_invalidated)")
 
+    def test_summarize_codex_exec_error_names_a_deactivated_workspace(self):
+        stderr = """
+2026-11-08T07:58:14.240775Z ERROR codex_models_manager::manager: failed to refresh available models: unexpected status 402 Payment Required: Payment Required, url: https://chatgpt.com/backend-api/codex/models, auth error: 402, auth error code: deactivated_workspace
+"""
+
+        summary = summarize_codex_exec_error("", stderr)
+
+        self.assertEqual(summary, "workspace deactivated (402 deactivated_workspace)")
+
     def test_summarize_claude_stats_aggregates_totals(self):
         summary = summarize_claude_stats(
             {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-08
+
+### Fixed
+- An account whose ChatGPT workspace is deactivated (`402 deactivated_workspace`) is no longer lent
+  out. The Codex probe names it `WORKSPACE_DEACTIVATED_ERROR` (`lib/auth-status.js`) and
+  `isPoolIneligible` (`lib/auth-pool.js`) excludes it. It is not an auth invalidation (the refresh
+  token is intact), and the owner's own `repair_returned` path is unchanged.
+
 ## 2026-11-07
 
 ### Changed

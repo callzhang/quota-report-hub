@@ -754,6 +754,8 @@ def summarize_codex_exec_error(stdout: str, stderr: str) -> str:
         return "auth invalidated (token_invalidated)"
     if "401 unauthorized" in lowered:
         return "auth failed (401 unauthorized)"
+    if "deactivated_workspace" in lowered:
+        return "workspace deactivated (402 deactivated_workspace)"
     if "reading additional input from stdin" in lowered:
         cleaned = combined.replace("Reading additional input from stdin...", "").strip()
         if cleaned:

@@ -5,6 +5,7 @@ import {
   pickBestAuthPoolCandidate,
   shouldReplaceAuthPoolEntry,
 } from "../lib/auth-pool.js";
+import { WORKSPACE_DEACTIVATED_ERROR } from "../lib/auth-status.js";
 
 function fakeJwt(payload) {
   return `x.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.y`;
@@ -271,6 +272,32 @@ test("an account whose credential really is Free stays ineligible", () => {
     current_account_id: "current",
     current_quota: { five_h_remaining_percent: 10, one_week_remaining_percent: 10 },
     now: "2026-09-12T10:45:00Z",
+  });
+
+  assert.equal(candidate, null);
+});
+
+test("an account whose workspace is deactivated is never lent out", () => {
+  // 2026-11-08: derek@stardust.ai (Team) probed "402 deactivated_workspace" -- every request fails --
+  // yet its fresh report and live access token kept it eligible.
+  const reports = [
+    {
+      source: "codex",
+      account_id: "team-deactivated",
+      status: "error",
+      error: WORKSPACE_DEACTIVATED_ERROR,
+      plan_name: "Team",
+      windows: { "5h": { remaining_percent: 95 }, "1week": { remaining_percent: 90 } },
+      reported_at: "2026-11-08T10:40:09Z",
+    },
+  ];
+  const pool = [{ account_id: "team-deactivated", plan_name: "Team" }];
+
+  const candidate = pickBestAuthPoolCandidate(reports, pool, {
+    source: "codex",
+    current_account_id: "current",
+    current_quota: { five_h_remaining_percent: 10, one_week_remaining_percent: 10 },
+    now: "2026-11-08T10:45:00Z",
   });
 
   assert.equal(candidate, null);
