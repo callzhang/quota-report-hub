@@ -5076,7 +5076,7 @@ Reading additional input from stdin...
         replace_codex.assert_called_once()
         stale_app_server.assert_called_once_with(args.codex_auth_path)
         restart_app_server.assert_not_called()
-        self.assertIn(mock.call(config, "codex", codex_payload, frozenset()), report_quota.call_args_list)
+        self.assertIn(mock.call(config, "codex", codex_payload, frozenset(), scheduler_warning=None), report_quota.call_args_list)
         self.assertEqual(result["codex"], codex_payload)
         self.assertEqual(result["replacement"]["codex"], codex_replacement)
 
@@ -5332,8 +5332,11 @@ Reading additional input from stdin...
                                           with mock.patch.object(quota_guard, "notify_probe_failures", return_value={"shown": []}):
                                             with mock.patch.object(quota_guard, "show_desktop_notification", return_value=True) as notify:
                                                 with mock.patch.object(quota_guard, "stale_codex_app_server_for_auth", return_value={"stale": False}):
+                                                  with mock.patch.object(quota_guard, "report_current_quota_to_auth_pool", return_value={"ok": True}) as report:
                                                     result = quota_guard.run_guard(args)
 
+        # Both heartbeats carry the fault: the desktop toast below is gone once dismissed.
+        self.assertEqual([call.kwargs.get("scheduler_warning") for call in report.call_args_list], [scheduler_warning, scheduler_warning])
         notify.assert_called_once()
         self.assertEqual(notify.call_args.args[0], "额度守护：定时任务未安装")
         self.assertEqual(result["warnings"]["scheduler"], scheduler_warning)

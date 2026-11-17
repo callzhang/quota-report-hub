@@ -563,7 +563,21 @@ def effective_usage_account_id(
     return payload.get("account_id") or None
 
 
-def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
+def scheduler_heartbeat_fault(warning: dict | None) -> dict | None:
+    # The install command is the same on every machine and already shown in the local toast; what
+    # the hub cannot get from anywhere else is the reason.
+    if not warning:
+        return None
+    return {
+        "scheduler": warning.get("scheduler"),
+        "reason": warning.get("reason"),
+        "error": warning.get("error"),
+        "detail": warning.get("detail"),
+        "launchd": warning.get("launchd"),
+    }
+
+
+def build_probe_heartbeat(source: str, payload: dict | None, scheduler_warning: dict | None = None) -> dict:
     """Liveness + probe outcome for this run, sent to the hub whether or not the quota is reportable.
 
     Without it a probe that fails every 15 minutes is invisible: the failing payload is never
@@ -609,6 +623,10 @@ def build_probe_heartbeat(source: str, payload: dict | None) -> dict:
         # live on this machine and nowhere the hub can reach; the heartbeat is the one message sent
         # on every run whether or not the quota is reportable.
         "diagnostics": (payload or {}).get("diagnostics"),
+        # Why this machine's 15-minute schedule is missing, present only while it is. A guard that is
+        # not scheduled only runs when someone starts it by hand, so this is usually the one run in
+        # weeks that can say so.
+        "scheduler": scheduler_heartbeat_fault(scheduler_warning),
         "last_run_at": iso_now(),
     }
 
@@ -622,11 +640,15 @@ def load_upload_exclusions(config: dict) -> frozenset:
 
 
 def report_current_quota_to_auth_pool(
-    config: dict, source: str, payload: dict | None, upload_exclusions: frozenset | None = frozenset()
+    config: dict,
+    source: str,
+    payload: dict | None,
+    upload_exclusions: frozenset | None = frozenset(),
+    scheduler_warning: dict | None = None,
 ) -> dict:
     if not config.get("auth_pool_url") or not config.get("auth_pool_user_token"):
         return {"ok": True, "reported": False, "reason": "missing_auth_pool_config"}
-    heartbeat = build_probe_heartbeat(source, payload)
+    heartbeat = build_probe_heartbeat(source, payload, scheduler_warning)
     excluded = account_upload_excluded(upload_exclusions, source, (payload or {}).get("account_id"))
     if excluded:
         # The heartbeat still goes: a machine that stopped being heard from would read as switched
@@ -1197,7 +1219,7 @@ def ensure_scheduler_registration(config: dict | None = None) -> dict:
             "install_command": verified.get("install_command") or initial.get("install_command") or scheduler_install_command(config),
         }
     except Exception as error:
-        return {
+        failure = {
             "ok": False,
             "scheduler": initial.get("scheduler"),
             "reason": "install_failed",
@@ -1205,6 +1227,35 @@ def ensure_scheduler_registration(config: dict | None = None) -> dict:
             "error": str(error),
             "install_command": initial.get("install_command") or scheduler_install_command(config),
         }
+        if platform.system() == "Darwin":
+            failure["launchd"] = launchd_install_failure_facts()
+        return failure
+
+
+def launchd_install_failure_facts() -> dict:
+    """What can be checked without root about why `launchctl bootstrap` refused the job.
+
+    Its own answer is `5: Input/output error` for every cause, so these name the candidates instead:
+    a label in the user domain's disabled list, or a plist launchd cannot parse. When both read clean
+    the remaining known cause is the job's executable switched off under System Settings → Login
+    Items → Allow in the Background, which no unprivileged command reports.
+    """
+    uid = str(os.getuid())
+    disabled = subprocess.run(["launchctl", "print-disabled", f"gui/{uid}"], capture_output=True, text=True, check=False)
+    service_disabled = None
+    if disabled.returncode == 0:
+        # Absent from the list means never disabled. Older macOS prints true/false for the state.
+        service_disabled = False
+        for line in disabled.stdout.splitlines():
+            if f'"{SCHEDULER_LABEL}"' in line and "=>" in line:
+                service_disabled = line.split("=>", 1)[1].strip() in {"disabled", "true"}
+    lint = subprocess.run(["plutil", "-lint", str(LAUNCH_AGENT_PLIST_PATH)], capture_output=True, text=True, check=False)
+    plist_valid = lint.returncode == 0
+    return {
+        "service_disabled": service_disabled,
+        "plist_valid": plist_valid,
+        "plist_lint": None if plist_valid else (lint.stdout or lint.stderr or "").strip()[-500:],
+    }
 
 
 def scheduler_warning_message(warning: dict) -> str:
@@ -3025,12 +3076,20 @@ def run_guard(args: argparse.Namespace) -> dict:
             lambda: timed_guard_step(
                 timings,
                 "codex_quota_report",
-                lambda: report_current_quota_to_auth_pool(config, "codex", codex_payload, upload_exclusions),
+                lambda: report_current_quota_to_auth_pool(
+                    config, "codex", codex_payload, upload_exclusions, scheduler_warning=warnings.get("scheduler")
+                ),
             ),
         )
         quota_report_result["claude"] = run_guard_step(
             "claude_quota_report_failed",
-            lambda: timed_guard_step(timings, "claude_quota_report", lambda: report_current_quota_to_auth_pool(config, "claude", claude_payload, upload_exclusions)),
+            lambda: timed_guard_step(
+                timings,
+                "claude_quota_report",
+                lambda: report_current_quota_to_auth_pool(
+                    config, "claude", claude_payload, upload_exclusions, scheduler_warning=warnings.get("scheduler")
+                ),
+            ),
         )
         if claude_custom_provider is not None:
             sync_result["claude"] = {"ok": True, "uploaded": False, "reason": claude_payload.get("error")}

@@ -229,6 +229,29 @@ test("a heartbeat keeps the client's identity diagnostics as bounded JSON and dr
   assert.equal(oversized.heartbeat.diagnostics_json, null);
 });
 
+test("a heartbeat keeps the client's scheduler fault as bounded JSON and none from a scheduled machine", async () => {
+  const base = { reporter_name: "r", hostname: "h", status: "ok" };
+  const scheduler = {
+    scheduler: "launchd",
+    reason: "install_failed",
+    error: "launchctl bootstrap exited 5: Bootstrap failed: 5: Input/output error",
+    detail: null,
+    launchd: { service_disabled: false, plist_valid: true, plist_lint: null },
+  };
+  const kept = normalizeReporterHeartbeat({ source: "codex", reporterEmail: "a@stardust.ai", heartbeat: { ...base, scheduler } });
+  assert.deepEqual(JSON.parse(kept.heartbeat.scheduler_json), scheduler);
+
+  const scheduled = normalizeReporterHeartbeat({ source: "codex", reporterEmail: "a@stardust.ai", heartbeat: { ...base, scheduler: null } });
+  assert.equal(scheduled.heartbeat.scheduler_json, null);
+
+  const oversized = normalizeReporterHeartbeat({
+    source: "codex",
+    reporterEmail: "a@stardust.ai",
+    heartbeat: { ...base, scheduler: { error: "x".repeat(9000) } },
+  });
+  assert.equal(oversized.heartbeat.scheduler_json, null);
+});
+
 test("a heartbeat reply names the account behind the token so a machine that lost its binding can repair it", async () => {
   const written = [];
   const named = await ingestReporterHeartbeat({

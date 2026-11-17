@@ -111,14 +111,24 @@ def write_plist(python_path: str, worker_script: Path) -> None:
         plistlib.dump(payload, handle)
 
 
+def run_launchctl(*args: str) -> None:
+    # launchctl's stderr is the only statement of why it refused. Left uncaptured it went to whatever
+    # terminal was open and the exception said only "exit status 5", so a guard that ran unscheduled
+    # for a month (xienxu, 2026-10-17..11-17) told the hub nothing.
+    result = subprocess.run(["launchctl", *args], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        said = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"launchctl {args[0]} exited {result.returncode}: {said}"[:1000])
+
+
 def load_launch_agent() -> None:
     uid = str(os.getuid())
     service = f"gui/{uid}/{LABEL}"
     existing = subprocess.run(["launchctl", "print", service], capture_output=True, text=True)
     if existing.returncode == 0:
-        subprocess.run(["launchctl", "bootout", f"gui/{uid}", str(PLIST_PATH)], check=True)
-    subprocess.run(["launchctl", "bootstrap", f"gui/{uid}", str(PLIST_PATH)], check=True)
-    subprocess.run(["launchctl", "kickstart", "-k", service], check=True)
+        run_launchctl("bootout", f"gui/{uid}", str(PLIST_PATH))
+    run_launchctl("bootstrap", f"gui/{uid}", str(PLIST_PATH))
+    run_launchctl("kickstart", "-k", service)
 
 
 def verify_launch_agent_registered() -> dict:

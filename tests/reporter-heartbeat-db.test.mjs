@@ -221,6 +221,21 @@ test("diagnostics_json is stored while a reporter fails and cleared by its next 
   }
 });
 
+test("scheduler_json is stored while a machine is unscheduled and cleared once it is scheduled", async () => {
+  const { mod, client, cleanup } = await loadDbWithTempStore();
+  try {
+    const scheduler_json = JSON.stringify({ scheduler: "launchd", reason: "install_failed" });
+    await mod.upsertReporterProbeHeartbeat(heartbeat({ source: "codex", scheduler_json }));
+    const read = async () => (await client.execute("SELECT scheduler_json FROM reporter_probe_heartbeats")).rows[0].scheduler_json;
+    assert.equal(await read(), scheduler_json);
+
+    await mod.upsertReporterProbeHeartbeat(heartbeat({ source: "codex", last_run_at: "2026-08-27T09:15:00.000Z" }));
+    assert.equal(await read(), null, "a machine whose schedule was repaired must not keep reporting it missing");
+  } finally {
+    cleanup();
+  }
+});
+
 test("a laptop that changes hostname with its network stays one row when it sends its installation id", async () => {
   const { mod, client, cleanup } = await loadDbWithTempStore();
   try {
