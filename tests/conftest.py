@@ -43,6 +43,17 @@ def _block_real_keychain_writes(monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def _keep_the_hub_move_off_the_real_config(monkeypatch):
+    """quota_guard.main() rewrites a retired hub address in ~/.agents/auth/quota-reporter.json before
+    anything else. A test that runs main() did exactly that to the developer's real install
+    (2026-11-25). tests/test_hub_move.py exercises the function itself, on temporary files."""
+    guard = sys.modules.get("quota_guard")
+    if guard is not None:
+        monkeypatch.setattr(guard, "move_config_off_retired_hub", lambda: False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _keep_the_installation_id_off_the_real_config(monkeypatch):
     """build_probe_heartbeat names this installation, and the first call writes the id into
     ~/.agents/auth/quota-reporter.json. A suite that builds heartbeats must not mint one for the
