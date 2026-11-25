@@ -5034,6 +5034,7 @@ Reading additional input from stdin...
         self.assertEqual(bundled["usage_summary"]["meter"], {"limit_id": "codex"})
         self.assertNotIn("refreshed_auth_json", bundled["refresh_capture"], "the rotated credential never rides along")
 
+    @mock.patch.object(quota_guard, "ensure_scheduler_registration", new=lambda *_: {"ok": True})
     @mock.patch.object(quota_guard, "load_upload_exclusions", return_value=frozenset())
     def test_run_guard_manages_codex_auth(self, _exclusions):
         args = mock.Mock(
@@ -5250,6 +5251,7 @@ Reading additional input from stdin...
         self.assertFalse(result["auth_pool_sync"]["codex"]["ok"])
         self.assertEqual(result["auth_pool_sync"]["codex"]["reason"], "codex_auth_pool_sync_failed")
 
+    @mock.patch.object(quota_guard, "ensure_scheduler_registration", new=lambda *_: {"ok": True})
     def test_run_guard_notifies_after_successful_replacement(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
@@ -5413,6 +5415,7 @@ Reading additional input from stdin...
         self.assertEqual(result["initial_check"], missing)
         self.assertIn("boom", result["error"])
 
+    @mock.patch.object(quota_guard, "ensure_scheduler_registration", new=lambda *_: {"ok": True})
     def test_run_guard_restarts_but_does_not_notify_after_same_account_codex_refresh(self):
         args = mock.Mock(
             auth_pool_url="https://quota-report-hub.vercel.app",
