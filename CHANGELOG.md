@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-25
+
+### Changed
+- The hub moved from Vercel to Fly.io: `server.mjs` serves the API and pages at
+  `https://quota-report-hub.fly.dev/`. Installed guards rewrite the old address in their config.
+  Daily jobs run from `.github/workflows/daily-crons.yml`. Deploy is `fly deploy --ha=false`.
+
+### Removed
+- `vercel.json`, the `/api/data` router and `scripts/deploy_vercel.py`.
+
 ## 2026-11-24
 
 ### Fixed

@@ -6990,7 +6990,7 @@ Reading additional input from stdin...
     def test_install_quota_guard_defaults_to_hosted_hub(self):
         parser = install_quota_guard.build_parser()
         args = parser.parse_args([])
-        self.assertEqual(args.auth_pool_url, "https://quota-report-hub.vercel.app/")
+        self.assertEqual(args.auth_pool_url, "https://quota-report-hub.fly.dev/")
 
     def test_install_quota_guard_parser_supports_skip_install_verification(self):
         parser = install_quota_guard.build_parser()

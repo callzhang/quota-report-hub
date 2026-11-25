@@ -1,0 +1,11 @@
+# An allow list: the checkout holds .env files and database exports that must never reach an image.
+*
+!package.json
+!package-lock.json
+!server.mjs
+!index.html
+!login.html
+!token-usage.html
+!users.html
+!api
+!lib

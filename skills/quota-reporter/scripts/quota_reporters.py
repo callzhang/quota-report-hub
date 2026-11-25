@@ -3202,6 +3202,23 @@ def build_claude_auth_blob(
     return blob, payload
 
 
+# The hub left Vercel on 2026-11-25 (SYSTEM_DESIGN §3.1). Installed clients hold the old address in
+# their own config, and it will never answer again as this hub, so the guard rewrites it once. A hub
+# somebody runs under any other address is theirs and is left alone.
+RETIRED_HUB_URL = "https://quota-report-hub.vercel.app"
+HUB_URL = "https://quota-report-hub.fly.dev/"
+
+
+def move_config_off_retired_hub(config_path: Path = CONFIG_PATH) -> bool:
+    if not config_path.exists():
+        return False
+    config = read_json(config_path)
+    if str(config.get("auth_pool_url") or "").rstrip("/") != RETIRED_HUB_URL:
+        return False
+    config_path.write_text(json.dumps({**config, "auth_pool_url": HUB_URL}, indent=2) + "\n", encoding="utf-8")
+    return True
+
+
 def load_config(args: argparse.Namespace) -> dict:
     config = read_json(CONFIG_PATH) if CONFIG_PATH.exists() else {}
     if getattr(args, "server_url", None):

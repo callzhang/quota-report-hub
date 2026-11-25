@@ -36,10 +36,9 @@ export default async function handler(req, res) {
   }
 
   const result = await notifyInvalidatedAuthOwners();
-  // The owners' daily death digest rides on this cron rather than getting its own: the Hobby plan caps
-  // the deployment at twelve serverless functions (asserted in db-read-budget-static.test.mjs), the
-  // schedule is the same, and so is the auth and the mail configuration. A digest failure must not
-  // take the owner notifications' result down with it.
+  // The owners' daily death digest rides on this job rather than getting its own: the schedule is the
+  // same, and so is the auth and the mail configuration. A digest failure must not take the owner
+  // notifications' result down with it.
   let deathDigest;
   try {
     deathDigest = await sendDeathDigest();

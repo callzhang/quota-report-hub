@@ -331,7 +331,7 @@ export default async function handler(req, res) {
       authContext.email,
       requesterId,
       currentAccountId,
-      req.headers["x-vercel-ip-city"] || req.headers["x-forwarded-for"] || "",
+      req.headers["fly-client-ip"] || "",
     ].filter(Boolean).join("|"),
     exclude_account_ids: Array.isArray(body?.exclude_account_ids) ? body.exclude_account_ids : [],
     current_account_id: currentAccountId,

@@ -60,7 +60,7 @@ async function serveStaticFile(req, res, rootDir) {
   if (relativePath.startsWith("api/")) {
     res.writeHead(501, { "content-type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({
-      error: "API routes are not served by the static frontend script. Use the deployed hub or vercel dev for API testing.",
+      error: "API routes are not served by the static frontend script. Use the deployed hub, or `node server.mjs` with the hub's environment, for API testing.",
     }));
     return;
   }

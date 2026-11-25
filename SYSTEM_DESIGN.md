@@ -20,7 +20,7 @@
 | [3](#3-component-local-client-quota-guard) | Local client (the quota guard) |
 | [4](#4-data-model) | Data model — Turso tables, Tigris blobs |
 | [5](#5-encryption--storage-layering) | Encryption and storage layering |
-| [6](#6-component-serverless-api) | Serverless API — endpoints, fetch-best, identity, availability, data router, ingest |
+| [6](#6-component-hub-api) | Hub API — endpoints, fetch-best, identity, availability, server, ingest |
 | [6.8](#68-what-makes-a-claude-credential-usable) | What makes a claude credential usable — the inference-scope check |
 | [7](#7-component-worker) | Worker — probe/refresh loop |
 | [8](#8-ops-scripts) | Ops scripts |
@@ -48,9 +48,9 @@
 
 Token analytics is an isolated read model, not part of auth selection or quota availability. Each local installation owns a private SQLite checkpoint database at `~/.agents/auth/token-usage.sqlite3` (`0600`). The first collector run fixes a 72-hour backfill cutoff. Subsequent runs discover only changed JSONL files and resume at acknowledged byte positions, with a 10-second cycle budget and a maximum of 400 aggregate rows per batch. A pending upload and its proposed file/counter/fingerprint checkpoint are committed locally only after server acknowledgement; retries reuse the same batch.
 
-Vercel Functions run in `pdx1` (AWS `us-west-2`) so database-backed requests execute in the same cloud region as the Turso primary. Static HTML remains CDN-served near the browser; keeping compute and data together avoids a cross-country database round trip on every dashboard query.
+The hub is one long-running Node process on Fly.io (`server.mjs`, one machine in `sjc`), next to the Turso primary in AWS `us-west-2`, so a request's database round trips do not cross the country. It serves the static pages too.
 
-Read-only token analytics requests do not run schema creation or migrations on serverless cold starts. Schema work remains on initialization/write paths, and API-token lookup plus its `last_used_at` touch share one database batch before the bounded analytics query batch.
+Read-only token analytics requests do not run schema creation or migrations. Schema work remains on initialization/write paths, and API-token lookup plus its `last_used_at` touch share one database batch before the bounded analytics query batch.
 
 Codex parsing uses structural `session_meta`, `turn_context`, and cumulative `token_count` fields. Canonical numeric fingerprints remove copied parent history, and counter resets start a new non-negative epoch. Claude parsing uses assistant message ID, raw model, timestamp, and final usage counters; repeated records update only the positive difference. No parser output contains conversation content.
 
@@ -68,14 +68,14 @@ It is a four-tier system:
 | Tier | Runtime | Code | Role |
 |---|---|---|---|
 | **Local client** ("quota guard") | Python, cron/launchd, per machine | `skills/quota-reporter/scripts/` | Probe local quota, sync auth to pool, borrow better auth, rotate |
-| **Serverless API** | Node, Vercel functions | `api/**`, `lib/**` | Auth, pool read/write, quota ingest, selection, flags, email |
+| **Hub API** | Node on Fly.io, `server.mjs` | `api/**`, `lib/**` | Auth, pool read/write, quota ingest, selection, flags, email |
 | **Data layer** | Turso (libsql/SQLite) + Tigris (S3-compatible) | `lib/db.js`, `lib/auth-blob-storage.js` | Metadata + pointers in DB; encrypted blobs in object storage |
 | **Worker** | Node + Python, GitHub Actions cron (~15 min) | `scripts/probe_auth_pool_worker.mjs` + `scripts/probe_*_auth_blob.py` | Cloud-probe every pooled account, central refresh, health snapshots |
 | **Dashboard** | Static HTML/JS | `index.html`, `users.html`, `login.html` | Read-only observability + admin flag toggle |
 
 ```
                        ┌─────────────────────────────────────────────┐
-                       │            Vercel serverless API             │
+                       │           Hub API (server.mjs, Fly.io)       │
    ┌──────────┐  HTTPS │  /auth/{fetch-best,upload,quota,delete,...}  │
    │  Local   │◄──────►│  /admin/flags  /status  /users  /cron/...    │
    │  guard   │ Bearer │                                              │
@@ -123,6 +123,7 @@ Code: `skills/quota-reporter/scripts/{quota_guard.py, quota_reporters.py, instal
 - Label `com.openai.quota-guard`, interval **900 s** (`install_quota_guard.py:27-28`).
 - **macOS** → launchd LaunchAgent (`StartInterval=900`, `RunAtLoad`) (`:71-95`); **Linux** → two managed cron lines `@reboot` + `*/15 * * * *` tagged `# quota-guard-managed` (`:107-128`); **Windows** → Task Scheduler with 15-min repetition (`:145-226`).
 - Config at `~/.agents/auth/quota-reporter.json`: `auth_pool_url`, `auth_pool_user_email`, `auth_pool_user_token` (`:40-53`).
+- **Hub address.** The default is `https://quota-report-hub.fly.dev/`. The hub left Vercel on 2026-11-25; each guard run first rewrites a config that still names `quota-report-hub.vercel.app` (`move_config_off_retired_hub`), and reports it as `hub_move`. Self-update comes from GitHub, so this reaches machines that could not reach the old hub: one run downloads the code, the next one moves. A machine whose self-update is broken has to be edited or reinstalled by hand. Any other address is somebody's own hub and is not touched.
 - **Logs.** All three schedulers append the run's stdout/stderr to `~/.agents/auth/quota-guard.log` / `quota-guard.error.log`, and nothing else ever shrinks them (one laptop's log reached 35 MB, 2026-11-02). Each guard cycle starts by trimming (`trim_guard_log`): a file over `GUARD_LOG_MAX_BYTES` (5 MB) is cut to its newest 2.5 MB, starting on a whole line, so a trim runs about once a month and the tail still covers weeks. The file is rewritten in place, not renamed, because launchd and cron hold it open in append mode for the running guard and would go on writing to an unlinked inode after a rename. Windows is not covered: PowerShell's `>>` holds the file open without write sharing, so the trim there fails, shows up as `Errors: trim_logs`, and the file stays as it is. No Windows reporter has sent a heartbeat in the past week (checked 2026-11-02).
 - Installs a Claude **statusline hook** into `~/.claude/settings.json` running `claude_statusline_probe.py` every 60 s (`:56-68`).
 - **Login**: browser loopback flow against `<hub>/login.html?callback=&state=` validated by a `state` nonce and a `127.0.0.1` callback (`:348-435`); falls back to emailed-token paste when headless (`:438-466`).
@@ -347,8 +348,8 @@ still fail the caller; there is no automatic database retry.
 **The migration runs once per version of itself, not once per instance.** `ensureSchema` sends one
 batch — create `schema_version` if missing, read its fingerprint — and returns when the stored value
 equals the SHA-256 of the migration functions' source. Otherwise it runs `migrateSchema` and records
-the fingerprint only after every statement succeeded. Before this, each cold serverless instance sent
-the whole migration (67 round trips) ahead of its first query; the 12 h before 2026-11-24 showed
+the fingerprint only after every statement succeeded. Before this, when the hub ran on Vercel, each
+cold instance sent the whole migration (67 round trips) ahead of its first query; the 12 h before 2026-11-24 showed
 19.3 % cold starts and 3.2K database calls for 188 invocations, and the team was paused for exceeding
 the free Active CPU allowance. Consequences to keep:
 
@@ -430,9 +431,9 @@ Only the auth JSON (the actual tokens) is encrypted. Plaintext in the DB: `email
 
 ---
 
-## 6. Component: Serverless API
+## 6. Component: Hub API
 
-All handlers are Vercel functions; most require a Bearer token via `authenticateApiRequest` → `authenticateOrUpgradeApiToken` (`lib/api-auth.js:4-6`). Responses pass through `withTokenUpgrade` so a legacy `qrp_` token is transparently swapped for a signed `qrp.` token mid-response (`lib/db.js:1329-1347`).
+`server.mjs` maps each path below to its handler; most require a Bearer token via `authenticateApiRequest` → `authenticateOrUpgradeApiToken` (`lib/api-auth.js:4-6`). Responses pass through `withTokenUpgrade` so a legacy `qrp_` token is transparently swapped for a signed `qrp.` token mid-response (`lib/db.js:1329-1347`).
 
 | Endpoint | Method | Auth | Purpose |
 |---|---|---|---|
@@ -452,15 +453,10 @@ All handlers are Vercel functions; most require a Bearer token via `authenticate
 | `/api/cron/token-usage-retention` | GET/POST | **`CRON_SECRET`** | Daily compaction of 15-minute detail into `token_usage_daily` |
 | `/api/users` | GET/POST | Bearer (POST: admin) | Users + fetch-log audit; POST disables/enables a user ([§19](#19-disabled-users)) |
 
-The last four are not separate functions: they are `vercel.json` rewrites onto `/api/data?route=…`
-([§6.5](#65-the-data-router-apidatajs)).
-
-`vercel.json` pins all functions to `pdx1` (same region as the Turso primary, [§1](#1-what-the-system-is)),
-gives the five heavy handlers `maxDuration: 30`, and runs two platform crons: invalidated-auth
-notifications at `0 17 * * *` UTC and token-usage retention at `30 18 * * *` UTC. Vercel Hobby does
-not support 15-minute cron jobs, so the *probe* worker stays in GitHub Actions;
-`/api/cron/probe-auth-pool` remains available for manual or external stale-snapshot dispatch when
-called with `CRON_SECRET`.
+Cron jobs are not run by the server: `.github/workflows/daily-crons.yml` calls the invalidated-auth
+notifications at `0 17 * * *` UTC and token-usage retention at `30 18 * * *` UTC with `CRON_SECRET`.
+The *probe* worker has its own workflow; `/api/cron/probe-auth-pool` remains available for manual or
+external stale-snapshot dispatch when called with `CRON_SECRET`.
 
 ### 6.1 fetch-best (the borrow path)
 
@@ -515,17 +511,19 @@ Each availability result includes its next time-derived transition. While visibl
 
 History is excluded from `/api/status`. The browser requests it only when an account dialog opens, caches the result for five minutes within the current authentication-session generation, and deduplicates concurrent requests for the same account. Changing or clearing the session invalidates the cache key.
 
-### 6.5 The data router (`api/data.js`)
+### 6.5 The server (`server.mjs`) and the data handlers
 
-Five endpoints share one function (the fifth, `upload-exclusions`, is [§18](#18-upload-exclusions-accounts-that-never-leave-the-machine)). `routeDataRequest` reads `?route=` (set by the `vercel.json`
-rewrites, so callers still use the clean paths), looks the handler up in a fixed map, strips the
-`route` parameter back off `req.url` so each handler parses its own query normally, and 404s an
-unknown route. The handlers themselves live in `lib/data-api.js` and take an injectable `deps`
-object — that is what lets the API tests drive them without a database or a clock.
+The server is deliberately small: an exact-path route table, an explicit list of the four pages (so
+nothing else in the checkout is downloadable), HSTS, and a 4.5 MB body limit (413) because a body is
+held in memory before its handler runs. A handler that throws gets `sendServiceUnavailable` (503) and
+the process keeps serving. The five data endpoints (quota history, token usage and its query, upload
+exclusions [§18](#18-upload-exclusions-accounts-that-never-leave-the-machine), retention) live in
+`lib/data-api.js` and take an injectable `deps` object — that is what lets the API tests drive them
+without a database or a clock.
 
-Why one function: Vercel's plan caps the number of deployed functions, and these four are the
-cheapest to co-locate (three are read-only or cron, none is on the auth hot path). The cost is that
-they share a cold start and a `maxDuration`.
+It moved off Vercel on 2026-11-25: the team was paused for Active CPU with a 30-day wait, and Hobby
+is limited by Vercel's terms to non-commercial use. Fly bills for the machine instead of per CPU
+second, and a process that stays up pays module load and the schema check once.
 
 Each handler enforces its own method (`405` with an `Allow` header), its own auth (Bearer for
 ingest/query, `CRON_SECRET` for retention), and its own error mapping: `TokenUsageValidationError`
@@ -866,10 +864,9 @@ Measured on Derek's machine over 2026-08-15..09-06: claude hub 4.992B vs local 4
 single day**), codex hub 27.774B vs local 20.868B — the gap being contamination that survived the
 1e8 purge.
 
-### 8.8 deploy_vercel.py / start_frontend.mjs
-`deploy_vercel.py` wraps the Vercel CLI for production/preview/development deploys and env
-management. `start_frontend.mjs` serves the static dashboards locally on `FRONTEND_PORT`
-(default 6088, `127.0.0.1` only).
+### 8.8 start_frontend.mjs
+`start_frontend.mjs` serves the static dashboards locally on `FRONTEND_PORT`
+(default 6088, `127.0.0.1` only), without the API.
 
 ---
 
@@ -1339,7 +1336,7 @@ Both sources are held to the same thresholds, judged per window the report carri
   Codex sends no scope.
 - **Every refresh logs one line** (`logRefreshOutcome`): source, attempt, requested scope, granted
   scope, `expires_in`, status, rejection. Stored expiry mirrors only show the result after the fact;
-  this is what makes "which scope buys which lifetime" answerable from the Vercel and Actions logs.
+  this is what makes "which scope buys which lifetime" answerable from the hub and Actions logs.
   Telemetry is wrapped so it can never fail a refresh.
 - **The refresh endpoint is entered only under an RT-generation lease.** The lease record contains
   an HMAC-SHA-256 fingerprint derived from `AUTH_POOL_ENCRYPTION_KEY`, not a raw token or an ordinary
@@ -1437,8 +1434,7 @@ present, no rotation", which is different from the key being absent.
 idle hours and the provider's reason. Deaths seen only through an access-token probe have no code and, at ~2 a
 day and mostly flapping, would make it noise, so they are counted in one line rather than listed. Nothing is
 sent when there is nothing to list, and an unconfigured mailer sends nothing. It rides on the existing
-`api/cron/invalidated-auth-notifications` handler instead of adding a cron of its own: the Hobby plan caps the
-deployment at twelve serverless functions (`db-read-budget-static.test.mjs` enforces it), the schedule, the
+`api/cron/invalidated-auth-notifications` handler instead of adding a job of its own: the schedule, the
 `CRON_SECRET` auth and the mail configuration are all the same, and a digest failure is caught so it cannot take
 the owner notifications' result down with it. Account ids come from users' own credentials, so every
 interpolated value is HTML-escaped.
@@ -1765,7 +1761,8 @@ day, so a partial run can only ever be retried, never lose rows.
 
 | Path | What lives there |
 |---|---|
-| `api/**` | Vercel function entrypoints. Thin: auth, method check, delegate to `lib/`. |
+| `server.mjs`, `Dockerfile`, `fly.toml` | The hub process and how it is deployed ([§6.5](#65-the-server-servermjs-and-the-data-handlers), [§17.3](#173-deploy)). |
+| `api/**` | HTTP handlers. Thin: auth, method check, delegate to `lib/`. |
 | `lib/**` | All server logic. Pure modules where possible so tests need no database or clock. |
 | `scripts/*.mjs`, `scripts/*.py` | Worker and ops scripts ([§7](#7-component-worker), [§8](#8-ops-scripts)). |
 | `skills/quota-reporter/**` | The local client, its installer, and its own docs. Self-updates from `main`. |
@@ -1796,8 +1793,24 @@ Both suites must pass before a commit. Conventions that make them worth having:
 
 ### 17.3 Deploy
 
-Push to `main` deploys the API and dashboards through Vercel (`scripts/deploy_vercel.py` wraps the
-CLI for manual or preview deploys). The worker deploys with the repo: GitHub Actions reads
+```bash
+fly deploy --ha=false
+```
+
+Run it from the repo root after pushing: **a push to `main` does not deploy the API or dashboards.**
+`--ha=false` keeps the one machine `fly.toml` describes. `.dockerignore` is an allow list, so a new
+top-level file the server needs must be added there and to the `Dockerfile`. A restart interrupts
+requests for a few seconds; clients retry on their next run.
+
+Secrets live in Fly (`fly secrets list`): `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`,
+`AUTH_POOL_ENCRYPTION_KEY`, `TOKEN_ISSUE_KEY`, `TIGRIS_STORAGE_ACCESS_KEY_ID`,
+`TIGRIS_STORAGE_SECRET_ACCESS_KEY`, `TIGRIS_STORAGE_BUCKET`, `ADMIN_EMAIL`,
+`AUTH_ALLOWED_EMAIL_DOMAIN`, `MAILGUN_API_KEY`, `MAILGUN_DOMAIN`, `MAILGUN_FROM`, `CRON_SECRET`,
+`GITHUB_WORKFLOW_DISPATCH_TOKEN`. `TOKEN_ISSUE_KEY` ends in a newline that is part of the key: every
+issued token was signed with it, so setting it without the newline invalidates them all.
+`CRON_SECRET` is also a GitHub Actions secret, with the same value, for the daily jobs.
+
+The worker deploys with the repo: GitHub Actions reads
 `.github/workflows/probe-auth-pool.yml` from `main`. Clients self-update from `main` on their next
 15-minute run, which is why a client-visible protocol change must stay backward-compatible for at
 least one cycle, and why enforcement of anything client-side is put behind a phase date rather than
@@ -1828,7 +1841,7 @@ for why not `@libsql/client`).
 `token_usage_repair.py` re-uploads historical usage on its own path and is covered by the hub filter
 only.
 
-**How the client learns the list.** `GET /api/auth/upload-exclusions` (a route of the data router,
+**How the client learns the list.** `GET /api/auth/upload-exclusions` (in `lib/data-api.js`,
 [§6.5](#65-the-data-router-apidatajs)) returns only the *caller's* exclusions — the list contains
 personal mailboxes and every member holds a token that can ask. It is read once per guard cycle,
 before any other hub call. **If it cannot be read, every account counts as excluded for that cycle**
@@ -1863,7 +1876,7 @@ mistake brings every one of their clients back with no reissue round-trip. Re-di
 original `disabled_at`: it records when access ended.
 
 **Where access is cut.** In `authenticateApiToken`, the one function every Bearer request passes
-through ([§6](#6-component-serverless-api)). The lookup joins `auth_users` and matches no row for a
+through ([§6](#6-component-hub-api)). The lookup joins `auth_users` and matches no row for a
 disabled person, so every endpoint answers 401 `token_invalidated` with no per-handler check. The
 `last_used_at` touch in the same batch is skipped for them too: the users page must not show
 activity from someone who no longer has access. The function still runs no migration and stays one

@@ -37,7 +37,7 @@ This skill installs and runs the local Codex and Claude quota guard.
 
 You need:
 
-- the shared auth-pool URL, for example `https://quota-report-hub.vercel.app`
+- the shared auth-pool URL, for example `https://quota-report-hub.fly.dev`
 - a personal auth-pool user token issued by company email
 
 That same personal token is also used to unlock the hosted dashboard.
@@ -72,7 +72,7 @@ Run:
 
 ```bash
 python3 scripts/install_quota_guard.py \
-  --auth-pool-url https://your-dashboard.vercel.app \
+  --auth-pool-url https://your-dashboard.fly.dev \
   --email your.name@stardust.ai
 ```
 
@@ -103,7 +103,7 @@ Token rules:
 
 If the user is not already using a compatible hub, the correct order is:
 
-1. either deploy a new hub with `scripts/deploy_vercel.py` or confirm an existing hub already supports the auth-pool APIs
+1. either deploy a new hub (`fly deploy`, see the repository's `SYSTEM_DESIGN.md` §17.3) or confirm an existing hub already supports the auth-pool APIs
 2. then run `install_quota_guard.py`
 3. then complete the browser login (or paste the emailed token in the terminal fallback)
 4. then let the scheduled guard handle the rest

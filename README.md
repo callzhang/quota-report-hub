@@ -1,6 +1,6 @@
 # Quota Report Hub
 
-Minimal Vercel app that stores encrypted Codex and Claude auth snapshots, issues per-user access tokens by company email, and serves a dashboard plus source-aware auth-pool APIs for local quota guards.
+Minimal Node app (hosted on Fly.io) that stores encrypted Codex and Claude auth snapshots, issues per-user access tokens by company email, and serves a dashboard plus source-aware auth-pool APIs for local quota guards.
 
 ## Documentation
 
@@ -23,9 +23,7 @@ Privacy boundary: the collector uploads numeric quarter-hour aggregates only—H
 
 `POST /api/token-usage` ingests a bounded idempotent batch. `GET /api/token-usage-query` returns totals, bounded trend points, bounded four-dimension breakdown rows, and per-Hub-user reporter state. Fifteen-minute detail is accepted and queryable for 90 days. The protected daily `/api/cron/token-usage-retention` job compacts at most seven old UTC days per run into daily rollups and removes old receipts. Token usage tables are not read by the Accounts dashboard, revision polling, or quota ingestion/history. Two paths do read them, both as one bounded `bucket_start` range scan: the fetch gate, which prices each requester's demand share, and the Users page, which shows each member's spend over that same window beside the 80th-percentile demand line.
 
-Vercel Functions are pinned to `pdx1`, matching the Turso database's AWS `us-west-2` location. This keeps database-backed requests in one region while static pages continue to use Vercel's CDN.
-
-Token analytics reads never run schema migrations during a serverless cold start. Authentication lookup/touch is one database batch, followed by one bounded analytics batch.
+The hub runs as one Node process on a Fly.io machine in `sjc`, next to the Turso database's AWS `us-west-2` location.
 
 Reference sizing from the approved design benchmark was 95 files and about 2.9 GB of history: a full parse took 44.97 seconds and about 54 MB peak memory. Normal scheduled work is substantially smaller because it resumes from byte positions and stops at the per-cycle budget.
 
@@ -41,7 +39,7 @@ This project is built for people who regularly switch between multiple coding ag
 
 The default shared hub URL for this project is:
 
-- [quota-report-hub.vercel.app](https://quota-report-hub.vercel.app)
+- [quota-report-hub.fly.dev](https://quota-report-hub.fly.dev)
 
 That hub now requires a valid personal access token to read dashboard data. Publishing the repo does not expose the live hub data by itself.
 
@@ -100,7 +98,7 @@ The startup script listens on `127.0.0.1:6088` by default. If port `6088` is alr
 FRONTEND_PORT=7000 npm run dev
 ```
 
-This script serves the static dashboard files only. Use the deployed hub or `vercel dev` when you need local API routes.
+This script serves the static dashboard files only. Use the deployed hub or run `node server.mjs` with the hub's environment when you need local API routes.
 
 ## Recommended User Flow
 
@@ -108,11 +106,8 @@ The intended end-to-end flow inside Codex is:
 
 1. The user asks Codex to install the skill and provides the GitHub repo URL.
 2. Codex installs the `quota-reporter` skill.
-3. Codex uses the default hosted hub at `https://quota-report-hub.vercel.app/` unless the user provides a different hub URL.
-4. If the user wants a new hub, Codex runs `scripts/deploy_vercel.py` with:
-   - `allowed domain`
-   - `mailgun api key`
-   - `sending email`
+3. Codex uses the default hosted hub at `https://quota-report-hub.fly.dev/` unless the user provides a different hub URL.
+4. If the user wants a new hub, Codex follows [Deploying the hub](#deploying-the-hub).
 5. If the user provides a different hub URL, Codex should verify that the hub supports:
    - `POST /api/auth/issue-token`
    - `POST /api/auth/upload`
@@ -213,7 +208,7 @@ Auth pool support:
 - During the Codex CLI probe, if the temporary auth blob is refreshed to a newer same-account auth, the worker writes that refreshed auth back into the cloud auth pool before finishing the run.
 - Codex `missing quota details` probe failures are recorded as quota errors but do not delete the auth entry, because the saved refresh token may still be valid and should be available for later central refresh or a successful probe.
 - Codex auths are removed from the active pool after consecutive `auth failed (401 unauthorized)` worker probes, because repeated 401 means the saved token cannot be reused by the pool.
-- A Vercel cron endpoint checks the cloud probe results daily. If a cloud auth stays hard-invalidated for more than 24 hours, Vercel emails the uploader and asks them to log in again. It sends at most one reminder per account per 24 hours until the auth recovers.
+- A daily job checks the cloud probe results. If a cloud auth stays hard-invalidated for more than 24 hours, the hub emails the uploader and asks them to log in again. It sends at most one reminder per account per 24 hours until the auth recovers.
 - The local guard also checks `/api/status` every run and warns about managed auths uploaded by the current token user only after the cloud worker confirms `refresh_token_rejected`. If `auto_relogin_owner_auth` is enabled, it opens the matching local CLI login for that confirmed RT-rejected source; sources disabled with `manage_<source>_auth: false`, ordinary auth probe errors, and stale quota snapshots do not launch login.
 - Claude quota is probed in the worker by running `claude -p /usage` against the restored CLI state and parsing the windows it prints. No inference turn is spent and no session is registered on the pooled account. The previous approach — driving the interactive UI and scraping its statusline snapshot — is kept as plan B behind `--mode tui`.
 - Claude auth snapshots are uploaded to the cloud pool only when the local machine is using a direct Claude subscription. Machines that inject `ANTHROPIC_*` credentials through `~/.claude/settings.json` are skipped because their active provider is not the worker's official Claude login path.
@@ -331,36 +326,21 @@ Before remote `apply`, confirm these variables are available to the process:
 
 Before remote rows are migrated, also configure the same three Tigris values as GitHub Actions secrets, because the scheduled probe worker reads object-backed auth rows.
 
-## Vercel deploy script
+## Deploying the hub
 
-Use the included deploy script to configure the auth-pool email settings on Vercel and trigger a production deploy:
+Create a Fly.io app, set the app name in `fly.toml`, set the secrets listed in
+[SYSTEM_DESIGN.md §17.3](SYSTEM_DESIGN.md#173-deploy) with `fly secrets set`, then:
 
 ```bash
-python3 scripts/deploy_vercel.py \
-  --allowed-domain stardust.ai \
-  --mailgun-api-key YOUR_MAILGUN_API_KEY \
-  --sending-email hello@friday.preseen.ai
+fly deploy --ha=false
 ```
 
-What it does:
-
-- sets `AUTH_ALLOWED_EMAIL_DOMAIN`
-- sets `MAILGUN_API_KEY`
-- derives `MAILGUN_DOMAIN` from the sending email domain
-- sets `MAILGUN_FROM`
-- generates `AUTH_POOL_ENCRYPTION_KEY` only if one does not already exist
-- updates `production`, `preview`, and `development`
-- runs `vercel deploy --prod --yes`
-
-Important:
-
-- the script preserves an existing `AUTH_POOL_ENCRYPTION_KEY` by default, because rotating it would make previously encrypted auth-pool rows unreadable
-- use `--rotate-auth-pool-key` only when you intentionally want to invalidate existing encrypted auth-pool entries
-- use `--skip-deploy` if you only want to update Vercel env values without deploying immediately
+Keep an existing `AUTH_POOL_ENCRYPTION_KEY`: rotating it makes previously encrypted auth-pool rows
+unreadable.
 
 ## Scheduler
 
-The hosted hub uses GitHub Actions for the Codex and Claude server probe loop, because the worker needs CLI tooling that does not belong in a Vercel function. Vercel Hobby projects cannot run 15-minute cron jobs, and GitHub scheduled workflows can start hours late, so the scheduled GitHub workflow starts once per hour and runs twelve probe cycles in the same runner, with a 12-minute wait between cycles. That keeps dashboard rows fresh without relying on high-frequency platform cron.
+The hosted hub uses GitHub Actions for the Codex and Claude server probe loop, because the worker needs CLI tooling that does not belong in the hub process. GitHub scheduled workflows can start hours late, so the scheduled GitHub workflow starts once per hour and runs twelve probe cycles in the same runner, with a 12-minute wait between cycles. That keeps dashboard rows fresh. The two daily jobs run from `.github/workflows/daily-crons.yml`.
 
 - workflow file: `.github/workflows/probe-auth-pool.yml`
 - scheduled behavior: hourly trigger at minute `7`, `PROBE_CYCLES=12`, `PROBE_INTERVAL_SECONDS=720`
@@ -368,7 +348,7 @@ The hosted hub uses GitHub Actions for the Codex and Claude server probe loop, b
   - `TURSO_DATABASE_URL`
   - `TURSO_AUTH_TOKEN`
   - `AUTH_POOL_ENCRYPTION_KEY`
-- Vercel manual/external backup trigger:
+- manual/external backup trigger:
   - path: `/api/cron/probe-auth-pool`
   - auth: `CRON_SECRET`
   - required env: `GITHUB_WORKFLOW_DISPATCH_TOKEN`
@@ -383,7 +363,7 @@ python3 skills/quota-reporter/scripts/install_quota_guard.py \
   --email your.name@stardust.ai
 ```
 
-If you want to use a different hub URL, pass `--auth-pool-url`. The default is `https://quota-report-hub.vercel.app/`.
+If you want to use a different hub URL, pass `--auth-pool-url`. The default is `https://quota-report-hub.fly.dev/`.
 
 2. The installer emails a personal token to `your.name@stardust.ai` and prompts you to paste it locally.
 

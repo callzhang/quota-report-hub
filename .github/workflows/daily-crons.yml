@@ -1,0 +1,30 @@
+name: Daily Hub Crons
+
+# The hub's two daily jobs. Each is an authenticated call into the running hub, which is where the
+# database and mail configuration live.
+on:
+  schedule:
+    - cron: "0 17 * * *" # invalidated-auth notifications
+    - cron: "30 18 * * *" # token-usage retention
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which job to run"
+        required: true
+        type: choice
+        options:
+          - token-usage-retention
+          - invalidated-auth-notifications
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call the hub
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          JOB: ${{ inputs.job || (github.event.schedule == '0 17 * * *' && 'invalidated-auth-notifications' || 'token-usage-retention') }}
+        run: |
+          curl --fail-with-body --silent --show-error --max-time 120 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "https://quota-report-hub.fly.dev/api/cron/${JOB}"

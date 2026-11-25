@@ -1,0 +1,26 @@
+app = "quota-report-hub"
+# The Turso primary is in AWS us-west-2; every request makes several database round trips.
+primary_region = "sjc"
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # One machine, always on: client requests arrive around the clock, and a stopped machine would
+  # bring the cold start back.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/login.html"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

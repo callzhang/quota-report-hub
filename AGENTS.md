@@ -33,7 +33,8 @@ python3 -m pytest tests -q
 ```
 
 Both suites pass before any commit. There is no lint step and no build step; `api/**` and `lib/**`
-are plain ESM run by Vercel, the client is plain Python 3.
+are plain ESM served by `server.mjs` on Fly.io, the client is plain Python 3. Deploy with
+`fly deploy --ha=false` (`SYSTEM_DESIGN.md` §17.3); a push alone does not deploy.
 
 ## How code is written here
 

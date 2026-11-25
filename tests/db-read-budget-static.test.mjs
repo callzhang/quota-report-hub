@@ -1,8 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 
 function functionBody(source, name) {
   const marker = `export async function ${name}`;
@@ -12,35 +10,9 @@ function functionBody(source, name) {
   return source.slice(start, next === -1 ? source.length : next);
 }
 
-async function apiFunctionFiles(directory) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const nested = await Promise.all(entries.map((entry) => {
-    const path = join(directory, entry.name);
-    return entry.isDirectory() ? apiFunctionFiles(path) : [path];
-  }));
-  return nested.flat().filter((path) => path.endsWith(".js"));
-}
-
-test("Hobby deployment stays within twelve serverless functions", async () => {
-  const apiDirectory = fileURLToPath(new URL("../api", import.meta.url));
-  const functions = await apiFunctionFiles(apiDirectory);
-  assert.ok(functions.length <= 12, `expected at most 12 API functions, found ${functions.length}`);
-  const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
-  const consolidatedSources = new Set(vercel.rewrites
-    .filter((rewrite) => rewrite.destination.startsWith("/api/data?route="))
-    .map((rewrite) => rewrite.source));
-  assert.deepEqual(consolidatedSources, new Set([
-    "/api/quota-history",
-    "/api/token-usage",
-    "/api/token-usage-query",
-    "/api/auth/upload-exclusions",
-    "/api/cron/token-usage-retention",
-  ]));
-});
-
-test("Vercel functions run beside the Turso us-west-2 database", async () => {
-  const vercel = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
-  assert.deepEqual(vercel.regions, ["pdx1"]);
+test("the hub runs beside the Turso us-west-2 database", async () => {
+  const fly = await readFile(new URL("../fly.toml", import.meta.url), "utf8");
+  assert.match(fly, /^primary_region = "sjc"$/m);
 });
 
 test("auth-pool active assignment reads use compact latest-state tables", async () => {
@@ -266,9 +238,11 @@ test("token usage wire responses and collector payload exclude conversation iden
   assert.equal((page.match(/fetch\(`\/api\/token-usage-query/g) || []).length, 1);
 });
 
-test("remote probe avoids high-frequency platform cron and uses a GitHub runner loop", async () => {
-  const vercelConfig = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8"));
-  assert.ok(vercelConfig.crons.every((cron) => cron.path !== "/api/cron/probe-auth-pool"));
+test("the probe stays in its own runner loop, not on a daily cron call", async () => {
+  const daily = await readFile(new URL("../.github/workflows/daily-crons.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(daily, /probe-auth-pool/);
+  assert.match(daily, /cron: "0 17 \* \* \*"/);
+  assert.match(daily, /cron: "30 18 \* \* \*"/);
 
   const workflow = await readFile(new URL("../.github/workflows/probe-auth-pool.yml", import.meta.url), "utf8");
   assert.match(workflow, /cron: "7 \* \* \* \*"/);

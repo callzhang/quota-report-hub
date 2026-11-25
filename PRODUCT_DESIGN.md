@@ -18,7 +18,7 @@ The system is designed to:
 The product has two layers:
 
 - `quota-report-hub`
-  the Vercel + Turso service that stores reports, renders the dashboard, stores encrypted auth snapshots, and issues per-user auth-pool tokens
+  the Fly.io + Turso service that stores reports, renders the dashboard, stores encrypted auth snapshots, and issues per-user auth-pool tokens
 - `quota-reporter`
   the local skill and scripts that run on each machine, track the current auth for each source, upload it to the hub when it changes, and fetch a better auth when needed
 
@@ -86,7 +86,7 @@ Company access is based on:
 
 The default hosted hub for the project is:
 
-- `https://quota-report-hub.vercel.app/`
+- `https://quota-report-hub.fly.dev/`
 
 Instead of using one shared `AUTH_POOL_TOKEN` for all employees, the system issues a separate personal token per user.
 
@@ -209,9 +209,9 @@ If a request presents an older hub-signed token, the server can verify the embed
 
 - `GET /api/cron/invalidated-auth-notifications`
   auth:
-  - Vercel cron bearer token from `CRON_SECRET`
+  - bearer token from `CRON_SECRET`, sent by the daily GitHub Actions job
   behavior:
-  - runs on Vercel, where the Mailgun environment variables live
+  - runs in the hub, where the Mailgun environment variables live
   - reads auth pool entries plus latest cloud probe results from Turso
   - records the first time each `source + account_id` becomes continuously hard-invalidated, using `auth_pool_quota_events` instead of only the latest row
   - emails the auth uploader after a hard invalidation remains unresolved for more than 24 hours
@@ -226,7 +226,7 @@ The intended Codex interaction is:
 1. user asks Codex to install the skill
 2. Codex installs local scripts
 3. Codex uses the default hosted hub unless the user provides a different hub URL
-4. if the user wants a new hub, Codex runs `scripts/deploy_vercel.py`
+4. if the user wants a new hub, Codex deploys it to Fly.io (`SYSTEM_DESIGN.md` §17.3)
 5. if the user provides a different hub URL, Codex verifies the auth-pool APIs exist
 6. Codex asks the user for company email
 7. Codex runs `install_quota_guard.py`
@@ -411,7 +411,7 @@ That means:
 
 ```bash
 python3 skills/quota-reporter/scripts/install_quota_guard.py \
-  --auth-pool-url https://quota-report-hub.vercel.app \
+  --auth-pool-url https://quota-report-hub.fly.dev \
   --email your.name@stardust.ai
 ```
 

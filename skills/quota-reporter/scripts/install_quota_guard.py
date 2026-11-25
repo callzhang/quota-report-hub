@@ -48,7 +48,7 @@ def emit_seed_guidance() -> dict:
 
 LABEL = "com.openai.quota-guard"
 RUN_INTERVAL_SECONDS = 900
-DEFAULT_AUTH_POOL_URL = "https://quota-report-hub.vercel.app/"
+DEFAULT_AUTH_POOL_URL = "https://quota-report-hub.fly.dev/"
 CONFIG_PATH = Path.home() / ".agents" / "auth" / "quota-reporter.json"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 LOG_PATH = Path.home() / ".agents" / "auth" / "quota-guard.log"

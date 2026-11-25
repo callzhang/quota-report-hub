@@ -71,6 +71,7 @@ from quota_reporters import (
     restart_claude_app_if_idle,
     iso_now,
     load_config,
+    move_config_off_retired_hub,
     known_codex_refresh_handoff,
     pending_codex_owner_repair,
     post_auth_pool_quota,
@@ -3440,6 +3441,8 @@ def main() -> None:
         sys.exit(run_seed(args, args.seed))
     process_started = time.perf_counter()
     self_update_started = time.perf_counter()
+    # Reported, not swallowed: a config that cannot be read fails again, visibly, in run_guard.
+    hub_move = run_guard_step("hub_move_failed", lambda: {"ok": True, "moved": move_config_off_retired_hub()})
     try:
         startup_config = load_config(args)
     except Exception:
@@ -3454,6 +3457,7 @@ def main() -> None:
         os.chdir(Path.home())
     result = run_guard(args)
     result["self_update"] = self_update
+    result["hub_move"] = hub_move
     result.setdefault("timings", {})["self_update"] = self_update_elapsed
     result["timings"]["process_total"] = round(time.perf_counter() - process_started, 3)
     if args.json_output:
