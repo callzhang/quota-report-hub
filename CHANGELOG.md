@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-11-24
+
+### Fixed
+- A cold serverless instance no longer re-runs the whole schema migration (67 database round trips)
+  before its first query; it reads one stored fingerprint of the migration code. This was the largest
+  share of the Vercel Active CPU that got the team paused (`SYSTEM_DESIGN.md` §4.1).
+- A failing migration column change now fails the caller instead of being swallowed.
+
 ## 2026-11-08
 
 ### Fixed

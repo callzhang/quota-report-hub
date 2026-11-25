@@ -344,6 +344,21 @@ statements; reusing a socket the database closed during that interval failed wit
 setup time but avoids replaying a statement whose write outcome is unknown. Transport failures
 still fail the caller; there is no automatic database retry.
 
+**The migration runs once per version of itself, not once per instance.** `ensureSchema` sends one
+batch — create `schema_version` if missing, read its fingerprint — and returns when the stored value
+equals the SHA-256 of the migration functions' source. Otherwise it runs `migrateSchema` and records
+the fingerprint only after every statement succeeded. Before this, each cold serverless instance sent
+the whole migration (67 round trips) ahead of its first query; the 12 h before 2026-11-24 showed
+19.3 % cold starts and 3.2K database calls for 188 invocations, and the team was paused for exceeding
+the free Active CPU allowance. Consequences to keep:
+
+- A new function that the migration calls must be added to the list in `schemaFingerprint`, or
+  editing it will not re-run anything.
+- Column changes go through `addColumn` / `dropColumn`, which check `PRAGMA table_info` first. A
+  failing `ALTER` propagates: swallowing it would record a migration that did not happen.
+- A migration step cannot be relied on to repair data on later starts; it runs when the code changes.
+- Migration code must not set module state that queries depend on — a skipped migration never sets it.
+
 | Table | Key | Purpose |
 |---|---|---|
 | `auth_pool_entries` | PK `(source, account_id, session_id)` | The encrypted credential pool. One row per account in practice (see collapse, [§5.2](#52-single-entry-per-account)). Holds metadata + either inline ciphertext **or** an `auth_blob_key` pointer. (`:331-353`) |
