@@ -157,6 +157,21 @@ class RecomputeWindowTest(unittest.TestCase):
         _rows, messages = self.recompute(datetime(2026, 9, 1, tzinfo=timezone.utc))
         self.assertEqual([message["model_account_id"] for message in messages], ["claude-b"])
 
+    def test_usage_after_the_last_switch_follows_a_later_manual_login(self):
+        # The live collector's rule (account_for_event): a boundary holds only until the account the
+        # guard observes says otherwise, since logging back in by hand leaves no boundary.
+        switch_id = self.state.prepare_account_switch(
+            provider="codex", from_account_id="acct-a", to_account_id="pool-acct",
+            prepared_at="2026-09-05T09:00:00.000Z",
+        )
+        self.state.finalize_account_switch(switch_id, finalized_at="2026-09-05T09:00:01.000Z")
+        self.state.set_meta("observed_account:codex", "own-acct")
+        (self.codex_root / "after.jsonl").write_text(codex_session("after", [
+            ("2026-09-05T10:00:00.000Z", 100_000, 1_000),
+        ]))
+        rows, _messages = self.recompute(datetime(2026, 9, 4, tzinfo=timezone.utc))
+        self.assertEqual([row["model_account_id"] for row in rows], ["own-acct"])
+
     def test_an_event_with_no_recorded_account_at_all_is_dropped_rather_than_misfiled(self):
         # Undercounting is recoverable; putting one account's tokens on another name is not.
         with tempfile.TemporaryDirectory() as bare:

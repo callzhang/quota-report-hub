@@ -165,6 +165,43 @@ class TokenUsageCollectorTests(unittest.TestCase):
             })
             state.close()
 
+    def run_after_manual_login(self, *, observed_account, upload_exclusions=frozenset()):
+        # The guard switched this machine to a pooled account on 2026-08-18 11:50, and the owner
+        # later logged back into their own account by hand -- which leaves no boundary behind.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            codex_root = root / "codex"
+            write_lines(codex_root / "after.jsonl", codex_lines(session="after", event_at="2026-08-18T11:55:00.000Z"))
+            state = self.make_state(root)
+            switch_id = state.prepare_account_switch(
+                provider="codex", from_account_id="old@stardust.ai", to_account_id="pool@stardust.ai",
+                prepared_at="2026-08-18T11:50:00.000Z",
+            )
+            state.finalize_account_switch(switch_id, finalized_at="2026-08-18T11:50:01.000Z")
+            uploads = []
+            with mock.patch.object(token_usage_collector, "post_token_usage_batch", side_effect=lambda _url, _token, payload: uploads.append(payload) or {"ok": True, "status_code": 200}):
+                self.run_collector(
+                    state=state, codex_root=codex_root, claude_root=root / "claude",
+                    codex_account=observed_account, upload_exclusions=upload_exclusions,
+                )
+            state.close()
+            return [row for upload in uploads for row in upload["rows"]]
+
+    def test_usage_after_a_manual_login_is_filed_under_the_account_observed_now(self):
+        # Regression, 2026-11-27: GPU4 was switched to solutions@ on 11-20 and its owner logged back
+        # into their own account the same day. Every token they spent for the next week was still
+        # filed under solutions@, because the last boundary outranked the account the guard read on
+        # every run -- and that put the owner over the fair-share cap on usage of their own account.
+        rows = self.run_after_manual_login(observed_account="mine@stardust.ai")
+        self.assertEqual({row["model_account_id"] for row in rows}, {"mine@stardust.ai"})
+
+    def test_usage_after_a_manual_login_to_an_excluded_account_is_not_sent(self):
+        rows = self.run_after_manual_login(
+            observed_account="mine@gmail.com",
+            upload_exclusions=frozenset({("codex", "mine@gmail.com")}),
+        )
+        self.assertEqual(rows, [])
+
     def test_pending_retry_uploads_same_batch_before_scanning_and_401_keeps_it_pending(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

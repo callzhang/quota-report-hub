@@ -1598,7 +1598,17 @@ Two cases, and the second is deliberately approximate:
   boundary*, reads the installed account back, then finalizes or cancels it. Collector events are
   split at finalized boundaries, so tokens land on the account that actually served them.
 - **Manual switch** — there is no boundary to split on, so events read in that cycle are attributed
-  to the account observed during the report.
+  to the account observed during the report. That includes every event after the last boundary
+  (`account_for_event`): a boundary proves its account only until something newer is observed.
+  Until 2026-11-27 the last boundary outranked the observation, so a machine switched to a pooled
+  account and then logged back into its owner's own by hand kept filing the owner's usage under the
+  pooled account. stardust-GPU4 was switched to `solutions@` on 11-20 and back to an excluded
+  personal account the same day; the next week of its usage (1.5B input tokens over the last three
+  days alone) landed on `solutions@` and counted against derek's fair-share cap (§9b), and the
+  laptop's went to `ceshi@` since 11-09. For an excluded account the observed id now matches the
+  exclusion, so that usage is not sent at all (§18). The offline repair (§16.4) applies the same
+  rule with the collector's last observed account; history already filed wrongly is corrected
+  only by a repair generation that re-derives it.
 
 This is a usage read model, not a billing ledger, and the doc says so on purpose: precision beyond
 "which account was in use this cycle" would require instrumenting the provider CLIs.

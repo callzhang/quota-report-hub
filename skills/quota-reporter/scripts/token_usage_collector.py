@@ -153,18 +153,25 @@ def discover_changed_files(
 def account_for_event(
     *,
     event_at: str,
-    report_account_id: str | None,
+    opening_account_id: str | None,
     switches: list[dict[str, Any]],
+    current_account_id: str | None,
 ) -> str | None:
-    if not switches:
-        return report_account_id
-    account = switches[0].get("from_account_id") or report_account_id
+    """The account installed when the event happened, from the newest evidence that covers it.
+
+    A boundary proves the account from the moment it was installed until the next boundary -- or
+    until a manual login, which leaves none. So an event after the last boundary belongs to the
+    account observed now (``current_account_id``), not the one that boundary installed: GPU4 filed a
+    week of its owner's own usage under the pooled account it had been switched to before they
+    logged back in (2026-11). When no account has been observed at all, the last boundary is the
+    newest evidence there is.
+    """
+    account = (switches[0].get("from_account_id") if switches else None) or opening_account_id
     for switch in switches:
-        if switch["prepared_at"] <= event_at:
-            account = switch.get("to_account_id") or account
-        else:
-            break
-    return account
+        if switch["prepared_at"] > event_at:
+            return account
+        account = switch.get("to_account_id") or account
+    return current_account_id or account
 
 
 def _empty_summary(*, started: float, monotonic: Callable[[], float], reason: str | None = None) -> dict[str, Any]:
@@ -398,8 +405,9 @@ def collect_and_report_token_usage(
                                     delta = claude_counter_delta(record.counters, acknowledged)
                                 account_id = account_for_event(
                                     event_at=record.event_at,
-                                    report_account_id=report_accounts[record.provider],
+                                    opening_account_id=report_accounts[record.provider],
                                     switches=switches[record.provider],
+                                    current_account_id=report_accounts[record.provider],
                                 )
                                 # Excluded usage is read and checkpointed like any other, then simply not
                                 # emitted: the account stays private without the file being re-read forever.

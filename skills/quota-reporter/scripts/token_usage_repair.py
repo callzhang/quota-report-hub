@@ -118,6 +118,13 @@ def recompute_window(
         provider: opening_account(state, provider, since_iso, switches[provider])
         for provider in ("codex", "claude")
     }
+    # After the window's last boundary the account is the one the collector last observed, as it is
+    # live (account_for_event): a manual login leaves no boundary, so the boundary alone would keep
+    # filing the owner's own usage under the account they had been switched to.
+    current = {
+        provider: state.meta(OBSERVED_ACCOUNT_KEY.format(provider=provider))
+        for provider in ("codex", "claude")
+    }
     aggregate: dict[tuple, dict[str, int]] = defaultdict(lambda: {field: 0 for field in COUNTER_FIELDS})
     counters: dict[str, dict[str, int]] = {}
     seen: set[str] = set()
@@ -164,8 +171,9 @@ def recompute_window(
                             continue
                         account = account_for_event(
                             event_at=record.event_at,
-                            report_account_id=opening[provider],
+                            opening_account_id=opening[provider],
                             switches=switches[provider],
+                            current_account_id=current[provider],
                         )
                         if account is not None:
                             claude_messages[record.logical_record_key] = claude_message(
@@ -184,8 +192,9 @@ def recompute_window(
                         continue
                     account = account_for_event(
                         event_at=record.event_at,
-                        report_account_id=opening[provider],
+                        opening_account_id=opening[provider],
                         switches=switches[provider],
+                        current_account_id=current[provider],
                     )
                     if account is None:
                         # No boundary covers this event, so there is no account to file it under.
