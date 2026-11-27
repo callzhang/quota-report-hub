@@ -89,6 +89,17 @@ test("every pooled model seen in production is priced at its own rate card, not 
     "claude-fable-5-1": { input: 10, cache_read: 0.25, cache_write: 12.5, output: 50 },
     "claude-opus-4-8": { input: 5, cache_read: 0.5, cache_write: 6.25, output: 25 },
     "claude-haiku-4-5-20251001": { input: 1, cache_read: 0.1, cache_write: 1.25, output: 5 },
+    // Seen in the 30 days to 2026-11-27 with no row of their own, so all of them read at the
+    // family's top rate: GPT-6.1/6.2 Sol at 5x (gpt-6.1-sol alone carried 76B tokens across 12
+    // users) and GPT-6.2 Astra at 2.5x on cache reads. derek's 3-day codex spend read $624 against
+    // a $618 fair-share cap; $540 of it was GPT-6.2 Sol priced as GPT-6 Astra.
+    "gpt-6.2-astra": { input: 8, cache_read: 0.4, cache_write: 10, output: 40 },
+    "gpt-6.2-sol": { input: 2, cache_read: 0.1, cache_write: 2.5, output: 10 },
+    "gpt-6.1-sol": { input: 2, cache_read: 0.1, cache_write: 2.5, output: 10 },
+    "gpt-6.1-terra": { input: 1, cache_read: 0.05, cache_write: 1.25, output: 5 },
+    "claude-fable-5-2": { input: 8, cache_read: 0.2, cache_write: 10, output: 40 },
+    "claude-sonnet-5-5": { input: 2, cache_read: 0.1, cache_write: 2.5, output: 10 },
+    "claude-haiku-5-5": { input: 0.1, cache_read: 0.01, cache_write: 0.125, output: 0.5 },
   };
   for (const [modelId, rates] of Object.entries(expected)) {
     const actual = perMillion(modelId);

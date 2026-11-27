@@ -1088,13 +1088,20 @@ them moved the 7-day team spend from $11,688 to $10,007, and moved individual sh
 matter to the gate: derek $8,671 → $5,440, shawn.hou $1,865 → $3,038. (Switching GPT-5.6 Sol to its
 promotional rate the same day took the 7-day total on to $9,576.)
 
-The premium list covers every flagship-tier model on the card: GPT-5.6 Sol, GPT-6 Astra, Fable
-5/5.1, Opus 4.8/5/5.5. The notices recommend GPT-6 Luna for Codex and Sonnet 5 for Claude. Adding
+The premium list covers every flagship-tier model on the card: GPT-5.6 Sol, GPT-6 Astra, GPT-6.2
+Astra, Fable 5/5.1/5.2, Opus 4.8/5/5.5. The notices recommend GPT-6 Luna for Codex and Sonnet 5 for Claude. Adding
 Astra, Opus 5.5 and Fable 5.1 put nearly every active user over the 50% premium-share hint on
 2026-09-24 (7-day: shawn.hou 1% → 96%, lingling.zhang 0% → 70%, derek 71% → 86%). That is accurate,
 because the team has moved onto exactly those models, and the hint stays advisory. When a new model shows up
 under `token_usage_15m.model_id`, price it from the vendor pages cited in `lib/model-tiers.js`.
-`gpt-reserve` (Codex's "Luna Reserve" fallback allowance) has no published price; it is charged as
+The same miss recurred two months later. On 2026-11-27 seven pooled models seen in the previous 30
+days had no row -- GPT-6.1 Sol (76B input tokens, 12 users), GPT-6.1 Terra, GPT-6.2 Sol and Astra,
+Fable 5.2, Sonnet 5.5, Haiku 5.5 -- and all read at their family's top rate. GPT-6.2 Sol is 1/5 of
+GPT-6 Astra's price on every field, so derek's 3-day codex spend read $624 against a $618 cap, $540 of
+it 6.2 Sol; priced, it is $111 (the whole 3-day codex pool spend went from $846 to $150). The newer
+cards also stopped discounting cache reads to a tenth (GPT-6.1/6.2 and Sonnet 5.5 at 1/20, Fable
+5.1/5.2 at 1/40), which matters here because replayed context is most of the volume. `gpt-reserve`
+(Codex's "Luna Reserve" fallback allowance) has no published price; it is charged as
 GPT-5.6 Luna, the model it runs.
 
 **Premium share only ever advises.** It is a proxy for "you are expensive", and once usage is priced
